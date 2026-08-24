@@ -1,0 +1,60 @@
+# Monorepo dispatcher pipeline for the gathered repo.
+#
+# This file is injected by `ctg gather` from the ctg repo's overlay/
+# directory; edit it there, not in the gathered repo.
+#
+# It does no work itself: for each top-level project that changed, it
+# uploads that project's own nested pipeline. Per-project pipelines live
+# with the code (test-collector-*/.buildkite/pipeline.yml) and are the
+# monorepo-owned CI for each project. See S5 in ctg docs/decisions.md.
+#
+# This pipeline is CI only: tests and lint, no credentials of any kind.
+# Release automation runs in the separate bktest-release Buildkite
+# pipeline, which uploads .buildkite/pipeline.release.yml — see D13 in
+# ctg docs/decisions.md.
+#
+# On dry-run-* branches there is no merge-base with main, so the agent
+# disables if_changed and uploads every project's pipeline — a full
+# exercise, which is what a dry-run wants.
+#
+# Projects arrive on main incrementally (D14 in ctg docs/decisions.md), so
+# every step's command guards on its directory existing: this one static
+# dispatcher stays valid for any subset of projects. if_changed already
+# skips absent dirs on ordinary builds, but not when it is disabled
+# (dry-run branches, or no merge-base).
+
+agents:
+  queue: hosted
+
+steps:
+  - label: ":pipeline: test-collector-ruby"
+    if_changed: "test-collector-ruby/**"
+    command: "[ ! -d test-collector-ruby ] || buildkite-agent pipeline upload test-collector-ruby/.buildkite/pipeline.yml"
+
+  - label: ":pipeline: test-collector-python"
+    if_changed: "test-collector-python/**"
+    command: "[ ! -d test-collector-python ] || buildkite-agent pipeline upload test-collector-python/.buildkite/pipeline.yml"
+
+  - label: ":pipeline: test-collector-javascript"
+    if_changed: "test-collector-javascript/**"
+    command: "[ ! -d test-collector-javascript ] || buildkite-agent pipeline upload test-collector-javascript/.buildkite/pipeline.yml"
+
+  - label: ":pipeline: test-collector-swift"
+    if_changed: "test-collector-swift/**"
+    command: "[ ! -d test-collector-swift ] || buildkite-agent pipeline upload test-collector-swift/.buildkite/pipeline.yml"
+
+  - label: ":pipeline: test_collector_elixir"
+    if_changed: "test_collector_elixir/**"
+    command: "[ ! -d test_collector_elixir ] || buildkite-agent pipeline upload test_collector_elixir/.buildkite/pipeline.yml"
+
+  - label: ":pipeline: test-collector-dotnet"
+    if_changed: "test-collector-dotnet/**"
+    command: "[ ! -d test-collector-dotnet ] || buildkite-agent pipeline upload test-collector-dotnet/.buildkite/pipeline.yml"
+
+  - label: ":pipeline: test-collector-android"
+    if_changed: "test-collector-android/**"
+    command: "[ ! -d test-collector-android ] || buildkite-agent pipeline upload test-collector-android/.buildkite/pipeline.yml"
+
+  - label: ":pipeline: test-collector-rust"
+    if_changed: "test-collector-rust/**"
+    command: "[ ! -d test-collector-rust ] || buildkite-agent pipeline upload test-collector-rust/.buildkite/pipeline.yml"

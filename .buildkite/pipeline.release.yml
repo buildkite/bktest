@@ -1,0 +1,55 @@
+# Monorepo release dispatcher, uploaded by the separate bktest-release
+# Buildkite pipeline — never by the CI pipeline. See D13 in ctg
+# docs/decisions.md and the Securing-public-pipelines ADR: CI and CD are
+# separate Buildkite pipelines so cluster, trigger-on-fork, PR-build, and
+# branch-limit settings — and credential trust — differ per pipeline.
+#
+# This file is injected by `ctg gather` from the ctg repo's overlay/
+# directory; edit it there, not in the gathered repo.
+#
+# It does no work itself: for each project with release automation (see
+# ctg docs/publishing.md) it uploads that project's release pipeline
+# (<dir>/.buildkite/pipeline.release.yml). Two steps each: a rehearsal
+# upload on ordinary (untagged) builds when the project changes — the
+# release pipelines' side-effect steps only exist on an exact
+# <project>/vX.Y.Z tag with RELEASE_EXECUTE=true, so rehearsals are
+# side-effect-free — and a release upload on that project's tags.
+#
+# On dry-run-* branches there is no merge-base with main, so the agent
+# disables if_changed and uploads every release pipeline — rehearsing all
+# release code on every dry-run, which is what a dry-run wants.
+#
+# Projects arrive on main incrementally (D14 in ctg docs/decisions.md), so
+# every step's command guards on its directory existing: this one static
+# dispatcher stays valid for any subset of projects.
+
+agents:
+  queue: hosted
+
+steps:
+  - label: ":pipeline: test-collector-ruby release rehearsal"
+    if: build.tag == null
+    if_changed: "test-collector-ruby/**"
+    command: "[ ! -d test-collector-ruby ] || buildkite-agent pipeline upload test-collector-ruby/.buildkite/pipeline.release.yml"
+
+  - label: ":pipeline: test-collector-ruby release"
+    if: build.tag =~ /^test-collector-ruby\//
+    command: "[ ! -d test-collector-ruby ] || buildkite-agent pipeline upload test-collector-ruby/.buildkite/pipeline.release.yml"
+
+  - label: ":pipeline: test-collector-python release rehearsal"
+    if: build.tag == null
+    if_changed: "test-collector-python/**"
+    command: "[ ! -d test-collector-python ] || buildkite-agent pipeline upload test-collector-python/.buildkite/pipeline.release.yml"
+
+  - label: ":pipeline: test-collector-python release"
+    if: build.tag =~ /^test-collector-python\//
+    command: "[ ! -d test-collector-python ] || buildkite-agent pipeline upload test-collector-python/.buildkite/pipeline.release.yml"
+
+  - label: ":pipeline: test-collector-android release rehearsal"
+    if: build.tag == null
+    if_changed: "test-collector-android/**"
+    command: "[ ! -d test-collector-android ] || buildkite-agent pipeline upload test-collector-android/.buildkite/pipeline.release.yml"
+
+  - label: ":pipeline: test-collector-android release"
+    if: build.tag =~ /^test-collector-android\//
+    command: "[ ! -d test-collector-android ] || buildkite-agent pipeline upload test-collector-android/.buildkite/pipeline.release.yml"
