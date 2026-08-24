@@ -17,7 +17,7 @@ remains its home:
 | elixir | Elixir | [test_collector_elixir/](test_collector_elixir/) | [buildkite_test_collector](https://hex.pm/packages/buildkite_test_collector) on Hex |
 | dotnet | .NET | [test-collector-dotnet/](test-collector-dotnet/) | [Buildkite.TestAnalytics](https://www.nuget.org/packages/Buildkite.TestAnalytics.Common) on NuGet |
 | android | Android | [test-collector-android/](test-collector-android/) | com.buildkite.test-collector-android on Maven Central |
-| rust | Rust | [buildkite/test-collector-rust](https://github.com/buildkite/test-collector-rust) | [buildkite-test-collector](https://crates.io/crates/buildkite-test-collector) on crates.io |
+| rust | Rust | [test-collector-rust/](test-collector-rust/) | [buildkite-test-collector](https://crates.io/crates/buildkite-test-collector) on crates.io |
 
 As each collector moves in, its Home link above changes to its directory
 here, and the original repository is archived with a pointer back.
