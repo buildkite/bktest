@@ -1,0 +1,31 @@
+# Monorepo pipeline for test-collector-rust, uploaded by the top-level
+# dispatcher when this project changes. Injected by `ctg gather` from the
+# ctg repo's overlay/ directory during the dry-run era; post-cutover this
+# file is maintained here, in the monorepo.
+#
+# Dry-run-safe: pure build/test/clippy steps translated from the source
+# repo's GitHub Actions workflow (.github/workflows/rust.yml), with no
+# analytics token. The source workflow pipes test output through the
+# collector itself (`cargo test ... | cargo run`), which needs a token
+# and nightly-only libtest flags; here we run plain `cargo test`.
+#
+# Jobs check out the monorepo root, so commands cd into this project.
+
+agents:
+  queue: hosted
+
+steps:
+  - group: ":rust: test-collector-rust"
+    steps:
+      - label: ":rust: Build, test, clippy"
+        command:
+          - "cd test-collector-rust"
+          - "cargo build --all-targets"
+          - "cargo test"
+          # The rust:1 image does not always ship clippy for a freshly
+          # released toolchain (e.g. 1.96.1); install it explicitly.
+          - "rustup component add clippy"
+          - "cargo clippy"
+        plugins:
+          - docker#v3.7.0:
+              image: "rust:1"
