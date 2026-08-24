@@ -1,0 +1,29 @@
+# Monorepo pipeline for test_collector_elixir, uploaded by the top-level
+# dispatcher when this project changes. Injected by `ctg gather` from the
+# ctg repo's overlay/ directory during the dry-run era; post-cutover this
+# file is maintained here, in the monorepo.
+#
+# Dry-run-safe: pure test/lint steps translated from the source repo's
+# GitHub Actions workflows (mix_test, mix_format), with no analytics token.
+#
+# Jobs check out the monorepo root, so commands cd into this project.
+
+agents:
+  queue: hosted
+
+steps:
+  - group: ":elixir: test_collector_elixir"
+    steps:
+      - label: ":elixir: mix test"
+        command:
+          - "cd test_collector_elixir"
+          - "mix local.rebar --force"
+          - "mix local.hex --force"
+          - "mix deps.get"
+          - "mix format --check-formatted"
+          - "mix test"
+        env:
+          MIX_ENV: test
+        plugins:
+          - docker#v3.7.0:
+              image: "elixir:1.18-otp-27"
