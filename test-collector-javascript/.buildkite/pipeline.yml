@@ -1,0 +1,36 @@
+# Monorepo pipeline for test-collector-javascript, uploaded by the
+# top-level dispatcher when this project changes. Injected by `ctg gather`
+# from the ctg repo's overlay/ directory during the dry-run era;
+# post-cutover this file is maintained here, in the monorepo.
+#
+# Dry-run-safe: pure test steps only, derived from the source repo's
+# buildkite.yaml.
+#
+# Jobs check out the monorepo root, so commands cd into this project.
+
+agents:
+  queue: hosted
+
+steps:
+  - group: ":javascript: test-collector-javascript"
+    steps:
+      - label: ":jest: Tests"
+        # The cypress e2e suite occasionally hits its 20s timeout
+        # (observed on bktest build #31); a plain retry has always
+        # cleared it.
+        retry:
+          automatic:
+            - exit_status: "*"
+              limit: 2
+        command:
+          - "cd test-collector-javascript"
+          - "npm ci"
+          - "npx playwright install --with-deps chromium"
+          - "npm test"
+        plugins:
+          - docker#v3.7.0:
+              image: cypress/base:22.15.0
+              # Prevent mounting the agent, otherwise BUILDKITE_JOB_ID and
+              # BUILDKITE_BUILD_ID are passed through to the container and
+              # mess up the CI detection — we want a clean process.env.
+              mount-buildkite-agent: false
