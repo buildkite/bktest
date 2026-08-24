@@ -1,0 +1,29 @@
+# Monorepo pipeline for test-collector-dotnet, uploaded by the top-level
+# dispatcher when this project changes. Injected by `ctg gather` from the
+# ctg repo's overlay/ directory during the dry-run era; post-cutover this
+# file is maintained here, in the monorepo.
+#
+# Dry-run-safe: pure restore/build/test steps translated from the source
+# repo's GitHub Actions workflow (.github/workflows/xunit.yml), with no
+# analytics token. The image is Microsoft's public registry (mcr) — no
+# credentials required.
+#
+# Jobs check out the monorepo root, so commands cd into this project.
+
+agents:
+  queue: hosted
+
+steps:
+  - group: ":dotnet: test-collector-dotnet"
+    steps:
+      - label: ":dotnet: Tests (.NET {{matrix}})"
+        command:
+          - "cd test-collector-dotnet"
+          - "dotnet restore"
+          - "dotnet build --configuration Release --no-restore"
+          - "dotnet test --no-restore --verbosity normal Buildkite.TestAnalytics.Tests/Buildkite.TestAnalytics.Tests.fsproj"
+        plugins:
+          - docker#v3.7.0:
+              image: "mcr.microsoft.com/dotnet/sdk:{{matrix}}"
+        matrix:
+          - "9.0"
