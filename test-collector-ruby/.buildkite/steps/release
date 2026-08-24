@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Monorepo release script for test-collector-ruby: build the gem, check
+# tag/version consistency and RubyGems state, then publish — but the publish
+# side effect only happens when RELEASE_EXECUTE=true (set explicitly on the
+# release build; see pipeline.release.yml). Everything before the push runs
+# in rehearsals too, so dry-runs exercise this code.
+#
+# Injected by `ctg gather` from the ctg repo's overlay/ directory during the
+# dry-run era; post-cutover this file is maintained here, in the monorepo.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/../.." # this project's root, wherever the checkout cwd is
+
+PROJECT="test-collector-ruby"
+GEM_NAME="buildkite-test_collector"
+TAG_PATTERN="^${PROJECT}/v([0-9]+\.[0-9]+\.[0-9]+)$"
+
+echo "--- Determining version"
+if [ -n "${BUILDKITE_TAG:-}" ]; then
+  if [[ ! "${BUILDKITE_TAG}" =~ ${TAG_PATTERN} ]]; then
+    echo "BUILDKITE_TAG '${BUILDKITE_TAG}' does not match ${PROJECT}/vX.Y.Z; refusing" >&2
+    exit 1
+  fi
+  VERSION="${BASH_REMATCH[1]}"
+  echo "version ${VERSION} (from tag ${BUILDKITE_TAG})"
+else
+  VERSION="$(ruby -Ilib -rbuildkite/test_collector/version -e 'puts Buildkite::TestCollector::VERSION')"
+  echo "version ${VERSION} (from lib/buildkite/test_collector/version.rb; no tag)"
+fi
+
+GEM_FILENAME="${GEM_NAME}-${VERSION}.gem"
+
+echo "--- Building gem"
+gem build "${GEM_NAME}.gemspec"
+if [ ! -f "${GEM_FILENAME}" ]; then
+  echo "ERROR: expected ${GEM_FILENAME}; does the gemspec/version.rb say ${VERSION}?" >&2
+  echo "gem files found:" >&2
+  ls -- *.gem >&2 || true
+  exit 1
+fi
+
+echo "--- Checking rubygems.org for existing version ${VERSION} (read-only)"
+STATUS="$(curl -s -o /dev/null -w "%{http_code}" "https://rubygems.org/api/v2/rubygems/${GEM_NAME}/versions/${VERSION}.json")"
+if [ "${STATUS}" = "200" ]; then
+  ALREADY_PUBLISHED=true
+  echo "${GEM_NAME} ${VERSION} is already on rubygems.org"
+else
+  ALREADY_PUBLISHED=false
+  echo "${GEM_NAME} ${VERSION} is not on rubygems.org (HTTP ${STATUS})"
+fi
+
+if [ "${RELEASE_EXECUTE:-}" != "true" ]; then
+  echo "--- Rehearsal only"
+  echo "RELEASE_EXECUTE is not 'true': stopping before 'gem push ${GEM_FILENAME}'."
+  exit 0
+fi
+
+echo "--- Publishing ${GEM_FILENAME} to RubyGems"
+if [ -z "${BUILDKITE_TAG:-}" ]; then
+  echo "RELEASE_EXECUTE=true without a ${PROJECT}/vX.Y.Z tag; refusing" >&2
+  exit 1
+fi
+if [ "${ALREADY_PUBLISHED}" = "true" ]; then
+  echo "version ${VERSION} already published; refusing" >&2
+  exit 1
+fi
+if [ -z "${GEM_HOST_API_KEY:-}" ]; then
+  echo "GEM_HOST_API_KEY not set (rubygems-oidc plugin missing or failed)" >&2
+  exit 1
+fi
+gem push "${GEM_FILENAME}"

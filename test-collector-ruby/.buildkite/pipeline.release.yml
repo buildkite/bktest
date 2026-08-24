@@ -1,12 +1,68 @@
+# Monorepo release pipeline for test-collector-ruby, uploaded by the
+# release dispatcher (.buildkite/pipeline.release.yml) running on the
+# separate bktest-release Buildkite pipeline — never by CI: as a rehearsal
+# when this project changes (no tag), and for real on a
+# test-collector-ruby/vX.Y.Z tag. Injected by `ctg gather` from the ctg
+# repo's overlay/ directory during the dry-run era; post-cutover this file
+# is maintained here, in the monorepo. It replaces the source repo's
+# .buildkite/pipeline.release.yml, which assumed the repo root was the
+# project root.
+#
+# Safety model (see docs/publishing.md in the ctg repo):
+#   - The build step is side-effect-free: it builds the gem, checks
+#     tag/version consistency, and queries RubyGems read-only. It runs on
+#     every rehearsal, so dry-runs exercise the release code. It never sees
+#     RELEASE_EXECUTE (deliberately not propagated into its container).
+#   - The credentials step only verifies a token can be minted; soft_fail
+#     until the bktest OIDC role exists (a cut-over task).
+#   - The publish steps exist only on an exact test-collector-ruby/vX.Y.Z
+#     tag AND RELEASE_EXECUTE=true set on the build, behind a block step;
+#     the release script independently re-checks both before `gem push`.
+
 agents:
   queue: hosted
 
 steps:
-  - block: "OK to release?"
+  - label: ":rubygems: test-collector-ruby: build + rehearse release"
+    key: ruby-build
+    command: test-collector-ruby/.buildkite/steps/release
+    plugins:
+      - docker#v5.12.0:
+          image: "ruby:3.4"
+          environment:
+            - BUILDKITE_TAG
 
-  - command: ".buildkite/steps/release-gem"
-    label: ":rubygems:"
-    if: build.tag != null
+  - label: ":rubygems: test-collector-ruby: verify RubyGems OIDC credentials"
+    key: ruby-credentials
+    # Same rubygems.org OIDC API key role as the source repo's release
+    # pipeline; its access policy gained an allow statement for this
+    # pipeline (2026-07-08) alongside the old test-collector-ruby-release
+    # statement, which goes away when that pipeline is retired at ruby's
+    # cut-over (see the credential cut-over section of ctg
+    # docs/publishing.md). No soft_fail: a red probe means the trust
+    # regressed. $$ because pipeline upload interpolates $VAR at upload
+    # time; the check must run in the job's shell.
+    command: |
+      if [ -n "$${GEM_HOST_API_KEY:-}" ]; then
+        echo "ok: rubygems-oidc minted GEM_HOST_API_KEY"
+      else
+        echo "GEM_HOST_API_KEY not present: RubyGems OIDC role not set up for this pipeline yet"
+        exit 1
+      fi
+    plugins:
+      - rubygems-oidc#v0.2.0:
+          role: "rg_oidc_akr_fy1x4px4yjwd1rdhkkda"
+
+  - block: ":rocket: Publish test-collector-ruby to RubyGems?"
+    key: ruby-confirm
+    if: build.tag =~ /^test-collector-ruby\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+
+  - label: ":rubygems: test-collector-ruby: publish to RubyGems"
+    if: build.tag =~ /^test-collector-ruby\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+    depends_on:
+      - ruby-build
+      - ruby-confirm
+    command: test-collector-ruby/.buildkite/steps/release
     plugins:
       - rubygems-oidc#v0.2.0:
           role: "rg_oidc_akr_fy1x4px4yjwd1rdhkkda"
@@ -15,4 +71,4 @@ steps:
           environment:
             - GEM_HOST_API_KEY
             - BUILDKITE_TAG
-
+            - RELEASE_EXECUTE

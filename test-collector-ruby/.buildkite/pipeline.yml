@@ -1,0 +1,30 @@
+# Monorepo pipeline for test-collector-ruby, uploaded by the top-level
+# dispatcher when this project changes. Injected by `ctg gather` from the
+# ctg repo's overlay/ directory during the dry-run era; post-cutover this
+# file is maintained here, in the monorepo.
+#
+# Dry-run-safe: pure test steps only, derived from the source repo's
+# buildkite.yaml with credentialed plugins (OIDC role assumption, ECR)
+# removed, Docker Hub images, and a trimmed matrix.
+#
+# Jobs check out the monorepo root, so commands cd into this project.
+
+agents:
+  queue: hosted
+
+steps:
+  - group: ":ruby: test-collector-ruby"
+    steps:
+      - label: ":rspec: Ruby {{matrix}}"
+        command:
+          - "cd test-collector-ruby"
+          - "gem install bundler:2.3.25"
+          - "bundle"
+          - "bundle exec rake"
+          - "bundle exec cucumber"
+        plugins:
+          - docker#v3.7.0:
+              image: "ruby:{{matrix}}"
+        matrix:
+          - "latest"
+          - "3.3"
