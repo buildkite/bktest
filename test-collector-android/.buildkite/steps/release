@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Monorepo release script for test-collector-android: check version
+# consistency, strip -SNAPSHOT, build and publish the SDK artifacts to the
+# local Maven repository — and publish to Maven Central only when
+# RELEASE_EXECUTE=true (set explicitly on the release build; see
+# pipeline.release.yml). Everything before the Central publish runs in
+# rehearsals too, so dry-runs exercise this code.
+#
+# Injected by `ctg gather` from the ctg repo's overlay/ directory during the
+# dry-run era; post-cutover this file is maintained here, in the monorepo.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/../.." # this project's root, wherever the checkout cwd is
+
+PROJECT="test-collector-android"
+TAG_PATTERN="^${PROJECT}/v([0-9]+\.[0-9]+\.[0-9]+)$"
+RUN_ENVIRONMENT="collector/test-data-uploader/src/main/kotlin/com/buildkite/test/collector/android/model/RunEnvironment.kt"
+
+echo "--- Determining version"
+VERSION_NAME="$(sed -n 's/^VERSION_NAME=//p' gradle.properties)"
+BASE_VERSION="${VERSION_NAME%-SNAPSHOT}"
+echo "gradle.properties VERSION_NAME=${VERSION_NAME} (base ${BASE_VERSION})"
+
+if ! grep -q "VERSION_NAME = \"${BASE_VERSION}\"" "${RUN_ENVIRONMENT}"; then
+  echo "RunEnvironment.VERSION_NAME does not say ${BASE_VERSION}; bump it alongside gradle.properties" >&2
+  grep -n 'VERSION_NAME =' "${RUN_ENVIRONMENT}" >&2 || true
+  exit 1
+fi
+
+if [ -n "${BUILDKITE_TAG:-}" ]; then
+  if [[ ! "${BUILDKITE_TAG}" =~ ${TAG_PATTERN} ]]; then
+    echo "BUILDKITE_TAG '${BUILDKITE_TAG}' does not match ${PROJECT}/vX.Y.Z; refusing" >&2
+    exit 1
+  fi
+  VERSION="${BASH_REMATCH[1]}"
+  if [ "${VERSION}" != "${BASE_VERSION}" ]; then
+    echo "tag says ${VERSION} but gradle.properties says ${BASE_VERSION}; refusing" >&2
+    exit 1
+  fi
+  echo "version ${VERSION} (tag ${BUILDKITE_TAG} matches gradle.properties)"
+else
+  VERSION="${BASE_VERSION}"
+  echo "version ${VERSION} (from gradle.properties; no tag)"
+fi
+
+echo "--- Removing -SNAPSHOT from version name"
+sed -i 's/-SNAPSHOT//g' gradle.properties
+
+echo "--- Cleaning project"
+./gradlew clean --no-daemon
+
+if [ "${RELEASE_EXECUTE:-}" != "true" ]; then
+  echo "--- Rehearsal only: publishing to the local Maven repository"
+  # Exercises artifact assembly and POM generation without credentials;
+  # signing is disabled because no GPG key is available in rehearsals.
+  ./gradlew publishToMavenLocal -PRELEASE_SIGNING_ENABLED=false --no-daemon --no-parallel
+  echo "RELEASE_EXECUTE is not 'true': stopping before './gradlew publishAndReleaseToMavenCentral'."
+  exit 0
+fi
+
+echo "--- Publishing ${VERSION} to Maven Central"
+if [ -z "${BUILDKITE_TAG:-}" ]; then
+  echo "RELEASE_EXECUTE=true without a ${PROJECT}/vX.Y.Z tag; refusing" >&2
+  exit 1
+fi
+ORG_GRADLE_PROJECT_mavenCentralUsername="$(buildkite-agent secret get MAVEN_CENTRAL_USERNAME)"
+ORG_GRADLE_PROJECT_mavenCentralPassword="$(buildkite-agent secret get MAVEN_CENTRAL_PASSWORD)"
+ORG_GRADLE_PROJECT_signingInMemoryKey="$(buildkite-agent secret get GPG_KEY)"
+ORG_GRADLE_PROJECT_signingInMemoryKeyPassword="$(buildkite-agent secret get GPG_PASSWORD)"
+export ORG_GRADLE_PROJECT_mavenCentralUsername
+export ORG_GRADLE_PROJECT_mavenCentralPassword
+export ORG_GRADLE_PROJECT_signingInMemoryKey
+export ORG_GRADLE_PROJECT_signingInMemoryKeyPassword
+./gradlew publishAndReleaseToMavenCentral --no-daemon --no-parallel

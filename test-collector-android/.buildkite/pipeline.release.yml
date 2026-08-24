@@ -1,0 +1,83 @@
+# Monorepo release pipeline for test-collector-android, uploaded by the
+# release dispatcher (.buildkite/pipeline.release.yml) running on the
+# separate bktest-release Buildkite pipeline — never by CI: as a rehearsal
+# when this project changes (no tag), and for real on a
+# test-collector-android/vX.Y.Z tag. Injected by `ctg gather` from the ctg
+# repo's overlay/ directory during the dry-run era; post-cutover this file
+# is maintained here, in the monorepo.
+#
+# This is a Buildkite port of the source repo's GitHub Actions release
+# workflow (release-sdk.yml: publishAndReleaseToMavenCentral via the
+# vanniktech maven-publish plugin), normalising the trigger from a GitHub
+# Release to the prefixed tag convention every project shares (see D13 in
+# ctg docs/decisions.md). The gathered copy of the GHA workflows is inert:
+# GitHub only reads workflows from the repo root's .github/workflows/.
+# The snapshot-on-main-push workflow is deliberately not carried over.
+#
+# Safety model (see docs/publishing.md in the ctg repo):
+#   - The build step is side-effect-free: version consistency checks and
+#     ./gradlew publishToMavenLocal with signing disabled. It runs on every
+#     rehearsal, so dry-runs exercise the release code. It never sees
+#     RELEASE_EXECUTE (deliberately not propagated into its container).
+#   - The credentials step only checks the four Buildkite secrets exist;
+#     soft_fail until they are created for the bktest-release pipeline (a
+#     cut-over task).
+#   - The publish steps exist only on an exact test-collector-android/vX.Y.Z
+#     tag AND RELEASE_EXECUTE=true set on the build, behind a block step;
+#     the release script independently re-checks both before publishing.
+
+agents:
+  queue: hosted
+
+steps:
+  - label: ":android: test-collector-android: build + rehearse release"
+    key: android-build
+    command: test-collector-android/.buildkite/steps/release
+    plugins:
+      - docker#v3.7.0:
+          image: "mobiledevops/android-sdk-image:34.0.0-jdk17"
+          user: "root"
+          environment:
+            - BUILDKITE_TAG
+
+  - label: ":android: test-collector-android: verify Maven Central + GPG secrets"
+    key: android-credentials
+    # The four secrets (created 2026-08-21 in the Open Source Deploy
+    # cluster, access-policied to pipeline_slug bktest-release; fresh
+    # Central Portal token, same GPG key as the source repo — see the
+    # credential cut-over section of ctg docs/publishing.md) are readable
+    # only by this pipeline's jobs. Verified on bktest-release build #13;
+    # no longer soft_fail — a red probe means the trust regressed. Values
+    # are never printed; this only checks each secret can be read. $$
+    # because pipeline upload interpolates $VAR at upload time; the loop
+    # must run in the job's shell.
+    command: |
+      missing=0
+      for name in MAVEN_CENTRAL_USERNAME MAVEN_CENTRAL_PASSWORD GPG_KEY GPG_PASSWORD; do
+        if buildkite-agent secret get "$$name" > /dev/null 2>&1; then
+          echo "ok: secret $$name is readable"
+        else
+          echo "missing: secret $$name"
+          missing=1
+        fi
+      done
+      exit "$$missing"
+
+  - block: ":rocket: Publish test-collector-android to Maven Central?"
+    key: android-confirm
+    if: build.tag =~ /^test-collector-android\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+
+  - label: ":android: test-collector-android: publish to Maven Central"
+    if: build.tag =~ /^test-collector-android\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+    depends_on:
+      - android-build
+      - android-confirm
+    command: test-collector-android/.buildkite/steps/release
+    plugins:
+      - docker#v3.7.0:
+          image: "mobiledevops/android-sdk-image:34.0.0-jdk17"
+          user: "root"
+          mount-buildkite-agent: true
+          environment:
+            - BUILDKITE_TAG
+            - RELEASE_EXECUTE

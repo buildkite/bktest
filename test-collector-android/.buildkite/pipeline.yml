@@ -1,0 +1,37 @@
+# Monorepo pipeline for test-collector-android, uploaded by the top-level
+# dispatcher when this project changes. Injected by `ctg gather` from the
+# ctg repo's overlay/ directory during the dry-run era; post-cutover this
+# file is maintained here, in the monorepo.
+#
+# Dry-run-safe: lint (detekt) and JVM unit tests only, translated from the
+# source repo's GitHub Actions workflow (build-and-test-sdk.yml), reusing
+# its support/scripts entrypoints, with no analytics token. Instrumented
+# (emulator) tests are not run. The image is a community Docker Hub image
+# with Android SDK 34 + JDK 17, matching compileSdk/AGP requirements; it
+# defaults to a non-root user that can't write to the bind-mounted
+# checkout (Gradle needs to create <project>/.gradle/), so run as root.
+#
+# Jobs check out the monorepo root, so commands cd into this project.
+
+agents:
+  queue: hosted
+
+steps:
+  - group: ":android: test-collector-android"
+    steps:
+      - label: ":android: Lint + SDK unit tests"
+        # The Gradle daemon in this containerised build crashes
+        # occasionally (observed on bktest builds #29, #32, #34); a plain
+        # retry has always cleared it.
+        retry:
+          automatic:
+            - exit_status: "*"
+              limit: 2
+        command:
+          - "cd test-collector-android"
+          - "support/scripts/lint"
+          - "support/scripts/sdk-unit-tests"
+        plugins:
+          - docker#v3.7.0:
+              image: "mobiledevops/android-sdk-image:34.0.0-jdk17"
+              user: "root"
