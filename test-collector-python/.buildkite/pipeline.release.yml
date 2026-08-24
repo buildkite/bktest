@@ -1,3 +1,26 @@
+# Monorepo release pipeline for test-collector-python, uploaded by the
+# release dispatcher (.buildkite/pipeline.release.yml) running on the
+# separate bktest-release Buildkite pipeline — never by CI: as a rehearsal
+# when this project changes (no tag), and for real on a
+# test-collector-python/vX.Y.Z tag. Injected by `ctg gather` from the ctg
+# repo's overlay/ directory during the dry-run era; post-cutover this file
+# is maintained here, in the monorepo. It replaces the source repo's
+# .buildkite/pipeline.release.yml, and normalises the trigger from a
+# "[release]" commit-message match to the prefixed tag convention every
+# project shares (see D13 in ctg docs/decisions.md).
+#
+# Safety model (see docs/publishing.md in the ctg repo):
+#   - The build step is side-effect-free: uv build + twine check + version
+#     consistency. It runs on every rehearsal, so dry-runs exercise the
+#     release code. It never sees RELEASE_EXECUTE (deliberately not
+#     propagated into its container).
+#   - The credentials step only assumes the IAM role and reads the PyPI
+#     token from SSM to prove access; soft_fail until a role trusting the
+#     bktest-release pipeline exists (a cut-over task).
+#   - The publish steps exist only on an exact test-collector-python/vX.Y.Z
+#     tag AND RELEASE_EXECUTE=true set on the build, behind a block step;
+#     the release script independently re-checks both before twine upload.
+
 agents:
   queue: hosted
 
@@ -5,16 +28,36 @@ env:
   AWS_DEFAULT_REGION: us-east-1
 
 steps:
-  - command: ".buildkite/steps/release-pypi"
-    label: ":pypi:"
-    if: build.message =~ /\[release\]/i && build.branch == "main"
-    env:
-      # > The username to authenticate to the repository (package index) as. Has no effect on PyPI
-      # It should be a noop, I set it anyway to prevent prompt showing up.
-      TWINE_USERNAME: __token__
+  - label: ":pypi: test-collector-python: build + rehearse release"
+    key: python-build
+    command: test-collector-python/.buildkite/steps/release
+    plugins:
+      - docker#v5.12.0:
+          image: "python:3.13"
+          environment:
+            - BUILDKITE_TAG
+
+  - label: ":pypi: test-collector-python: verify PyPI credentials (AWS OIDC + SSM)"
+    key: python-credentials
+    # The role (aws-buildkite-dev oidc-buildkite-bktest-release.tf, applied
+    # 2026-08-21) trusts this pipeline on dry-run-* branches and
+    # test-collector-python/v* tags; the PyPI token was re-issued under
+    # the `buildkite` PyPI user (a package owner) and hand-populated at
+    # the SSM path below (see the credential cut-over section of ctg
+    # docs/publishing.md). Verified on bktest-release build #11; no longer
+    # soft_fail — a red probe means the trust regressed. $$ because
+    # pipeline upload interpolates $VAR at upload time; the check must run
+    # in the job's shell.
+    command: |
+      if [ -n "$${TWINE_PASSWORD:-}" ]; then
+        echo "ok: assumed the release role and read the PyPI token from SSM"
+      else
+        echo "TWINE_PASSWORD not present: IAM role / SSM parameter not set up for this pipeline yet"
+        exit 1
+      fi
     plugins:
       - aws-assume-role-with-web-identity#v1.2.0:
-          role-arn: "arn:aws:iam::445615400570:role/pipeline-buildkite-test-collector-python-release"
+          role-arn: "arn:aws:iam::445615400570:role/pipeline-buildkite-bktest-release"
           session-tags:
             - organization_slug
             - organization_id
@@ -22,12 +65,37 @@ steps:
             - build_branch
       - aws-ssm#v1.0.0:
           parameters:
-            TWINE_PASSWORD: /pipelines/buildkite/test-collector-python-release/pypi-api-token
-      - ecr#v2.9.0:
-          login: true
-          account_ids: "public.ecr.aws"
+            TWINE_PASSWORD: /pipelines/buildkite/bktest-release/pypi-api-token
+
+  - block: ":rocket: Publish test-collector-python to PyPI?"
+    key: python-confirm
+    if: build.tag =~ /^test-collector-python\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+
+  - label: ":pypi: test-collector-python: publish to PyPI"
+    if: build.tag =~ /^test-collector-python\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+    depends_on:
+      - python-build
+      - python-confirm
+    env:
+      # "The username to authenticate to the repository (package index) as"
+      # — a no-op on PyPI with a token, set to suppress the prompt.
+      TWINE_USERNAME: __token__
+    command: test-collector-python/.buildkite/steps/release
+    plugins:
+      - aws-assume-role-with-web-identity#v1.2.0:
+          role-arn: "arn:aws:iam::445615400570:role/pipeline-buildkite-bktest-release"
+          session-tags:
+            - organization_slug
+            - organization_id
+            - pipeline_slug
+            - build_branch
+      - aws-ssm#v1.0.0:
+          parameters:
+            TWINE_PASSWORD: /pipelines/buildkite/bktest-release/pypi-api-token
       - docker#v5.12.0:
-          image: "public.ecr.aws/docker/library/python:3.13.2-bookworm"
+          image: "python:3.13"
           environment:
             - TWINE_USERNAME
             - TWINE_PASSWORD
+            - BUILDKITE_TAG
+            - RELEASE_EXECUTE

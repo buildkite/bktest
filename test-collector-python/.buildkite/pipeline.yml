@@ -1,34 +1,48 @@
+# Monorepo pipeline for test-collector-python, uploaded by the top-level
+# dispatcher when this project changes. Injected by `ctg gather` from the
+# ctg repo's overlay/ directory during the dry-run era; post-cutover this
+# file is maintained here, in the monorepo.
+#
+# Mirrors the source repo's own .buildkite/pipeline.yml (it moved from
+# GitHub Actions to Buildkite in its commit 43f5ded), invoking
+# the source's step scripts, which gather carries across unchanged. The
+# scripts cd to their project root via $BASH_SOURCE, so they run correctly
+# from a monorepo-root checkout. Dry-run-safe: pure test/lint steps; the
+# only token is an ephemeral OIDC analytics token, no stored secrets.
+
 agents:
   queue: hosted
 
 steps:
-  - label: ":pytest: pytest {{matrix}}"
-    command: ".buildkite/steps/test"
-    env:
-      PYTHON_VERSION: "{{matrix}}"
-    matrix:
-      - "3.10"
-      - "3.11"
-      - "3.12"
-      - "3.13"
+  - group: ":python: test-collector-python"
+    steps:
+      - label: ":pytest: pytest {{matrix}}"
+        command: "test-collector-python/.buildkite/steps/test"
+        env:
+          PYTHON_VERSION: "{{matrix}}"
+        matrix:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
 
-  - label: ":pytest: pytest 3.13 / pytest>=9"
-    command: ".buildkite/steps/test"
-    env:
-      PYTHON_VERSION: "3.13"
-      # "--with py" is needed because the uv overlay environment puts
-      # pytest 9's vendored py.py shim (py.error/py.path only) ahead of the
-      # project venv's real py package, which pytest-forked needs for
-      # py.process. Installing py into the same overlay restores normal
-      # package-over-module resolution.
-      UV_RUN_FLAGS: "--with pytest>=9 --with py"
+      - label: ":pytest: pytest 3.13 / pytest>=9"
+        command: "test-collector-python/.buildkite/steps/test"
+        env:
+          PYTHON_VERSION: "3.13"
+          # "--with py" is needed because the uv overlay environment puts
+          # pytest 9's vendored py.py shim (py.error/py.path only) ahead of
+          # the project venv's real py package, which pytest-forked needs
+          # for py.process. Installing py into the same overlay restores
+          # normal package-over-module resolution.
+          UV_RUN_FLAGS: "--with pytest>=9 --with py"
 
-  - label: ":python: pylint {{matrix}}"
-    command: ".buildkite/steps/lint"
-    env:
-      PYTHON_VERSION: "{{matrix}}"
-    matrix:
-      - "3.10"
-      - "3.11"
-      - "3.12"
-      - "3.13"
+      - label: ":python: pylint {{matrix}}"
+        command: "test-collector-python/.buildkite/steps/lint"
+        env:
+          PYTHON_VERSION: "{{matrix}}"
+        matrix:
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"

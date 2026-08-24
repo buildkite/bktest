@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Monorepo release script for test-collector-python: build the package,
+# check it with twine, check tag/version consistency, then publish — but
+# the publish side effect only happens when RELEASE_EXECUTE=true (set
+# explicitly on the release build; see pipeline.release.yml). Everything
+# before the upload runs in rehearsals too, so dry-runs exercise this code.
+#
+# Injected by `ctg gather` from the ctg repo's overlay/ directory during the
+# dry-run era; post-cutover this file is maintained here, in the monorepo.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/../.." # this project's root, wherever the checkout cwd is
+
+PROJECT="test-collector-python"
+TAG_PATTERN="^${PROJECT}/v([0-9]+\.[0-9]+\.[0-9]+)$"
+
+echo "--- Determining version"
+PACKAGE_VERSION="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+if [ -n "${BUILDKITE_TAG:-}" ]; then
+  if [[ ! "${BUILDKITE_TAG}" =~ ${TAG_PATTERN} ]]; then
+    echo "BUILDKITE_TAG '${BUILDKITE_TAG}' does not match ${PROJECT}/vX.Y.Z; refusing" >&2
+    exit 1
+  fi
+  VERSION="${BASH_REMATCH[1]}"
+  if [ "${VERSION}" != "${PACKAGE_VERSION}" ]; then
+    echo "tag says ${VERSION} but pyproject.toml says ${PACKAGE_VERSION}; refusing" >&2
+    exit 1
+  fi
+  echo "version ${VERSION} (tag ${BUILDKITE_TAG} matches pyproject.toml)"
+else
+  VERSION="${PACKAGE_VERSION}"
+  echo "version ${VERSION} (from pyproject.toml; no tag)"
+fi
+
+echo "--- Building package"
+pip install --quiet uv
+uv build
+
+echo "--- Checking package"
+# twine via uvx (latest), not the project's locked dev-dependency: uv build
+# uses an isolated, current build backend (hatchling), whose metadata can be
+# newer than the locked twine/packaging understand — e.g. Metadata-Version
+# 2.5 vs twine 6.1.0, which failed bktest-release build #8.
+uvx twine check dist/*
+
+if [ "${RELEASE_EXECUTE:-}" != "true" ]; then
+  echo "--- Rehearsal only"
+  echo "RELEASE_EXECUTE is not 'true': stopping before 'twine upload dist/*'."
+  exit 0
+fi
+
+echo "--- Publishing to PyPI"
+if [ -z "${BUILDKITE_TAG:-}" ]; then
+  echo "RELEASE_EXECUTE=true without a ${PROJECT}/vX.Y.Z tag; refusing" >&2
+  exit 1
+fi
+if [ -z "${TWINE_PASSWORD:-}" ]; then
+  echo "TWINE_PASSWORD not set (AWS OIDC/SSM plugins missing or failed)" >&2
+  exit 1
+fi
+uvx twine upload --skip-existing dist/*
