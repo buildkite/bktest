@@ -230,10 +230,13 @@ instrumentation unchanged. A warning reports an `[]` selection that was ignored.
 
 ## What gets sent
 
-Spans go to Buildkite over OTLP, using the same `BUILDKITE_ANALYTICS_TOKEN` as
-the rest of the collector. Sending them needs an agent OIDC token with the
-`write_uploads` scope; a suite API token uploads test results as normal but its
-spans are rejected.
+When bktec's OTLP relay is enabled, spans go to its loopback endpoint using the
+injected `BUILDKITE_TESTS_OTLP_TOKEN`. bktec forwards them to Buildkite with its
+OIDC credential. `BUILDKITE_ANALYTICS_TOKEN` remains available for the normal
+JSON uploads in `otel_enabled` mode. Without the relay, spans go directly to
+Buildkite using `BUILDKITE_ANALYTICS_TOKEN`, which must be an agent OIDC token
+with the `write_uploads` scope; a suite API token uploads test results as normal
+but its spans are rejected.
 
 OpenTelemetry's SDK owns batching, retries, and transport. `test.execution`
 spans have a reserved, faster-draining queue and exporter. Forwarded children

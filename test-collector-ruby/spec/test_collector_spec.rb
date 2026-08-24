@@ -79,6 +79,30 @@ RSpec.describe Buildkite::TestCollector do
       )
     end
 
+    it "uses the bktec relay token in both OpenTelemetry modes without replacing the upload token" do
+      configured_tokens = []
+      allow(Buildkite::TestCollector).to receive(:hook_into)
+      allow(Buildkite::TestCollector::OTel).to receive(:configure!) do |**options|
+        configured_tokens << options[:api_token]
+      end
+      allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { true }
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "upload-token"
+      env_overlay["BUILDKITE_TESTS_OTLP_TOKEN"] = "  relay-token  "
+
+      [
+        { otel_enabled: true },
+        { otel_only: true },
+      ].each do |mode|
+        Buildkite::TestCollector.configure(hook: hook, **mode)
+        expect(Buildkite::TestCollector.api_token).to eq("upload-token")
+        Buildkite::TestCollector.start_otel
+      end
+
+      expect(configured_tokens).to eq(["relay-token", "relay-token"])
+    ensure
+      Buildkite::TestCollector.otel_only = false
+    end
+
     it "can override the endpoint for local development" do
       env_overlay["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] = "http://tests-otlp.buildkite.localhost/v1/traces"
       allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "run-key" } }

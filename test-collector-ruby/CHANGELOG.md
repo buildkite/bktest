@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* Use bktec's `BUILDKITE_TESTS_OTLP_TOKEN` for `otel_enabled` and `otel_only`
+  exports when the local OTLP relay is enabled, without replacing the token
+  used by normal JSON uploads.
+
 * Align `otel_enabled` and `otel_only` on the same execution spans and run
   resources. `otel_only` now differs by adding `buildkite.execution.via=otlp`
   while skipping legacy trace capture and JSON result uploads.
