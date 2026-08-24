@@ -16,7 +16,7 @@ remains its home:
 | swift | Swift | [buildkite/test-collector-swift](https://github.com/buildkite/test-collector-swift) | BuildkiteTestCollector via SwiftPM |
 | elixir | Elixir | [buildkite/test_collector_elixir](https://github.com/buildkite/test_collector_elixir) | [buildkite_test_collector](https://hex.pm/packages/buildkite_test_collector) on Hex |
 | dotnet | .NET | [buildkite/test-collector-dotnet](https://github.com/buildkite/test-collector-dotnet) | [Buildkite.TestAnalytics](https://www.nuget.org/packages/Buildkite.TestAnalytics.Common) on NuGet |
-| android | Android | [buildkite/test-collector-android](https://github.com/buildkite/test-collector-android) | com.buildkite.test-collector-android on Maven Central |
+| android | Android | [test-collector-android/](test-collector-android/) | com.buildkite.test-collector-android on Maven Central |
 | rust | Rust | [buildkite/test-collector-rust](https://github.com/buildkite/test-collector-rust) | [buildkite-test-collector](https://crates.io/crates/buildkite-test-collector) on crates.io |
 
 As each collector moves in, its Home link above changes to its directory
