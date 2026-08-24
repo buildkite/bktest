@@ -14,7 +14,7 @@ remains its home:
 | python | Python | [buildkite/test-collector-python](https://github.com/buildkite/test-collector-python) | [buildkite-test-collector](https://pypi.org/project/buildkite-test-collector/) on PyPI |
 | javascript | JavaScript | [buildkite/test-collector-javascript](https://github.com/buildkite/test-collector-javascript) | [buildkite-test-collector](https://www.npmjs.com/package/buildkite-test-collector) on npm |
 | swift | Swift | [buildkite/test-collector-swift](https://github.com/buildkite/test-collector-swift) | BuildkiteTestCollector via SwiftPM |
-| elixir | Elixir | [buildkite/test_collector_elixir](https://github.com/buildkite/test_collector_elixir) | [buildkite_test_collector](https://hex.pm/packages/buildkite_test_collector) on Hex |
+| elixir | Elixir | [test_collector_elixir/](test_collector_elixir/) | [buildkite_test_collector](https://hex.pm/packages/buildkite_test_collector) on Hex |
 | dotnet | .NET | [test-collector-dotnet/](test-collector-dotnet/) | [Buildkite.TestAnalytics](https://www.nuget.org/packages/Buildkite.TestAnalytics.Common) on NuGet |
 | android | Android | [test-collector-android/](test-collector-android/) | com.buildkite.test-collector-android on Maven Central |
 | rust | Rust | [buildkite/test-collector-rust](https://github.com/buildkite/test-collector-rust) | [buildkite-test-collector](https://crates.io/crates/buildkite-test-collector) on crates.io |
