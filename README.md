@@ -13,7 +13,7 @@ remains its home:
 | ruby | Ruby | [buildkite/test-collector-ruby](https://github.com/buildkite/test-collector-ruby) | [buildkite-test_collector](https://rubygems.org/gems/buildkite-test_collector) on RubyGems |
 | python | Python | [buildkite/test-collector-python](https://github.com/buildkite/test-collector-python) | [buildkite-test-collector](https://pypi.org/project/buildkite-test-collector/) on PyPI |
 | javascript | JavaScript | [buildkite/test-collector-javascript](https://github.com/buildkite/test-collector-javascript) | [buildkite-test-collector](https://www.npmjs.com/package/buildkite-test-collector) on npm |
-| swift | Swift | [buildkite/test-collector-swift](https://github.com/buildkite/test-collector-swift) | BuildkiteTestCollector via SwiftPM |
+| swift | Swift | [test-collector-swift/](test-collector-swift/) | BuildkiteTestCollector via SwiftPM |
 | elixir | Elixir | [test_collector_elixir/](test_collector_elixir/) | [buildkite_test_collector](https://hex.pm/packages/buildkite_test_collector) on Hex |
 | dotnet | .NET | [test-collector-dotnet/](test-collector-dotnet/) | [Buildkite.TestAnalytics](https://www.nuget.org/packages/Buildkite.TestAnalytics.Common) on NuGet |
 | android | Android | [test-collector-android/](test-collector-android/) | com.buildkite.test-collector-android on Maven Central |
