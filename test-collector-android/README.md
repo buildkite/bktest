@@ -206,6 +206,10 @@ the [Buildkite Test Analytics docs](https://buildkite.com/docs/test-analytics).
 Please refer the contribution guide [here](CONTRIBUTING.md). 
 Bug reports and pull requests are welcome on GitHub at https://github.com/buildkite/test-collector-android
 
+## 🚀 Releasing
+
+See the monorepo's [collector release guide](../RELEASING.md#android-maven-central).
+
 ## 📜 License
 
 See [LICENSE.MD](/LICENSE.MD)

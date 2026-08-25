@@ -34,6 +34,12 @@ CI runs per project: a change under a project's directory triggers that
 project's own pipeline (`<project>/.buildkite/pipeline.yml`), uploaded by
 the dispatcher in [.buildkite/pipeline.yml](.buildkite/pipeline.yml).
 
+## Releasing
+
+See [RELEASING.md](RELEASING.md) for the current process and status of every
+collector. Anyone can prepare a release pull request; publishing packages and
+creating releases requires the appropriate maintainer permissions.
+
 ## Contributing
 
 Issues and pull requests are welcome right here! A PR touching one

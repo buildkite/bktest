@@ -22,9 +22,11 @@ To reference the locally published plugin and library, add the dependency for bo
 Once you've tested your changes and are happy with the outcome, create a pull request. This is the formal process of submitting your changes to the project and getting them reviewed and merged by the maintainers.
 **Ensure that you remove all references to the locally published repository that you added to the project before creating a pull request, since the CI build will fail as it won't be able to fetch the dependencies.**
 
-### Testing Snapshots
+### Releases
 
-After your pull request is merged, you can test the published version of the SDK with your changes immediately by accessing snapshots. Refer to [Access Snapshots](https://github.com/buildkite/test-collector-android#access-snapshots) for guidance.
+Merges do not publish snapshots automatically. See the monorepo's
+[collector release guide](../RELEASING.md#android-maven-central) for the
+current release process.
 
 ### Bumping Version
 

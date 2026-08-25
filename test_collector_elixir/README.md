@@ -86,25 +86,12 @@ Useful resources for developing collectors include the [Buildkite Test Analytics
 
 Bug reports and pull requests are welcome on GitHub at https://github.com/buildkite/test_collector_elixir
 
-Please use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) so that the changelog and version can be automatically tracked via the [git_ops](https://hex.pm/packages/git_ops) package.
+Please use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+The version and changelog are maintained explicitly in a release pull request.
 
 ## 🚀 Releasing
 
-Important: some of this process is already automated by Github Actions.  It should be completely automated shortly.
-
-```sh
-# Generate the new version and changelog
-mix git_ops.release
-
-# Push the tags
-git push && git push --tags
-
-# Publish the Hex package
-mix hex.publish
-
-# Create a new GitHub release
-open "https://github.com/buildkite/test_collector_elixir/releases"
-```
+See the monorepo's [collector release guide](../RELEASING.md#elixir-hex).
 
 ## 📜 License
 
