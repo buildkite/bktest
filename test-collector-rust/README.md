@@ -67,25 +67,7 @@ Bug reports and pull requests are welcome on GitHub at https://github.com/buildk
 
 ## 🚀 Releasing
 
-Version bump the code, tag and push
-
-```sh
-cargo install cargo-bump
-cargo bump --git-tag
-git push && git push --tags
-```
-
-Publish to the Cargo registry
-
-```sh
-cargo publish
-```
-
-Create a new GitHub release
-
-```sh
-open "https://github.com/buildkite/test-collector-rust/releases"
-```
+See the monorepo's [collector release guide](../RELEASING.md#rust-cratesio).
 
 ## 📜 License
 

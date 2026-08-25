@@ -48,10 +48,7 @@ Bug reports and pull requests are welcome on GitHub at https://github.com/buildk
 
 ## 🚀 Releasing
 
-1. Version bump the code, tag and push.
-2. Publish to [NuGet](https://www.nuget.org/).
-
-3. Create a [new github release](https://github.com/buildkite/test-collector-dotnet/releases).
+See the monorepo's [collector release guide](../../RELEASING.md#net-nuget).
 
 ## 📜 License
 

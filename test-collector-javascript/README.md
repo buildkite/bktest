@@ -257,23 +257,7 @@ Bug reports and pull requests are welcome on GitHub at https://github.com/buildk
 
 ## 🚀 Releasing
 
-```sh
-# Version bump the code, tag and push
-git switch --create prepare-v1-2-3
-npm version --no-git-tag-version v1.2.3
-git push
-
-# Open a pull request, get it merged
-git switch main
-git tag v1.2.3
-git push --tags
-
-# Publish to the NPM registry
-npm publish
-
-# Create a new GitHub release
-open "https://github.com/buildkite/test-collector-javascript/releases"
-```
+See the monorepo's [collector release guide](../RELEASING.md#javascript-npm).
 
 ## 📜 License
 

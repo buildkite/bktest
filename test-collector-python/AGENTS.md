@@ -147,7 +147,6 @@ class API:
 
 ## Release Process
 
-1. Update version in `pyproject.toml`
-2. Create PR with `[release]` in title
-3. Merge triggers automated PyPI release
-4. Create GitHub release tag manually
+Follow [`../RELEASING.md`](../RELEASING.md#python-pypi). Releases use a
+prefixed `test-collector-python/vX.Y.Z` tag and the separate release pipeline;
+a `[release]` PR title does not publish from the monorepo.
