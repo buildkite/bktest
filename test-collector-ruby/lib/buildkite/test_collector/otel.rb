@@ -85,7 +85,13 @@ module Buildkite::TestCollector
 
         @api_token = api_token
         @run_key = run_env["key"]
-        headers = request_headers(run_env, api_token)
+        # Passing collector headers to the exporter bypasses its environment
+        # defaults, so merge the standard OTLP headers here instead.
+        environment_headers = otlp_headers_from_environment
+        @authorization_from_environment = environment_headers.keys.any? do |key|
+          key.casecmp?("Authorization")
+        end
+        headers = request_headers(run_env, api_token, environment_headers)
 
         # Run-level detail travels as the resource of the providers we create,
         # so every exported span carries it without repeating it per span.
@@ -215,6 +221,7 @@ module Buildkite::TestCollector
         @execution_child_forwarder = nil
         @exporters = nil
         @api_token = nil
+        @authorization_from_environment = nil
         @run_key = nil
         @tracer = nil
       end
@@ -288,6 +295,10 @@ module Buildkite::TestCollector
         return if api_token.nil? || api_token == @api_token
 
         @api_token = api_token
+        # Standard OTLP configuration remains authoritative across warm-worker
+        # reconfiguration, even when the collector receives a refreshed token.
+        return if @authorization_from_environment
+
         value = authorization_header(api_token)
         refreshed = Array(@exporters).count do |exporter|
           headers = exporter.instance_variable_defined?(:@headers) && exporter.instance_variable_get(:@headers)
@@ -511,10 +522,33 @@ module Buildkite::TestCollector
         []
       end
 
-      def request_headers(run_env, api_token)
+      def request_headers(run_env, api_token, environment_headers = otlp_headers_from_environment)
         headers = { "Buildkite-Tests-Run-Key" => run_env["key"] }
         headers["Authorization"] = authorization_header(api_token) if api_token
+        environment_headers.each do |key, value|
+          headers.delete_if { |existing, _| existing.casecmp?(key) }
+          headers[key] = value
+        end
         headers
+      end
+
+      def otlp_headers_from_environment
+        raw = ENV["OTEL_EXPORTER_OTLP_TRACES_HEADERS"]
+        raw = ENV["OTEL_EXPORTER_OTLP_HEADERS"] if raw.nil?
+        return {} if raw.nil?
+
+        entries = raw.split(",")
+        raise ArgumentError, "invalid OTLP exporter headers" if entries.empty?
+
+        entries.each_with_object({}) do |entry, headers|
+          key, value = entry.split("=", 2).map { |part| URI.decode_uri_component(part) }
+          key = key.to_s.strip
+          value = value.to_s.strip
+          raise ArgumentError, "invalid OTLP exporter headers" if key.empty? || value.empty?
+
+          headers.delete_if { |existing, _| existing.casecmp?(key) }
+          headers[key] = value
+        end
       end
 
       def authorization_header(api_token)

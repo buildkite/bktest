@@ -88,7 +88,7 @@ module Buildkite
         @otel_options = {
           # Undocumented, for development purposes.
           endpoint: ENV["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] || Buildkite::TestCollector::OTel::DEFAULT_ENDPOINT,
-          api_token: (ENV["BUILDKITE_TESTS_OTLP_TOKEN"] || api_token)&.strip,
+          api_token: api_token,
           run_env: Buildkite::TestCollector::CI.env,
           instrumentations: otel_instrumentations,
           # Tags describe the whole run, so they ride along as resource

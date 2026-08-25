@@ -131,12 +131,14 @@ regardless of who owns the provider. In suite-owned mode, a supported
 Export needs Ruby 3.3 or newer, which is what the OpenTelemetry gems require. On
 older Rubies the option is accepted and does nothing.
 
-When bktec's OTLP relay is enabled, the collector automatically sends spans to
-its loopback endpoint using the injected `BUILDKITE_TESTS_OTLP_TOKEN`. In
-`otel_enabled` mode, `BUILDKITE_ANALYTICS_TOKEN` remains unchanged for normal
-JSON uploads. Without the relay, spans use `BUILDKITE_ANALYTICS_TOKEN`, which
-must be an agent OIDC token with the `write_uploads` scope; a suite API token
-still uploads executions, but its spans are rejected.
+The collector honors standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (or the
+generic `OTEL_EXPORTER_OTLP_HEADERS`) and gives them precedence over its own
+headers, including `Authorization`. bktec's OTLP relay uses this to provide its
+local credential without changing `BUILDKITE_ANALYTICS_TOKEN`, which remains
+available for normal JSON uploads in `otel_enabled` mode. Without an OTLP
+Authorization header, spans use `BUILDKITE_ANALYTICS_TOKEN`, which must be an
+agent OIDC token with the `write_uploads` scope; a suite API token still uploads
+executions, but its spans are rejected.
 
 Export failures never fail a test or block the normal Test Engine upload. See the
 [OpenTelemetry guide](docs/opentelemetry.md) for what you get and how it
