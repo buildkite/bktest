@@ -528,6 +528,48 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
   end
 
+  it "gives trace-specific OTLP headers precedence over generic and collector headers" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+      .and_return(
+        "authorization=Bearer%20relay-token,buildkite-tests-run-key=relay-run,x-extra=hello%20world"
+      )
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
+      .and_return("authorization=Bearer%20generic-token")
+
+    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
+
+    expect(headers).to eq(
+      "authorization" => "Bearer relay-token",
+      "buildkite-tests-run-key" => "relay-run",
+      "x-extra" => "hello world",
+    )
+  end
+
+  it "uses generic OTLP headers when trace-specific headers are empty" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return("")
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
+      .and_return("Authorization=Bearer%20generic-token")
+
+    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
+
+    expect(headers["Authorization"]).to eq("Bearer generic-token")
+  end
+
+  it "uses collector headers when both standard OTLP header variables are empty" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return("")
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS").and_return("")
+
+    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
+
+    expect(headers).to eq(
+      "Buildkite-Tests-Run-Key" => "test-run-id",
+      "Authorization" => %(Token token="suite-token"),
+    )
+  end
+
   it "uses an AlwaysOn sampler, process-safe random IDs, and the run resource for execution roots" do
     processor = spy(
       "execution processor",
@@ -734,7 +776,9 @@ RSpec.describe Buildkite::TestCollector::OTel do
   describe "token refresh" do
     def exporter_authorization_headers
       described_class.instance_variable_get(:@exporters).map do |exporter|
-        exporter.instance_variable_get(:@headers)["Authorization"]
+        exporter.instance_variable_get(:@headers).find do |key, _|
+          key.casecmp?("Authorization")
+        end&.last
       end
     end
 
@@ -762,6 +806,32 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
       expect(exporter_authorization_headers).to eq(['Token token="after-refresh"'] * 2)
       expect(described_class.instance_variable_get(:@execution_provider)).to equal(provider_before)
+    ensure
+      described_class.shutdown
+      suite_provider&.shutdown
+      OpenTelemetry.tracer_provider = original
+    end
+
+    it "does not replace standard OTLP authorization when the collector token changes" do
+      original = OpenTelemetry.tracer_provider
+      suite_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+      OpenTelemetry.tracer_provider = suite_provider
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+        .and_return("authorization=Bearer%20relay-token")
+
+      described_class.configure!(
+        endpoint: "https://example.invalid/v1/traces",
+        api_token: "before-refresh",
+        run_env: { "key" => "run-123" },
+      )
+      described_class.configure!(
+        endpoint: "https://example.invalid/v1/traces",
+        api_token: "after-refresh",
+        run_env: { "key" => "run-123" },
+      )
+
+      expect(exporter_authorization_headers).to eq(["Bearer relay-token"] * 2)
     ensure
       described_class.shutdown
       suite_provider&.shutdown

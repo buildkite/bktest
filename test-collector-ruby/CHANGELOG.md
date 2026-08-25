@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* Honor standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and
+  `OTEL_EXPORTER_OTLP_HEADERS` in both OpenTelemetry modes. These headers take
+  precedence over collector-generated headers, allowing bktec's local OTLP
+  relay to authenticate exports without replacing the normal JSON upload token.
+  Empty header environment variables are treated as unset.
+
 * Align `otel_enabled` and `otel_only` on the same execution spans and run
   resources. `otel_only` now differs by adding `buildkite.execution.via=otlp`
   while skipping legacy trace capture and JSON result uploads.
