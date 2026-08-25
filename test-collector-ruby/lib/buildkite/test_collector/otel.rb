@@ -534,8 +534,8 @@ module Buildkite::TestCollector
 
       def otlp_headers_from_environment
         raw = ENV["OTEL_EXPORTER_OTLP_TRACES_HEADERS"]
-        raw = ENV["OTEL_EXPORTER_OTLP_HEADERS"] if raw.nil?
-        return {} if raw.nil?
+        raw = ENV["OTEL_EXPORTER_OTLP_HEADERS"] if raw.nil? || raw.empty?
+        return {} if raw.nil? || raw.empty?
 
         entries = raw.split(",")
         raise ArgumentError, "invalid OTLP exporter headers" if entries.empty?

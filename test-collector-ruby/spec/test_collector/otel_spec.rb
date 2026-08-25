@@ -546,15 +546,28 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
   end
 
-  it "uses generic OTLP headers when trace-specific headers are absent" do
+  it "uses generic OTLP headers when trace-specific headers are empty" do
     allow(ENV).to receive(:[]).and_call_original
-    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return(nil)
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return("")
     allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
       .and_return("Authorization=Bearer%20generic-token")
 
     headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
 
     expect(headers["Authorization"]).to eq("Bearer generic-token")
+  end
+
+  it "uses collector headers when both standard OTLP header variables are empty" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return("")
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS").and_return("")
+
+    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
+
+    expect(headers).to eq(
+      "Buildkite-Tests-Run-Key" => "test-run-id",
+      "Authorization" => %(Token token="suite-token"),
+    )
   end
 
   it "uses an AlwaysOn sampler, process-safe random IDs, and the run resource for execution roots" do

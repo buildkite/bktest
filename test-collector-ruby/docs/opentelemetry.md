@@ -233,7 +233,8 @@ instrumentation unchanged. A warning reports an `[]` selection that was ignored.
 The collector merges standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (or, when it
 is absent, `OTEL_EXPORTER_OTLP_HEADERS`) over its own OTLP headers. Header names
 are matched case-insensitively, so a standard `authorization` entry takes
-precedence over the credential sourced from `BUILDKITE_ANALYTICS_TOKEN`.
+precedence over the credential sourced from `BUILDKITE_ANALYTICS_TOKEN`. Empty
+header environment variables are treated as unset.
 
 bktec's OTLP relay uses the trace-specific header variable to provide its local
 credential. bktec forwards spans to Buildkite with its OIDC credential while
