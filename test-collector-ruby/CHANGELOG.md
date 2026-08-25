@@ -1,24 +1,20 @@
 # CHANGELOG
 
-## Unreleased
+## v2.15.0
 
-* Honor standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and
-  `OTEL_EXPORTER_OTLP_HEADERS` in both OpenTelemetry modes. These headers take
-  precedence over collector-generated headers, allowing bktec's local OTLP
-  relay to authenticate exports without replacing the normal JSON upload token.
-  Empty header environment variables are treated as unset.
+* Add [experimental, opt-in OpenTelemetry trace export](docs/opentelemetry.md)
+  for RSpec suites. Both modes share execution spans and run resources while
+  preserving execution roots; `otel_only` skips legacy trace capture and JSON
+  uploads. Standard OTLP header environment variables are supported for export
+  authentication.
 
-* Align `otel_enabled` and `otel_only` on the same execution spans and run
-  resources. `otel_only` now differs by adding `buildkite.execution.via=otlp`
-  while skipping legacy trace capture and JSON result uploads.
+* Automatically tag executions with `ci.worker.id` from `BUILDKITE_AGENT_ID`,
+  so failures can be grouped by the agent that ran them. An explicit
+  caller-supplied `ci.worker.id` tag still takes precedence.
 
-* Automatically tag executions with `ci.worker.id` from `BUILDKITE_AGENT_ID`, so failures can be grouped by the agent that ran them. An explicit caller-supplied `ci.worker.id` tag still takes precedence.
+* Drop support for Ruby 2.x. Ruby 3.0 or newer is now required.
 
-* Preserve OpenTelemetry `test.execution` roots with a private AlwaysOn provider
-  while retaining suite-owned or customer-installed child instrumentation. Suite
-  backends may display execution children as partial traces because private roots
-  are sent only to Buildkite. Parent-based suite samplers may also export more
-  children during tests because the private root is sampled.
+**Full Changelog**: https://github.com/buildkite/bktest/compare/test-collector-ruby/v2.14.0...test-collector-ruby/v2.15.0
 
 ## v2.14.0
 

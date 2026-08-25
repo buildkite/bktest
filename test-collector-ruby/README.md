@@ -91,22 +91,24 @@ showing what each test did and where it spent its time. Each trace is rooted in 
 Tags passed to `configure` appear as resource attributes, while `tag_execution`
 adds attributes to the current test's root span.
 
-This is still under development and everything here may change. It is off by
-default, so opt in when you configure the collector:
+This feature is still under development and may change. This first release is
+intended for suites that do not already configure OpenTelemetry. It may work
+with an existing OpenTelemetry setup, but that configuration is not yet
+supported or guaranteed to work.
+
+OpenTelemetry export is off by default. Opt in when you configure the collector:
 
 ```ruby
 Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
 ```
 
 Execution roots use a private AlwaysOn provider so a suite's sampling policy
-cannot remove them. If the suite already runs OpenTelemetry, the collector
-forwards its sampled spans created during a test execution without changing the
-suite's provider, sampler, instrumentation, exporters, or lifecycle.
+cannot remove them.
 
-If the suite does not configure OpenTelemetry, the collector configures a global
-provider for child spans and installs all applicable instrumentation registered
-when the suite starts. The collector does not include instrumentation gems. Add
-and explicitly require each one you want to use:
+The collector configures a global provider for child spans and installs all
+applicable instrumentation registered when the suite starts. The collector does
+not include instrumentation gems. Add and explicitly require each one you want
+to use:
 
 ```ruby
 # Gemfile
@@ -123,9 +125,7 @@ Adding a gem to the Gemfile may auto-require it in applications that call
 `Bundler.require`, but that is not guaranteed. An explicit `require` is the
 recommended setup. To disable instrumentations and export only root
 `test.execution` spans, set `otel_instrumentations: []`. Any other value is
-reserved for a future release and disables span export with a warning,
-regardless of who owns the provider. In suite-owned mode, a supported
-`otel_instrumentations: []` selection is ignored with a warning. See the
+reserved for a future release and disables span export with a warning. See the
 [OpenTelemetry guide](docs/opentelemetry.md#choosing-instrumentation) for more.
 
 Export needs Ruby 3.3 or newer, which is what the OpenTelemetry gems require. On
@@ -141,8 +141,8 @@ agent OIDC token with the `write_uploads` scope; a suite API token still uploads
 executions, but its spans are rejected.
 
 Export failures never fail a test or block the normal Test Engine upload. See the
-[OpenTelemetry guide](docs/opentelemetry.md) for what you get and how it
-fits around an existing OpenTelemetry setup.
+[OpenTelemetry guide](docs/opentelemetry.md) for setup details and current
+limitations.
 
 ### OTLP-only submission (experimental)
 
@@ -168,7 +168,7 @@ gem's whole job is to configure OpenTelemetry so each test gets a suitable span:
   the `test.execution` spans. See
   [choosing instrumentation](docs/opentelemetry.md#choosing-instrumentation).
 - Your code can also talk to OpenTelemetry directly — the collector configures
-  the global tracer provider (unless your suite already has one), so
+  the global tracer provider, so
   `OpenTelemetry::Trace.current_span.set_attribute(...)` works during a test,
   and any instrumentation joins the test's trace.
 
