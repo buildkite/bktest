@@ -11,12 +11,13 @@
 #
 # Safety model (see docs/publishing.md in the ctg repo):
 #   - The build step is side-effect-free: uv build + twine check + version
-#     consistency. It runs on every rehearsal, so dry-runs exercise the
+#     consistency. It runs on every rehearsal, so rehearsals exercise the
 #     release code. It never sees RELEASE_EXECUTE (deliberately not
 #     propagated into its container).
-#   - The credentials step only assumes the IAM role and reads the PyPI
-#     token from SSM to prove access; soft_fail until a role trusting the
-#     bktest-release pipeline exists (a cut-over task).
+#   - The publish steps assume the IAM role (aws-buildkite-dev
+#     oidc-buildkite-bktest-release.tf) and read the PyPI token from SSM;
+#     the role trusts this pipeline on test-collector-python/v* tags only
+#     (see the credential cut-over section of ctg docs/publishing.md).
 #   - The publish steps exist only on an exact test-collector-python/vX.Y.Z
 #     tag AND RELEASE_EXECUTE=true set on the build, behind a block step;
 #     the release script independently re-checks both before twine upload.
@@ -36,36 +37,6 @@ steps:
           image: "python:3.13"
           environment:
             - BUILDKITE_TAG
-
-  - label: ":pypi: test-collector-python: verify PyPI credentials (AWS OIDC + SSM)"
-    key: python-credentials
-    # The role (aws-buildkite-dev oidc-buildkite-bktest-release.tf, applied
-    # 2026-08-21) trusts this pipeline on dry-run-* branches and
-    # test-collector-python/v* tags; the PyPI token was re-issued under
-    # the `buildkite` PyPI user (a package owner) and hand-populated at
-    # the SSM path below (see the credential cut-over section of ctg
-    # docs/publishing.md). Verified on bktest-release build #11; no longer
-    # soft_fail — a red probe means the trust regressed. $$ because
-    # pipeline upload interpolates $VAR at upload time; the check must run
-    # in the job's shell.
-    command: |
-      if [ -n "$${TWINE_PASSWORD:-}" ]; then
-        echo "ok: assumed the release role and read the PyPI token from SSM"
-      else
-        echo "TWINE_PASSWORD not present: IAM role / SSM parameter not set up for this pipeline yet"
-        exit 1
-      fi
-    plugins:
-      - aws-assume-role-with-web-identity#v1.2.0:
-          role-arn: "arn:aws:iam::445615400570:role/pipeline-buildkite-bktest-release"
-          session-tags:
-            - organization_slug
-            - organization_id
-            - pipeline_slug
-            - build_branch
-      - aws-ssm#v1.0.0:
-          parameters:
-            TWINE_PASSWORD: /pipelines/buildkite/bktest-release/pypi-api-token
 
   - block: ":rocket: Publish test-collector-python to PyPI?"
     key: python-confirm

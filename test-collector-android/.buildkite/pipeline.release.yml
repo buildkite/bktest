@@ -17,11 +17,11 @@
 # Safety model (see docs/publishing.md in the ctg repo):
 #   - The build step is side-effect-free: version consistency checks and
 #     ./gradlew publishToMavenLocal with signing disabled. It runs on every
-#     rehearsal, so dry-runs exercise the release code. It never sees
+#     rehearsal, so rehearsals exercise the release code. It never sees
 #     RELEASE_EXECUTE (deliberately not propagated into its container).
-#   - The credentials step only checks the four Buildkite secrets exist;
-#     soft_fail until they are created for the bktest-release pipeline (a
-#     cut-over task).
+#   - The publish steps read the four Buildkite secrets (Open Source Deploy
+#     cluster, access-policied to pipeline_slug bktest-release — see the
+#     credential cut-over section of ctg docs/publishing.md).
 #   - The publish steps exist only on an exact test-collector-android/vX.Y.Z
 #     tag AND RELEASE_EXECUTE=true set on the build, behind a block step;
 #     the release script independently re-checks both before publishing.
@@ -39,29 +39,6 @@ steps:
           user: "root"
           environment:
             - BUILDKITE_TAG
-
-  - label: ":android: test-collector-android: verify Maven Central + GPG secrets"
-    key: android-credentials
-    # The four secrets (created 2026-08-21 in the Open Source Deploy
-    # cluster, access-policied to pipeline_slug bktest-release; fresh
-    # Central Portal token, same GPG key as the source repo — see the
-    # credential cut-over section of ctg docs/publishing.md) are readable
-    # only by this pipeline's jobs. Verified on bktest-release build #13;
-    # no longer soft_fail — a red probe means the trust regressed. Values
-    # are never printed; this only checks each secret can be read. $$
-    # because pipeline upload interpolates $VAR at upload time; the loop
-    # must run in the job's shell.
-    command: |
-      missing=0
-      for name in MAVEN_CENTRAL_USERNAME MAVEN_CENTRAL_PASSWORD GPG_KEY GPG_PASSWORD; do
-        if buildkite-agent secret get "$$name" > /dev/null 2>&1; then
-          echo "ok: secret $$name is readable"
-        else
-          echo "missing: secret $$name"
-          missing=1
-        fi
-      done
-      exit "$$missing"
 
   - block: ":rocket: Publish test-collector-android to Maven Central?"
     key: android-confirm
