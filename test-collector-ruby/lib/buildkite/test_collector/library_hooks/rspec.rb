@@ -27,7 +27,14 @@ RSpec.configure do |config|
     Thread.current[:_buildkite_tracer] = tracer
     Thread.current[:_buildkite_tags] = tags
 
-    otel_span, trace_id = Buildkite::TestCollector::OTel.start_test_span
+    trace = Buildkite::TestCollector::RSpecPlugin::Trace.new(
+      example,
+      history: {},
+      tags: tags,
+      location_prefix: Buildkite::TestCollector.location_prefix,
+      external_id: Buildkite::TestCollector::UUID.v7,
+    )
+    otel_span, trace.trace_id = Buildkite::TestCollector::OTel.start_test_span(test: trace)
 
     # example.run can raise errors (including from other middleware/hooks) so clean up in `ensure`.
     begin
@@ -38,14 +45,7 @@ RSpec.configure do |config|
 
       tracer&.finalize
 
-      trace = Buildkite::TestCollector::RSpecPlugin::Trace.new(
-        example,
-        history: tracer ? tracer.history : {},
-        tags: tags,
-        location_prefix: Buildkite::TestCollector.location_prefix,
-        external_id: Buildkite::TestCollector::UUID.v7,
-        trace_id: trace_id,
-      )
+      trace.history = tracer ? tracer.history : {}
 
       # Left open for Reporter to finish once RSpec settles the result;
       # the end timestamp keeps the span timing the example itself.

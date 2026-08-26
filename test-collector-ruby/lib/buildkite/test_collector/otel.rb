@@ -109,12 +109,25 @@ module Buildkite::TestCollector
         shutdown
       end
 
-      def start_test_span
+      def start_test_span(test: nil)
         return [nil, nil] unless enabled?
+
+        attributes = {}
+        if test
+          test.otel_attributes.each do |key, value|
+            attributes[key] = value unless value.nil? || key.start_with?(TAG_ATTRIBUTE_PREFIX)
+          end
+          run_key = (@execution_attributes || {})["buildkite.run_key"]
+          attributes["buildkite.run_key"] = run_key if run_key
+          # Reserve the result's position before test code can consume the
+          # SDK's attribute budget. finish_test_span replaces this value.
+          attributes[RESULT_ATTRIBUTE] = "unset"
+        end
 
         span = @tracer.start_span(
           ROOT_SPAN_NAME,
           with_parent: OpenTelemetry::Context.empty,
+          attributes: attributes,
           links: job_span_links,
           kind: :internal,
         )

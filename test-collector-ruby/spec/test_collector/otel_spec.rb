@@ -160,7 +160,10 @@ RSpec.describe Buildkite::TestCollector::OTel do
       otel_result: "passed",
     )
 
-    span, = described_class.start_test_span
+    span, = described_class.start_test_span(test: test)
+    described_class.with_test_span(span) do
+      OpenTelemetry::Trace.current_span.set_attribute("custom.attribute", "optional")
+    end
     described_class.finish_test_span(span, test: test)
     provider.force_flush
 
@@ -180,6 +183,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       "buildkite.message",
       "buildkite.tag.configured",
       "buildkite.tag.execution",
+      "custom.attribute",
     )
   ensure
     described_class.instance_variable_set(:@tracer, nil)
