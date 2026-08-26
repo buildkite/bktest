@@ -1008,6 +1008,52 @@ RSpec.describe Buildkite::TestCollector::OTel do
   end
 
   describe "resource and execution attributes" do
+    it "uses provider-native CI run IDs rather than the Test Engine run key" do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("GITHUB_RUN_ID").and_return("github-123")
+      allow(ENV).to receive(:[]).with("GITHUB_REPOSITORY").and_return("acme/payments")
+      allow(ENV).to receive(:[]).with("CIRCLE_WORKFLOW_ID").and_return("circle-123")
+      allow(ENV).to receive(:[]).with("CIRCLE_BUILD_URL").and_return("https://circle.example/workflow/123")
+
+      github = described_class.send(
+        :provider_resource,
+        { "CI" => "github_actions", "key" => "test-engine-key" },
+      ).attribute_enumerator.to_h
+      circle = described_class.send(
+        :provider_resource,
+        { "CI" => "circleci", "key" => "test-engine-key" },
+      ).attribute_enumerator.to_h
+
+      expect(github).to include(
+        "cicd.pipeline.run.id" => "github-123",
+        "cicd.pipeline.run.url.full" => "https://github.com/acme/payments/actions/runs/github-123",
+      )
+      expect(circle).to include(
+        "cicd.pipeline.run.id" => "circle-123",
+        "cicd.pipeline.run.url.full" => "https://circle.example/workflow/123",
+      )
+    end
+
+    it "keeps configured URLs on the execution when they are not the CI resource URL" do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("BUILDKITE_BUILD_ID").and_return("build-123")
+      allow(ENV).to receive(:[]).with("BUILDKITE_BUILD_URL").and_return("https://buildkite.example/builds/123")
+
+      buildkite = described_class.send(
+        :execution_attributes,
+        { "CI" => "buildkite", "url" => "https://configured.example/run" },
+        {},
+      )
+      generic = described_class.send(
+        :execution_attributes,
+        { "CI" => "generic", "url" => "https://configured.example/generic-run" },
+        {},
+      )
+
+      expect(buildkite).to include("buildkite.run_url" => "https://configured.example/run")
+      expect(generic).to include("buildkite.run_url" => "https://configured.example/generic-run")
+    end
+
     it "keeps producer identity on the resource and run metadata on the test root" do
       original = OpenTelemetry.tracer_provider
       OpenTelemetry.tracer_provider = OpenTelemetry::Internal::ProxyTracerProvider.new
@@ -1068,6 +1114,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       expect(resource).not_to include(
         "service.instance.id",
         "buildkite.run_key",
+        "buildkite.run_url",
         "buildkite.build_number",
         "buildkite.job_id",
         "buildkite.message",
@@ -1090,6 +1137,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         "buildkite.tag.team" => "platform",
         "buildkite.tag.speed" => "fast",
       )
+      expect(root.attributes).not_to include("buildkite.run_url")
       expect(child.resource.attribute_enumerator.to_h).to include(resource)
       expect(child.attributes).not_to include(
         "buildkite.run_key",

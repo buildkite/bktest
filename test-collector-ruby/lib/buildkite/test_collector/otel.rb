@@ -400,11 +400,7 @@ module Buildkite::TestCollector
       # A resource identifies the entities that produced every span from the
       # provider: the suite, CI pipeline run and worker, and checked-out VCS ref.
       def provider_resource(run_env)
-        pipeline_run_id, pipeline_run_url = if run_env["CI"] == "buildkite"
-          [ENV["BUILDKITE_BUILD_ID"], ENV["BUILDKITE_BUILD_URL"]]
-        elsif %w[github_actions circleci codeship].include?(run_env["CI"])
-          [run_env["key"], run_env["url"]]
-        end
+        pipeline_run_id, pipeline_run_url = ci_pipeline_run(run_env)
         worker_id = ENV["BUILDKITE_AGENT_ID"]
         worker_id = nil if worker_id.nil? || worker_id.strip.empty?
 
@@ -433,6 +429,7 @@ module Buildkite::TestCollector
       # emitted its child spans. Configure-level tags apply to every test root;
       # tag_execution adds the per-test tags later when the result is finalized.
       def execution_attributes(run_env, execution_tags)
+        _, pipeline_run_url = ci_pipeline_run(run_env)
         attributes = {
           "buildkite.run_key" => run_env["key"],
           "buildkite.build_number" => run_env["number"],
@@ -443,11 +440,34 @@ module Buildkite::TestCollector
           "buildkite.collector.version" => run_env["version"],
           "buildkite.test.framework.name" => Buildkite::TestCollector.test_runner,
         }
+        if run_env["url"] && run_env["url"] != pipeline_run_url
+          attributes["buildkite.run_url"] = run_env["url"]
+        end
         if defined?(RSpec::Core::Version::STRING)
           attributes["buildkite.test.framework.version"] = RSpec::Core::Version::STRING
         end
 
         attributes.reject { |_, value| value.nil? }.merge(tag_attributes(execution_tags))
+      end
+
+      # Use provider-native IDs for correlation with other CI telemetry. The
+      # Test Engine run key is a separate identity and stays on the test root.
+      def ci_pipeline_run(run_env)
+        case run_env["CI"]
+        when "buildkite"
+          [ENV["BUILDKITE_BUILD_ID"], ENV["BUILDKITE_BUILD_URL"]]
+        when "github_actions"
+          id = ENV["GITHUB_RUN_ID"]
+          repository = ENV["GITHUB_REPOSITORY"]
+          url = File.join("https://github.com", repository, "actions/runs", id) if repository && id
+          [id, url]
+        when "circleci"
+          [ENV["CIRCLE_WORKFLOW_ID"], ENV["CIRCLE_BUILD_URL"]]
+        when "codeship"
+          [ENV["CI_BUILD_ID"], nil]
+        else
+          [nil, nil]
+        end
       end
 
       def shutdown_exports(timeout)

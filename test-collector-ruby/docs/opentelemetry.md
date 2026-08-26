@@ -113,6 +113,7 @@ operations do not need:
 | --- | --- | --- |
 | `buildkite.execution.via` | `otlp` in OTLP-only mode — opts this span in to synthesis | — |
 | `buildkite.run_key` | the Test Engine run key (required) | run key |
+| `buildkite.run_url` | a configured run URL when it differs from, or cannot be represented by, the CI resource URL | URL |
 | `buildkite.build_number` | the build number | number |
 | `buildkite.job_id` | the job's UUID | job ID |
 | `buildkite.step_id` | the step's UUID | step ID |
