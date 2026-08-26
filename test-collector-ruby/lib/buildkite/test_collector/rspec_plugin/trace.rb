@@ -8,7 +8,7 @@ module Buildkite::TestCollector::RSpecPlugin
     # settles the example's result.
     attr_accessor :otel_span, :otel_end_timestamp
 
-    attr_reader :history
+    attr_accessor :history
     attr_reader :tags
     attr_reader :location_prefix
 

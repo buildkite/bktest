@@ -129,6 +129,55 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(skipped.ended).to be(true)
   end
 
+  it "reserves synthesis attributes before descriptive fields, run metadata, and tags" do
+    exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
+    limits = OpenTelemetry::SDK::Trace::SpanLimits.new(attribute_count_limit: 3)
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new(span_limits: limits)
+    provider.add_span_processor(processor)
+    described_class.instance_variable_set(:@tracer, provider.tracer("attribute-priority-test"))
+    described_class.instance_variable_set(
+      :@execution_attributes,
+      {
+        "buildkite.run_key" => "run-123",
+        "buildkite.message" => "optional metadata",
+        "buildkite.tag.configured" => "optional tag",
+      },
+    )
+    test = double(
+      "trace",
+      otel_attributes: {
+        "buildkite.test.scope" => "Math",
+        "buildkite.test.name" => "adds numbers",
+        "test.case.name" => "Math adds numbers",
+        "test.suite.name" => "Math",
+        "code.file.path" => "spec/math_spec.rb",
+        "code.line.number" => 12,
+        "buildkite.execution.via" => "otlp",
+        "buildkite.test.execution.external_id" => "execution-123",
+        "buildkite.tag.execution" => "optional tag",
+      },
+      otel_result: "passed",
+    )
+
+    span, = described_class.start_test_span(test: test)
+    described_class.with_test_span(span) do
+      OpenTelemetry::Trace.current_span.set_attribute("custom.attribute", "optional")
+    end
+    described_class.finish_test_span(span, test: test)
+    provider.force_flush
+
+    expect(exporter.finished_spans.fetch(0).attributes).to eq(
+      "buildkite.execution.via" => "otlp",
+      "buildkite.run_key" => "run-123",
+      "test.case.result.status" => "pass",
+    )
+  ensure
+    described_class.instance_variable_set(:@tracer, nil)
+    described_class.instance_variable_set(:@execution_attributes, nil)
+    provider&.shutdown
+  end
+
   it "reports how long the finished span says the test took" do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     described_class.instance_variable_set(:@tracer, provider.tracer("duration-test"))
@@ -169,14 +218,31 @@ RSpec.describe Buildkite::TestCollector::OTel do
   end
 
   it "finishes the span even when the test cannot be described" do
-    span = double("OpenTelemetry span")
-    allow(span).to receive(:finish)
-    test = double("test")
-    allow(test).to receive(:otel_attributes).and_raise("no metadata for you")
+    exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    provider.add_span_processor(processor)
+    described_class.instance_variable_set(:@tracer, provider.tracer("description-failure-test"))
+    test = double("test", otel_result: "passed")
+    calls = 0
+    allow(test).to receive(:otel_attributes) do
+      calls += 1
+      raise "no metadata for you" if calls > 1
 
+      { "buildkite.execution.via" => "otlp" }
+    end
+
+    span, = described_class.start_test_span(test: test)
     expect { described_class.finish_test_span(span, test: test) }
       .to output(/Could not describe OpenTelemetry test span/).to_stderr
-    expect(span).to have_received(:finish).once
+    provider.force_flush
+
+    expect(exporter.finished_spans.fetch(0).attributes).to include(
+      "test.case.result.status" => "pass",
+    )
+  ensure
+    described_class.instance_variable_set(:@tracer, nil)
+    provider&.shutdown
   end
 
   it "asks nothing of the test when there is no span" do
@@ -570,13 +636,13 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
   end
 
-  it "uses an AlwaysOn sampler, process-safe random IDs, and the run resource for execution roots" do
+  it "uses an AlwaysOn sampler, process-safe random IDs, and the producer resource for execution roots" do
     processor = spy(
       "execution processor",
       shutdown: OpenTelemetry::SDK::Trace::Export::SUCCESS,
     )
     generator = described_class.const_get(:SecureRandomIdGenerator, false)
-    resource = described_class.send(:run_resource, { "key" => "run-123" }, {})
+    resource = described_class.send(:provider_resource, {})
     allow(described_class).to receive(:batch_processor).and_return(processor)
 
     execution_provider = described_class.send(
@@ -589,18 +655,14 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(execution_provider.id_generator).to equal(generator)
     expect(execution_provider.sampler).to equal(OpenTelemetry::SDK::Trace::Samplers::ALWAYS_ON)
     expect(execution_provider.resource).to equal(resource)
-    expect(execution_provider.resource.attribute_enumerator.to_h).to include(
-      "buildkite.run_key" => "run-123",
-    )
   ensure
     execution_provider&.shutdown
   end
 
-  it "adds user tags to the run resource for execution roots" do
-    tagged = described_class.send(:run_resource, {}, { "team" => "platform" })
+  it "adds configure-level tags to execution roots" do
+    attributes = described_class.send(:execution_attributes, {}, { "team" => "platform" })
 
-    expect(tagged.attribute_enumerator.to_h).to include(
-      "service.name" => "buildkite-test-collector",
+    expect(attributes).to include(
       "buildkite.tag.team" => "platform",
     )
   end
@@ -683,7 +745,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(exported_child.trace_id).to eq(exported_root.trace_id)
     expect(exported_child.parent_span_id).to eq(exported_root.span_id)
     expect(exported_root.resource.attribute_enumerator.to_h).to include(
-      "service.name" => "buildkite-test-collector",
+      "service.name" => "unknown_service",
     )
     expect(exported_child.resource).to equal(suite_resource)
 
@@ -1011,54 +1073,154 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.shutdown
   end
 
-  describe "run resources" do
-    it "exports spans carrying the run and user tags as the resource" do
+  describe "resource and execution attributes" do
+    it "uses provider-native CI run IDs rather than the Test Engine run key" do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("GITHUB_RUN_ID").and_return("github-123")
+      allow(ENV).to receive(:[]).with("GITHUB_REPOSITORY").and_return("acme/payments")
+      allow(ENV).to receive(:[]).with("CIRCLE_WORKFLOW_ID").and_return("circle-123")
+      allow(ENV).to receive(:[]).with("CIRCLE_BUILD_URL").and_return("https://circle.example/workflow/123")
+
+      github = described_class.send(
+        :provider_resource,
+        { "CI" => "github_actions", "key" => "test-engine-key" },
+      ).attribute_enumerator.to_h
+      circle = described_class.send(
+        :provider_resource,
+        { "CI" => "circleci", "key" => "test-engine-key" },
+      ).attribute_enumerator.to_h
+
+      expect(github).to include(
+        "cicd.pipeline.run.id" => "github-123",
+        "cicd.pipeline.run.url.full" => "https://github.com/acme/payments/actions/runs/github-123",
+      )
+      expect(circle).to include("cicd.pipeline.run.id" => "circle-123")
+      expect(circle).not_to include("cicd.pipeline.run.url.full")
+    end
+
+    it "keeps configured URLs on the execution when they are not the CI resource URL" do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("BUILDKITE_BUILD_ID").and_return("build-123")
+      allow(ENV).to receive(:[]).with("BUILDKITE_BUILD_URL").and_return("https://buildkite.example/builds/123")
+
+      buildkite = described_class.send(
+        :execution_attributes,
+        { "CI" => "buildkite", "url" => "https://configured.example/run" },
+        {},
+      )
+      generic = described_class.send(
+        :execution_attributes,
+        { "CI" => "generic", "url" => "https://configured.example/generic-run" },
+        {},
+      )
+      circle = described_class.send(
+        :execution_attributes,
+        { "CI" => "circleci", "url" => "https://circle.example/jobs/123" },
+        {},
+      )
+
+      expect(buildkite).to include("buildkite.run_url" => "https://configured.example/run")
+      expect(generic).to include("buildkite.run_url" => "https://configured.example/generic-run")
+      expect(circle).to include("buildkite.run_url" => "https://circle.example/jobs/123")
+    end
+
+    it "keeps producer identity on the resource and run metadata on the test root" do
       original = OpenTelemetry.tracer_provider
       OpenTelemetry.tracer_provider = OpenTelemetry::Internal::ProxyTracerProvider.new
       exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
       allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new) { exporter }
       allow(OpenTelemetry::Instrumentation.registry).to receive(:install_all)
-      # A tag build would flip vcs.ref.head.type; pin the environment here.
+      allow(Buildkite::TestCollector).to receive(:test_runner).and_return("rspec")
       allow(ENV).to receive(:[]).and_call_original
       allow(ENV).to receive(:[]).with("BUILDKITE_TAG").and_return(nil)
+      allow(ENV).to receive(:[]).with("BUILDKITE_BUILD_ID").and_return("build-123")
+      allow(ENV).to receive(:[]).with("BUILDKITE_BUILD_URL")
+        .and_return("https://buildkite.example/acme/payments/builds/123")
+      allow(ENV).to receive(:[]).with("BUILDKITE_AGENT_ID").and_return("agent-123")
+      allow(ENV).to receive(:[]).with("BUILDKITE_STEP_ID").and_return("step-123")
+      allow(ENV).to receive(:[]).with("BUILDKITE_TEST_ENGINE_SUITE_SLUG").and_return("payments")
+      allow(ENV).to receive(:[]).with("BUILDKITE_ORGANIZATION_SLUG").and_return("acme")
 
       described_class.configure!(
         endpoint: "https://example.invalid/v1/traces",
         run_env: {
+          "CI" => "buildkite",
           "key" => "run-123",
+          "url" => "https://buildkite.example/acme/payments/builds/123",
           "branch" => "main",
           "commit_sha" => "abc123",
+          "number" => "123",
+          "job_id" => "job-123",
+          "message" => "Test resource boundaries",
           "collector" => "ruby-buildkite-test_collector",
           "version" => Buildkite::TestCollector::VERSION,
         },
-        resource_attributes: { "team" => "platform", :speed => :fast },
+        execution_tags: { "team" => "platform", :speed => :fast },
       )
 
       expect(described_class).to be_enabled
       expect(OpenTelemetry.tracer_provider).not_to equal(original)
 
-      span, = described_class.start_test_span
-      described_class.finish_test_span(span)
+      root, = described_class.start_test_span
+      described_class.with_test_span(root) do
+        OpenTelemetry.tracer_provider.tracer("test-suite").in_span("child") { nil }
+      end
+      described_class.finish_test_span(root)
       described_class.force_flush
 
-      resource = exporter.finished_spans.fetch(0).resource.attribute_enumerator.to_h
+      root = exporter.finished_spans.find { |span| span.name == "test.execution" }
+      child = exporter.finished_spans.find { |span| span.name == "child" }
+      resource = root.resource.attribute_enumerator.to_h
       expect(resource).to include(
-        "buildkite.run_key" => "run-123",
+        "service.name" => "payments",
+        "service.namespace" => "acme",
+        "cicd.pipeline.run.id" => "build-123",
+        "cicd.pipeline.run.url.full" => "https://buildkite.example/acme/payments/builds/123",
+        "cicd.worker.id" => "agent-123",
         "vcs.ref.head.name" => "main",
-        "vcs.ref.head.type" => "branch",
         "vcs.ref.head.revision" => "abc123",
+        "vcs.ref.type" => "branch",
+      )
+      expect(resource).not_to include(
+        "service.instance.id",
+        "buildkite.run_key",
+        "buildkite.run_url",
+        "buildkite.build_number",
+        "buildkite.job_id",
+        "buildkite.message",
+        "buildkite.step_id",
+        "buildkite.collector.name",
+        "buildkite.collector.version",
+        "buildkite.test.framework.name",
+        "buildkite.test.framework.version",
+        "buildkite.tag.team",
+      )
+      expect(root.attributes).to include(
+        "buildkite.run_key" => "run-123",
+        "buildkite.build_number" => "123",
+        "buildkite.job_id" => "job-123",
+        "buildkite.message" => "Test resource boundaries",
+        "buildkite.step_id" => "step-123",
         "buildkite.collector.name" => "ruby-buildkite-test_collector",
         "buildkite.collector.version" => Buildkite::TestCollector::VERSION,
-        # User tags ride along as prefixed resource attributes, stringified.
+        "buildkite.test.framework.name" => "rspec",
         "buildkite.tag.team" => "platform",
         "buildkite.tag.speed" => "fast",
+      )
+      expect(root.attributes).not_to include("buildkite.run_url")
+      expect(child.resource.attribute_enumerator.to_h).to include(resource)
+      expect(child.attributes).not_to include(
+        "buildkite.run_key",
+        "buildkite.job_id",
+        "buildkite.test.framework.name",
+        "buildkite.tag.team",
       )
     ensure
       described_class.shutdown
       OpenTelemetry.tracer_provider = original
     end
 
-    it "leaves a suite-installed provider in place while roots still carry the run resource" do
+    it "leaves a suite-installed provider in place while roots carry the run metadata" do
       original = OpenTelemetry.tracer_provider
       suite_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
       OpenTelemetry.tracer_provider = suite_provider
@@ -1079,8 +1241,9 @@ RSpec.describe Buildkite::TestCollector::OTel do
       described_class.finish_test_span(span)
       described_class.force_flush
 
-      resource = exporter.finished_spans.fetch(0).resource.attribute_enumerator.to_h
-      expect(resource).to include("buildkite.run_key" => "run-123")
+      exported = exporter.finished_spans.fetch(0)
+      expect(exported.attributes).to include("buildkite.run_key" => "run-123")
+      expect(exported.resource.attribute_enumerator.to_h).not_to include("buildkite.run_key")
     ensure
       described_class.shutdown
       suite_provider&.shutdown

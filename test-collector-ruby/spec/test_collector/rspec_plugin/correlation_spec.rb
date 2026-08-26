@@ -46,7 +46,7 @@ RSpec.describe "RSpec execution and OpenTelemetry correlation" do
       api_token: nil,
       run_env: run_env,
       instrumentations: nil,
-      resource_attributes: {},
+      execution_tags: {},
       )
     expect(library_loaded_when_configured).to eq("constant")
   end

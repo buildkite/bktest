@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## Unreleased
+
+* Keep stable suite, CI worker/run, and VCS identity on OpenTelemetry resources,
+  while moving Test Engine run metadata, framework details, and configured tags
+  to each `test.execution` root. Child spans no longer carry execution-only
+  metadata as duplicated resource attributes.
+
 ## v2.15.0
 
 * Add [experimental, opt-in OpenTelemetry trace export](docs/opentelemetry.md)

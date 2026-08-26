@@ -88,8 +88,8 @@ Add the `BUILDKITE_ANALYTICS_TOKEN` secret to your CI, push your changes to a br
 RSpec suites can also send an OpenTelemetry trace per test execution to Buildkite,
 showing what each test did and where it spent its time. Each trace is rooted in a
 `test.execution` span carrying its name, location, result, and any failure detail.
-Tags passed to `configure` appear as resource attributes, while `tag_execution`
-adds attributes to the current test's root span.
+Tags passed to `configure` appear on every test root, while `tag_execution` adds
+attributes only to the current test's root span.
 
 This feature is still under development and may change. This first release is
 intended for suites that do not already configure OpenTelemetry. It may work
@@ -165,7 +165,7 @@ gem's whole job is to configure OpenTelemetry so each test gets a suitable span:
 - `Buildkite::TestCollector.annotate` adds a `test.annotation` event to the
   current span.
 - `Buildkite::TestCollector.tag_execution` sets attributes on the test span.
-- `tags:` given to `configure` become resource attributes on every span.
+- `tags:` given to `configure` become attributes on every test root.
 - Instrumentation works exactly as it does with `otel_enabled`: everything you
   require and register installs, and `otel_instrumentations: []` exports only
   the `test.execution` spans. See

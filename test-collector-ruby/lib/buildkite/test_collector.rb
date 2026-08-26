@@ -91,10 +91,10 @@ module Buildkite
           api_token: api_token,
           run_env: Buildkite::TestCollector::CI.env,
           instrumentations: otel_instrumentations,
-          # Tags describe the whole run, so they ride along as resource
-          # attributes on every exported span. The merged self.tags, not the
-          # raw argument, so the automatic ci.worker.id tag comes too.
-          resource_attributes: self.tags,
+          # Configure-level tags describe each test execution, not every child
+          # operation. Use the merged self.tags so the automatic worker tag is
+          # included alongside caller-supplied tags on each test root.
+          execution_tags: self.tags,
         }
       end
       self.hook_into(hook)
