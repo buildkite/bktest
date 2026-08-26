@@ -143,13 +143,14 @@ execution.
 
 Instrumentation selection applies only when the collector configures the global
 provider, and works the same with `otel_enabled` and `otel_only`.
-The collector includes the OpenTelemetry SDK and OTLP
-exporter, but no instrumentation gems. Add the instrumentation you want to your
-bundle and require it explicitly:
+Add the OpenTelemetry SDK and OTLP exporter, plus the instrumentation you want,
+to your bundle. Require each instrumentation explicitly:
 
 ```ruby
 # Gemfile
 group :test do
+  gem "opentelemetry-exporter-otlp", "~> 0.34", require: false
+  gem "opentelemetry-sdk", "~> 1.13", require: false
   gem "opentelemetry-instrumentation-pg", require: false
   gem "opentelemetry-instrumentation-redis", require: false
 end

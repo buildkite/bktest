@@ -6,7 +6,8 @@
   for RSpec suites. Both modes share execution spans and run resources while
   preserving execution roots; `otel_only` skips legacy trace capture and JSON
   uploads. Standard OTLP header environment variables are supported for export
-  authentication.
+  authentication. Export requires Ruby 3.3 or newer and the OpenTelemetry SDK
+  and OTLP exporter gems.
 
 * Automatically tag executions with `ci.worker.id` from `BUILDKITE_AGENT_ID`,
   so failures can be grouped by the agent that ran them. An explicit

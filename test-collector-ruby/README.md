@@ -106,12 +106,13 @@ Execution roots use a private AlwaysOn provider so a suite's sampling policy
 cannot remove them.
 
 The collector configures a global provider for child spans and installs all
-applicable instrumentation registered when the suite starts. The collector does
-not include instrumentation gems. Add and explicitly require each one you want
-to use:
+applicable instrumentation registered when the suite starts. Add the
+OpenTelemetry SDK and OTLP exporter, plus any instrumentation you want to use:
 
 ```ruby
 # Gemfile
+gem "opentelemetry-exporter-otlp", "~> 0.34", require: false
+gem "opentelemetry-sdk", "~> 1.13", require: false
 gem "opentelemetry-instrumentation-pg", require: false
 
 # spec/spec_helper.rb
@@ -128,8 +129,8 @@ recommended setup. To disable instrumentations and export only root
 reserved for a future release and disables span export with a warning. See the
 [OpenTelemetry guide](docs/opentelemetry.md#choosing-instrumentation) for more.
 
-Export needs Ruby 3.3 or newer, which is what the OpenTelemetry gems require. On
-older Rubies the option is accepted and does nothing.
+Export needs Ruby 3.3 or newer, which is what the OpenTelemetry gems require. If
+those gems are unavailable, the option is accepted and export remains disabled.
 
 The collector honors standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (or the
 generic `OTEL_EXPORTER_OTLP_HEADERS`) and gives them precedence over its own
