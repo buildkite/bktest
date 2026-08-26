@@ -129,10 +129,10 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(skipped.ended).to be(true)
   end
 
-  it "prioritizes essential test attributes over optional run metadata and tags" do
+  it "reserves synthesis attributes before descriptive fields, run metadata, and tags" do
     exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
-    limits = OpenTelemetry::SDK::Trace::SpanLimits.new(attribute_count_limit: 10)
+    limits = OpenTelemetry::SDK::Trace::SpanLimits.new(attribute_count_limit: 3)
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new(span_limits: limits)
     provider.add_span_processor(processor)
     described_class.instance_variable_set(:@tracer, provider.tracer("attribute-priority-test"))
@@ -147,13 +147,13 @@ RSpec.describe Buildkite::TestCollector::OTel do
     test = double(
       "trace",
       otel_attributes: {
-        "buildkite.execution.via" => "otlp",
         "buildkite.test.scope" => "Math",
         "buildkite.test.name" => "adds numbers",
         "test.case.name" => "Math adds numbers",
         "test.suite.name" => "Math",
         "code.file.path" => "spec/math_spec.rb",
         "code.line.number" => 12,
+        "buildkite.execution.via" => "otlp",
         "buildkite.test.execution.external_id" => "execution-123",
         "buildkite.tag.execution" => "optional tag",
       },
@@ -167,23 +167,10 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.finish_test_span(span, test: test)
     provider.force_flush
 
-    expect(exporter.finished_spans.fetch(0).attributes).to include(
+    expect(exporter.finished_spans.fetch(0).attributes).to eq(
       "buildkite.execution.via" => "otlp",
       "buildkite.run_key" => "run-123",
-      "buildkite.test.scope" => "Math",
-      "buildkite.test.name" => "adds numbers",
-      "test.case.name" => "Math adds numbers",
-      "test.suite.name" => "Math",
-      "code.file.path" => "spec/math_spec.rb",
-      "code.line.number" => 12,
-      "buildkite.test.execution.external_id" => "execution-123",
       "test.case.result.status" => "pass",
-    )
-    expect(exporter.finished_spans.fetch(0).attributes).not_to include(
-      "buildkite.message",
-      "buildkite.tag.configured",
-      "buildkite.tag.execution",
-      "custom.attribute",
     )
   ensure
     described_class.instance_variable_set(:@tracer, nil)
@@ -231,14 +218,31 @@ RSpec.describe Buildkite::TestCollector::OTel do
   end
 
   it "finishes the span even when the test cannot be described" do
-    span = double("OpenTelemetry span")
-    allow(span).to receive(:finish)
-    test = double("test")
-    allow(test).to receive(:otel_attributes).and_raise("no metadata for you")
+    exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    provider.add_span_processor(processor)
+    described_class.instance_variable_set(:@tracer, provider.tracer("description-failure-test"))
+    test = double("test", otel_result: "passed")
+    calls = 0
+    allow(test).to receive(:otel_attributes) do
+      calls += 1
+      raise "no metadata for you" if calls > 1
 
+      { "buildkite.execution.via" => "otlp" }
+    end
+
+    span, = described_class.start_test_span(test: test)
     expect { described_class.finish_test_span(span, test: test) }
       .to output(/Could not describe OpenTelemetry test span/).to_stderr
-    expect(span).to have_received(:finish).once
+    provider.force_flush
+
+    expect(exporter.finished_spans.fetch(0).attributes).to include(
+      "test.case.result.status" => "pass",
+    )
+  ensure
+    described_class.instance_variable_set(:@tracer, nil)
+    provider&.shutdown
   end
 
   it "asks nothing of the test when there is no span" do

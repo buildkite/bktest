@@ -7,6 +7,7 @@ module Buildkite::TestCollector
   module OTel
     DEFAULT_ENDPOINT = "https://tests-otlp.buildkite.com/v1/traces"
 
+    EXECUTION_VIA_ATTRIBUTE = "buildkite.execution.via"
     RESULT_ATTRIBUTE = "test.case.result.status"
     TAG_ATTRIBUTE_PREFIX = "buildkite.tag."
 
@@ -114,14 +115,21 @@ module Buildkite::TestCollector
 
         attributes = {}
         if test
-          test.otel_attributes.each do |key, value|
-            attributes[key] = value unless value.nil? || key.start_with?(TAG_ATTRIBUTE_PREFIX)
-          end
+          test_attributes = test.otel_attributes
+          # The SDK retains the earliest attributes at its configured limit.
+          # These three are the minimum needed to synthesize an execution.
+          via = test_attributes[EXECUTION_VIA_ATTRIBUTE]
+          attributes[EXECUTION_VIA_ATTRIBUTE] = via if via
           run_key = (@execution_attributes || {})["buildkite.run_key"]
           attributes["buildkite.run_key"] = run_key if run_key
           # Reserve the result's position before test code can consume the
           # SDK's attribute budget. finish_test_span replaces this value.
           attributes[RESULT_ATTRIBUTE] = "unset"
+          test_attributes.each do |key, value|
+            next if value.nil? || attributes.key?(key) || key.start_with?(TAG_ATTRIBUTE_PREFIX)
+
+            attributes[key] = value
+          end
         end
 
         span = @tracer.start_span(
@@ -157,16 +165,16 @@ module Buildkite::TestCollector
         test_attributes = {}
         begin
           if test
+            result = test.otel_result
+            status = RESULT_STATUSES[result]
+            span.set_attribute(RESULT_ATTRIBUTE, status) if status
+
             # The Ruby SDK keeps the earliest attributes when a span reaches
             # its limit, so record the test itself before run metadata or tags.
             test_attributes = test.otel_attributes.reject { |_, value| value.nil? }
             test_attributes.each do |key, value|
               span.set_attribute(key, value) unless key.start_with?(TAG_ATTRIBUTE_PREFIX)
             end
-
-            result = test.otel_result
-            status = RESULT_STATUSES[result]
-            span.set_attribute(RESULT_ATTRIBUTE, status) if status
 
             if result == "failed"
               # The failure summary rides as the span status description, and
