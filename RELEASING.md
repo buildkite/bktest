@@ -40,7 +40,7 @@ put registry credentials in this repository or in release notes.
   automation.
 - **Python:** `pyproject.toml`; PyPI; Buildkite automation.
 - **JavaScript:** `package.json`; npm; maintainer-operated.
-- **Swift:** Git tag; Swift Package Manager; [releases paused](#swift-swift-package-manager).
+- **Swift:** Git tag mirror; Swift Package Manager; Buildkite automation.
 - **Elixir:** `mix.exs`; Hex; maintainer-operated.
 - **.NET:** both package-project `.fsproj` files; NuGet;
   maintainer-operated.
@@ -54,7 +54,7 @@ the repository-level `.github/workflows/` directory.
 
 ## Buildkite-automated releases
 
-Ruby, Python, and Android publish through the
+Ruby, Python, Android, and Swift publish through the
 [`bktest-release` pipeline](https://buildkite.com/buildkite/bktest-release).
 The pipeline builds and validates release artifacts without publishing by
 default.
@@ -103,6 +103,24 @@ Update versioned usage examples when appropriate. Use a
 pipeline removes `-SNAPSHOT` while building the release. Merges to `main` no
 longer publish Android snapshots automatically.
 
+### Swift (Swift Package Manager)
+
+Swift Package Manager discovers versions from repository-level `vX.Y.Z`
+tags, so the release pipeline mirrors Swift releases to the standalone
+[`buildkite/test-collector-swift`](https://github.com/buildkite/test-collector-swift)
+repository that existing consumers already use.
+
+Swift has no version file to update. Use a
+`test-collector-swift/vX.Y.Z` tag and the automated process above. The
+pipeline extracts `test-collector-swift/` from the tagged bktest history,
+checks that it extends the existing release mirror, and pushes the
+corresponding plain `vX.Y.Z` tag. It never updates the standalone
+repository's default branch.
+
+Do not create an unprefixed tag in bktest or push a release tag directly to
+the standalone repository. After publishing, verify that the plain tag is
+present there and resolves through Swift Package Manager.
+
 ## Maintainer-operated releases
 
 For these collectors, an authorized registry maintainer publishes from a
@@ -140,14 +158,3 @@ Update `Cargo.toml` and `Cargo.lock` in the release pull request. Do not use a
 tool that creates an unprefixed tag. After pushing
 `test-collector-rust/vX.Y.Z`, run `cargo publish --dry-run` and then
 `cargo publish` from `test-collector-rust/`.
-
-## Swift (Swift Package Manager)
-
-New Swift releases are currently paused. Swift Package Manager discovers
-versions from repository-level `vX.Y.Z` tags and cannot use this monorepo's
-prefixed tags. Existing releases continue to resolve from the archived
-standalone `buildkite/test-collector-swift` repository.
-
-Do not create an unprefixed tag in this repository for Swift. If a new Swift
-release becomes necessary, contact the Buildkite Test Engine maintainers so
-the distribution approach can be reviewed first.

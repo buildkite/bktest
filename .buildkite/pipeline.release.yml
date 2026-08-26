@@ -4,8 +4,8 @@
 # separate Buildkite pipelines so cluster, trigger-on-fork, PR-build, and
 # branch-limit settings — and credential trust — differ per pipeline.
 #
-# This file is injected by `ctg gather` from the ctg repo's overlay/
-# directory; edit it there, not in the gathered repo.
+# This file originated in the `ctg gather` overlay. Now that the collectors
+# have cut over, it is maintained here in the monorepo.
 #
 # It does no work itself: for each project with release automation (see
 # ctg docs/publishing.md) it uploads that project's release pipeline
@@ -53,3 +53,12 @@ steps:
   - label: ":pipeline: test-collector-android release"
     if: build.tag =~ /^test-collector-android\//
     command: "[ ! -d test-collector-android ] || buildkite-agent pipeline upload test-collector-android/.buildkite/pipeline.release.yml"
+
+  - label: ":pipeline: test-collector-swift release rehearsal"
+    if: build.tag == null
+    if_changed: "test-collector-swift/**"
+    command: "[ ! -d test-collector-swift ] || buildkite-agent pipeline upload test-collector-swift/.buildkite/pipeline.release.yml"
+
+  - label: ":pipeline: test-collector-swift release"
+    if: build.tag =~ /^test-collector-swift\//
+    command: "[ ! -d test-collector-swift ] || buildkite-agent pipeline upload test-collector-swift/.buildkite/pipeline.release.yml"
