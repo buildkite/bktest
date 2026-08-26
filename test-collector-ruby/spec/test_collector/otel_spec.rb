@@ -1028,10 +1028,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
         "cicd.pipeline.run.id" => "github-123",
         "cicd.pipeline.run.url.full" => "https://github.com/acme/payments/actions/runs/github-123",
       )
-      expect(circle).to include(
-        "cicd.pipeline.run.id" => "circle-123",
-        "cicd.pipeline.run.url.full" => "https://circle.example/workflow/123",
-      )
+      expect(circle).to include("cicd.pipeline.run.id" => "circle-123")
+      expect(circle).not_to include("cicd.pipeline.run.url.full")
     end
 
     it "keeps configured URLs on the execution when they are not the CI resource URL" do
@@ -1049,9 +1047,15 @@ RSpec.describe Buildkite::TestCollector::OTel do
         { "CI" => "generic", "url" => "https://configured.example/generic-run" },
         {},
       )
+      circle = described_class.send(
+        :execution_attributes,
+        { "CI" => "circleci", "url" => "https://circle.example/jobs/123" },
+        {},
+      )
 
       expect(buildkite).to include("buildkite.run_url" => "https://configured.example/run")
       expect(generic).to include("buildkite.run_url" => "https://configured.example/generic-run")
+      expect(circle).to include("buildkite.run_url" => "https://circle.example/jobs/123")
     end
 
     it "keeps producer identity on the resource and run metadata on the test root" do

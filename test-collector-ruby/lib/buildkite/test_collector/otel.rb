@@ -462,7 +462,7 @@ module Buildkite::TestCollector
           url = File.join("https://github.com", repository, "actions/runs", id) if repository && id
           [id, url]
         when "circleci"
-          [ENV["CIRCLE_WORKFLOW_ID"], ENV["CIRCLE_BUILD_URL"]]
+          [ENV["CIRCLE_WORKFLOW_ID"], nil]
         when "codeship"
           [ENV["CI_BUILD_ID"], nil]
         else
