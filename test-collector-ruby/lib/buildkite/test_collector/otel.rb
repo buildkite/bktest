@@ -8,6 +8,7 @@ module Buildkite::TestCollector
     DEFAULT_ENDPOINT = "https://tests-otlp.buildkite.com/v1/traces"
 
     RESULT_ATTRIBUTE = "test.case.result.status"
+    TAG_ATTRIBUTE_PREFIX = "buildkite.tag."
 
     # OpenTelemetry has no standard value for skipped tests.
     RESULT_STATUSES = {
@@ -114,7 +115,6 @@ module Buildkite::TestCollector
         span = @tracer.start_span(
           ROOT_SPAN_NAME,
           with_parent: OpenTelemetry::Context.empty,
-          attributes: @execution_attributes,
           links: job_span_links,
           kind: :internal,
         )
@@ -141,10 +141,14 @@ module Buildkite::TestCollector
       def finish_test_span(span, test: nil, end_timestamp: nil)
         return unless span
 
+        test_attributes = {}
         begin
           if test
-            test.otel_attributes.each do |key, value|
-              span.set_attribute(key, value) unless value.nil?
+            # The Ruby SDK keeps the earliest attributes when a span reaches
+            # its limit, so record the test itself before run metadata or tags.
+            test_attributes = test.otel_attributes.reject { |_, value| value.nil? }
+            test_attributes.each do |key, value|
+              span.set_attribute(key, value) unless key.start_with?(TAG_ATTRIBUTE_PREFIX)
             end
 
             result = test.otel_result
@@ -169,7 +173,19 @@ module Buildkite::TestCollector
         rescue StandardError => e
           warn "[buildkite-test_collector] Could not describe OpenTelemetry test span: #{e.class}: #{e.message}"
         ensure
-          finish_span(span, end_timestamp)
+          begin
+            execution_attributes = @execution_attributes || {}
+            execution_attributes.each do |key, value|
+              span.set_attribute(key, value) unless key.start_with?(TAG_ATTRIBUTE_PREFIX)
+            end
+            execution_attributes.merge(test_attributes).each do |key, value|
+              span.set_attribute(key, value) if key.start_with?(TAG_ATTRIBUTE_PREFIX)
+            end
+          rescue StandardError => e
+            warn "[buildkite-test_collector] Could not add OpenTelemetry run metadata: #{e.class}: #{e.message}"
+          ensure
+            finish_span(span, end_timestamp)
+          end
         end
 
         span_duration(span)
@@ -394,7 +410,7 @@ module Buildkite::TestCollector
       # strips and turns into upload-level tags.
       def tag_attributes(tags)
         (tags || {})
-          .map { |key, value| ["buildkite.tag.#{key}", value.to_s] }.to_h
+          .map { |key, value| ["#{TAG_ATTRIBUTE_PREFIX}#{key}", value.to_s] }.to_h
       end
 
       # A resource identifies the entities that produced every span from the

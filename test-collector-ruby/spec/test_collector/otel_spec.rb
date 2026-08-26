@@ -129,6 +129,64 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(skipped.ended).to be(true)
   end
 
+  it "prioritizes essential test attributes over optional run metadata and tags" do
+    exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
+    limits = OpenTelemetry::SDK::Trace::SpanLimits.new(attribute_count_limit: 10)
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new(span_limits: limits)
+    provider.add_span_processor(processor)
+    described_class.instance_variable_set(:@tracer, provider.tracer("attribute-priority-test"))
+    described_class.instance_variable_set(
+      :@execution_attributes,
+      {
+        "buildkite.run_key" => "run-123",
+        "buildkite.message" => "optional metadata",
+        "buildkite.tag.configured" => "optional tag",
+      },
+    )
+    test = double(
+      "trace",
+      otel_attributes: {
+        "buildkite.execution.via" => "otlp",
+        "buildkite.test.scope" => "Math",
+        "buildkite.test.name" => "adds numbers",
+        "test.case.name" => "Math adds numbers",
+        "test.suite.name" => "Math",
+        "code.file.path" => "spec/math_spec.rb",
+        "code.line.number" => 12,
+        "buildkite.test.execution.external_id" => "execution-123",
+        "buildkite.tag.execution" => "optional tag",
+      },
+      otel_result: "passed",
+    )
+
+    span, = described_class.start_test_span
+    described_class.finish_test_span(span, test: test)
+    provider.force_flush
+
+    expect(exporter.finished_spans.fetch(0).attributes).to include(
+      "buildkite.execution.via" => "otlp",
+      "buildkite.run_key" => "run-123",
+      "buildkite.test.scope" => "Math",
+      "buildkite.test.name" => "adds numbers",
+      "test.case.name" => "Math adds numbers",
+      "test.suite.name" => "Math",
+      "code.file.path" => "spec/math_spec.rb",
+      "code.line.number" => 12,
+      "buildkite.test.execution.external_id" => "execution-123",
+      "test.case.result.status" => "pass",
+    )
+    expect(exporter.finished_spans.fetch(0).attributes).not_to include(
+      "buildkite.message",
+      "buildkite.tag.configured",
+      "buildkite.tag.execution",
+    )
+  ensure
+    described_class.instance_variable_set(:@tracer, nil)
+    described_class.instance_variable_set(:@execution_attributes, nil)
+    provider&.shutdown
+  end
+
   it "reports how long the finished span says the test took" do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     described_class.instance_variable_set(:@tracer, provider.tracer("duration-test"))
