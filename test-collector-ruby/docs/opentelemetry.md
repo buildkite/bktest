@@ -24,6 +24,12 @@ against the test's execution.
 It is off by default. See the [README](../README.md#opentelemetry-export-experimental)
 for how to turn it on.
 
+Export requires Ruby 3.3 or newer and the `opentelemetry-sdk` and
+`opentelemetry-exporter-otlp` gems. These optional dependencies are not installed
+with `buildkite-test_collector`; add them to your bundle as shown in
+[Choosing instrumentation](#choosing-instrumentation). This requirement applies
+to both `otel_enabled` and `otel_only`.
+
 ## What a trace looks like
 
 Each example gets a `test.execution` span of its own, with the instrumented work

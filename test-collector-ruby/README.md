@@ -106,8 +106,10 @@ Execution roots use a private AlwaysOn provider so a suite's sampling policy
 cannot remove them.
 
 The collector configures a global provider for child spans and installs all
-applicable instrumentation registered when the suite starts. Add the
-OpenTelemetry SDK and OTLP exporter, plus any instrumentation you want to use:
+applicable instrumentation registered when the suite starts. Because export is
+optional and its dependencies require Ruby 3.3+, the collector does not install
+them automatically. Add the OpenTelemetry SDK and OTLP exporter, plus any
+instrumentation you want to use:
 
 ```ruby
 # Gemfile
@@ -173,9 +175,10 @@ gem's whole job is to configure OpenTelemetry so each test gets a suitable span:
   `OpenTelemetry::Trace.current_span.set_attribute(...)` works during a test,
   and any instrumentation joins the test's trace.
 
-`otel_only` is currently RSpec-only and needs Ruby 3.3+. It's an alternative to
-`otel_enabled`; the two are mutually exclusive, and passing both (either value)
-raises `ArgumentError`.
+`otel_only` is currently RSpec-only and has the same Ruby 3.3+ and OpenTelemetry
+gem requirements as `otel_enabled`. It's an alternative to `otel_enabled`; the
+two are mutually exclusive, and passing both (either value) raises
+`ArgumentError`.
 
 ## More information
 
