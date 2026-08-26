@@ -14,8 +14,6 @@
 
 * Drop support for Ruby 2.x. Ruby 3.0 or newer is now required.
 
-**Full Changelog**: https://github.com/buildkite/bktest/compare/test-collector-ruby/v2.14.0...test-collector-ruby/v2.15.0
-
 ## v2.14.0
 
 * Send `location_prefix` in `run_env`
