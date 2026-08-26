@@ -56,7 +56,7 @@ module Buildkite::TestCollector
         !@tracer.nil?
       end
 
-      def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, instrumentations: nil, resource_attributes: {})
+      def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, instrumentations: nil, execution_tags: {})
         if enabled?
           # One process serves one run: the exporters and providers live for
           # the whole process, so run identity is fixed at first configure.
@@ -93,9 +93,11 @@ module Buildkite::TestCollector
         end
         headers = request_headers(run_env, api_token, environment_headers)
 
-        # Run-level detail travels as the resource of the providers we create,
-        # so every exported span carries it without repeating it per span.
-        resource = run_resource(run_env, resource_attributes)
+        # Resources identify the entities that produced the telemetry. Details
+        # about the Test Engine run and test framework describe each execution
+        # instead, so keep them on the test root rather than every child span.
+        resource = provider_resource(run_env)
+        @execution_attributes = execution_attributes(run_env, execution_tags)
 
         @execution_provider = build_execution_provider(endpoint, headers, resource)
         @tracer = @execution_provider.tracer(TRACER_NAME, Buildkite::TestCollector::VERSION)
@@ -112,6 +114,7 @@ module Buildkite::TestCollector
         span = @tracer.start_span(
           ROOT_SPAN_NAME,
           with_parent: OpenTelemetry::Context.empty,
+          attributes: @execution_attributes,
           links: job_span_links,
           kind: :internal,
         )
@@ -222,6 +225,7 @@ module Buildkite::TestCollector
         @exporters = nil
         @api_token = nil
         @authorization_from_environment = nil
+        @execution_attributes = nil
         @run_key = nil
         @tracer = nil
       end
@@ -341,10 +345,8 @@ module Buildkite::TestCollector
         warn "[buildkite-test_collector] Could not exempt the OTLP endpoint from VCR: #{e.class}: #{e.message}"
       end
 
-      # The collector-managed child provider carries the same run resource as
-      # the execution provider, so instrumentation spans and any spans the
-      # suite starts through the global tracer carry the run's identity too.
-      # A suite-owned provider keeps its own resource.
+      # The collector-managed child provider carries the same producer resource
+      # as the execution provider. A suite-owned provider keeps its own resource.
       def configure_child_export(endpoint, headers, instrumentations, resource: nil)
         provider = OpenTelemetry.tracer_provider
         collector_managed = provider.is_a?(OpenTelemetry::Internal::ProxyTracerProvider)
@@ -390,48 +392,62 @@ module Buildkite::TestCollector
 
       # User tags travel under the buildkite.tag. prefix, which the server
       # strips and turns into upload-level tags.
-      def tag_attributes(resource_attributes)
-        (resource_attributes || {})
+      def tag_attributes(tags)
+        (tags || {})
           .map { |key, value| ["buildkite.tag.#{key}", value.to_s] }.to_h
       end
 
-      # Describes the whole run once, on the resource, so every span carries it
-      # without repeating it: which run this is, where it came from, and any
-      # tags the user gave to configure. Buildkite vocabulary is flat
-      # (buildkite.run_key, buildkite.build_id, ...) matching the agent's own
-      # OTel attributes; branch and commit use the OTel vcs.ref.head.*
-      # semantic conventions.
-      def run_resource(run_env, resource_attributes)
+      # A resource identifies the entities that produced every span from the
+      # provider: the suite, CI pipeline run and worker, and checked-out VCS ref.
+      def provider_resource(run_env)
+        pipeline_run_id, pipeline_run_url = if run_env["CI"] == "buildkite"
+          [ENV["BUILDKITE_BUILD_ID"], ENV["BUILDKITE_BUILD_URL"]]
+        elsif %w[github_actions circleci codeship].include?(run_env["CI"])
+          [run_env["key"], run_env["url"]]
+        end
+        worker_id = ENV["BUILDKITE_AGENT_ID"]
+        worker_id = nil if worker_id.nil? || worker_id.strip.empty?
+
         attributes = {
-          "service.name" => ENV["BUILDKITE_TEST_ENGINE_SUITE_SLUG"] || "buildkite-test-collector",
+          "service.name" => ENV["BUILDKITE_TEST_ENGINE_SUITE_SLUG"],
           "service.namespace" => ENV["BUILDKITE_ORGANIZATION_SLUG"],
-          "service.instance.id" => run_env["job_id"],
-          "buildkite.run_key" => run_env["key"],
-          "buildkite.run_url" => run_env["url"],
+          "cicd.pipeline.run.id" => pipeline_run_id,
+          "cicd.pipeline.run.url.full" => pipeline_run_id && pipeline_run_url,
+          "cicd.worker.id" => worker_id,
           "vcs.ref.head.name" => run_env["branch"],
           "vcs.ref.head.revision" => run_env["commit_sha"],
+        }
+        if run_env["branch"]
+          tag = ENV["BUILDKITE_TAG"]
+          attributes["vcs.ref.type"] = tag.nil? || tag.empty? ? "branch" : "tag"
+        end
+
+        OpenTelemetry::SDK::Resources::Resource.default.merge(
+          OpenTelemetry::SDK::Resources::Resource.create(
+            attributes.reject { |_, value| value.nil? }
+          )
+        )
+      end
+
+      # These fields describe each test execution rather than the provider that
+      # emitted its child spans. Configure-level tags apply to every test root;
+      # tag_execution adds the per-test tags later when the result is finalized.
+      def execution_attributes(run_env, execution_tags)
+        attributes = {
+          "buildkite.run_key" => run_env["key"],
           "buildkite.build_number" => run_env["number"],
           "buildkite.job_id" => run_env["job_id"],
           "buildkite.message" => run_env["message"],
-          "buildkite.build_id" => ENV["BUILDKITE_BUILD_ID"],
           "buildkite.step_id" => ENV["BUILDKITE_STEP_ID"],
           "buildkite.collector.name" => run_env["collector"],
           "buildkite.collector.version" => run_env["version"],
           "buildkite.test.framework.name" => Buildkite::TestCollector.test_runner,
         }
-        if run_env["branch"]
-          tag = ENV["BUILDKITE_TAG"]
-          attributes["vcs.ref.head.type"] = tag.nil? || tag.empty? ? "branch" : "tag"
-        end
         if defined?(RSpec::Core::Version::STRING)
           attributes["buildkite.test.framework.version"] = RSpec::Core::Version::STRING
         end
 
-        OpenTelemetry::SDK::Resources::Resource.default.merge(
-          OpenTelemetry::SDK::Resources::Resource.create(
-            attributes.reject { |_, value| value.nil? }.merge(tag_attributes(resource_attributes))
-          )
-        )
+        attributes.reject { |_, value| value.nil? }.merge(tag_attributes(execution_tags))
       end
 
       def shutdown_exports(timeout)

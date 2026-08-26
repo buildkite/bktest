@@ -10,9 +10,10 @@ normal JSON upload and linked to it by trace ID. There is also an OTLP-only
 mode (`otel_only`) that exports the same spans but adds
 `buildkite.execution.via=otlp`. That marker makes the span itself the
 submission: Buildkite synthesizes the execution from it server-side, with
-nothing sent to `/v1/uploads`. In both modes the run's details (run key, branch,
-commit, and any `tags:` you configure) travel as OpenTelemetry resource
-attributes on the spans the collector exports. See the
+nothing sent to `/v1/uploads`. In both modes, resources identify the suite, CI
+run and worker, and VCS ref that produced telemetry. Test Engine run metadata
+and any `tags:` you configure live only on each `test.execution` root, not its
+children. See the
 [README](../README.md#otlp-only-submission-experimental) for how to turn it on,
 and [OTLP-only attributes](#otlp-only-attributes) below for what's sent.
 
@@ -48,9 +49,8 @@ letting you navigate between them without combining every test into one trace.
 
 ## What's on the span
 
-Each `tags:` entry passed to `configure` is attached to the root as a
-`buildkite.tag.<key>` resource attribute. Per-execution tags use the same prefix
-as span attributes.
+Each `tags:` entry passed to `configure` is attached to every test root as a
+`buildkite.tag.<key>` span attribute. Per-execution tags use the same prefix.
 
 | Attribute | Value |
 | --- | --- |
@@ -62,7 +62,7 @@ as span attributes.
 | `code.line.number` | the line, or the call site for a shared example |
 | `test.case.result.status` | `pass`, `fail` or `skipped` |
 | `buildkite.test.execution.external_id` | the ID of the matching Test Engine execution |
-| `buildkite.tag.<key>` | each `tag_execution` tag |
+| `buildkite.tag.<key>` | each `configure` or `tag_execution` tag |
 
 A failed test also sets the span's status to error with the failure summary as
 its description. Each failure is recorded as a semconv `exception` event with
@@ -84,38 +84,43 @@ Two things worth knowing:
 
 Both modes use the same resource and span attributes. With `otel_only`, the
 `buildkite.execution.via=otlp` marker opts the span into execution synthesis.
-Buildkite attributes are flat (`buildkite.run_key`, `buildkite.build_id`, ...),
-matching the agent's own OpenTelemetry attributes; everything else follows
-OpenTelemetry semantic conventions.
+Buildkite-specific execution fields are flat (`buildkite.run_key`,
+`buildkite.job_id`, ...); producer identity follows OpenTelemetry resource
+semantic conventions.
 
-Run-level details travel once, as resource attributes on every span:
+Resources identify entities that apply to every span emitted by their provider:
 
 | Resource attribute | Value | Execution field |
 | --- | --- | --- |
-| `buildkite.run_key` | the run key (required) | run key |
-| `buildkite.run_url` | the build URL | URL |
+| `service.name` | the Test Engine suite slug, when available | — |
+| `service.namespace` | the Buildkite organization slug, when available | — |
+| `cicd.pipeline.run.id` | the CI pipeline run ID | build ID on Buildkite |
+| `cicd.pipeline.run.url.full` | the CI pipeline run URL | URL |
+| `cicd.worker.id` | the Buildkite Agent ID, when available | — |
 | `vcs.ref.head.name` | the branch (or tag) name | branch |
 | `vcs.ref.head.revision` | the commit SHA | commit |
-| `vcs.ref.head.type` | `branch` or `tag` | — |
+| `vcs.ref.type` | `branch` or `tag` | — |
+
+The SDK's default resource also contributes process and `telemetry.sdk.*`
+attributes. `OTEL_RESOURCE_ATTRIBUTES` remains the standard escape hatch for
+additional resource identity. When a suite owns its provider, child spans keep
+that provider's resource rather than the collector's.
+
+Each test root carries the execution itself and the run metadata that its child
+operations do not need:
+
+| Span attribute | Value | Execution field |
+| --- | --- | --- |
+| `buildkite.execution.via` | `otlp` in OTLP-only mode — opts this span in to synthesis | — |
+| `buildkite.run_key` | the Test Engine run key (required) | run key |
 | `buildkite.build_number` | the build number | number |
-| `buildkite.build_id` | the build's UUID | build ID |
 | `buildkite.job_id` | the job's UUID | job ID |
 | `buildkite.step_id` | the step's UUID | step ID |
 | `buildkite.message` | the commit message | message |
 | `buildkite.collector.name` | this gem's name | collector |
 | `buildkite.collector.version` | this gem's version | version |
-| `buildkite.tag.<key>` | each `tags:` entry from `configure` | run tag `<key>` |
-
-The resource also names the suite for any other OpenTelemetry backend looking
-at the same spans: `service.name` (the suite slug), `service.namespace` (the
-organization slug), `service.instance.id` (the job UUID), and
-`buildkite.test.framework.name`/`.version`. Buildkite doesn't use these.
-
-Each test's span carries the execution itself:
-
-| Span attribute | Value | Execution field |
-| --- | --- | --- |
-| `buildkite.execution.via` | `otlp` in OTLP-only mode — opts this span in to synthesis | — |
+| `buildkite.test.framework.name` | `rspec` | — |
+| `buildkite.test.framework.version` | the RSpec version | — |
 | `buildkite.test.scope` | the example group | scope |
 | `buildkite.test.name` | the example's description | name |
 | `test.suite.name` | the example group | — |
@@ -124,7 +129,7 @@ Each test's span carries the execution itself:
 | `code.line.number` | the line number | location |
 | `test.case.result.status` | `pass`, `fail`, `skipped` | result |
 | `buildkite.test.execution.external_id` | the execution's collector-generated ID | external ID |
-| `buildkite.tag.<key>` | each `tag_execution` tag | execution tag `<key>` |
+| `buildkite.tag.<key>` | each `configure` or `tag_execution` tag | execution tag `<key>` |
 
 In OTLP-only mode the server maps the span's failure status and exception events
 back to the execution's failure reason and expanded failure detail.

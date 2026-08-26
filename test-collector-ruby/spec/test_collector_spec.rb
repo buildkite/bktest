@@ -75,7 +75,7 @@ RSpec.describe Buildkite::TestCollector do
         api_token: "MyToken",
         run_env: run_env,
         instrumentations: [],
-        resource_attributes: { "team" => "platform" },
+        execution_tags: { "team" => "platform" },
       )
     end
 
@@ -94,7 +94,7 @@ RSpec.describe Buildkite::TestCollector do
       )
     end
 
-    it "submits results only via OTLP when otel_only is set, with tags as resource attributes" do
+    it "submits results only via OTLP when otel_only is set, with tags on execution roots" do
       run_env = { "key" => "run-key" }
       allow(Buildkite::TestCollector::CI).to receive(:env) { run_env }
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
@@ -122,7 +122,7 @@ RSpec.describe Buildkite::TestCollector do
         run_env: run_env,
         instrumentations: nil,
         # The merged tags, so the automatic worker tag reaches OTLP too.
-        resource_attributes: { "ci.worker.id" => "agent-123", "team" => "platform" },
+        execution_tags: { "ci.worker.id" => "agent-123", "team" => "platform" },
       )
     ensure
       Buildkite::TestCollector.otel_only = false
