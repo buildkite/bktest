@@ -59,17 +59,30 @@ Ruby, Python, and Android publish through the
 The pipeline builds and validates release artifacts without publishing by
 default.
 
-After pushing the exact prefixed tag, an authorized Buildkite maintainer:
+Publishing requires both `build.tag` to contain the exact prefixed tag and
+`RELEASE_EXECUTE=true`. Pushing a tag creates a webhook build with `build.tag`,
+but does not set `RELEASE_EXECUTE`; that build is therefore only a safe
+rehearsal. Conversely, selecting a tag as the branch or commit for a manually
+created build does not populate `build.tag`.
 
-1. creates an execution-enabled build for that tag with
-   `RELEASE_EXECUTE=true`;
+After pushing the exact prefixed tag, an authorized Buildkite maintainer creates
+a new build for the tagged commit and sets both environment variables explicitly:
+
+```text
+BUILDKITE_TAG=<collector-directory>/vX.Y.Z
+RELEASE_EXECUTE=true
+```
+
+The maintainer then:
+
+1. confirms the build targets the tagged commit and shows the expected tag;
 2. checks that the artifact build and version checks pass;
 3. reviews and unblocks the publish step; and
 4. confirms the package appears on the registry.
 
-A webhook-created tag build without `RELEASE_EXECUTE=true` is only a safe
-rehearsal. If the publish confirmation step is absent, stop rather than
-trying to publish around the pipeline: the tag or execution flag is wrong.
+If the publish confirmation step is absent, stop rather than trying to publish
+around the pipeline: `BUILDKITE_TAG`, `RELEASE_EXECUTE`, or the selected commit
+is wrong.
 
 ### Ruby (RubyGems)
 
