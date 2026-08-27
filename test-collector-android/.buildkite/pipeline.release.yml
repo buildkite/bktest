@@ -17,13 +17,16 @@
 # Safety model (see docs/publishing.md in the ctg repo):
 #   - The build step is side-effect-free: version consistency checks and
 #     ./gradlew publishToMavenLocal with signing disabled. It runs on every
-#     rehearsal, so rehearsals exercise the release code.
+#     rehearsal, so rehearsals exercise the release code. It never sees
+#     RELEASE_PUBLISH (set only on the publish step below), so it stops
+#     before the Central publish even on tag builds.
 #   - The publish steps read the four Buildkite secrets (Open Source Deploy
 #     cluster, access-policied to pipeline_slug bktest-release — see the
 #     credential cut-over section of ctg docs/publishing.md).
-#   - The publish steps exist only on an exact test-collector-android/vX.Y.Z
-#     tag, behind a block step; the release script independently re-checks
-#     the tag before publishing.
+#   - The publish step exists only on an exact test-collector-android/vX.Y.Z
+#     tag, behind a block step; it sets RELEASE_PUBLISH=true in its own
+#     environment, and the release script independently re-checks the tag
+#     and RELEASE_PUBLISH before publishing.
 
 agents:
   queue: hosted
@@ -48,6 +51,10 @@ steps:
     depends_on:
       - android-build
       - android-confirm
+    env:
+      # Step-local publish signal: distinguishes this credentialed step from
+      # the rehearsal build step, which runs the same script.
+      RELEASE_PUBLISH: "true"
     command: test-collector-android/.buildkite/steps/release
     plugins:
       - docker#v3.7.0:
@@ -56,3 +63,4 @@ steps:
           mount-buildkite-agent: true
           environment:
             - BUILDKITE_TAG
+            - RELEASE_PUBLISH

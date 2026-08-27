@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Monorepo release script for test-collector-python: build the package,
-# check it with twine, check tag/version consistency, then publish on a
-# release tag. Everything before the upload runs in rehearsals too, so
-# dry-runs exercise this code.
+# check it with twine, check tag/version consistency, then publish — but
+# only in the publish step, which sets RELEASE_PUBLISH=true in its own
+# container (see pipeline.release.yml); the pre-confirmation build step runs
+# this same script as a side-effect-free rehearsal, even on tag builds.
+# Everything before the upload runs in rehearsals too, so dry-runs exercise
+# this code.
 #
 # Injected by `ctg gather` from the ctg repo's overlay/ directory during the
 # dry-run era; post-cutover this file is maintained here, in the monorepo.
@@ -43,13 +46,17 @@ echo "--- Checking package"
 # 2.5 vs twine 6.1.0, which failed bktest-release build #8.
 uvx twine check dist/*
 
-if [ -z "${BUILDKITE_TAG:-}" ]; then
+if [ "${RELEASE_PUBLISH:-}" != "true" ]; then
   echo "--- Rehearsal only"
-  echo "No release tag: stopping before 'twine upload dist/*'."
+  echo "RELEASE_PUBLISH is not 'true': stopping before 'twine upload dist/*'."
   exit 0
 fi
 
 echo "--- Publishing to PyPI"
+if [ -z "${BUILDKITE_TAG:-}" ]; then
+  echo "RELEASE_PUBLISH=true without a ${PROJECT}/vX.Y.Z tag; refusing" >&2
+  exit 1
+fi
 if [ -z "${TWINE_PASSWORD:-}" ]; then
   echo "TWINE_PASSWORD not set (AWS OIDC/SSM plugins missing or failed)" >&2
   exit 1

@@ -12,14 +12,16 @@
 # Safety model (see docs/publishing.md in the ctg repo):
 #   - The build step is side-effect-free: uv build + twine check + version
 #     consistency. It runs on every rehearsal, so rehearsals exercise the
-#     release code.
+#     release code. It never sees RELEASE_PUBLISH (set only on the publish
+#     step below), so it stops before twine upload even on tag builds.
 #   - The publish steps assume the IAM role (aws-buildkite-dev
 #     oidc-buildkite-bktest-release.tf) and read the PyPI token from SSM;
 #     the role trusts this pipeline on test-collector-python/v* tags only
 #     (see the credential cut-over section of ctg docs/publishing.md).
-#   - The publish steps exist only on an exact test-collector-python/vX.Y.Z
-#     tag, behind a block step; the release script independently re-checks
-#     the tag before twine upload.
+#   - The publish step exists only on an exact test-collector-python/vX.Y.Z
+#     tag, behind a block step; it sets RELEASE_PUBLISH=true in its own
+#     environment, and the release script independently re-checks the tag
+#     and RELEASE_PUBLISH before twine upload.
 
 agents:
   queue: hosted
@@ -50,6 +52,9 @@ steps:
       # "The username to authenticate to the repository (package index) as"
       # — a no-op on PyPI with a token, set to suppress the prompt.
       TWINE_USERNAME: __token__
+      # Step-local publish signal: distinguishes this credentialed step from
+      # the rehearsal build step, which runs the same script.
+      RELEASE_PUBLISH: "true"
     command: test-collector-python/.buildkite/steps/release
     plugins:
       - aws-assume-role-with-web-identity#v1.2.0:
@@ -68,3 +73,4 @@ steps:
             - TWINE_USERNAME
             - TWINE_PASSWORD
             - BUILDKITE_TAG
+            - RELEASE_PUBLISH

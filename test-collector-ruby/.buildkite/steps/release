@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Monorepo release script for test-collector-ruby: build the gem, check
-# tag/version consistency and RubyGems state, then publish on a release tag.
+# tag/version consistency and RubyGems state, then publish — but only in
+# the publish step, which sets RELEASE_PUBLISH=true in its own container
+# (see pipeline.release.yml); the pre-confirmation build step runs this
+# same script as a side-effect-free rehearsal, even on tag builds.
 # Everything before the push runs in rehearsals too, so dry-runs exercise
 # this code.
 #
@@ -49,13 +52,17 @@ else
   echo "${GEM_NAME} ${VERSION} is not on rubygems.org (HTTP ${STATUS})"
 fi
 
-if [ -z "${BUILDKITE_TAG:-}" ]; then
+if [ "${RELEASE_PUBLISH:-}" != "true" ]; then
   echo "--- Rehearsal only"
-  echo "No release tag: stopping before 'gem push ${GEM_FILENAME}'."
+  echo "RELEASE_PUBLISH is not 'true': stopping before 'gem push ${GEM_FILENAME}'."
   exit 0
 fi
 
 echo "--- Publishing ${GEM_FILENAME} to RubyGems"
+if [ -z "${BUILDKITE_TAG:-}" ]; then
+  echo "RELEASE_PUBLISH=true without a ${PROJECT}/vX.Y.Z tag; refusing" >&2
+  exit 1
+fi
 if [ "${ALREADY_PUBLISHED}" = "true" ]; then
   echo "version ${VERSION} already published; refusing" >&2
   exit 1

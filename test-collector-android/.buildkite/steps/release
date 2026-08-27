@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Monorepo release script for test-collector-android: check version
 # consistency, strip -SNAPSHOT, build and publish the SDK artifacts to the
-# local Maven repository — and publish to Maven Central on a release tag.
-# Everything before the Central publish runs in rehearsals too, so dry-runs
-# exercise this code.
+# local Maven repository — and publish to Maven Central only in the publish
+# step, which sets RELEASE_PUBLISH=true in its own container (see
+# pipeline.release.yml); the pre-confirmation build step runs this same
+# script as a side-effect-free rehearsal, even on tag builds. Everything
+# before the Central publish runs in rehearsals too, so dry-runs exercise
+# this code.
 #
 # Injected by `ctg gather` from the ctg repo's overlay/ directory during the
 # dry-run era; post-cutover this file is maintained here, in the monorepo.
@@ -49,16 +52,20 @@ sed -i 's/-SNAPSHOT//g' gradle.properties
 echo "--- Cleaning project"
 ./gradlew clean --no-daemon
 
-if [ -z "${BUILDKITE_TAG:-}" ]; then
+if [ "${RELEASE_PUBLISH:-}" != "true" ]; then
   echo "--- Rehearsal only: publishing to the local Maven repository"
   # Exercises artifact assembly and POM generation without credentials;
   # signing is disabled because no GPG key is available in rehearsals.
   ./gradlew publishToMavenLocal -PRELEASE_SIGNING_ENABLED=false --no-daemon --no-parallel
-  echo "No release tag: stopping before './gradlew publishAndReleaseToMavenCentral'."
+  echo "RELEASE_PUBLISH is not 'true': stopping before './gradlew publishAndReleaseToMavenCentral'."
   exit 0
 fi
 
 echo "--- Publishing ${VERSION} to Maven Central"
+if [ -z "${BUILDKITE_TAG:-}" ]; then
+  echo "RELEASE_PUBLISH=true without a ${PROJECT}/vX.Y.Z tag; refusing" >&2
+  exit 1
+fi
 ORG_GRADLE_PROJECT_mavenCentralUsername="$(buildkite-agent secret get MAVEN_CENTRAL_USERNAME)"
 ORG_GRADLE_PROJECT_mavenCentralPassword="$(buildkite-agent secret get MAVEN_CENTRAL_PASSWORD)"
 ORG_GRADLE_PROJECT_signingInMemoryKey="$(buildkite-agent secret get GPG_KEY)"
