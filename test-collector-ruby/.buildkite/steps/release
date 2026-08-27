@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Monorepo release script for test-collector-ruby: build the gem, check
-# tag/version consistency and RubyGems state, then publish — but the publish
-# side effect only happens when RELEASE_EXECUTE=true (set explicitly on the
-# release build; see pipeline.release.yml). Everything before the push runs
-# in rehearsals too, so dry-runs exercise this code.
+# tag/version consistency and RubyGems state, then publish on a release tag.
+# Everything before the push runs in rehearsals too, so dry-runs exercise
+# this code.
 #
 # Injected by `ctg gather` from the ctg repo's overlay/ directory during the
 # dry-run era; post-cutover this file is maintained here, in the monorepo.
@@ -50,17 +49,13 @@ else
   echo "${GEM_NAME} ${VERSION} is not on rubygems.org (HTTP ${STATUS})"
 fi
 
-if [ "${RELEASE_EXECUTE:-}" != "true" ]; then
+if [ -z "${BUILDKITE_TAG:-}" ]; then
   echo "--- Rehearsal only"
-  echo "RELEASE_EXECUTE is not 'true': stopping before 'gem push ${GEM_FILENAME}'."
+  echo "No release tag: stopping before 'gem push ${GEM_FILENAME}'."
   exit 0
 fi
 
 echo "--- Publishing ${GEM_FILENAME} to RubyGems"
-if [ -z "${BUILDKITE_TAG:-}" ]; then
-  echo "RELEASE_EXECUTE=true without a ${PROJECT}/vX.Y.Z tag; refusing" >&2
-  exit 1
-fi
 if [ "${ALREADY_PUBLISHED}" = "true" ]; then
   echo "version ${VERSION} already published; refusing" >&2
   exit 1

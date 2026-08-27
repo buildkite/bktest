@@ -17,14 +17,13 @@
 # Safety model (see docs/publishing.md in the ctg repo):
 #   - The build step is side-effect-free: version consistency checks and
 #     ./gradlew publishToMavenLocal with signing disabled. It runs on every
-#     rehearsal, so rehearsals exercise the release code. It never sees
-#     RELEASE_EXECUTE (deliberately not propagated into its container).
+#     rehearsal, so rehearsals exercise the release code.
 #   - The publish steps read the four Buildkite secrets (Open Source Deploy
 #     cluster, access-policied to pipeline_slug bktest-release — see the
 #     credential cut-over section of ctg docs/publishing.md).
 #   - The publish steps exist only on an exact test-collector-android/vX.Y.Z
-#     tag AND RELEASE_EXECUTE=true set on the build, behind a block step;
-#     the release script independently re-checks both before publishing.
+#     tag, behind a block step; the release script independently re-checks
+#     the tag before publishing.
 
 agents:
   queue: hosted
@@ -42,10 +41,10 @@ steps:
 
   - block: ":rocket: Publish test-collector-android to Maven Central?"
     key: android-confirm
-    if: build.tag =~ /^test-collector-android\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+    if: build.tag =~ /^test-collector-android\/v[0-9]+\.[0-9]+\.[0-9]+$/
 
   - label: ":android: test-collector-android: publish to Maven Central"
-    if: build.tag =~ /^test-collector-android\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+    if: build.tag =~ /^test-collector-android\/v[0-9]+\.[0-9]+\.[0-9]+$/
     depends_on:
       - android-build
       - android-confirm
@@ -57,4 +56,3 @@ steps:
           mount-buildkite-agent: true
           environment:
             - BUILDKITE_TAG
-            - RELEASE_EXECUTE

@@ -11,14 +11,13 @@
 # Safety model (see docs/publishing.md in the ctg repo):
 #   - The build step is side-effect-free: it builds the gem, checks
 #     tag/version consistency, and queries RubyGems read-only. It runs on
-#     every rehearsal, so rehearsals exercise the release code. It never sees
-#     RELEASE_EXECUTE (deliberately not propagated into its container).
+#     every rehearsal, so rehearsals exercise the release code.
 #   - The publish steps mint a push token via the rubygems.org OIDC API key
 #     role, whose access policy trusts this pipeline (see the credential
 #     cut-over section of ctg docs/publishing.md).
 #   - The publish steps exist only on an exact test-collector-ruby/vX.Y.Z
-#     tag AND RELEASE_EXECUTE=true set on the build, behind a block step;
-#     the release script independently re-checks both before `gem push`.
+#     tag, behind a block step; the release script independently re-checks
+#     the tag before `gem push`.
 
 agents:
   queue: hosted
@@ -35,10 +34,10 @@ steps:
 
   - block: ":rocket: Publish test-collector-ruby to RubyGems?"
     key: ruby-confirm
-    if: build.tag =~ /^test-collector-ruby\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+    if: build.tag =~ /^test-collector-ruby\/v[0-9]+\.[0-9]+\.[0-9]+$/
 
   - label: ":rubygems: test-collector-ruby: publish to RubyGems"
-    if: build.tag =~ /^test-collector-ruby\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+    if: build.tag =~ /^test-collector-ruby\/v[0-9]+\.[0-9]+\.[0-9]+$/
     depends_on:
       - ruby-build
       - ruby-confirm
@@ -51,4 +50,3 @@ steps:
           environment:
             - GEM_HOST_API_KEY
             - BUILDKITE_TAG
-            - RELEASE_EXECUTE

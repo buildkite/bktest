@@ -12,8 +12,8 @@
 # (<dir>/.buildkite/pipeline.release.yml). Two steps each: a rehearsal
 # upload on ordinary (untagged) builds when the project changes — the
 # release pipelines' side-effect steps only exist on an exact
-# <project>/vX.Y.Z tag with RELEASE_EXECUTE=true, so rehearsals are
-# side-effect-free — and a release upload on that project's tags.
+# <project>/vX.Y.Z tag, so rehearsals are side-effect-free — and a release
+# upload on that project's tags.
 #
 # On dry-run-* branches there is no merge-base with main, so the agent
 # disables if_changed and uploads every release pipeline — rehearsing all
