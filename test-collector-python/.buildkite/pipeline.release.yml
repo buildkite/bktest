@@ -12,15 +12,16 @@
 # Safety model (see docs/publishing.md in the ctg repo):
 #   - The build step is side-effect-free: uv build + twine check + version
 #     consistency. It runs on every rehearsal, so rehearsals exercise the
-#     release code. It never sees RELEASE_EXECUTE (deliberately not
-#     propagated into its container).
+#     release code. It never sees RELEASE_PUBLISH (set only on the publish
+#     step below), so it stops before twine upload even on tag builds.
 #   - The publish steps assume the IAM role (aws-buildkite-dev
 #     oidc-buildkite-bktest-release.tf) and read the PyPI token from SSM;
 #     the role trusts this pipeline on test-collector-python/v* tags only
 #     (see the credential cut-over section of ctg docs/publishing.md).
-#   - The publish steps exist only on an exact test-collector-python/vX.Y.Z
-#     tag AND RELEASE_EXECUTE=true set on the build, behind a block step;
-#     the release script independently re-checks both before twine upload.
+#   - The publish step exists only on an exact test-collector-python/vX.Y.Z
+#     tag, behind a block step; it sets RELEASE_PUBLISH=true in its own
+#     environment, and the release script independently re-checks the tag
+#     and RELEASE_PUBLISH before twine upload.
 
 agents:
   queue: hosted
@@ -40,10 +41,10 @@ steps:
 
   - block: ":rocket: Publish test-collector-python to PyPI?"
     key: python-confirm
-    if: build.tag =~ /^test-collector-python\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+    if: build.tag =~ /^test-collector-python\/v[0-9]+\.[0-9]+\.[0-9]+$/
 
   - label: ":pypi: test-collector-python: publish to PyPI"
-    if: build.tag =~ /^test-collector-python\/v[0-9]+\.[0-9]+\.[0-9]+$/ && build.env("RELEASE_EXECUTE") == "true"
+    if: build.tag =~ /^test-collector-python\/v[0-9]+\.[0-9]+\.[0-9]+$/
     depends_on:
       - python-build
       - python-confirm
@@ -51,6 +52,9 @@ steps:
       # "The username to authenticate to the repository (package index) as"
       # — a no-op on PyPI with a token, set to suppress the prompt.
       TWINE_USERNAME: __token__
+      # Step-local publish signal: distinguishes this credentialed step from
+      # the rehearsal build step, which runs the same script.
+      RELEASE_PUBLISH: "true"
     command: test-collector-python/.buildkite/steps/release
     plugins:
       - aws-assume-role-with-web-identity#v1.2.0:
@@ -69,4 +73,4 @@ steps:
             - TWINE_USERNAME
             - TWINE_PASSWORD
             - BUILDKITE_TAG
-            - RELEASE_EXECUTE
+            - RELEASE_PUBLISH
