@@ -110,8 +110,9 @@ tags, so the release pipeline mirrors Swift releases to the standalone
 [`buildkite/test-collector-swift`](https://github.com/buildkite/test-collector-swift)
 repository that existing consumers already use.
 
-Swift supports stable `test-collector-swift/vX.Y.Z` tags and beta tags such as
-`test-collector-swift/v2.0.0-beta.1`. It has no version file to update. Use the
+Swift supports stable `test-collector-swift/vX.Y.Z` tags and numbered beta or
+release-candidate tags such as `test-collector-swift/v2.0.0-beta.1` and
+`test-collector-swift/v2.0.0-rc.1`. It has no version file to update. Use the
 automated process above. The pipeline extracts `test-collector-swift/` from the
 tagged bktest history, checks that it extends the existing release mirror, and
 pushes the corresponding plain version tag. It never updates the standalone
