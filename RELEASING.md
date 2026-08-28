@@ -17,8 +17,9 @@ Engine maintainer to complete the release.
    build before merging.
 2. Merge the release pull request to `main`.
 3. An authorized maintainer tags the merge commit using
-   `<collector-directory>/vX.Y.Z`. Tags are scoped because all collectors
-   share this repository; do not create an unprefixed `vX.Y.Z` tag.
+   `<collector-directory>/vX.Y.Z`, or a collector-supported prerelease form
+   described below. Tags are scoped because all collectors share this
+   repository; do not create an unprefixed release tag.
 
    ```sh
    git tag test-collector-python/v1.10.0 <release-merge-sha>
@@ -109,11 +110,12 @@ tags, so the release pipeline mirrors Swift releases to the standalone
 [`buildkite/test-collector-swift`](https://github.com/buildkite/test-collector-swift)
 repository that existing consumers already use.
 
-Swift has no version file to update. Use a
-`test-collector-swift/vX.Y.Z` tag and the automated process above. The
-pipeline extracts `test-collector-swift/` from the tagged bktest history,
-checks that it extends the existing release mirror, and pushes the
-corresponding plain `vX.Y.Z` tag. It never updates the standalone
+Swift supports stable `test-collector-swift/vX.Y.Z` tags and numbered beta or
+release-candidate tags such as `test-collector-swift/v2.0.0-beta.1` and
+`test-collector-swift/v2.0.0-rc.1`. It has no version file to update. Use the
+automated process above. The pipeline extracts `test-collector-swift/` from the
+tagged bktest history, checks that it extends the existing release mirror, and
+pushes the corresponding plain version tag. It never updates the standalone
 repository's default branch.
 
 Do not create an unprefixed tag in bktest or push a release tag directly to
