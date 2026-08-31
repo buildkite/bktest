@@ -447,6 +447,7 @@ module Buildkite::TestCollector
           "cicd.pipeline.run.id" => pipeline_run_id,
           "cicd.pipeline.run.url.full" => pipeline_run_id && pipeline_run_url,
           "cicd.worker.id" => worker_id,
+          "process.runtime.version" => run_env["language_version"],
           "vcs.ref.head.name" => run_env["branch"],
           "vcs.ref.head.revision" => run_env["commit_sha"],
         }
@@ -475,6 +476,7 @@ module Buildkite::TestCollector
           "buildkite.step_id" => ENV["BUILDKITE_STEP_ID"],
           "buildkite.collector.name" => run_env["collector"],
           "buildkite.collector.version" => run_env["version"],
+          "buildkite.location_prefix" => run_env["location_prefix"],
           "buildkite.test.framework.name" => Buildkite::TestCollector.test_runner,
         }
         if run_env["url"] && run_env["url"] != pipeline_run_url

@@ -6,6 +6,9 @@
   while moving Test Engine run metadata, framework details, and configured tags
   to each `test.execution` root. Child spans no longer carry execution-only
   metadata as duplicated resource attributes.
+* Send the Ruby version and configured location prefix with OpenTelemetry test
+  executions so OTLP-only uploads retain their classic upload tags and selector
+  paths.
 
 ## v2.15.0
 

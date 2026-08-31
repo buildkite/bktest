@@ -1154,6 +1154,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
           "message" => "Test resource boundaries",
           "collector" => "ruby-buildkite-test_collector",
           "version" => Buildkite::TestCollector::VERSION,
+          "language_version" => "3.4.1",
+          "location_prefix" => "services/payments",
         },
         execution_tags: { "team" => "platform", :speed => :fast },
       )
@@ -1177,6 +1179,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         "cicd.pipeline.run.id" => "build-123",
         "cicd.pipeline.run.url.full" => "https://buildkite.example/acme/payments/builds/123",
         "cicd.worker.id" => "agent-123",
+        "process.runtime.version" => "3.4.1",
         "vcs.ref.head.name" => "main",
         "vcs.ref.head.revision" => "abc123",
         "vcs.ref.type" => "branch",
@@ -1191,6 +1194,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         "buildkite.step_id",
         "buildkite.collector.name",
         "buildkite.collector.version",
+        "buildkite.location_prefix",
         "buildkite.test.framework.name",
         "buildkite.test.framework.version",
         "buildkite.tag.team",
@@ -1203,6 +1207,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         "buildkite.step_id" => "step-123",
         "buildkite.collector.name" => "ruby-buildkite-test_collector",
         "buildkite.collector.version" => Buildkite::TestCollector::VERSION,
+        "buildkite.location_prefix" => "services/payments",
         "buildkite.test.framework.name" => "rspec",
         "buildkite.tag.team" => "platform",
         "buildkite.tag.speed" => "fast",
@@ -1212,6 +1217,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       expect(child.attributes).not_to include(
         "buildkite.run_key",
         "buildkite.job_id",
+        "buildkite.location_prefix",
         "buildkite.test.framework.name",
         "buildkite.tag.team",
       )
