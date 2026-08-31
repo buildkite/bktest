@@ -97,11 +97,12 @@ Resources identify entities that apply to every span emitted by their provider:
 | `cicd.pipeline.run.id` | the CI pipeline run ID | build ID on Buildkite |
 | `cicd.pipeline.run.url.full` | the CI pipeline run URL | URL |
 | `cicd.worker.id` | the Buildkite Agent ID, when available | — |
+| `process.runtime.version` | the Ruby version | language version |
 | `vcs.ref.head.name` | the branch (or tag) name | branch |
 | `vcs.ref.head.revision` | the commit SHA | commit |
 | `vcs.ref.type` | `branch` or `tag` | — |
 
-The SDK's default resource also contributes process and `telemetry.sdk.*`
+The SDK's default resource also contributes other process and `telemetry.sdk.*`
 attributes. `OTEL_RESOURCE_ATTRIBUTES` remains the standard escape hatch for
 additional resource identity. When a suite owns its provider, child spans keep
 that provider's resource rather than the collector's.
@@ -120,6 +121,7 @@ operations do not need:
 | `buildkite.message` | the commit message | message |
 | `buildkite.collector.name` | this gem's name | collector |
 | `buildkite.collector.version` | this gem's version | version |
+| `buildkite.location_prefix` | the raw prefix prepended to test file paths, when configured | location prefix |
 | `buildkite.test.framework.name` | `rspec` | — |
 | `buildkite.test.framework.version` | the RSpec version | — |
 | `buildkite.test.scope` | the example group | scope |
