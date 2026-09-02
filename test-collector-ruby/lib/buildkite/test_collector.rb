@@ -41,24 +41,13 @@ module Buildkite
       attr_accessor :test_runner
       attr_accessor :env
       attr_accessor :tags
-      attr_accessor :otel_only
+      attr_accessor :otel_enabled
       attr_accessor :batch_size
       attr_accessor :trace_min_duration
       attr_accessor :span_filters
     end
 
-    def self.configure(hook:, token: nil, url: nil, tracing_enabled: true, artifact_path: nil, location_prefix: nil, env: {}, tags: {}, otel_enabled: nil, otel_instrumentations: nil, otel_only: false)
-      if otel_only && hook.to_sym != :rspec
-        raise ArgumentError.new("otel_only is currently only supported with the rspec hook")
-      end
-
-      # They name one choice of upload mode, not two independent switches, so
-      # any explicit otel_enabled (even false) contradicts otel_only. Its nil
-      # default keeps unspecified distinct from an explicit value.
-      if otel_only && !otel_enabled.nil?
-        raise ArgumentError.new("otel_enabled and otel_only are mutually exclusive; pass at most one")
-      end
-
+    def self.configure(hook:, token: nil, url: nil, tracing_enabled: true, artifact_path: nil, location_prefix: nil, env: {}, tags: {}, otel_enabled: false, otel_instrumentations: nil)
       self.api_token = (token || ENV["BUILDKITE_ANALYTICS_TOKEN"])&.strip
       self.url = url || ENV["BUILDKITE_ANALYTICS_ENDPOINT"] || DEFAULT_URL
       self.tracing_enabled = tracing_enabled
@@ -67,7 +56,7 @@ module Buildkite
       self.test_runner = hook.to_s
       self.env = env
       self.tags = worker_id_tag.merge(tags)
-      self.otel_only = otel_only
+      self.otel_enabled = otel_enabled && test_runner == "rspec"
       self.batch_size = ENV.fetch("BUILDKITE_ANALYTICS_UPLOAD_BATCH_SIZE") { DEFAULT_UPLOAD_BATCH_SIZE }.to_i
 
       trace_min_ms_string = ENV["BUILDKITE_ANALYTICS_TRACE_MIN_MS"]
@@ -81,10 +70,8 @@ module Buildkite
       end
 
       # Defer OTel setup until RSpec's before(:suite), after application and support files have loaded.
-      # otel_only already guarantees the rspec hook (checked above), so both
-      # modes use exactly the same OpenTelemetry setup.
       @otel_options = nil
-      if otel_only || (otel_enabled && test_runner == "rspec")
+      if otel_enabled?
         @otel_options = {
           # Undocumented, for development purposes.
           endpoint: ENV["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] || Buildkite::TestCollector::OTel::DEFAULT_ENDPOINT,
@@ -98,7 +85,7 @@ module Buildkite
         }
       end
       self.hook_into(hook)
-      enable_tracing! if test_runner == "rspec" && !otel_only?
+      enable_tracing! if test_runner == "rspec" && !otel_enabled?
     end
 
     def self.start_otel
@@ -107,18 +94,17 @@ module Buildkite
       return unless options
 
       Buildkite::TestCollector::OTel.configure!(**options)
-      warn_otel_only_disabled if otel_only? && !Buildkite::TestCollector::OTel.enabled?
+      warn_otel_disabled unless Buildkite::TestCollector::OTel.enabled?
     end
 
-    def self.otel_only?
-      !!otel_only
+    def self.otel_enabled?
+      !!otel_enabled
     end
 
-    # In otel_only mode OTLP is the only upload method, so if OpenTelemetry
-    # could not be set up (see the warning OTel.configure! just printed) there
-    # is nothing to fall back to: the suite still runs, but no results are
+    # OTLP is the only upload method when OpenTelemetry is enabled, so if setup
+    # fails there is no JSON fallback. The suite still runs, but no results are
     # uploaded at all. That deserves more than one easily-missed line.
-    def self.warn_otel_only_disabled
+    def self.warn_otel_disabled
       # Buildkite log output renders ANSI colour even though it isn't a TTY.
       red, reset = if $stderr.tty? || ENV["BUILDKITE"]
         ["\e[31;1m", "\e[0m"]
@@ -132,7 +118,7 @@ module Buildkite
         ##                                                        ##
         ##  buildkite-test_collector: NO TEST RESULTS UPLOADED!   ##
         ##                                                        ##
-        ##  otel_only is set, but OpenTelemetry could not be      ##
+        ##  otel_enabled is set, but OpenTelemetry could not be   ##
         ##  configured (see the warning above). This mode has no  ##
         ##  JSON fallback, so this run will upload NO results to  ##
         ##  Buildkite Test Engine.                                ##
@@ -162,10 +148,10 @@ module Buildkite
     private_class_method :worker_id_tag
 
     def self.annotate(content)
-      # Keep the OpenTelemetry span identical in both export modes. The
-      # standard mode additionally records the annotation in its JSON trace.
-      Buildkite::TestCollector::OTel.annotate(content)
-      return if otel_only?
+      if otel_enabled?
+        Buildkite::TestCollector::OTel.annotate(content)
+        return
+      end
 
       tracer = Buildkite::TestCollector::Uploader.tracer
       tracer&.enter("annotation", **{ content: content })

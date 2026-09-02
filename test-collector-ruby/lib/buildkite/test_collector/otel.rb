@@ -111,7 +111,7 @@ module Buildkite::TestCollector
       end
 
       def start_test_span(test: nil)
-        return [nil, nil] unless enabled?
+        return unless enabled?
 
         attributes = {}
         if test
@@ -132,17 +132,16 @@ module Buildkite::TestCollector
           end
         end
 
-        span = @tracer.start_span(
+        @tracer.start_span(
           ROOT_SPAN_NAME,
           with_parent: OpenTelemetry::Context.empty,
           attributes: attributes,
           links: job_span_links,
           kind: :internal,
         )
-        [span, trace_id(span)]
       rescue StandardError => e
         warn "[buildkite-test_collector] Could not start OpenTelemetry test span: #{e.class}: #{e.message}"
-        [nil, nil]
+        nil
       end
 
       def with_test_span(span)
@@ -208,8 +207,6 @@ module Buildkite::TestCollector
             finish_span(span, end_timestamp)
           end
         end
-
-        span_duration(span)
       end
 
       # Records a point-in-time annotation as an event on whichever span is
@@ -559,25 +556,6 @@ module Buildkite::TestCollector
         (end_timestamp.to_r * 1_000_000_000).to_i < span.start_timestamp
       rescue StandardError
         false
-      end
-
-      def span_duration(span)
-        return unless span.respond_to?(:to_span_data)
-
-        data = span.to_span_data
-        return unless data.start_timestamp && data.end_timestamp
-
-        (data.end_timestamp - data.start_timestamp) / 1_000_000_000.0
-      rescue StandardError => e
-        warn "[buildkite-test_collector] Could not read the OpenTelemetry test span's duration: #{e.class}: #{e.message}"
-        nil
-      end
-
-      def trace_id(span)
-        context = span.context
-        return unless context.valid?
-
-        context.hex_trace_id
       end
 
       # Link to the Agent job while keeping each execution a trace root.

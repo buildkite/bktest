@@ -7,7 +7,7 @@ module Buildkite::TestCollector::RSpecPlugin
     attr_reader :output
 
     def initialize(output)
-      unless Buildkite::TestCollector.otel_only?
+      unless Buildkite::TestCollector.otel_enabled?
         Buildkite::TestCollector.session = Buildkite::TestCollector::Session.new
       end
       @output = output
@@ -29,18 +29,18 @@ module Buildkite::TestCollector::RSpecPlugin
 
         finish_otel_span(trace)
 
-        unless Buildkite::TestCollector.otel_only?
+        unless Buildkite::TestCollector.otel_enabled?
           Buildkite::TestCollector.session.add_example_to_send_queue(example.id)
         end
       end
     ensure
-      if Buildkite::TestCollector.otel_only?
+      if Buildkite::TestCollector.otel_enabled?
         Buildkite::TestCollector.uploader.traces.delete(example&.id)
       end
     end
 
     def dump_summary(_notification)
-      return if Buildkite::TestCollector.otel_only?
+      return if Buildkite::TestCollector.otel_enabled?
 
       Buildkite::TestCollector.session.send_remaining_data
       Buildkite::TestCollector.session.close
@@ -55,19 +55,12 @@ module Buildkite::TestCollector::RSpecPlugin
     def finish_otel_span(trace)
       return unless trace.otel_span
 
-      span_duration = Buildkite::TestCollector::OTel.finish_test_span(
+      Buildkite::TestCollector::OTel.finish_test_span(
         trace.otel_span,
         test: trace,
         end_timestamp: trace.otel_end_timestamp,
       )
       trace.otel_span = nil
-
-      # Mirror the span's timing onto the JSON history so the two never
-      # disagree; skip if a clock step made the duration negative.
-      if span_duration && span_duration >= 0 && trace.history[:start_at]
-        trace.history[:duration] = span_duration
-        trace.history[:end_at] = trace.history[:start_at] + span_duration
-      end
     rescue StandardError => e
       warn "[buildkite-test_collector] Could not finish the OpenTelemetry test span: #{e.class}: #{e.message}"
     end

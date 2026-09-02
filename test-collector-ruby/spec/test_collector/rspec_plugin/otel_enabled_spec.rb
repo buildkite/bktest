@@ -22,8 +22,8 @@ RSpec.describe "RSpec OTLP-only submission" do
   end
 
   around do |test|
-    original_otel_only = Buildkite::TestCollector.otel_only
-    Buildkite::TestCollector.otel_only = true
+    original_otel_enabled = Buildkite::TestCollector.otel_enabled
+    Buildkite::TestCollector.otel_enabled = true
 
     @exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     @provider = OpenTelemetry::SDK::Trace::TracerProvider.new
@@ -31,12 +31,12 @@ RSpec.describe "RSpec OTLP-only submission" do
       OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(@exporter)
     )
     Buildkite::TestCollector::OTel.instance_variable_set(
-      :@tracer, @provider.tracer("otel-only-test")
+      :@tracer, @provider.tracer("otel-enabled-test")
     )
 
     test.run
   ensure
-    Buildkite::TestCollector.otel_only = original_otel_only
+    Buildkite::TestCollector.otel_enabled = original_otel_enabled
     Buildkite::TestCollector::OTel.instance_variable_set(:@tracer, nil)
     @provider&.shutdown
   end
@@ -62,7 +62,7 @@ RSpec.describe "RSpec OTLP-only submission" do
       "test.case.name" => "OTLP-only group does something",
       "test.case.result.status" => "pass",
     )
-    expect(span.attributes.fetch("code.file.path")).to end_with("otel_only_spec.rb")
+    expect(span.attributes.fetch("code.file.path")).to end_with("otel_enabled_spec.rb")
     expect(span.attributes.fetch("code.line.number")).to be_an(Integer)
     expect(span.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
 
@@ -207,6 +207,23 @@ RSpec.describe "RSpec OTLP-only submission" do
 
     expect(span).not_to be_nil
     expect(span.attributes).to include("test.case.result.status" => "pass")
+  end
+
+  it "uses only the legacy JSON path when OpenTelemetry is disabled" do
+    original_session = Buildkite::TestCollector.session
+    session = spy("legacy session")
+    allow(Buildkite::TestCollector::Session).to receive(:new) { session }
+    Buildkite::TestCollector.otel_enabled = false
+
+    example = run_sandboxed_example
+
+    expect(finished_test_span).to be_nil
+    expect(session).to have_received(:add_example_to_send_queue).with(example.id)
+    expect(Buildkite::TestCollector.uploader.traces).to have_key(example.id)
+    expect(Buildkite::TestCollector.uploader.traces.fetch(example.id).as_hash).not_to have_key(:trace_id)
+  ensure
+    Buildkite::TestCollector.session = original_session
+    Buildkite::TestCollector.uploader.traces.delete(example&.id)
   end
 
   it "turns annotations into span events and tags into span attributes" do

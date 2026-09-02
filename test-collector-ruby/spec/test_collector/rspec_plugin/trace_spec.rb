@@ -10,14 +10,12 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
       tags: tags,
       location_prefix: location_prefix,
       external_id: external_id,
-      trace_id: trace_id,
     )
   end
 
   let(:example) { double(id: "test for invalid character '\xC8'").as_null_object }
   let(:location_prefix) { nil }
   let(:external_id) { nil }
-  let(:trace_id) { nil }
 
   let(:history) do
     {
@@ -85,24 +83,14 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
       end
     end
 
-    context "with an OpenTelemetry trace ID" do
-      let(:trace_id) { "4bf92f3577b34da6a3ce929d0e0e4736" }
-
-      it "includes the trace ID" do
-        expect(trace.as_hash[:trace_id]).to eq(trace_id)
-      end
-    end
-
-    it "omits the trace ID when OpenTelemetry is not enabled" do
-      expect(trace.as_hash).not_to have_key(:trace_id)
-    end
   end
 
   describe "#otel_attributes" do
     let(:example) { fake_example(file_path: "./spec/foo_spec.rb") }
 
-    it "describes the test, using the same path as the upload" do
+    it "describes the OTLP execution, using the same path as the legacy upload" do
       expect(trace.otel_attributes).to eq(
+        "buildkite.execution.via" => "otlp",
         "buildkite.test.scope" => example.example_group.metadata[:full_description],
         "buildkite.test.name" => example.description,
         "test.case.name" => example.full_description,
@@ -110,26 +98,6 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
         "code.file.path" => "./spec/foo_spec.rb",
         "code.line.number" => 42,
       )
-    end
-
-    context "with OTLP-only submission" do
-      around do |test|
-        original_otel_only = Buildkite::TestCollector.otel_only
-        Buildkite::TestCollector.otel_only = true
-        test.run
-      ensure
-        Buildkite::TestCollector.otel_only = original_otel_only
-      end
-
-      it "adds only the execution synthesis marker" do
-        Buildkite::TestCollector.otel_only = false
-        standard_attributes = trace.otel_attributes
-        Buildkite::TestCollector.otel_only = true
-
-        expect(trace.otel_attributes).to eq(
-          standard_attributes.merge("buildkite.execution.via" => "otlp"),
-        )
-      end
     end
 
     context "with an external ID" do

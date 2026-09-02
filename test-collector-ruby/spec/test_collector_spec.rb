@@ -11,6 +11,13 @@ RSpec.describe Buildkite::TestCollector do
   context "RSpec" do
     let(:hook) { :rspec }
 
+    around do |test|
+      original_otel_enabled = Buildkite::TestCollector.otel_enabled
+      test.run
+    ensure
+      Buildkite::TestCollector.otel_enabled = original_otel_enabled
+    end
+
     it "can configure api_token and url" do
       analytics = Buildkite::TestCollector
       env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "MyToken"
@@ -49,6 +56,7 @@ RSpec.describe Buildkite::TestCollector do
       Buildkite::TestCollector.configure(hook: hook)
       Buildkite::TestCollector.start_otel
 
+      expect(Buildkite::TestCollector.otel_enabled?).to eq false
       expect(Buildkite::TestCollector::OTel).not_to have_received(:configure!)
     end
 
@@ -56,6 +64,7 @@ RSpec.describe Buildkite::TestCollector do
       run_env = { "key" => "run-key" }
       allow(Buildkite::TestCollector::CI).to receive(:env) { run_env }
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
+      allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { true }
       env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "MyToken"
 
       Buildkite::TestCollector.configure(
@@ -66,6 +75,7 @@ RSpec.describe Buildkite::TestCollector do
         tags: { "team" => "platform" },
       )
 
+      expect(Buildkite::TestCollector.otel_enabled?).to eq true
       expect(Buildkite::TestCollector::OTel).not_to have_received(:configure!)
 
       Buildkite::TestCollector.start_otel
@@ -83,6 +93,7 @@ RSpec.describe Buildkite::TestCollector do
       env_overlay["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] = "http://tests-otlp.buildkite.localhost/v1/traces"
       allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "run-key" } }
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
+      allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { true }
 
       Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
       Buildkite::TestCollector.start_otel
@@ -94,7 +105,7 @@ RSpec.describe Buildkite::TestCollector do
       )
     end
 
-    it "submits results only via OTLP when otel_only is set, with tags on execution roots" do
+    it "submits results only via OTLP when OpenTelemetry is enabled, with tags on execution roots" do
       run_env = { "key" => "run-key" }
       allow(Buildkite::TestCollector::CI).to receive(:env) { run_env }
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
@@ -106,11 +117,11 @@ RSpec.describe Buildkite::TestCollector do
 
       Buildkite::TestCollector.configure(
         hook: hook,
-        otel_only: true,
+        otel_enabled: true,
         tags: { "team" => "platform" },
       )
 
-      expect(Buildkite::TestCollector.otel_only?).to eq true
+      expect(Buildkite::TestCollector.otel_enabled?).to eq true
       expect(Buildkite::TestCollector).to have_received(:hook_into).with(hook)
       expect(Buildkite::TestCollector::OTel).not_to have_received(:configure!)
 
@@ -124,58 +135,44 @@ RSpec.describe Buildkite::TestCollector do
         # The merged tags, so the automatic worker tag reaches OTLP too.
         execution_tags: { "ci.worker.id" => "agent-123", "team" => "platform" },
       )
-    ensure
-      Buildkite::TestCollector.otel_only = false
     end
 
-    it "rejects otel_enabled alongside otel_only, whichever way it is set" do
-      [true, false].each do |otel_enabled|
-        expect {
-          Buildkite::TestCollector.configure(hook: hook, otel_only: true, otel_enabled: otel_enabled)
-        }.to raise_error(ArgumentError, /otel_enabled and otel_only are mutually exclusive/)
-      end
-    end
-
-    it "warns prominently when otel_only is set but OpenTelemetry could not be configured" do
+    it "warns prominently when OpenTelemetry is enabled but could not be configured" do
       # configure! is stubbed to do nothing, so OTel stays disabled: the
-      # otel_only run would silently upload nothing without the banner.
+      # OTLP-only run would silently upload nothing without the banner.
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
       allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { false }
       allow(Buildkite::TestCollector).to receive(:hook_into)
 
-      Buildkite::TestCollector.configure(hook: hook, otel_only: true)
+      Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
 
       expect {
         Buildkite::TestCollector.start_otel
       }.to output(/NO TEST RESULTS UPLOADED/).to_stderr
-    ensure
-      Buildkite::TestCollector.otel_only = false
     end
 
-    it "routes annotations to OpenTelemetry in OTLP-only mode" do
+    it "routes annotations only to OpenTelemetry when it is enabled" do
       allow(Buildkite::TestCollector::OTel).to receive(:annotate)
-      Buildkite::TestCollector.otel_only = true
+      Buildkite::TestCollector.otel_enabled = true
 
       Buildkite::TestCollector.annotate("a thing happened")
 
       expect(Buildkite::TestCollector::OTel).to have_received(:annotate).with("a thing happened")
-    ensure
-      Buildkite::TestCollector.otel_only = false
     end
 
-    it "routes annotations to OpenTelemetry alongside the standard trace" do
+    it "routes annotations only to the legacy trace when OpenTelemetry is off" do
       allow(Buildkite::TestCollector::OTel).to receive(:annotate)
       tracer = spy("tracer")
       allow(Buildkite::TestCollector::Uploader).to receive(:tracer) { tracer }
 
       Buildkite::TestCollector.annotate("a thing happened")
 
-      expect(Buildkite::TestCollector::OTel).to have_received(:annotate).with("a thing happened")
+      expect(Buildkite::TestCollector::OTel).not_to have_received(:annotate)
       expect(tracer).to have_received(:enter).with("annotation", content: "a thing happened")
       expect(tracer).to have_received(:leave)
     end
 
-    it "enables legacy tracing after OTLP-only without duplicating SQL subscriptions" do
+    it "enables legacy tracing after OpenTelemetry without duplicating SQL subscriptions" do
       previous = Buildkite::TestCollector.instance_variable_get(:@active_support_tracing_enabled)
       Buildkite::TestCollector.instance_variable_set(:@active_support_tracing_enabled, nil)
       allow(Buildkite::TestCollector).to receive(:hook_into)
@@ -183,7 +180,7 @@ RSpec.describe Buildkite::TestCollector do
       allow(Buildkite::TestCollector::Object).to receive(:configure)
       allow(ActiveSupport::Notifications).to receive(:subscribe)
 
-      Buildkite::TestCollector.configure(hook: hook, otel_only: true)
+      Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
       2.times { Buildkite::TestCollector.configure(hook: hook) }
 
       expect(Buildkite::TestCollector::Network).to have_received(:configure).twice
@@ -191,7 +188,6 @@ RSpec.describe Buildkite::TestCollector do
       expect(ActiveSupport::Notifications).to have_received(:subscribe).once
     ensure
       Buildkite::TestCollector.instance_variable_set(:@active_support_tracing_enabled, previous)
-      Buildkite::TestCollector.otel_only = false
     end
   end
 
@@ -281,13 +277,8 @@ RSpec.describe Buildkite::TestCollector do
       )
       Buildkite::TestCollector.start_otel
 
+      expect(Buildkite::TestCollector.otel_enabled?).to eq false
       expect(Buildkite::TestCollector::OTel).not_to have_received(:configure!)
-    end
-
-    it "rejects otel_only rather than silently uploading nothing" do
-      expect {
-        Buildkite::TestCollector.configure(hook: hook, otel_only: true)
-      }.to raise_error(ArgumentError, /otel_only is currently only supported with the rspec hook/)
     end
   end
 
@@ -326,6 +317,7 @@ RSpec.describe Buildkite::TestCollector do
       )
       Buildkite::TestCollector.start_otel
 
+      expect(Buildkite::TestCollector.otel_enabled?).to eq false
       expect(Buildkite::TestCollector::OTel).not_to have_received(:configure!)
     end
   end

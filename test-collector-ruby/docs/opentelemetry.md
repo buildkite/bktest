@@ -5,31 +5,28 @@
 > OpenTelemetry. Existing OpenTelemetry setups may work, but are not yet
 > supported or guaranteed to work.
 
-This page describes `otel_enabled`, where spans are exported *alongside* the
-normal JSON upload and linked to it by trace ID. There is also an OTLP-only
-mode (`otel_only`) that exports the same spans but adds
-`buildkite.execution.via=otlp`. That marker makes the span itself the
-submission: Buildkite synthesizes the execution from it server-side, with
-nothing sent to `/v1/uploads`. In both modes, resources identify the suite, CI
-run and worker, and VCS ref that produced telemetry. Test Engine run metadata
-and any `tags:` you configure live only on each `test.execution` root, not its
-children. See the
-[README](../README.md#otlp-only-submission-experimental) for how to turn it on,
-and [OTLP-only attributes](#otlp-only-attributes) below for what's sent.
+When `otel_enabled` is true, spans are the only submission path. Every root has
+`buildkite.execution.via=otlp`, which makes the span itself the submission:
+Buildkite synthesizes the execution from it server-side, with nothing sent to
+`/v1/uploads`. Resources identify the suite, CI run and worker, and VCS ref that
+produced telemetry. Test Engine run metadata and any `tags:` you configure live
+only on each `test.execution` root, not its children. See the
+[README](../README.md#opentelemetry-submission-experimental) for how to turn it
+on, and [OTLP execution attributes](#otlp-execution-attributes) below for what's
+sent.
 
 Every RSpec example gets an OpenTelemetry `test.execution` root. The collector
 can configure a provider and export instrumented child spans showing what the
 test did and where its time went. The traces are sent to Buildkite and shown
 against the test's execution.
 
-It is off by default. See the [README](../README.md#opentelemetry-export-experimental)
+It is off by default. See the [README](../README.md#opentelemetry-submission-experimental)
 for how to turn it on.
 
 Export requires Ruby 3.3 or newer and the `opentelemetry-sdk` and
 `opentelemetry-exporter-otlp` gems. These optional dependencies are not installed
 with `buildkite-test_collector`; add them to your bundle as shown in
-[Choosing instrumentation](#choosing-instrumentation). This requirement applies
-to both `otel_enabled` and `otel_only`.
+[Choosing instrumentation](#choosing-instrumentation).
 
 ## What a trace looks like
 
@@ -61,29 +58,29 @@ Each `tags:` entry passed to `configure` is attached to every test root as a
 | `code.file.path` | the file the test is in |
 | `code.line.number` | the line, or the call site for a shared example |
 | `test.case.result.status` | `pass`, `fail` or `skipped` |
-| `buildkite.test.execution.external_id` | the ID of the matching Test Engine execution |
+| `buildkite.test.execution.external_id` | the collector-generated execution ID |
 | `buildkite.tag.<key>` | each `configure` or `tag_execution` tag |
 
 A failed test also sets the span's status to error with the failure summary as
 its description. Each failure is recorded as a semconv `exception` event with
 `exception.message` and `exception.stacktrace` attributes.
 
-Two things worth knowing:
+Three things worth knowing:
 
 - An example skipped with `skip` produces no span at all. RSpec doesn't run its
   hooks, so there is nothing to time. `skipped` on a span means a `pending`
   example that failed as expected.
-- The execution's duration is whatever the span timed, so the two always agree.
-  With the export off, the collector times the example itself as it always has.
+- The execution's duration is the span's duration. With export off, the legacy
+  collector times the example itself as it always has.
 - The result is RSpec's final verdict, read after every `around` hook has
   unwound: an `around` hook that raises after the example ran counts as a
   failure, and an example a hook marks `pending` before deliberately raising
   stays skipped.
 
-## OTLP-only attributes
+## OTLP execution attributes
 
-Both modes use the same resource and span attributes. With `otel_only`, the
-`buildkite.execution.via=otlp` marker opts the span into execution synthesis.
+The `buildkite.execution.via=otlp` marker opts every exported execution span
+into execution synthesis.
 Buildkite-specific execution fields are flat (`buildkite.run_key`,
 `buildkite.job_id`, ...); producer identity follows OpenTelemetry resource
 semantic conventions.
@@ -112,7 +109,7 @@ operations do not need:
 
 | Span attribute | Value | Execution field |
 | --- | --- | --- |
-| `buildkite.execution.via` | `otlp` in OTLP-only mode — opts this span in to synthesis | — |
+| `buildkite.execution.via` | `otlp` — opts this span in to synthesis | — |
 | `buildkite.run_key` | the Test Engine run key (required) | run key |
 | `buildkite.run_url` | a configured run URL when it differs from, or cannot be represented by, the CI resource URL | URL |
 | `buildkite.build_number` | the build number | number |
@@ -134,15 +131,14 @@ operations do not need:
 | `buildkite.test.execution.external_id` | the execution's collector-generated ID | external ID |
 | `buildkite.tag.<key>` | each `configure` or `tag_execution` tag | execution tag `<key>` |
 
-In OTLP-only mode the server maps the span's failure status and exception events
-back to the execution's failure reason and expanded failure detail.
+The server maps the span's failure status and exception events back to the
+execution's failure reason and expanded failure detail.
 
 ## Finding a test's trace
 
-With `otel_enabled`, the trace's ID is sent in the JSON execution so Buildkite
-can show the two together. With `otel_only`, the span is the execution. Child
-spans share the root's trace ID through normal context propagation, so one trace
-holds everything the test did.
+With `otel_enabled`, the span is the execution. Child spans share the root's
+trace ID through normal context propagation, so one trace holds everything the
+test did.
 
 ## Recommended setup: suites without OpenTelemetry
 
@@ -156,7 +152,7 @@ execution.
 ## Choosing instrumentation
 
 Instrumentation selection applies only when the collector configures the global
-provider, and works the same with `otel_enabled` and `otel_only`.
+provider.
 Add the OpenTelemetry SDK and OTLP exporter, plus the instrumentation you want,
 to your bundle. Require each instrumentation explicitly:
 
@@ -221,12 +217,10 @@ precedence over the credential sourced from `BUILDKITE_ANALYTICS_TOKEN`. Empty
 header environment variables are treated as unset.
 
 bktec's OTLP relay uses the trace-specific header variable to provide its local
-credential. bktec forwards spans to Buildkite with its OIDC credential while
-`BUILDKITE_ANALYTICS_TOKEN` remains available for normal JSON uploads in
-`otel_enabled` mode. Without an OTLP Authorization header, spans go directly to
-Buildkite using `BUILDKITE_ANALYTICS_TOKEN`, which must be an agent OIDC token
-with the `write_uploads` scope; a suite API token uploads test results as normal
-but its spans are rejected.
+credential and forwards spans to Buildkite with its OIDC credential. Without an
+OTLP Authorization header, spans go directly to Buildkite using
+`BUILDKITE_ANALYTICS_TOKEN`, which must be an agent OIDC token with the
+`write_uploads` scope; a suite API token is rejected by the OTLP endpoint.
 
 OpenTelemetry's SDK owns batching, retries, and transport. `test.execution`
 spans have a reserved, faster-draining queue and exporter. Forwarded children
@@ -243,12 +237,13 @@ run. Reporting a new run requires a new process.
 
 ## When something goes wrong
 
-Export never fails a test. If root setup fails, the collector warns and the
-normal test result upload continues without spans. If optional child setup or
-attachment fails, the collector warns, cleans up that path, and continues
-exporting roots. The suite-end flush and the process-exit shutdown each give
-the OpenTelemetry SDK a 30-second budget to export buffered spans; the SDK's
-own retry backoff can run past it when the endpoint keeps failing.
+Export never fails a test. If root setup fails, the collector warns prominently;
+the suite continues, but no results are uploaded because there is no JSON
+fallback. If optional child setup or attachment fails, the collector warns,
+cleans up that path, and continues exporting roots. The suite-end flush and the
+process-exit shutdown each give the OpenTelemetry SDK a 30-second budget to
+export buffered spans; the SDK's own retry backoff can run past it when the
+endpoint keeps failing.
 
 Export failures are reported through OpenTelemetry's own logger. The collector
 also warns if its reserved root queue drops any `test.execution` spans; normal

@@ -14,7 +14,7 @@ module Buildkite::TestCollector::RSpecPlugin
 
     FILE_PATH_REGEX = /^(.*?\.(rb|feature))/
 
-    def initialize(example, history:, failure_reason: nil, failure_expanded: [], tags: nil, location_prefix: nil, external_id: nil, trace_id: nil)
+    def initialize(example, history:, failure_reason: nil, failure_expanded: [], tags: nil, location_prefix: nil, external_id: nil)
       @example = example
       @history = history
       @failure_reason = failure_reason
@@ -22,7 +22,6 @@ module Buildkite::TestCollector::RSpecPlugin
       @tags = tags
       @location_prefix = location_prefix
       @external_id = external_id
-      @trace_id = trace_id
     end
 
     def result
@@ -38,10 +37,11 @@ module Buildkite::TestCollector::RSpecPlugin
       result
     end
 
-    # What the span says about the test itself. The two OTel modes use the same
-    # attributes; buildkite.execution.via is the sole synthesis opt-in.
+    # What the span says about the test itself. OpenTelemetry spans are the
+    # execution submission, so every one opts in to server-side synthesis.
     def otel_attributes
       attributes = {
+        "buildkite.execution.via" => "otlp",
         "buildkite.test.scope" => strip_invalid_utf8_chars(scope),
         "buildkite.test.name" => strip_invalid_utf8_chars(name),
         "test.case.name" => strip_invalid_utf8_chars(example.full_description),
@@ -49,7 +49,6 @@ module Buildkite::TestCollector::RSpecPlugin
         "code.file.path" => strip_invalid_utf8_chars(prepend_location_prefix(file_name)),
         "code.line.number" => source_line_number,
       }
-      attributes["buildkite.execution.via"] = "otlp" if Buildkite::TestCollector.otel_only?
       attributes["buildkite.test.execution.external_id"] = external_id if external_id
       tags&.each do |key, value|
         attributes["buildkite.tag.#{key}"] = strip_invalid_utf8_chars(value.to_s)
