@@ -1,4 +1,4 @@
-# OpenTelemetry export (experimental)
+# OpenTelemetry submission (experimental)
 
 > **This feature is still under development and may change.**
 > This first release is intended for suites that do not already configure

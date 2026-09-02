@@ -48,7 +48,8 @@ RSpec.describe "RSpec OTLP-only submission" do
 
   it "describes the whole execution on the span and uploads no JSON" do
     expect(Buildkite::TestCollector::Tracer).not_to receive(:new)
-    expect(Buildkite::TestCollector).not_to receive(:enable_tracing!)
+    expect(Buildkite::TestCollector::Session).not_to receive(:new)
+    expect(Buildkite::TestCollector::Uploader).not_to receive(:upload)
 
     example = run_sandboxed_example { nil }
     span = finished_test_span
@@ -66,7 +67,7 @@ RSpec.describe "RSpec OTLP-only submission" do
     expect(span.attributes.fetch("code.line.number")).to be_an(Integer)
     expect(span.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
 
-    # No JSON upload is prepared: the legacy uploader never sees the example.
+    # Reporter removes the transient trace state instead of queueing JSON.
     expect(Buildkite::TestCollector.uploader.traces).not_to have_key(example.id)
   end
 
