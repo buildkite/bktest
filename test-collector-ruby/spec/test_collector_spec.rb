@@ -105,7 +105,7 @@ RSpec.describe Buildkite::TestCollector do
       )
     end
 
-    it "submits results only via OTLP when OpenTelemetry is enabled, with tags on execution roots" do
+    it "submits results only via OTLP when OpenTelemetry is enabled, with tags on test spans" do
       run_env = { "key" => "run-key" }
       allow(Buildkite::TestCollector::CI).to receive(:env) { run_env }
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)

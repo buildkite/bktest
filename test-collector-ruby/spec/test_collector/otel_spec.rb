@@ -11,7 +11,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     double("test", otel_attributes: attributes, otel_result: "passed")
   end
 
-  it "starts the execution as a root and links it to the Agent job trace" do
+  it "starts the test span as a trace root and links it to the Agent job trace" do
     exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
@@ -118,7 +118,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(skipped.ended).to be(true)
   end
 
-  it "marks every root as the submission, even one whose test describes nothing" do
+  it "marks every test span as the submission, even one whose test describes nothing" do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     described_class.instance_variable_set(:@tracer, provider.tracer("via-marker-test"))
 
@@ -231,7 +231,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect { described_class.finish_test_span(nil, test: test) }.not_to raise_error
   end
 
-  it "deactivates children, then shuts down roots and children against one deadline" do
+  it "deactivates children, then shuts down test spans and children against one deadline" do
     success = OpenTelemetry::SDK::Trace::Export::SUCCESS
     forwarder = double("execution child forwarder")
     execution_provider = double("execution provider")
@@ -250,7 +250,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.shutdown
   end
 
-  it "flushes roots and children against one shared deadline" do
+  it "flushes test spans and children against one shared deadline" do
     execution_provider = double("execution provider")
     child_processor = double("execution child processor")
     described_class.instance_variable_set(:@execution_provider, execution_provider)
@@ -268,33 +268,33 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.instance_variable_set(:@execution_child_processor, nil)
   end
 
-  it "still flushes children when the root flush fails" do
+  it "still flushes children when the test span flush fails" do
     execution_provider = double("execution provider")
     child_processor = double("execution child processor")
-    allow(execution_provider).to receive(:force_flush).and_raise("root flush failed")
+    allow(execution_provider).to receive(:force_flush).and_raise("test span flush failed")
     described_class.instance_variable_set(:@execution_provider, execution_provider)
     described_class.instance_variable_set(:@execution_child_processor, child_processor)
 
     expect(child_processor).to receive(:force_flush)
     expect { described_class.force_flush }
-      .to output(/Could not flush OpenTelemetry spans.*root flush failed/).to_stderr
+      .to output(/Could not flush OpenTelemetry spans.*test span flush failed/).to_stderr
   ensure
     described_class.instance_variable_set(:@execution_provider, nil)
     described_class.instance_variable_set(:@execution_child_processor, nil)
   end
 
-  it "attempts child shutdown when root shutdown fails" do
+  it "attempts child shutdown when test span shutdown fails" do
     execution_provider = double("execution provider")
     child_processor = spy(
       "execution child processor",
       shutdown: OpenTelemetry::SDK::Trace::Export::SUCCESS,
     )
-    allow(execution_provider).to receive(:shutdown).and_raise("root shutdown failed")
+    allow(execution_provider).to receive(:shutdown).and_raise("test span shutdown failed")
     described_class.instance_variable_set(:@execution_provider, execution_provider)
     described_class.instance_variable_set(:@execution_child_processor, child_processor)
 
     expect { described_class.shutdown }
-      .to output(/Could not shut down OpenTelemetry span export: RuntimeError: root shutdown failed/)
+      .to output(/Could not shut down OpenTelemetry span export: RuntimeError: test span shutdown failed/)
       .to_stderr
     expect(child_processor).to have_received(:shutdown).with(timeout: be_between(0, 30))
     expect(described_class).not_to be_enabled
@@ -362,7 +362,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(described_class).not_to be_enabled
   end
 
-  it "keeps root export enabled when child processor setup fails" do
+  it "keeps test span export enabled when child processor setup fails" do
     suite_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     allow(OpenTelemetry).to receive(:tracer_provider).and_return(suite_provider)
     root_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
@@ -620,7 +620,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
   end
 
-  it "uses an AlwaysOn sampler, process-safe random IDs, and the producer resource for execution roots" do
+  it "uses an AlwaysOn sampler, process-safe random IDs, and the producer resource for test spans" do
     processor = spy(
       "execution processor",
       shutdown: OpenTelemetry::SDK::Trace::Export::SUCCESS,
@@ -643,7 +643,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     execution_provider&.shutdown
   end
 
-  it "adds configure-level tags to execution roots" do
+  it "adds configure-level tags to test spans" do
     attributes = described_class.send(:execution_attributes, {}, { "team" => "platform" })
 
     expect(attributes).to include(
@@ -651,7 +651,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
   end
 
-  it "exports roots privately and only forwards execution children" do
+  it "exports test spans privately and only forwards their children" do
     suite_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     allow(suite_exporter).to receive(:shutdown).and_call_original
     suite_resource = OpenTelemetry::SDK::Resources::Resource.create(
@@ -672,15 +672,15 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(OpenTelemetry::Exporter::OTLP::Exporter)
       .to receive(:new)
       .and_return(root_exporter, child_exporter)
-    root_reporter = described_class.const_get(:RootSpanMetricsReporter, false)
+    test_span_reporter = described_class.const_get(:TestSpanMetricsReporter, false)
     expect(OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor)
       .to receive(:new)
       .with(
         root_exporter,
-        max_queue_size: described_class::ROOT_MAX_QUEUE_SIZE,
-        max_export_batch_size: described_class::ROOT_MAX_EXPORT_BATCH_SIZE,
-        schedule_delay: described_class::ROOT_SCHEDULE_DELAY_MILLISECONDS,
-        metrics_reporter: an_instance_of(root_reporter),
+        max_queue_size: described_class::TEST_SPAN_MAX_QUEUE_SIZE,
+        max_export_batch_size: described_class::TEST_SPAN_MAX_EXPORT_BATCH_SIZE,
+        schedule_delay: described_class::TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS,
+        metrics_reporter: an_instance_of(test_span_reporter),
       )
       .ordered
       .and_call_original
@@ -746,8 +746,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider&.shutdown
   end
 
-  it "shares one metrics reporter between the root exporter and its processor" do
-    root_reporter = described_class.const_get(:RootSpanMetricsReporter, false)
+  it "shares one metrics reporter between the test span exporter and its processor" do
+    test_span_reporter = described_class.const_get(:TestSpanMetricsReporter, false)
     exporter_reporters = []
     allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new) do |**options|
       exporter_reporters << options[:metrics_reporter]
@@ -762,15 +762,15 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     described_class.configure!(endpoint: "https://example.invalid/v1/traces", instrumentations: [])
 
-    # Roots are built first; children keep the SDK's default (no-op) reporter.
-    expect(exporter_reporters.first).to be_a(root_reporter)
+    # Test spans are built first; children keep the SDK's default (no-op) reporter.
+    expect(exporter_reporters.first).to be_a(test_span_reporter)
     expect(processor_reporters.first).to equal(exporter_reporters.first)
     expect(exporter_reporters.drop(1)).to all(be_nil)
   ensure
     described_class.shutdown
   end
 
-  it "reports each suite run's total dropped roots when every export fails" do
+  it "reports each suite run's total dropped test spans when every export fails" do
     failing_exporter = Class.new do
       def export(_spans, timeout: nil) = OpenTelemetry::SDK::Trace::Export::FAILURE
       def force_flush(timeout: nil) = OpenTelemetry::SDK::Trace::Export::SUCCESS
@@ -787,7 +787,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       described_class.finish_test_span(described_class.start_test_span(test: test), test: test)
     end
 
-    # Exporting one root fails and warns inline; the suite-end flush then
+    # Exporting one test span fails and warns inline; the suite-end flush then
     # reports the run's total, which the inline warning did not cover.
     record_execution.call
     expect { processor.force_flush }
@@ -830,7 +830,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider&.shutdown
   end
 
-  it "exports roots when the suite's sampler drops child spans" do
+  it "exports test spans when the suite's sampler drops child spans" do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new(
       sampler: OpenTelemetry::SDK::Trace::Samplers::ALWAYS_OFF,
     )
@@ -858,7 +858,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider&.shutdown
   end
 
-  it "keeps private root export alive if the suite shuts down its provider" do
+  it "keeps private test span export alive if the suite shuts down its provider" do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)
     root_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
@@ -1098,7 +1098,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
   end
 
-  it "keeps root export enabled with an incompatible suite provider" do
+  it "keeps test span export enabled with an incompatible suite provider" do
     root_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     allow(OpenTelemetry).to receive(:tracer_provider).and_return(Object.new)
     allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(root_exporter)
@@ -1170,7 +1170,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       expect(circle).to include("buildkite.run_url" => "https://circle.example/jobs/123")
     end
 
-    it "keeps producer identity on the resource and run metadata on the test root" do
+    it "keeps producer identity on the resource and run metadata on the test span" do
       original = OpenTelemetry.tracer_provider
       OpenTelemetry.tracer_provider = OpenTelemetry::Internal::ProxyTracerProvider.new
       exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
@@ -1272,7 +1272,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       OpenTelemetry.tracer_provider = original
     end
 
-    it "leaves a suite-installed provider in place while roots carry the run metadata" do
+    it "leaves a suite-installed provider in place while test spans carry the run metadata" do
       original = OpenTelemetry.tracer_provider
       suite_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
       OpenTelemetry.tracer_provider = suite_provider
@@ -1284,8 +1284,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
         run_env: { "key" => "run-123" },
       )
 
-      # The suite's provider is not replaced or reconfigured: the execution
-      # root comes from the collector's private provider, and the suite's
+      # The suite's provider is not replaced or reconfigured: the
+      # test span comes from the collector's private provider, and the suite's
       # spans reach Buildkite through the forwarder attached to its provider.
       expect(OpenTelemetry.tracer_provider).to equal(suite_provider)
 

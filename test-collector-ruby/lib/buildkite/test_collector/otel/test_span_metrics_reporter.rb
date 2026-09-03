@@ -3,9 +3,9 @@
 module Buildkite
   module TestCollector
     module OTel
-      # Warns about dropped execution roots and correlates processor drops with
+      # Warns about dropped test spans and correlates processor drops with
       # exporter failures. Counts reset when reported at suite end or shutdown.
-      class RootSpanMetricsReporter
+      class TestSpanMetricsReporter
         def initialize
           @mutex = Mutex.new
           @warned_count = nil
@@ -65,7 +65,7 @@ module Buildkite
           MESSAGE
         end
       end
-      private_constant :RootSpanMetricsReporter
+      private_constant :TestSpanMetricsReporter
     end
   end
 end

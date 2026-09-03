@@ -106,7 +106,7 @@ RSpec.describe forwarder_class do
       .to output(/Could not flush OpenTelemetry child spans: RuntimeError: flush failed/).to_stderr
   end
 
-  it "keeps the root when the child queue overflows" do
+  it "keeps the test span when the child queue overflows" do
     root_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     child_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     root_processor = OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(

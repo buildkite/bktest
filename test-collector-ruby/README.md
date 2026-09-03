@@ -97,7 +97,7 @@ default. Enable it when you configure the collector:
 Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
 ```
 
-When enabled, OpenTelemetry is the only submission path. Every root includes
+When enabled, OpenTelemetry is the only submission path. Every `test.execution` span includes
 `buildkite.execution.via=otlp`, which tells Buildkite to synthesize the test
 execution from the span. Nothing is uploaded to `/v1/uploads`.
 

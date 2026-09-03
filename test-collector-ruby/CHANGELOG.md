@@ -16,7 +16,7 @@
   at the suite-end flush and again at process exit for anything still draining.
 * Keep stable suite, CI worker/run, and VCS identity on OpenTelemetry resources,
   while moving Test Engine run metadata, framework details, and configured tags
-  to each `test.execution` root. Child spans no longer carry execution-only
+  to each `test.execution` span. Child spans no longer carry execution-only
   metadata as duplicated resource attributes.
 * Send the Ruby version and configured location prefix with OpenTelemetry test
   executions so OTLP-only uploads retain their classic upload tags and selector

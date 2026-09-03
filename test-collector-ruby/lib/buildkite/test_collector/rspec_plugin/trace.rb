@@ -36,7 +36,7 @@ module Buildkite::TestCollector::RSpecPlugin
     alias_method :otel_result, :result
 
     # What the span says about the test itself. OTel adds the submission
-    # marker and run metadata that describe every execution root.
+    # marker and run metadata that describe every test span.
     def otel_attributes
       attributes = {
         "buildkite.test.scope" => strip_invalid_utf8_chars(scope),

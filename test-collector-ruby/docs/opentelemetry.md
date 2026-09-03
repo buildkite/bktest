@@ -5,15 +5,15 @@
 > OpenTelemetry. Existing OpenTelemetry setups may work, but are not yet
 > supported or guaranteed to work.
 
-When `otel_enabled` is true, spans are the only submission path. Every root has
-`buildkite.execution.via=otlp`, which makes the span itself the submission:
-Buildkite synthesizes the execution from it server-side, with nothing sent to
-`/v1/uploads` and no JSON artifact written for `artifact_path`. Resources
-identify the suite, CI run and worker, and VCS ref that produced telemetry. Test
-Engine run metadata and any `tags:` you configure live only on each
-`test.execution` root, not its children.
+When `otel_enabled` is true, spans are the only submission path. Every
+`test.execution` span has `buildkite.execution.via=otlp`, which makes the span
+itself the submission: Buildkite synthesizes the execution from it server-side,
+with nothing sent to `/v1/uploads` and no JSON artifact written for
+`artifact_path`. Resources identify the suite, CI run and worker, and VCS ref
+that produced telemetry. Test Engine run metadata and any `tags:` you configure
+live only on each `test.execution` span, not its children.
 
-Every RSpec example that runs gets an OpenTelemetry `test.execution` root. The
+Every RSpec example that runs gets an OpenTelemetry `test.execution` span. The
 collector can configure a provider and export instrumented child spans showing
 what the test did and where its time went. The traces are sent to Buildkite and
 shown against the test's execution.
@@ -85,7 +85,7 @@ attributes. `OTEL_RESOURCE_ATTRIBUTES` remains the standard escape hatch for
 additional resource identity. When a suite owns its provider, child spans keep
 that provider's resource rather than the collector's.
 
-Each test root carries the execution itself and the run metadata that its child
+Each test span carries the execution itself and the run metadata that its child
 operations do not need:
 
 | Span attribute | Value | Execution field |
@@ -198,8 +198,8 @@ with the `write_uploads` scope.
 OpenTelemetry's SDK owns batching, retries, and transport. `test.execution`
 spans have a reserved, faster-draining queue and exporter. Forwarded children
 use a separate queue and exporter, so a child flood or invalid child request
-cannot displace or poison execution roots. When the suite finishes, both queues
-share one 30-second flush budget, roots first. A hard exit or sustained endpoint
+cannot displace or poison test spans. When the suite finishes, both queues
+share one 30-second flush budget, test spans first. A hard exit or sustained endpoint
 failure can still lose spans because the queues live in process memory.
 
 One process reports one run. Export survives repeated suite runs in the same
@@ -210,24 +210,24 @@ run. Reporting a new run requires a new process.
 
 ## When something goes wrong
 
-Export never fails a test. If root setup fails (for example on Ruby older than
-3.3, or without the OpenTelemetry gems), the collector warns and uploads the
-run's results as JSON instead, exactly as it does with `otel_enabled` off. If
-optional child setup or attachment fails, the collector warns,
-cleans up that path, and continues exporting roots. The suite-end flush and the
+Export never fails a test. If test span setup fails (for example on Ruby older
+than 3.3, or without the OpenTelemetry gems), the collector warns and uploads
+the run's results as JSON instead, exactly as it does with `otel_enabled` off.
+If optional child setup or attachment fails, the collector warns, cleans up that
+path, and continues exporting test spans. The suite-end flush and the
 process-exit shutdown each give the OpenTelemetry SDK a 30-second budget to
 export buffered spans; the SDK's own retry backoff can run past it when the
 endpoint keeps failing.
 
 Export failures are reported through OpenTelemetry's own logger. Because
 `test.execution` spans are the submission, the collector also warns prominently
-the first time its reserved root queue drops any of them, naming the HTTP
+the first time its reserved test span queue drops any of them, naming the HTTP
 status or connection error that caused the export to fail (for example a `403`
-when OTLP ingest is not enabled for the organization). If more are dropped
-after that, the suite-end flush and the process-exit shutdown each report the
-total dropped since the last report, so a persistent failure is not mistaken
-for a one-off. The suite-end flush stops at the first rejected batch and leaves
-the rest queued, so when many roots are buffered the balance drains, and is
+when OTLP ingest is not enabled for the organization). If more are dropped after
+that, the suite-end flush and the process-exit shutdown each report the total
+dropped since the last report, so a persistent failure is not mistaken for a
+one-off. The suite-end flush stops at the first rejected batch and leaves the
+rest queued, so when many test spans are buffered the balance drains, and is
 counted, at process exit. Each suite run in a warm worker gets its own warning
 and totals. Normal child-span queue overflow is not logged by the OpenTelemetry
 SDK.

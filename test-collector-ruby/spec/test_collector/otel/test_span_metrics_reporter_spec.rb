@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
-reporter_class = Buildkite::TestCollector::OTel.const_get(:RootSpanMetricsReporter, false)
+reporter_class = Buildkite::TestCollector::OTel.const_get(:TestSpanMetricsReporter, false)
 
 RSpec.describe reporter_class do
   subject(:reporter) { described_class.new }
 
   describe "#add_to_counter" do
-    it "warns only once when root spans are dropped" do
+    it "warns only once when test spans are dropped" do
       expect do
         2.times do
           reporter.add_to_counter(
@@ -78,7 +78,7 @@ RSpec.describe reporter_class do
       reporter.add_to_counter("otel.bsp.dropped_spans", increment: count, labels: { "reason" => reason })
     end
 
-    it "reports every root the suite run dropped" do
+    it "reports every test span the suite run dropped" do
       # A persistent failure drops every batch, but only the first is warned
       # about inline; the total is what tells the reader the whole run is gone.
       expect { drop(512) }.to output(/dropped 512 test\.execution span\(s\)/).to_stderr
@@ -91,7 +91,7 @@ RSpec.describe reporter_class do
       ).to_stderr
     end
 
-    it "stays silent when the first warning already named every dropped root" do
+    it "stays silent when the first warning already named every dropped test span" do
       expect { drop(3) }.to output.to_stderr
 
       expect { reporter.warn_total }.not_to output.to_stderr
