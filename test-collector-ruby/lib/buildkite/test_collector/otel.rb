@@ -110,7 +110,7 @@ module Buildkite::TestCollector
         shutdown
       end
 
-      def start_test_span(test: nil)
+      def start_test_span(test:)
         return unless enabled?
 
         # The SDK retains the earliest attributes at its configured limit.
@@ -119,15 +119,13 @@ module Buildkite::TestCollector
         attributes = { EXECUTION_VIA_ATTRIBUTE => "otlp" }
         run_key = (@execution_attributes || {})["buildkite.run_key"]
         attributes["buildkite.run_key"] = run_key if run_key
-        if test
-          # Reserve the result's position before test code can consume the
-          # SDK's attribute budget. finish_test_span replaces this value.
-          attributes[RESULT_ATTRIBUTE] = "unset"
-          test.otel_attributes.each do |key, value|
-            next if value.nil? || attributes.key?(key) || key.start_with?(TAG_ATTRIBUTE_PREFIX)
+        # Reserve the result's position before test code can consume the
+        # SDK's attribute budget. finish_test_span replaces this value.
+        attributes[RESULT_ATTRIBUTE] = "unset"
+        test.otel_attributes.each do |key, value|
+          next if value.nil? || attributes.key?(key) || key.start_with?(TAG_ATTRIBUTE_PREFIX)
 
-            attributes[key] = value
-          end
+          attributes[key] = value
         end
 
         @tracer.start_span(
@@ -139,6 +137,7 @@ module Buildkite::TestCollector
         )
       rescue StandardError => e
         warn "[buildkite-test_collector] Could not start OpenTelemetry test span: #{e.class}: #{e.message}"
+        nil
       end
 
       def with_test_span(span)
@@ -155,35 +154,33 @@ module Buildkite::TestCollector
         Rational(Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond), 1_000_000_000)
       end
 
-      def finish_test_span(span, test: nil, end_timestamp: nil)
+      def finish_test_span(span, test:, end_timestamp: nil)
         return unless span
 
         test_attributes = {}
         begin
-          if test
-            result = test.otel_result
-            status = RESULT_STATUSES[result]
-            span.set_attribute(RESULT_ATTRIBUTE, status) if status
+          result = test.otel_result
+          status = RESULT_STATUSES[result]
+          span.set_attribute(RESULT_ATTRIBUTE, status) if status
 
-            # The Ruby SDK keeps the earliest attributes when a span reaches
-            # its limit, so record the test itself before run metadata or tags.
-            test_attributes = test.otel_attributes.compact
-            test_attributes.each do |key, value|
-              span.set_attribute(key, value) unless key.start_with?(TAG_ATTRIBUTE_PREFIX)
-            end
+          # The Ruby SDK keeps the earliest attributes when a span reaches
+          # its limit, so record the test itself before run metadata or tags.
+          test_attributes = test.otel_attributes.compact
+          test_attributes.each do |key, value|
+            span.set_attribute(key, value) unless key.start_with?(TAG_ATTRIBUTE_PREFIX)
+          end
 
-            if result == "failed"
-              # The failure summary rides as the span status description, and
-              # each individual failure as a semconv exception event - the
-              # native OTel shapes, which the server maps back to the
-              # execution's failure_reason and failure_expanded.
-              reason = test.respond_to?(:otel_failure_reason) ? test.otel_failure_reason : nil
-              span.status = OpenTelemetry::Trace::Status.error(reason.to_s)
+          if result == "failed"
+            # The failure summary rides as the span status description, and
+            # each individual failure as a semconv exception event - the
+            # native OTel shapes, which the server maps back to the
+            # execution's failure_reason and failure_expanded.
+            reason = test.respond_to?(:otel_failure_reason) ? test.otel_failure_reason : nil
+            span.status = OpenTelemetry::Trace::Status.error(reason.to_s)
 
-              if test.respond_to?(:otel_exception_events)
-                test.otel_exception_events.each do |attributes|
-                  span.add_event("exception", attributes: attributes)
-                end
+            if test.respond_to?(:otel_exception_events)
+              test.otel_exception_events.each do |attributes|
+                span.add_event("exception", attributes: attributes)
               end
             end
           end

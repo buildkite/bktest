@@ -6,6 +6,11 @@ require "opentelemetry/exporter/otlp"
 require "opentelemetry/trace/propagation/trace_context"
 
 RSpec.describe Buildkite::TestCollector::OTel do
+  # A passed test that describes nothing, for specs about the span itself.
+  def execution_test(attributes = {})
+    double("test", otel_attributes: attributes, otel_result: "passed")
+  end
+
   it "starts the execution as a root and links it to the Agent job trace" do
     exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
@@ -22,11 +27,11 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.instance_variable_set(:@tracer, tracer)
 
     tracer.in_span("ambient") do
-      execution_span = described_class.start_test_span
+      execution_span = described_class.start_test_span(test: execution_test)
       described_class.with_test_span(execution_span) do
         tracer.in_span("child") { nil }
       end
-      described_class.finish_test_span(execution_span)
+      described_class.finish_test_span(execution_span, test: execution_test)
     end
     provider.force_flush
 
@@ -58,8 +63,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(ENV).to receive(:[]).with("TRACESTATE").and_return(nil)
 
     2.times do
-      span = described_class.start_test_span
-      described_class.finish_test_span(span)
+      span = described_class.start_test_span(test: execution_test)
+      described_class.finish_test_span(span, test: execution_test)
     end
     provider.force_flush
 
@@ -76,7 +81,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(tracer).to receive(:start_span).and_raise("start failed")
     described_class.instance_variable_set(:@tracer, tracer)
 
-    expect { expect(described_class.start_test_span).to be_nil }
+    expect { expect(described_class.start_test_span(test: execution_test)).to be_nil }
       .to output(/Could not start OpenTelemetry test span/).to_stderr
   ensure
     described_class.instance_variable_set(:@tracer, nil)
@@ -113,13 +118,16 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(skipped.ended).to be(true)
   end
 
-  it "marks every root as the submission, even one no test describes" do
+  it "marks every root as the submission, even one whose test describes nothing" do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     described_class.instance_variable_set(:@tracer, provider.tracer("via-marker-test"))
 
-    span = described_class.start_test_span
+    span = described_class.start_test_span(test: execution_test)
 
-    expect(span.to_span_data.attributes).to eq("buildkite.execution.via" => "otlp")
+    expect(span.to_span_data.attributes).to eq(
+      "buildkite.execution.via" => "otlp",
+      "test.case.result.status" => "unset",
+    )
   ensure
     described_class.instance_variable_set(:@tracer, nil)
     provider&.shutdown
@@ -177,9 +185,9 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     described_class.instance_variable_set(:@tracer, provider.tracer("clock-step-test"))
 
-    span = described_class.start_test_span
+    span = described_class.start_test_span(test: execution_test)
     stepped_back = described_class.current_timestamp - 60
-    described_class.finish_test_span(span, end_timestamp: stepped_back)
+    described_class.finish_test_span(span, test: execution_test, end_timestamp: stepped_back)
 
     data = span.to_span_data
     expect(data.end_timestamp).to be >= data.start_timestamp
@@ -372,8 +380,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
       /OpenTelemetry child span export disabled: ArgumentError: invalid child queue configuration; test.execution export remains enabled/
     ).to_stderr
 
-    execution_span = described_class.start_test_span
-    described_class.finish_test_span(execution_span)
+    execution_span = described_class.start_test_span(test: execution_test)
+    described_class.finish_test_span(execution_span, test: execution_test)
     described_class.instance_variable_get(:@execution_provider).force_flush
 
     expect(described_class).to be_enabled
@@ -682,7 +690,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     tracer = provider.tracer("suite")
     tracer.in_span("before-execution") { nil }
-    execution_span = described_class.start_test_span
+    execution_span = described_class.start_test_span(test: execution_test)
     late_child = nil
     described_class.with_test_span(execution_span) do
       tracer.in_span("child") { nil }
@@ -693,7 +701,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       detached.finish
       late_child = tracer.start_span("late-child")
     end
-    described_class.finish_test_span(execution_span)
+    described_class.finish_test_span(execution_span, test: execution_test)
     late_child.finish
     tracer.in_span("after-execution") { nil }
     described_class.instance_variable_get(:@execution_provider).force_flush
@@ -770,18 +778,23 @@ RSpec.describe Buildkite::TestCollector::OTel do
     processor = described_class.instance_variable_get(:@execution_provider)
       .instance_variable_get(:@span_processors).first
 
+    record_execution = lambda do
+      test = execution_test
+      described_class.finish_test_span(described_class.start_test_span(test: test), test: test)
+    end
+
     # Exporting one root fails and warns inline; the suite-end flush then
     # reports the run's total, which the inline warning did not cover.
-    described_class.finish_test_span(described_class.start_test_span)
+    record_execution.call
     expect { processor.force_flush }
       .to output(/dropped 1 test\.execution span\(s\) \(export-failure\)/).to_stderr
-    2.times { described_class.finish_test_span(described_class.start_test_span) }
+    2.times { record_execution.call }
     expect { described_class.force_flush }
       .to output(/dropped 3 test\.execution span\(s\) so far this run/).to_stderr
 
     # A warm worker's next suite run gets its own inline warning; shutdown
     # has nothing new to add.
-    described_class.finish_test_span(described_class.start_test_span)
+    record_execution.call
     expect { described_class.force_flush }
       .to output(/dropped 1 test\.execution span\(s\) \(export-failure\)/).to_stderr
     expect { described_class.shutdown }.not_to output.to_stderr
@@ -825,11 +838,11 @@ RSpec.describe Buildkite::TestCollector::OTel do
       .and_return(root_exporter, child_exporter)
     described_class.configure!(endpoint: "https://example.invalid/v1/traces")
 
-    execution_span = described_class.start_test_span
+    execution_span = described_class.start_test_span(test: execution_test)
     described_class.with_test_span(execution_span) do
       provider.tracer("suite").in_span("sampled-out-child") { nil }
     end
-    described_class.finish_test_span(execution_span)
+    described_class.finish_test_span(execution_span, test: execution_test)
     described_class.instance_variable_get(:@execution_provider).force_flush
     described_class.instance_variable_get(:@execution_child_processor).force_flush
 
@@ -853,8 +866,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     provider.shutdown
     provider = nil
-    execution_span = described_class.start_test_span
-    described_class.finish_test_span(execution_span)
+    execution_span = described_class.start_test_span(test: execution_test)
+    described_class.finish_test_span(execution_span, test: execution_test)
     described_class.instance_variable_get(:@execution_provider).force_flush
 
     expect(root_exporter.finished_spans.map(&:name)).to contain_exactly("test.execution")
@@ -1047,11 +1060,12 @@ RSpec.describe Buildkite::TestCollector::OTel do
         endpoint: "https://example.invalid/v1/traces",
         instrumentations: [],
       )
-      span = Buildkite::TestCollector::OTel.start_test_span
+      test = Struct.new(:otel_attributes, :otel_result).new({}, "passed")
+      span = Buildkite::TestCollector::OTel.start_test_span(test: test)
       Buildkite::TestCollector::OTel.with_test_span(span) do
         OpenTelemetry.tracer_provider.tracer("application").in_span("child") { nil }
       end
-      Buildkite::TestCollector::OTel.finish_test_span(span)
+      Buildkite::TestCollector::OTel.finish_test_span(span, test: test)
       Buildkite::TestCollector::OTel.instance_variable_get(:@execution_provider).force_flush
       Buildkite::TestCollector::OTel.instance_variable_get(:@execution_child_processor).force_flush
 
@@ -1091,8 +1105,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
       /OpenTelemetry child span export disabled: RuntimeError: existing OpenTelemetry tracer provider does not support adding a span processor; test.execution export remains enabled/
     ).to_stderr
 
-    execution_span = described_class.start_test_span
-    described_class.finish_test_span(execution_span)
+    execution_span = described_class.start_test_span(test: execution_test)
+    described_class.finish_test_span(execution_span, test: execution_test)
     described_class.instance_variable_get(:@execution_provider).force_flush
 
     expect(described_class).to be_enabled
@@ -1191,11 +1205,11 @@ RSpec.describe Buildkite::TestCollector::OTel do
       expect(described_class).to be_enabled
       expect(OpenTelemetry.tracer_provider).not_to equal(original)
 
-      root = described_class.start_test_span
+      root = described_class.start_test_span(test: execution_test)
       described_class.with_test_span(root) do
         OpenTelemetry.tracer_provider.tracer("test-suite").in_span("child") { nil }
       end
-      described_class.finish_test_span(root)
+      described_class.finish_test_span(root, test: execution_test)
       described_class.force_flush
 
       root = exporter.finished_spans.find { |span| span.name == "test.execution" }
@@ -1271,8 +1285,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
       # spans reach Buildkite through the forwarder attached to its provider.
       expect(OpenTelemetry.tracer_provider).to equal(suite_provider)
 
-      span = described_class.start_test_span
-      described_class.finish_test_span(span)
+      span = described_class.start_test_span(test: execution_test)
+      described_class.finish_test_span(span, test: execution_test)
       described_class.force_flush
 
       exported = exporter.finished_spans.fetch(0)
@@ -1336,7 +1350,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       ],
     )
 
-    span = described_class.start_test_span
+    span = described_class.start_test_span(test: execution_test)
     described_class.finish_test_span(span, test: test)
     provider.force_flush
 
