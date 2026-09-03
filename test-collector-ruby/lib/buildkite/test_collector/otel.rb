@@ -506,13 +506,9 @@ module Buildkite::TestCollector
         # each individual failure as a semconv exception event - the
         # native OTel shapes, which the server maps back to the
         # execution's failure_reason and failure_expanded.
-        reason = test.respond_to?(:otel_failure_reason) ? test.otel_failure_reason : nil
-        span.status = OpenTelemetry::Trace::Status.error(reason.to_s)
-
-        if test.respond_to?(:otel_exception_events)
-          test.otel_exception_events.each do |attributes|
-            span.add_event("exception", attributes: attributes)
-          end
+        span.status = OpenTelemetry::Trace::Status.error(test.otel_failure_reason.to_s)
+        test.otel_exception_events.each do |attributes|
+          span.add_event("exception", attributes: attributes)
         end
       rescue StandardError => e
         warn "[buildkite-test_collector] Could not record the OpenTelemetry test result: #{e.class}: #{e.message}"
@@ -557,8 +553,6 @@ module Buildkite::TestCollector
       end
 
       def precedes_start?(span, end_timestamp)
-        return false unless span.respond_to?(:start_timestamp) && span.start_timestamp
-
         (end_timestamp.to_r * 1_000_000_000).to_i < span.start_timestamp
       rescue StandardError
         false

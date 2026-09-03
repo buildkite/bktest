@@ -7,8 +7,8 @@ require "opentelemetry/trace/propagation/trace_context"
 
 RSpec.describe Buildkite::TestCollector::OTel do
   # A passed test that describes nothing, for specs about the span itself.
-  def execution_test(attributes = {})
-    double("test", otel_attributes: attributes, otel_result: "passed")
+  def execution_test
+    double("test", otel_attributes: {}, otel_result: "passed")
   end
 
   it "starts the test span as a trace root and links it to the Agent job trace" do
@@ -97,7 +97,15 @@ RSpec.describe Buildkite::TestCollector::OTel do
         self.ended = true
       end
     end
-    described = Struct.new(:otel_attributes, :otel_result)
+    described = Struct.new(:otel_attributes, :otel_result) do
+      def otel_failure_reason
+        nil
+      end
+
+      def otel_exception_events
+        []
+      end
+    end
 
     failed = span_class.new({})
     described_class.finish_test_span(
