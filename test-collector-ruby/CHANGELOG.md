@@ -9,7 +9,9 @@
   remains off by default, so suites that never opted in are unaffected. When
   OpenTelemetry cannot be used, the collector warns and uploads JSON instead:
   at configure time for a non-RSpec hook, and at suite start when the
-  OpenTelemetry gems are missing or Ruby is older than 3.3.
+  OpenTelemetry gems are missing or Ruby is older than 3.3. Without a token or
+  OTLP header variables, `otel_enabled` stays off and nothing is exported, the
+  same as the JSON path, which skips uploading without a token.
 * Warn prominently, usually naming the HTTP status or connection error, the first
   time Buildkite rejects or the collector drops `test.execution` spans, since
   OTLP is now the only upload path. When more are dropped after that, report the

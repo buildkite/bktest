@@ -20,6 +20,9 @@ module Buildkite::TestCollector
 
     PROCESSOR_TIMEOUT_SECONDS = 30
 
+    # Standard OTLP exporter header variables, most specific first.
+    HEADER_ENVIRONMENT_VARIABLES = %w[OTEL_EXPORTER_OTLP_TRACES_HEADERS OTEL_EXPORTER_OTLP_HEADERS].freeze
+
     TRACER_NAME = "buildkite-test-collector"
 
     TEST_SPAN_NAME = "test.execution"
@@ -56,6 +59,12 @@ module Buildkite::TestCollector
     class << self
       def enabled?
         !@tracer.nil?
+      end
+
+      # Whether the standard OTLP environment supplies request headers (which
+      # may carry the credential, as bktec's relay does).
+      def headers_from_environment?
+        HEADER_ENVIRONMENT_VARIABLES.any? { |name| !ENV[name].to_s.empty? }
       end
 
       def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, instrumentations: nil, tags: {})
@@ -586,8 +595,7 @@ module Buildkite::TestCollector
       end
 
       def otlp_headers_from_environment
-        raw = [ENV["OTEL_EXPORTER_OTLP_TRACES_HEADERS"], ENV["OTEL_EXPORTER_OTLP_HEADERS"]]
-          .find { |value| !value.to_s.empty? }
+        raw = HEADER_ENVIRONMENT_VARIABLES.map { |name| ENV[name] }.find { |value| !value.to_s.empty? }
         return {} unless raw
 
         entries = raw.split(",")

@@ -195,6 +195,11 @@ OTLP Authorization header, spans go directly to Buildkite using
 `BUILDKITE_ANALYTICS_TOKEN`: either the suite API token or an agent OIDC token
 with the `write_uploads` scope.
 
+With neither a token nor OTLP header variables set, nothing is exported and
+`otel_enabled` is left off for the run, so a suite that hard-codes
+`otel_enabled: true` stays quiet on a developer machine. This matches the JSON
+path, which does not upload without a token.
+
 OpenTelemetry's SDK owns batching, retries, and transport. `test.execution`
 spans have a reserved, faster-draining queue and exporter. Forwarded children
 use a separate queue and exporter, so a child flood or invalid child request

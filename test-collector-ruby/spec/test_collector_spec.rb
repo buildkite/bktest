@@ -89,7 +89,36 @@ RSpec.describe Buildkite::TestCollector do
       )
     end
 
+    it "leaves OpenTelemetry off without a credential, like the JSON path" do
+      allow(Buildkite::TestCollector::OTel).to receive(:configure!)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
+      Buildkite::TestCollector::OTel::HEADER_ENVIRONMENT_VARIABLES.each { |name| env_overlay[name] = nil }
+
+      expect {
+        Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
+        Buildkite::TestCollector.start_otel
+      }.not_to output.to_stderr
+
+      expect(Buildkite::TestCollector.otel_enabled?).to eq false
+      expect(Buildkite::TestCollector::OTel).not_to have_received(:configure!)
+    end
+
+    it "keeps OpenTelemetry on when the OTLP environment supplies the headers" do
+      allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "run-key" } }
+      allow(Buildkite::TestCollector::OTel).to receive(:configure!)
+      allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { true }
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
+      env_overlay["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "Authorization=Bearer%20relay"
+
+      Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
+      Buildkite::TestCollector.start_otel
+
+      expect(Buildkite::TestCollector.otel_enabled?).to eq true
+      expect(Buildkite::TestCollector::OTel).to have_received(:configure!).with(hash_including(api_token: nil))
+    end
+
     it "can override the endpoint for local development" do
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "MyToken"
       env_overlay["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] = "http://tests-otlp.buildkite.localhost/v1/traces"
       allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "run-key" } }
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
@@ -144,6 +173,7 @@ RSpec.describe Buildkite::TestCollector do
       allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { false }
       allow(Buildkite::TestCollector).to receive(:hook_into)
       allow(Buildkite::TestCollector::Network).to receive(:configure)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "MyToken"
       allow(Buildkite::TestCollector::Object).to receive(:configure)
 
       Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
@@ -186,6 +216,7 @@ RSpec.describe Buildkite::TestCollector do
       allow(Buildkite::TestCollector::Network).to receive(:configure)
       allow(Buildkite::TestCollector::Object).to receive(:configure)
       allow(ActiveSupport::Notifications).to receive(:subscribe)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "MyToken"
 
       Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
       2.times { Buildkite::TestCollector.configure(hook: hook) }

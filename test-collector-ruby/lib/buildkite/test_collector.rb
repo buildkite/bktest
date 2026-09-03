@@ -61,6 +61,14 @@ module Buildkite
           "the #{test_runner} hook will upload results as JSON instead"
         otel_enabled = false
       end
+      # Without a credential there is nothing to submit, and the JSON path
+      # already treats that as "not reporting" (Uploader.upload skips the
+      # request without a token). Take the same quiet path here rather than
+      # export unauthenticated spans and warn that they were dropped, which
+      # is what a developer running the suite locally would otherwise see.
+      if otel_enabled && api_token.nil? && !Buildkite::TestCollector::OTel.headers_from_environment?
+        otel_enabled = false
+      end
       self.otel_enabled = otel_enabled
       self.batch_size = ENV.fetch("BUILDKITE_ANALYTICS_UPLOAD_BATCH_SIZE") { DEFAULT_UPLOAD_BATCH_SIZE }.to_i
 

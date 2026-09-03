@@ -16,7 +16,7 @@ RSpec.describe "RSpec OpenTelemetry setup" do
     library_loaded_when_configured = nil
     allow(Buildkite::TestCollector::CI).to receive(:env) { run_env }
     allow(ENV).to receive(:[]).and_call_original
-    allow(ENV).to receive(:[]).with("BUILDKITE_ANALYTICS_TOKEN").and_return(nil)
+    allow(ENV).to receive(:[]).with("BUILDKITE_ANALYTICS_TOKEN").and_return("MyToken")
     allow(ENV).to receive(:[]).with("BUILDKITE_ANALYTICS_OTLP_ENDPOINT").and_return(nil)
     allow(Buildkite::TestCollector::OTel).to receive(:configure!) do
       library_loaded_when_configured = defined?(LateLoadedApplicationLibrary)
@@ -36,7 +36,7 @@ RSpec.describe "RSpec OpenTelemetry setup" do
 
     expect(Buildkite::TestCollector::OTel).to have_received(:configure!).with(
       endpoint: "https://tests-otlp.buildkite.com/v1/traces",
-      api_token: nil,
+      api_token: "MyToken",
       run_env: run_env,
       instrumentations: nil,
       tags: {},
@@ -45,6 +45,8 @@ RSpec.describe "RSpec OpenTelemetry setup" do
   end
 
   it "starts setup after the application configures its provider" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("BUILDKITE_ANALYTICS_TOKEN").and_return("MyToken")
     suite_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     active_provider = OpenTelemetry::Internal::ProxyTracerProvider.new
     provider_when_configured = nil
