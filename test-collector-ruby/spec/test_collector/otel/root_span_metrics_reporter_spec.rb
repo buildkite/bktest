@@ -18,7 +18,7 @@ RSpec.describe reporter_class do
       end.to output(
         "[buildkite-test_collector] TEST RESULTS MISSING: OpenTelemetry dropped 3 test.execution span(s) (buffer-full).\n" \
           "[buildkite-test_collector] OpenTelemetry is the only upload path, so those test executions were not uploaded " \
-          "to Buildkite Test Engine. See the OpenTelemetry errors above for details.\n"
+          "to Buildkite Test Engine.\n"
       ).to_stderr
     end
 
@@ -36,6 +36,21 @@ RSpec.describe reporter_class do
       end.to output(
         /dropped 12 test\.execution span\(s\) \(export-failure, last OTLP failure: 403\)\./
       ).to_stderr
+    end
+
+    it "forgets a failure once a retried export succeeds" do
+      # A 503 that the exporter retried successfully must not be blamed for a
+      # later drop whose own failure path records no metric.
+      reporter.add_to_counter("otel.otlp_exporter.failure", labels: { "reason" => "503" })
+      reporter.add_to_counter("otel.bsp.export.success")
+
+      expect do
+        reporter.add_to_counter(
+          "otel.bsp.dropped_spans",
+          increment: 1,
+          labels: { "reason" => "export-failure" },
+        )
+      end.to output(/\(export-failure\)\./).to_stderr
     end
 
     it "does not blame an earlier export failure for a full buffer" do

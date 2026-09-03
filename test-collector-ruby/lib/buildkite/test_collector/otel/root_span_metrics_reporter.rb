@@ -21,6 +21,10 @@ module Buildkite
           case metric
           when "otel.otlp_exporter.failure"
             @mutex.synchronize { @last_export_failure = labels["reason"] }
+          when "otel.bsp.export.success"
+            # A retried request can fail and then succeed; only a failure
+            # still standing when a batch is dropped explains that drop.
+            @mutex.synchronize { @last_export_failure = nil }
           when "otel.bsp.dropped_spans"
             warn_dropped(increment, labels["reason"])
           end
@@ -47,7 +51,7 @@ module Buildkite
 
           warn <<~MESSAGE.chomp
             [buildkite-test_collector] TEST RESULTS MISSING: OpenTelemetry dropped #{count} test.execution span(s) (#{detail}).
-            [buildkite-test_collector] OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine. See the OpenTelemetry errors above for details.
+            [buildkite-test_collector] OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.
           MESSAGE
         end
       end
