@@ -210,9 +210,10 @@ run. Reporting a new run requires a new process.
 
 ## When something goes wrong
 
-Export never fails a test. If root setup fails, the collector warns prominently;
-the suite continues, but no results are uploaded because there is no JSON
-fallback. If optional child setup or attachment fails, the collector warns,
+Export never fails a test. If root setup fails (for example on Ruby older than
+3.3, or without the OpenTelemetry gems), the collector warns and uploads the
+run's results as JSON instead, exactly as it does with `otel_enabled` off. If
+optional child setup or attachment fails, the collector warns,
 cleans up that path, and continues exporting roots. The suite-end flush and the
 process-exit shutdown each give the OpenTelemetry SDK a 30-second budget to
 export buffered spans; the SDK's own retry backoff can run past it when the

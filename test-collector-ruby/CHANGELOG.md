@@ -6,9 +6,10 @@
   submission is now OTLP-only for RSpec. `otel_enabled: true` submits executions
   as spans without also uploading legacy JSON, and the separate `otel_only`
   option has been removed (passing it now raises `ArgumentError`). OpenTelemetry
-  remains off by default, so suites that never opted in are unaffected. Passing
-  `otel_enabled: true` with a non-RSpec hook now warns that results fall back to
-  JSON.
+  remains off by default, so suites that never opted in are unaffected. When
+  OpenTelemetry cannot be used, the collector warns and uploads JSON instead:
+  at configure time for a non-RSpec hook, and at suite start when the
+  OpenTelemetry gems are missing or Ruby is older than 3.3.
 * Warn prominently, naming the HTTP status or connection error, the first time
   Buildkite rejects or the collector drops `test.execution` spans, since OTLP is
   now the only upload path. When more are dropped after that, report the total

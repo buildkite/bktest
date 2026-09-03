@@ -137,18 +137,25 @@ RSpec.describe Buildkite::TestCollector do
       )
     end
 
-    it "warns prominently when OpenTelemetry is enabled but could not be configured" do
-      # configure! is stubbed to do nothing, so OTel stays disabled: the
-      # OTLP-only run would silently upload nothing without the banner.
+    it "falls back to JSON when OpenTelemetry is enabled but could not be configured" do
+      # configure! is stubbed to do nothing, so OTel stays disabled (as when
+      # the gems are missing or Ruby is too old); the run must not upload nothing.
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
       allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { false }
       allow(Buildkite::TestCollector).to receive(:hook_into)
+      allow(Buildkite::TestCollector::Network).to receive(:configure)
+      allow(Buildkite::TestCollector::Object).to receive(:configure)
 
       Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
+      expect(Buildkite::TestCollector::Network).not_to have_received(:configure)
 
       expect {
         Buildkite::TestCollector.start_otel
-      }.to output(/NO TEST RESULTS UPLOADED/).to_stderr
+      }.to output(/OpenTelemetry could not be configured .*; uploading results as JSON instead/).to_stderr
+
+      expect(Buildkite::TestCollector.otel_enabled?).to eq false
+      expect(Buildkite::TestCollector::Network).to have_received(:configure)
+      expect(Buildkite::TestCollector::Object).to have_received(:configure)
     end
 
     it "routes annotations only to OpenTelemetry when it is enabled" do

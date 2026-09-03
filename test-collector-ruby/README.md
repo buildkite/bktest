@@ -99,15 +99,16 @@ Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
 
 When enabled, OpenTelemetry is the only submission path. Every root includes
 `buildkite.execution.via=otlp`, which tells Buildkite to synthesize the test
-execution from the span. Nothing is uploaded to `/v1/uploads`, so there is no
-JSON fallback.
+execution from the span. Nothing is uploaded to `/v1/uploads`.
 
 This requires Ruby 3.3 or newer and the optional `opentelemetry-sdk` and
-`opentelemetry-exporter-otlp` gems, which the collector does not install.
+`opentelemetry-exporter-otlp` gems, which the collector does not install. If
+OpenTelemetry cannot be configured, the collector warns and uploads results as
+JSON instead.
 
-If OpenTelemetry cannot be configured, or Buildkite rejects the exported
-`test.execution` spans, the collector prints a prominent warning. Tests continue
-to run, but the affected results are not uploaded. See the
+If Buildkite rejects the exported `test.execution` spans, the collector prints a
+prominent warning. Tests continue to run, but the affected results are not
+uploaded. See the
 [OpenTelemetry guide](docs/opentelemetry.md) for dependency setup,
 instrumentation, authentication, attributes, and current limitations.
 

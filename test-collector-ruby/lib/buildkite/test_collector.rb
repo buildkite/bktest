@@ -96,38 +96,20 @@ module Buildkite
       return unless options
 
       Buildkite::TestCollector::OTel.configure!(**options)
-      warn_otel_disabled unless Buildkite::TestCollector::OTel.enabled?
+      return if Buildkite::TestCollector::OTel.enabled?
+
+      # Nothing has run yet, so the legacy path can still cover the whole
+      # suite: the Reporter, per-example tracer, and artifact all read
+      # otel_enabled? lazily.
+      warn "[buildkite-test_collector] otel_enabled is set, but OpenTelemetry could not be configured " \
+        "(see the warning above); uploading results as JSON instead"
+      self.otel_enabled = false
+      enable_tracing!
     end
 
     def self.otel_enabled?
       !!otel_enabled
     end
-
-    # OTLP has no JSON fallback, so make setup failures prominent.
-    def self.warn_otel_disabled
-      # Buildkite log output renders ANSI colour even though it isn't a TTY.
-      red, reset = if $stderr.tty? || ENV["BUILDKITE"]
-        ["\e[31;1m", "\e[0m"]
-      else
-        ["", ""]
-      end
-
-      warn <<~MESSAGE
-        #{red}
-        ############################################################
-        ##                                                        ##
-        ##  buildkite-test_collector: NO TEST RESULTS UPLOADED!   ##
-        ##                                                        ##
-        ##  otel_enabled is set, but OpenTelemetry could not be   ##
-        ##  configured (see the warning above). This mode has no  ##
-        ##  JSON fallback, so this run will upload NO results to  ##
-        ##  Buildkite Test Engine.                                ##
-        ##                                                        ##
-        ############################################################
-        #{reset}
-      MESSAGE
-    end
-    private_class_method :warn_otel_disabled
 
     def self.hook_into(hook)
       file = "test_collector/library_hooks/#{hook}"
