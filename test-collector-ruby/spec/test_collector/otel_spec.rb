@@ -209,6 +209,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider.force_flush
 
     expect(exporter.finished_spans.fetch(0).attributes).to include(
+      "buildkite.execution.via" => "otlp",
       "test.case.result.status" => "pass",
     )
   ensure
@@ -753,6 +754,37 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(exporter_reporters.first).to be_a(root_reporter)
     expect(processor_reporters.first).to equal(exporter_reporters.first)
     expect(exporter_reporters.drop(1)).to all(be_nil)
+  ensure
+    described_class.shutdown
+  end
+
+  it "reports each suite run's total dropped roots when every export fails" do
+    failing_exporter = Class.new do
+      def export(_spans, timeout: nil) = OpenTelemetry::SDK::Trace::Export::FAILURE
+      def force_flush(timeout: nil) = OpenTelemetry::SDK::Trace::Export::SUCCESS
+      def shutdown(timeout: nil) = OpenTelemetry::SDK::Trace::Export::SUCCESS
+    end.new
+    allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(failing_exporter)
+    allow(OpenTelemetry).to receive(:handle_error)
+    described_class.configure!(endpoint: "https://example.invalid/v1/traces", instrumentations: [])
+    processor = described_class.instance_variable_get(:@execution_provider)
+      .instance_variable_get(:@span_processors).first
+
+    # Exporting one root fails and warns inline; the suite-end flush then
+    # reports the run's total, which the inline warning did not cover.
+    described_class.finish_test_span(described_class.start_test_span)
+    expect { processor.force_flush }
+      .to output(/dropped 1 test\.execution span\(s\) \(export-failure\)/).to_stderr
+    2.times { described_class.finish_test_span(described_class.start_test_span) }
+    expect { described_class.force_flush }
+      .to output(/dropped 3 test\.execution span\(s\) in total/).to_stderr
+
+    # A warm worker's next suite run gets its own inline warning; shutdown
+    # has nothing new to add.
+    described_class.finish_test_span(described_class.start_test_span)
+    expect { described_class.force_flush }
+      .to output(/dropped 1 test\.execution span\(s\) \(export-failure\)/).to_stderr
+    expect { described_class.shutdown }.not_to output.to_stderr
   ensure
     described_class.shutdown
   end

@@ -241,6 +241,8 @@ module Buildkite::TestCollector
         if error
           warn "[buildkite-test_collector] Could not flush OpenTelemetry spans: #{error.class}: #{error.message}"
         end
+        # The suite's drops are all counted once its roots have been flushed.
+        @root_metrics_reporter&.warn_total
       end
 
       def shutdown
@@ -250,11 +252,15 @@ module Buildkite::TestCollector
         if error
           warn "[buildkite-test_collector] Could not shut down OpenTelemetry span export: #{error.class}: #{error.message}"
         end
+        # Anything dropped since the last suite flush, including the final
+        # flush's own drops, has been counted by now.
+        @root_metrics_reporter&.warn_total
       ensure
         @execution_provider = nil
         @execution_child_processor = nil
         @execution_child_forwarder = nil
         @exporters = nil
+        @root_metrics_reporter = nil
         @api_token = nil
         @authorization_from_environment = nil
         @execution_attributes = nil
@@ -278,13 +284,15 @@ module Buildkite::TestCollector
       end
 
       def build_execution_provider(endpoint, headers, resource)
+        # Retained so shutdown can report the final dropped-root count.
+        @root_metrics_reporter = RootSpanMetricsReporter.new
         execution_processor = batch_processor(
           endpoint,
           headers,
           max_queue_size: ROOT_MAX_QUEUE_SIZE,
           max_export_batch_size: ROOT_MAX_EXPORT_BATCH_SIZE,
           schedule_delay: ROOT_SCHEDULE_DELAY_MILLISECONDS,
-          metrics_reporter: RootSpanMetricsReporter.new,
+          metrics_reporter: @root_metrics_reporter,
         )
         execution_provider = OpenTelemetry::SDK::Trace::TracerProvider.new(
           sampler: OpenTelemetry::SDK::Trace::Samplers::ALWAYS_ON,

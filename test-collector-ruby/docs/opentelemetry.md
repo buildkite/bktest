@@ -249,5 +249,8 @@ Export failures are reported through OpenTelemetry's own logger. Because
 `test.execution` spans are the submission, the collector also warns prominently
 the first time its reserved root queue drops any of them, naming the HTTP
 status or connection error that caused the export to fail (for example a `403`
-when OTLP ingest is not enabled for the organization). Normal child-span queue overflow is
-not logged by the OpenTelemetry SDK.
+when OTLP ingest is not enabled for the organization). If more are dropped
+after that, the suite-end flush reports the run's total so a persistent failure
+is not mistaken for a one-off; each suite run in a warm worker gets its own
+warning and total. Normal child-span queue overflow is not logged by the
+OpenTelemetry SDK.

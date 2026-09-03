@@ -72,4 +72,46 @@ RSpec.describe reporter_class do
       end.not_to output.to_stderr
     end
   end
+
+  describe "#warn_total" do
+    def drop(count, reason: "export-failure")
+      reporter.add_to_counter("otel.bsp.dropped_spans", increment: count, labels: { "reason" => reason })
+    end
+
+    it "reports every root the suite run dropped" do
+      # A persistent failure drops every batch, but only the first is warned
+      # about inline; the total is what tells the reader the whole run is gone.
+      expect { drop(512) }.to output(/dropped 512 test\.execution span\(s\)/).to_stderr
+      drop(512)
+      drop(7, reason: "terminating")
+
+      expect { reporter.warn_total }.to output(
+        "[buildkite-test_collector] TEST RESULTS MISSING: OpenTelemetry dropped 1031 test.execution span(s) " \
+          "in total; those test executions were not uploaded to Buildkite Test Engine.\n"
+      ).to_stderr
+    end
+
+    it "stays silent when the first warning already named every dropped root" do
+      expect { drop(3) }.to output.to_stderr
+
+      expect { reporter.warn_total }.not_to output.to_stderr
+    end
+
+    it "starts a fresh count and inline warning for the next suite run" do
+      # Warm workers run several suites per process; each run's log must
+      # state its own losses rather than depending on process exit.
+      drop(512)
+      drop(512)
+      expect { reporter.warn_total }.to output(/dropped 1024 test\.execution span\(s\) in total/).to_stderr
+
+      expect { drop(2) }.to output(/dropped 2 test\.execution span\(s\) \(export-failure\)/).to_stderr
+      expect { reporter.warn_total }.not_to output.to_stderr
+    end
+
+    it "stays silent when nothing was dropped" do
+      reporter.add_to_counter("otel.bsp.export.success")
+
+      expect { reporter.warn_total }.not_to output.to_stderr
+    end
+  end
 end
