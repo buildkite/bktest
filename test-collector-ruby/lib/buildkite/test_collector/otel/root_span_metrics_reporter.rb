@@ -33,18 +33,17 @@ module Buildkite
         private
 
         def warn_dropped(count, reason)
-          should_warn, export_failure = @mutex.synchronize do
-            next [false, nil] if @warned
+          export_failure = @mutex.synchronize do
+            return if @warned
 
             @warned = true
-            [true, @last_export_failure]
+            @last_export_failure
           end
-          return unless should_warn
 
-          detail = reason.to_s
           # The exporter's reason is an HTTP status for rejected requests and an
           # exception class name for connection errors, so "failure" covers both.
-          detail += ", last OTLP failure: #{export_failure}" if reason == "export-failure" && export_failure
+          cause = export_failure if reason == "export-failure"
+          detail = [reason, cause && "last OTLP failure: #{cause}"].compact.join(", ")
 
           warn <<~MESSAGE.chomp
             [buildkite-test_collector] TEST RESULTS MISSING: OpenTelemetry dropped #{count} test.execution span(s) (#{detail}).

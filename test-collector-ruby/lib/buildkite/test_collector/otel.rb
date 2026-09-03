@@ -300,18 +300,22 @@ module Buildkite::TestCollector
         raise
       end
 
-      # The exporter and its processor share one metrics reporter so the
-      # reporter can pair a dropped batch with the HTTP status that caused it.
-      def batch_processor(endpoint, headers, options = {})
+      # One metrics reporter serves both the exporter and its processor, so it
+      # can pair a dropped batch with the HTTP failure that caused it.
+      def batch_processor(endpoint, headers, metrics_reporter: nil, **processor_options)
         exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(
           endpoint: endpoint,
           headers: headers,
-          metrics_reporter: options[:metrics_reporter],
+          metrics_reporter: metrics_reporter,
         )
         # Retained so refresh_authorization can reach the headers each
         # exporter snapshotted at construction.
         (@exporters ||= []) << exporter
-        OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(exporter, **options)
+        OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(
+          exporter,
+          metrics_reporter: metrics_reporter,
+          **processor_options,
+        )
       end
 
       # Run identity (run key, resource, Run-Key header) is fixed for the

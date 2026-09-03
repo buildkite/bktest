@@ -660,9 +660,10 @@ RSpec.describe Buildkite::TestCollector::OTel do
       )
       .ordered
       .and_call_original
+    # Children keep the SDK defaults, including its no-op metrics reporter.
     expect(OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor)
       .to receive(:new)
-      .with(child_exporter)
+      .with(child_exporter, metrics_reporter: nil)
       .ordered
       .and_call_original
     described_class.configure!(endpoint: "https://example.invalid/v1/traces")
