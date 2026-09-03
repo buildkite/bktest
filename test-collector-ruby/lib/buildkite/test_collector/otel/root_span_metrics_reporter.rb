@@ -3,15 +3,8 @@
 module Buildkite
   module TestCollector
     module OTel
-      # BatchSpanProcessor silently drops spans by default. Roots are the
-      # submission itself and have no JSON fallback, so a dropped root is a
-      # missing test execution: warn once per suite run, prominently, and say
-      # why, then report that run's full count at its end so a persistent
-      # failure that drops every batch is not mistaken for a one-off.
-      #
-      # Shared by the root exporter and its processor: the exporter reports
-      # the HTTP status of a rejected request, then the processor reports the
-      # batch it dropped as a result.
+      # Warns about dropped execution roots and correlates processor drops with
+      # exporter failures. Counts reset when reported at suite end or shutdown.
       class RootSpanMetricsReporter
         def initialize
           @mutex = Mutex.new
@@ -37,10 +30,6 @@ module Buildkite
 
         def observe_value(_metric, value:, labels: {}); end
 
-        # Called after each suite's flush and after shutdown, so the count
-        # covers everything that suite run dropped. Silent when the inline
-        # warning already named every one. Re-arms the inline warning, so a
-        # warm worker's next suite run reports its own losses too.
         def warn_total
           total, warned = @mutex.synchronize do
             counts = [@dropped_since_report, @warned_count]

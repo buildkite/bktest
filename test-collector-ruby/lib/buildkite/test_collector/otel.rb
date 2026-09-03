@@ -241,7 +241,9 @@ module Buildkite::TestCollector
         if error
           warn "[buildkite-test_collector] Could not flush OpenTelemetry spans: #{error.class}: #{error.message}"
         end
-        # The suite's drops are all counted once its roots have been flushed.
+        # Report what this suite run has dropped so far. The SDK's flush stops
+        # at the first rejected batch and re-queues the rest, so a persistent
+        # failure leaves a balance that drains, and is reported, at shutdown.
         @root_metrics_reporter&.warn_total
       end
 
@@ -252,8 +254,6 @@ module Buildkite::TestCollector
         if error
           warn "[buildkite-test_collector] Could not shut down OpenTelemetry span export: #{error.class}: #{error.message}"
         end
-        # Anything dropped since the last suite flush, including the final
-        # flush's own drops, has been counted by now.
         @root_metrics_reporter&.warn_total
       ensure
         @execution_provider = nil
@@ -284,7 +284,6 @@ module Buildkite::TestCollector
       end
 
       def build_execution_provider(endpoint, headers, resource)
-        # Retained so shutdown can report the final dropped-root count.
         @root_metrics_reporter = RootSpanMetricsReporter.new
         execution_processor = batch_processor(
           endpoint,
@@ -306,8 +305,6 @@ module Buildkite::TestCollector
         raise
       end
 
-      # One metrics reporter serves both the exporter and its processor, so it
-      # can pair a dropped batch with the HTTP failure that caused it.
       def batch_processor(endpoint, headers, metrics_reporter: nil, **processor_options)
         exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(
           endpoint: endpoint,

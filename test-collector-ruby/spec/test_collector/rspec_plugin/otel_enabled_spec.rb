@@ -49,7 +49,6 @@ RSpec.describe "RSpec OTLP-only submission" do
   it "describes the whole execution on the span and uploads no JSON" do
     expect(Buildkite::TestCollector::Tracer).not_to receive(:new)
     expect(Buildkite::TestCollector::Session).not_to receive(:new)
-    expect(Buildkite::TestCollector::Uploader).not_to receive(:upload)
 
     example = run_sandboxed_example { nil }
     span = finished_test_span

@@ -8,20 +8,21 @@
 When `otel_enabled` is true, spans are the only submission path. Every root has
 `buildkite.execution.via=otlp`, which makes the span itself the submission:
 Buildkite synthesizes the execution from it server-side, with nothing sent to
-`/v1/uploads`. Resources identify the suite, CI run and worker, and VCS ref that
-produced telemetry. Test Engine run metadata and any `tags:` you configure live
-only on each `test.execution` root, not its children. See the
-[README](../README.md#opentelemetry-submission-experimental) for how to turn it
-on, and [OTLP execution attributes](#otlp-execution-attributes) below for what's
-sent.
+`/v1/uploads` and no JSON artifact written for `artifact_path`. Resources
+identify the suite, CI run and worker, and VCS ref that produced telemetry. Test
+Engine run metadata and any `tags:` you configure live only on each
+`test.execution` root, not its children.
 
 Every RSpec example gets an OpenTelemetry `test.execution` root. The collector
 can configure a provider and export instrumented child spans showing what the
 test did and where its time went. The traces are sent to Buildkite and shown
 against the test's execution.
 
-It is off by default. See the [README](../README.md#opentelemetry-submission-experimental)
-for how to turn it on.
+OpenTelemetry submission is off by default:
+
+```ruby
+Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
+```
 
 Export requires Ruby 3.3 or newer and the `opentelemetry-sdk` and
 `opentelemetry-exporter-otlp` gems. These optional dependencies are not installed
@@ -39,31 +40,11 @@ test.execution  "Buildkite::Pipeline creates a build"   12.4ms
 └── SELECT      pipelines                                1.2ms
 ```
 
-One example is one trace. The span is never nested under anything else, so a
-trace always belongs to exactly one test. On Buildkite Agent v3.110 or newer,
-the root span links to the Agent's propagated job trace when tracing is enabled,
-letting you navigate between them without combining every test into one trace.
-
-## What's on the span
-
-Each `tags:` entry passed to `configure` is attached to every test root as a
-`buildkite.tag.<key>` span attribute. Per-execution tags use the same prefix.
-
-| Attribute | Value |
-| --- | --- |
-| `buildkite.test.scope` | the example group |
-| `buildkite.test.name` | the example's description |
-| `test.case.name` | the example's full description |
-| `test.suite.name` | the example group |
-| `code.file.path` | the file the test is in |
-| `code.line.number` | the line, or the call site for a shared example |
-| `test.case.result.status` | `pass`, `fail` or `skipped` |
-| `buildkite.test.execution.external_id` | the collector-generated execution ID |
-| `buildkite.tag.<key>` | each `configure` or `tag_execution` tag |
-
-A failed test also sets the span's status to error with the failure summary as
-its description. Each failure is recorded as a semconv `exception` event with
-`exception.message` and `exception.stacktrace` attributes.
+One example is one trace. Child spans share the root's trace ID, and the root is
+never nested under anything else, so a trace always belongs to exactly one test.
+On Buildkite Agent v3.110 or newer, the root span links to the Agent's propagated
+job trace when tracing is enabled, letting you navigate between them without
+combining every test into one trace.
 
 Three things worth knowing:
 
@@ -131,14 +112,9 @@ operations do not need:
 | `buildkite.test.execution.external_id` | the execution's collector-generated ID | external ID |
 | `buildkite.tag.<key>` | each `configure` or `tag_execution` tag | execution tag `<key>` |
 
-The server maps the span's failure status and exception events back to the
-execution's failure reason and expanded failure detail.
-
-## Finding a test's trace
-
-With `otel_enabled`, the span is the execution. Child spans share the root's
-trace ID through normal context propagation, so one trace holds everything the
-test did.
+A failed test sets the span's status to error with the failure summary as its
+description. Each failure is a semconv `exception` event; the server maps these
+back to the execution's failure reason and expanded failure detail.
 
 ## Recommended setup: suites without OpenTelemetry
 
@@ -250,7 +226,10 @@ Export failures are reported through OpenTelemetry's own logger. Because
 the first time its reserved root queue drops any of them, naming the HTTP
 status or connection error that caused the export to fail (for example a `403`
 when OTLP ingest is not enabled for the organization). If more are dropped
-after that, the suite-end flush reports the run's total so a persistent failure
-is not mistaken for a one-off; each suite run in a warm worker gets its own
-warning and total. Normal child-span queue overflow is not logged by the
-OpenTelemetry SDK.
+after that, the suite-end flush and the process-exit shutdown each report the
+total dropped since the last report, so a persistent failure is not mistaken
+for a one-off. The suite-end flush stops at the first rejected batch and leaves
+the rest queued, so when many roots are buffered the balance drains, and is
+counted, at process exit. Each suite run in a warm worker gets its own warning
+and totals. Normal child-span queue overflow is not logged by the OpenTelemetry
+SDK.

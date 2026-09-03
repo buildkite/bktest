@@ -99,46 +99,17 @@ Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
 
 When enabled, OpenTelemetry is the only submission path. Every root includes
 `buildkite.execution.via=otlp`, which tells Buildkite to synthesize the test
-execution from the span. Nothing is uploaded to `/v1/uploads`, and the legacy
-`Net::HTTP` and `Object` tracing patches are not installed.
+execution from the span. Nothing is uploaded to `/v1/uploads`, so there is no
+JSON fallback.
 
-Execution roots use a private AlwaysOn provider so a suite's sampling policy
-cannot remove them. The collector also configures a global provider for child
-spans and installs all applicable instrumentation registered when the suite
-starts. Because the OpenTelemetry dependencies require Ruby 3.3+, the collector
-does not install them automatically:
-
-```ruby
-# Gemfile
-gem "opentelemetry-exporter-otlp", "~> 0.34", require: false
-gem "opentelemetry-sdk", "~> 1.13", require: false
-gem "opentelemetry-instrumentation-pg", require: false
-
-# spec/spec_helper.rb
-require "opentelemetry-instrumentation-pg"
-require "buildkite/test_collector"
-
-Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
-```
-
-Adding a gem to the Gemfile may auto-require it in applications that call
-`Bundler.require`, but that is not guaranteed. An explicit `require` is the
-recommended setup. To disable instrumentations and export only root
-`test.execution` spans, set `otel_instrumentations: []`. Any other value is
-reserved for a future release and disables span export with a warning. See the
-[OpenTelemetry guide](docs/opentelemetry.md#choosing-instrumentation) for more.
-
-The collector honors standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (or the
-generic `OTEL_EXPORTER_OTLP_HEADERS`) and gives them precedence over its own
-headers, including `Authorization`. Without an OTLP Authorization header, spans
-use `BUILDKITE_ANALYTICS_TOKEN`: the suite API token from the setup above, or an
-agent OIDC token with the `write_uploads` scope.
+This requires Ruby 3.3 or newer and the optional `opentelemetry-sdk` and
+`opentelemetry-exporter-otlp` gems, which the collector does not install.
 
 If OpenTelemetry cannot be configured, or Buildkite rejects the exported
 `test.execution` spans, the collector prints a prominent warning. Tests continue
-to run, but there is no JSON fallback and the affected results are not uploaded.
-See the [OpenTelemetry guide](docs/opentelemetry.md) for setup details and
-current limitations.
+to run, but the affected results are not uploaded. See the
+[OpenTelemetry guide](docs/opentelemetry.md) for dependency setup,
+instrumentation, authentication, attributes, and current limitations.
 
 ## More information
 
