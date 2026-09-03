@@ -45,9 +45,8 @@ RSpec.describe "RSpec OpenTelemetry setup" do
   end
 
   it "starts setup after the application configures its provider" do
-    default_provider = OpenTelemetry::Internal::ProxyTracerProvider.new
     suite_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
-    active_provider = default_provider
+    active_provider = OpenTelemetry::Internal::ProxyTracerProvider.new
     provider_when_configured = nil
     allow(OpenTelemetry).to receive(:tracer_provider) { active_provider }
     allow(Buildkite::TestCollector::OTel).to receive(:configure!) do
