@@ -33,9 +33,7 @@ module Buildkite::TestCollector::RSpecPlugin
     end
 
     # Read at reporter time, when the result is final.
-    def otel_result
-      result
-    end
+    alias_method :otel_result, :result
 
     # What the span says about the test itself. OTel adds the submission
     # marker and run metadata that describe every execution root.
@@ -49,8 +47,8 @@ module Buildkite::TestCollector::RSpecPlugin
         "code.line.number" => source_line_number,
       }
       attributes["buildkite.test.execution.external_id"] = external_id if external_id
+      prefix = Buildkite::TestCollector::OTel::TAG_ATTRIBUTE_PREFIX
       tags&.each do |key, value|
-        prefix = Buildkite::TestCollector::OTel::TAG_ATTRIBUTE_PREFIX
         attributes["#{prefix}#{key}"] = strip_invalid_utf8_chars(value.to_s)
       end
       attributes

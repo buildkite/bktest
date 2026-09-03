@@ -154,53 +154,14 @@ module Buildkite::TestCollector
         Rational(Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond), 1_000_000_000)
       end
 
+      # Each step warns and moves on rather than raising, so the span always
+      # finishes: a half-described execution beats a missing one.
       def finish_test_span(span, test:, end_timestamp: nil)
         return unless span
 
-        test_attributes = {}
-        begin
-          result = test.otel_result
-          status = RESULT_STATUSES[result]
-          span.set_attribute(RESULT_ATTRIBUTE, status) if status
-
-          # The Ruby SDK keeps the earliest attributes when a span reaches
-          # its limit, so record the test itself before run metadata or tags.
-          test_attributes = test.otel_attributes.compact
-          test_attributes.each do |key, value|
-            span.set_attribute(key, value) unless key.start_with?(TAG_ATTRIBUTE_PREFIX)
-          end
-
-          if result == "failed"
-            # The failure summary rides as the span status description, and
-            # each individual failure as a semconv exception event - the
-            # native OTel shapes, which the server maps back to the
-            # execution's failure_reason and failure_expanded.
-            reason = test.respond_to?(:otel_failure_reason) ? test.otel_failure_reason : nil
-            span.status = OpenTelemetry::Trace::Status.error(reason.to_s)
-
-            if test.respond_to?(:otel_exception_events)
-              test.otel_exception_events.each do |attributes|
-                span.add_event("exception", attributes: attributes)
-              end
-            end
-          end
-        rescue StandardError => e
-          warn "[buildkite-test_collector] Could not describe OpenTelemetry test span: #{e.class}: #{e.message}"
-        ensure
-          begin
-            execution_attributes = @execution_attributes || {}
-            execution_attributes.each do |key, value|
-              span.set_attribute(key, value) unless key.start_with?(TAG_ATTRIBUTE_PREFIX)
-            end
-            execution_attributes.merge(test_attributes).each do |key, value|
-              span.set_attribute(key, value) if key.start_with?(TAG_ATTRIBUTE_PREFIX)
-            end
-          rescue StandardError => e
-            warn "[buildkite-test_collector] Could not add OpenTelemetry run metadata: #{e.class}: #{e.message}"
-          ensure
-            finish_span(span, end_timestamp)
-          end
-        end
+        test_attributes = describe_test(span, test)
+        add_run_metadata(span, test_attributes)
+        finish_span(span, end_timestamp)
       end
 
       # Records a point-in-time annotation as an event on whichever span is
@@ -220,7 +181,9 @@ module Buildkite::TestCollector
       # Pushes any finished spans out now without stopping export. Used at the
       # end of a suite when the process (and maybe another suite run) lives on.
       def force_flush
-        error = each_export_component(:force_flush, PROCESSOR_TIMEOUT_SECONDS)
+        error = each_export_component(PROCESSOR_TIMEOUT_SECONDS) do |component, remaining|
+          component.force_flush(timeout: remaining)
+        end
         if error
           warn "[buildkite-test_collector] Could not flush OpenTelemetry spans: #{error.class}: #{error.message}"
         end
@@ -232,7 +195,9 @@ module Buildkite::TestCollector
 
       def shutdown
         forwarder_error = deactivate_child_forwarder(@execution_child_forwarder)
-        export_error = each_export_component(:shutdown, PROCESSOR_TIMEOUT_SECONDS)
+        export_error = each_export_component(PROCESSOR_TIMEOUT_SECONDS) do |component, remaining|
+          component.shutdown(timeout: remaining)
+        end
         error = forwarder_error || export_error
         if error
           warn "[buildkite-test_collector] Could not shut down OpenTelemetry span export: #{error.class}: #{error.message}"
@@ -332,7 +297,7 @@ module Buildkite::TestCollector
 
         value = authorization_header(api_token)
         refreshed = Array(@exporters).count do |exporter|
-          headers = exporter.instance_variable_defined?(:@headers) && exporter.instance_variable_get(:@headers)
+          headers = exporter.instance_variable_get(:@headers)
           next false unless headers.is_a?(Hash)
 
           headers["Authorization"] = value
@@ -420,8 +385,7 @@ module Buildkite::TestCollector
       # User tags travel under the buildkite.tag. prefix, which the server
       # strips and turns into upload-level tags.
       def tag_attributes(tags)
-        (tags || {})
-          .map { |key, value| ["#{TAG_ATTRIBUTE_PREFIX}#{key}", value.to_s] }.to_h
+        (tags || {}).to_h { |key, value| ["#{TAG_ATTRIBUTE_PREFIX}#{key}", value.to_s] }
       end
 
       # A resource identifies the entities that produced every span from the
@@ -442,8 +406,7 @@ module Buildkite::TestCollector
           "vcs.ref.head.revision" => run_env["commit_sha"],
         }
         if run_env["branch"]
-          tag = ENV["BUILDKITE_TAG"]
-          attributes["vcs.ref.type"] = tag.nil? || tag.empty? ? "branch" : "tag"
+          attributes["vcs.ref.type"] = ENV["BUILDKITE_TAG"].to_s.empty? ? "branch" : "tag"
         end
 
         OpenTelemetry::SDK::Resources::Resource.default.merge(
@@ -499,17 +462,17 @@ module Buildkite::TestCollector
         end
       end
 
-      # Flushes or shuts down both queues, roots first, within one shared
+      # Yields each export queue, roots first, with what is left of one shared
       # budget so an unreachable endpoint cannot block the suite twice over.
       # Returns the first error rather than raising so every queue gets a turn.
-      def each_export_component(operation, timeout)
+      def each_export_component(timeout)
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
         error = nil
 
         [@execution_provider, @execution_child_processor].compact.each do |component|
           remaining = [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
           begin
-            component.public_send(operation, timeout: remaining)
+            yield component, remaining
           rescue StandardError => e
             error ||= e
           end
@@ -529,6 +492,55 @@ module Buildkite::TestCollector
         processor&.shutdown(timeout: 0)
       rescue StandardError
         nil
+      end
+
+      # Records what the test was and how it went. Returns the test's own
+      # attributes so add_run_metadata can order its tags after them.
+      def describe_test(span, test)
+        test_attributes = {}
+        result = test.otel_result
+        status = RESULT_STATUSES[result]
+        span.set_attribute(RESULT_ATTRIBUTE, status) if status
+
+        # The Ruby SDK keeps the earliest attributes when a span reaches
+        # its limit, so record the test itself before run metadata or tags.
+        test_attributes = test.otel_attributes.compact
+        test_attributes.each do |key, value|
+          span.set_attribute(key, value) unless key.start_with?(TAG_ATTRIBUTE_PREFIX)
+        end
+
+        if result == "failed"
+          # The failure summary rides as the span status description, and
+          # each individual failure as a semconv exception event - the
+          # native OTel shapes, which the server maps back to the
+          # execution's failure_reason and failure_expanded.
+          reason = test.respond_to?(:otel_failure_reason) ? test.otel_failure_reason : nil
+          span.status = OpenTelemetry::Trace::Status.error(reason.to_s)
+
+          if test.respond_to?(:otel_exception_events)
+            test.otel_exception_events.each do |attributes|
+              span.add_event("exception", attributes: attributes)
+            end
+          end
+        end
+
+        test_attributes
+      rescue StandardError => e
+        warn "[buildkite-test_collector] Could not describe OpenTelemetry test span: #{e.class}: #{e.message}"
+        test_attributes
+      end
+
+      # Run metadata follows the test's attributes; tags come last of all.
+      def add_run_metadata(span, test_attributes)
+        execution_attributes = @execution_attributes || {}
+        execution_attributes.each do |key, value|
+          span.set_attribute(key, value) unless key.start_with?(TAG_ATTRIBUTE_PREFIX)
+        end
+        execution_attributes.merge(test_attributes).each do |key, value|
+          span.set_attribute(key, value) if key.start_with?(TAG_ATTRIBUTE_PREFIX)
+        end
+      rescue StandardError => e
+        warn "[buildkite-test_collector] Could not add OpenTelemetry run metadata: #{e.class}: #{e.message}"
       end
 
       def finish_span(span, end_timestamp)
@@ -582,9 +594,9 @@ module Buildkite::TestCollector
       end
 
       def otlp_headers_from_environment
-        raw = ENV["OTEL_EXPORTER_OTLP_TRACES_HEADERS"]
-        raw = ENV["OTEL_EXPORTER_OTLP_HEADERS"] if raw.nil? || raw.empty?
-        return {} if raw.nil? || raw.empty?
+        raw = [ENV["OTEL_EXPORTER_OTLP_TRACES_HEADERS"], ENV["OTEL_EXPORTER_OTLP_HEADERS"]]
+          .find { |value| !value.to_s.empty? }
+        return {} unless raw
 
         entries = raw.split(",")
         raise ArgumentError, "invalid OTLP exporter headers" if entries.empty?

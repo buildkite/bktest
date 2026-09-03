@@ -149,10 +149,7 @@ module Buildkite
     private_class_method :worker_id_tag
 
     def self.annotate(content)
-      if otel_enabled?
-        Buildkite::TestCollector::OTel.annotate(content)
-        return
-      end
+      return Buildkite::TestCollector::OTel.annotate(content) if otel_enabled?
 
       tracer = Buildkite::TestCollector::Uploader.tracer
       tracer&.enter("annotation", **{ content: content })

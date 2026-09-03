@@ -45,7 +45,7 @@ RSpec.configure do |config|
 
       tracer&.finalize
 
-      trace.history = tracer ? tracer.history : {}
+      trace.history = tracer&.history || {}
 
       # Left open for Reporter to finish once RSpec settles the result;
       # the end timestamp keeps the span timing the example itself.
