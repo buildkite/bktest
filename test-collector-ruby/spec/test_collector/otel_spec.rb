@@ -626,7 +626,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       shutdown: OpenTelemetry::SDK::Trace::Export::SUCCESS,
     )
     generator = described_class.const_get(:SecureRandomIdGenerator, false)
-    resource = described_class.send(:provider_resource, {})
+    resource = described_class.send(:producer_resource, {})
     allow(described_class).to receive(:batch_processor).and_return(processor)
 
     test_span_provider = described_class.send(
@@ -1128,11 +1128,11 @@ RSpec.describe Buildkite::TestCollector::OTel do
       allow(ENV).to receive(:[]).with("CIRCLE_BUILD_URL").and_return("https://circle.example/workflow/123")
 
       github = described_class.send(
-        :provider_resource,
+        :producer_resource,
         { "CI" => "github_actions", "key" => "test-engine-key" },
       ).attribute_enumerator.to_h
       circle = described_class.send(
-        :provider_resource,
+        :producer_resource,
         { "CI" => "circleci", "key" => "test-engine-key" },
       ).attribute_enumerator.to_h
 
