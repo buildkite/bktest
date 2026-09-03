@@ -766,7 +766,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end.new
     allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(failing_exporter)
     allow(OpenTelemetry).to receive(:handle_error)
-    described_class.configure!(endpoint: "https://example.invalid/v1/traces", instrumentations: [])
+    described_class.configure!(endpoint: "https://example.invalid/v1/traces")
     processor = described_class.instance_variable_get(:@execution_provider)
       .instance_variable_get(:@span_processors).first
 

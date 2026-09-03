@@ -100,7 +100,7 @@ RSpec.describe reporter_class do
     it "starts a fresh count and inline warning for the next suite run" do
       # Warm workers run several suites per process; each run's log must
       # state its own losses rather than depending on process exit.
-      drop(512)
+      expect { drop(512) }.to output.to_stderr
       drop(512)
       expect { reporter.warn_total }.to output(/dropped 1024 test\.execution span\(s\) so far this run/).to_stderr
 

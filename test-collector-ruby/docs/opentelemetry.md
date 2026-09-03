@@ -1,7 +1,7 @@
 # OpenTelemetry submission (experimental)
 
 > **This feature is still under development and may change.**
-> This first release is intended for suites that do not already configure
+> This experimental support is intended for suites that do not already configure
 > OpenTelemetry. Existing OpenTelemetry setups may work, but are not yet
 > supported or guaranteed to work.
 
@@ -13,10 +13,10 @@ identify the suite, CI run and worker, and VCS ref that produced telemetry. Test
 Engine run metadata and any `tags:` you configure live only on each
 `test.execution` root, not its children.
 
-Every RSpec example gets an OpenTelemetry `test.execution` root. The collector
-can configure a provider and export instrumented child spans showing what the
-test did and where its time went. The traces are sent to Buildkite and shown
-against the test's execution.
+Every RSpec example that runs gets an OpenTelemetry `test.execution` root. The
+collector can configure a provider and export instrumented child spans showing
+what the test did and where its time went. The traces are sent to Buildkite and
+shown against the test's execution.
 
 OpenTelemetry submission is off by default:
 
@@ -107,7 +107,7 @@ operations do not need:
 | `test.suite.name` | the example group | — |
 | `test.case.name` | the example's full description | — |
 | `code.file.path` | the file the test is in | file name, location |
-| `code.line.number` | the line number | location |
+| `code.line.number` | the example line number, or the shared example's call-site line | location |
 | `test.case.result.status` | `pass`, `fail`, `skipped` | result |
 | `buildkite.test.execution.external_id` | the execution's collector-generated ID | external ID |
 | `buildkite.tag.<key>` | each `configure` or `tag_execution` tag | execution tag `<key>` |
@@ -121,7 +121,7 @@ back to the execution's failure reason and expanded failure detail.
 The collector configures a global SDK provider for child spans and installs the
 applicable instrumentation registered when the suite starts. The private
 provider still owns `test.execution`; instrumented spans use the
-collector-created provider's normal sampling. The same forwarding filter
+collector-created provider's normal sampling. The forwarding filter
 excludes setup, teardown, detached traces, and other spans outside an active
 execution.
 
@@ -174,10 +174,10 @@ Buildkite::TestCollector.configure(
 )
 ```
 
-For this release, omitting `otel_instrumentations` and setting it to `[]` are the
+Currently, omitting `otel_instrumentations` and setting it to `[]` are the
 only supported choices. Any other value is reserved for a future release and
-disables span export with a warning, in every path. The collector does not
-inspect instrumentation patches, so compatibility between customer-selected
+disables span export with a warning. The collector does not inspect
+instrumentation patches, so compatibility between customer-selected
 instrumentation and other APM or test-library patches remains the customer's
 responsibility.
 

@@ -127,6 +127,7 @@ module Buildkite
         #{reset}
       MESSAGE
     end
+    private_class_method :warn_otel_disabled
 
     def self.hook_into(hook)
       file = "test_collector/library_hooks/#{hook}"
