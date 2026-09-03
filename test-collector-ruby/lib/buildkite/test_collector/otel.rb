@@ -145,7 +145,9 @@ module Buildkite::TestCollector
           kind: :internal,
         )
       rescue StandardError => e
-        warn "[buildkite-test_collector] Could not start OpenTelemetry test span: #{e.class}: #{e.message}"
+        # The example still runs, but with no span it reaches neither upload
+        # path, so report it as a missing result rather than a stray warning.
+        @test_span_metrics_reporter&.record_start_failure(e)
         nil
       end
 

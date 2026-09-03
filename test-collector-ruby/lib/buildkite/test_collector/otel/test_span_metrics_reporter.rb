@@ -22,8 +22,14 @@ module Buildkite
             # still standing when a batch is dropped explains that drop.
             @mutex.synchronize { @last_export_failure = nil }
           when "otel.bsp.dropped_spans"
-            warn_first_drop(increment, labels["reason"])
+            record_drop(increment, labels["reason"])
           end
+        end
+
+        # A test span that never started is as missing from Buildkite as one
+        # the processor dropped, so it is counted and reported the same way.
+        def record_start_failure(error)
+          record_drop(1, "could not start span: #{error.class}: #{error.message}")
         end
 
         def record_value(_metric, value:, labels: {}); end
@@ -45,7 +51,7 @@ module Buildkite
 
         private
 
-        def warn_first_drop(count, reason)
+        def record_drop(count, reason)
           export_failure = @mutex.synchronize do
             @dropped_since_report += count
             return if @warned_count

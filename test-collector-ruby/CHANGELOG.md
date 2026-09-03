@@ -17,9 +17,9 @@
   on; the JSON upload that carried them in the old dual mode no longer happens.
 * Warn prominently, usually naming the HTTP status or connection error, the first
   time Buildkite rejects or the collector drops `test.execution` spans, since
-  OTLP is now the only upload path. When more are dropped after that, report the
-  total at the suite-end flush and again at process exit for anything still
-  draining.
+  OTLP is now the only upload path. A test span that could not be started counts
+  as dropped too. When more are dropped after that, report the total at the
+  suite-end flush and again at process exit for anything still draining.
 * Keep stable suite, CI worker/run, and VCS identity on OpenTelemetry resources,
   while moving Test Engine run metadata, framework details, and configured tags
   to each `test.execution` span. Child spans no longer carry execution-only

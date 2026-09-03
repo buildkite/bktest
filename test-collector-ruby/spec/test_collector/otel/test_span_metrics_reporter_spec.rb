@@ -65,6 +65,16 @@ RSpec.describe reporter_class do
       end.to output(/\(buffer-full\)\./).to_stderr
     end
 
+    it "counts spans that failed to start together with dropped spans" do
+      expect { reporter.record_start_failure(RuntimeError.new("boom")) }
+        .to output(/dropped 1 test\.execution span\(s\) \(could not start span: RuntimeError: boom\)\./).to_stderr
+
+      reporter.add_to_counter("otel.bsp.dropped_spans", increment: 2, labels: { "reason" => "buffer-full" })
+
+      expect { reporter.warn_dropped_total }
+        .to output(/dropped 3 test\.execution span\(s\) so far this run/).to_stderr
+    end
+
     it "ignores other processor metrics" do
       expect do
         reporter.add_to_counter("otel.bsp.export.success")

@@ -236,8 +236,9 @@ Export failures are reported through OpenTelemetry's own logger. Because
 the first time its reserved test span queue drops any of them, usually naming
 the HTTP status or connection error that caused the export to fail (for example
 a `403` when OTLP ingest is not enabled for the organization, or a `404` for a
-wrong endpoint). If more are dropped after
-that, the suite-end flush and the process-exit shutdown each report the total
+wrong endpoint). A test span that could not be started is counted and reported
+the same way, since that execution also never reaches Buildkite. If more are
+dropped after that, the suite-end flush and the process-exit shutdown each report the total
 dropped since the last report, so a persistent failure is not mistaken for a
 one-off. The suite-end flush stops at the first rejected batch and leaves the
 rest queued, so when many test spans are buffered the balance drains, and is

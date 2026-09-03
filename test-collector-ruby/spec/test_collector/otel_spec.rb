@@ -76,15 +76,18 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider&.shutdown
   end
 
-  it "fails open when starting a span fails" do
+  it "fails open and reports a missing result when starting a span fails" do
     tracer = double("OpenTelemetry tracer")
     allow(tracer).to receive(:start_span).and_raise("start failed")
     described_class.instance_variable_set(:@tracer, tracer)
+    reporter = described_class.const_get(:TestSpanMetricsReporter, false).new
+    described_class.instance_variable_set(:@test_span_metrics_reporter, reporter)
 
     expect { expect(described_class.start_test_span(test: execution_test)).to be_nil }
-      .to output(/Could not start OpenTelemetry test span/).to_stderr
+      .to output(/TEST RESULTS MISSING: .* dropped 1 test\.execution span\(s\) \(could not start span: RuntimeError: start failed\)/).to_stderr
   ensure
     described_class.instance_variable_set(:@tracer, nil)
+    described_class.instance_variable_set(:@test_span_metrics_reporter, nil)
   end
 
   it "records what the test was and how it went" do
