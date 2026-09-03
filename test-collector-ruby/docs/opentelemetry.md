@@ -116,7 +116,7 @@ A failed test sets the span's status to error with the failure summary as its
 description. Each failure is a semconv `exception` event; the server maps these
 back to the execution's failure reason and expanded failure detail.
 
-## Recommended setup: suites without OpenTelemetry
+## Choosing instrumentation
 
 The collector configures a global SDK provider for child spans and installs the
 applicable instrumentation registered when the suite starts. The private
@@ -125,12 +125,9 @@ collector-created provider's normal sampling. The same forwarding filter
 excludes setup, teardown, detached traces, and other spans outside an active
 execution.
 
-## Choosing instrumentation
-
-Instrumentation selection applies only when the collector configures the global
-provider.
-Add the OpenTelemetry SDK and OTLP exporter, plus the instrumentation you want,
-to your bundle. Require each instrumentation explicitly:
+Instrumentation selection applies only in this collector-managed setup. Add the
+OpenTelemetry SDK and OTLP exporter, plus the instrumentation you want, to your
+bundle. Require each instrumentation explicitly:
 
 ```ruby
 # Gemfile

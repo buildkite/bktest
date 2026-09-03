@@ -75,17 +75,14 @@ module Buildkite
       end
 
       # Defer OTel setup until RSpec's before(:suite), after application and support files have loaded.
-      @otel_options = nil
-      if otel_enabled?
-        @otel_options = {
+      @otel_options = if otel_enabled?
+        {
           # Undocumented, for development purposes.
           endpoint: ENV["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] || Buildkite::TestCollector::OTel::DEFAULT_ENDPOINT,
           api_token: api_token,
           run_env: Buildkite::TestCollector::CI.env,
           instrumentations: otel_instrumentations,
-          # Configure-level tags describe each test execution, not every child
-          # operation. Use the merged self.tags so the automatic worker tag is
-          # included alongside caller-supplied tags on each test root.
+          # Include the automatic worker tag alongside caller-supplied tags.
           execution_tags: self.tags,
         }
       end
@@ -106,9 +103,7 @@ module Buildkite
       !!otel_enabled
     end
 
-    # OTLP is the only upload method when OpenTelemetry is enabled, so if setup
-    # fails there is no JSON fallback. The suite still runs, but no results are
-    # uploaded at all. That deserves more than one easily-missed line.
+    # OTLP has no JSON fallback, so make setup failures prominent.
     def self.warn_otel_disabled
       # Buildkite log output renders ANSI colour even though it isn't a TTY.
       red, reset = if $stderr.tty? || ENV["BUILDKITE"]

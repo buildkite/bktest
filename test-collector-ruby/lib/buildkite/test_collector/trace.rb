@@ -17,7 +17,7 @@ module Buildkite
           failure_expanded: failure_expanded,
           history: history,
           tags: tags,
-        ).select { |_, value| !value.nil? }
+        ).compact
       end
 
       private

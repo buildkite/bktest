@@ -139,7 +139,6 @@ module Buildkite::TestCollector
         )
       rescue StandardError => e
         warn "[buildkite-test_collector] Could not start OpenTelemetry test span: #{e.class}: #{e.message}"
-        nil
       end
 
       def with_test_span(span)
@@ -168,7 +167,7 @@ module Buildkite::TestCollector
 
             # The Ruby SDK keeps the earliest attributes when a span reaches
             # its limit, so record the test itself before run metadata or tags.
-            test_attributes = test.otel_attributes.reject { |_, value| value.nil? }
+            test_attributes = test.otel_attributes.compact
             test_attributes.each do |key, value|
               span.set_attribute(key, value) unless key.start_with?(TAG_ATTRIBUTE_PREFIX)
             end
@@ -465,7 +464,7 @@ module Buildkite::TestCollector
 
         OpenTelemetry::SDK::Resources::Resource.default.merge(
           OpenTelemetry::SDK::Resources::Resource.create(
-            attributes.reject { |_, value| value.nil? }
+            attributes.compact
           )
         )
       end
@@ -493,7 +492,7 @@ module Buildkite::TestCollector
           attributes["buildkite.test.framework.version"] = RSpec::Core::Version::STRING
         end
 
-        attributes.reject { |_, value| value.nil? }.merge(tag_attributes(execution_tags))
+        attributes.compact.merge(tag_attributes(execution_tags))
       end
 
       # Use provider-native IDs for correlation with other CI telemetry. The

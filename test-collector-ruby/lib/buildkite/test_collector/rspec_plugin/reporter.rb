@@ -7,31 +7,28 @@ module Buildkite::TestCollector::RSpecPlugin
     attr_reader :output
 
     def initialize(output)
-      unless Buildkite::TestCollector.otel_enabled?
-        Buildkite::TestCollector.session = Buildkite::TestCollector::Session.new
-      end
+      Buildkite::TestCollector.session = Buildkite::TestCollector::Session.new unless Buildkite::TestCollector.otel_enabled?
       @output = output
     end
 
     def handle_example(notification)
       example = notification.example
       trace = Buildkite::TestCollector.uploader.traces[example.id]
+      return unless trace
 
-      if trace
-        trace.example = example
-        if example.execution_result.status == :failed
-          begin
-            trace.failure_reason, trace.failure_expanded = failure_info(notification)
-          rescue StandardError => e
-            warn "[buildkite-test_collector] Could not describe test failure: #{e.class}: #{e.message}"
-          end
+      trace.example = example
+      if example.execution_result.status == :failed
+        begin
+          trace.failure_reason, trace.failure_expanded = failure_info(notification)
+        rescue StandardError => e
+          warn "[buildkite-test_collector] Could not describe test failure: #{e.class}: #{e.message}"
         end
+      end
 
-        finish_otel_span(trace)
+      finish_otel_span(trace)
 
-        unless Buildkite::TestCollector.otel_enabled?
-          Buildkite::TestCollector.session.add_example_to_send_queue(example.id)
-        end
+      unless Buildkite::TestCollector.otel_enabled?
+        Buildkite::TestCollector.session.add_example_to_send_queue(example.id)
       end
     ensure
       if Buildkite::TestCollector.otel_enabled?

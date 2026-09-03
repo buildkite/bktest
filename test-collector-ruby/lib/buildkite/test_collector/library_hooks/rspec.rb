@@ -64,7 +64,7 @@ RSpec.configure do |config|
     # process-lifetime at_exit shutdown when it configured.
     Buildkite::TestCollector::OTel.force_flush
 
-    if !Buildkite::TestCollector.otel_enabled? && Buildkite::TestCollector.artifact_path
+    if Buildkite::TestCollector.artifact_path && !Buildkite::TestCollector.otel_enabled?
       filename = File.join(Buildkite::TestCollector.artifact_path, "buildkite-test-collector-rspec-#{Buildkite::TestCollector::UUID.call}.json.gz")
       data_set = { results: Buildkite::TestCollector.uploader.traces.values.map(&:as_hash) }
       File.open(filename, "wb") do |f|
