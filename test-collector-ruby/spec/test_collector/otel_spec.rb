@@ -721,6 +721,30 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider&.shutdown
   end
 
+  it "shares one metrics reporter between the root exporter and its processor" do
+    root_reporter = described_class.const_get(:RootSpanMetricsReporter, false)
+    exporter_reporters = []
+    allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new) do |**options|
+      exporter_reporters << options[:metrics_reporter]
+      OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    end
+    processor_reporters = []
+    allow(OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor)
+      .to receive(:new).and_wrap_original do |original, exporter, **options|
+        processor_reporters << options[:metrics_reporter]
+        original.call(exporter, **options)
+      end
+
+    described_class.configure!(endpoint: "https://example.invalid/v1/traces", instrumentations: [])
+
+    # Roots are built first; children keep the SDK's default (no-op) reporter.
+    expect(exporter_reporters.first).to be_a(root_reporter)
+    expect(processor_reporters.first).to equal(exporter_reporters.first)
+    expect(exporter_reporters.drop(1)).to all(be_nil)
+  ensure
+    described_class.shutdown
+  end
+
   it "leaves instrumentation alone when the suite owns its provider" do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)

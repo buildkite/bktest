@@ -245,6 +245,9 @@ process-exit shutdown each give the OpenTelemetry SDK a 30-second budget to
 export buffered spans; the SDK's own retry backoff can run past it when the
 endpoint keeps failing.
 
-Export failures are reported through OpenTelemetry's own logger. The collector
-also warns if its reserved root queue drops any `test.execution` spans; normal
-child-span queue overflow is not logged by the OpenTelemetry SDK.
+Export failures are reported through OpenTelemetry's own logger. Because
+`test.execution` spans are the submission, the collector also warns prominently
+the first time its reserved root queue drops any of them, naming the HTTP
+status or connection error that caused the export to fail (for example a `403`
+when OTLP ingest is not enabled for the organization). Normal child-span queue overflow is
+not logged by the OpenTelemetry SDK.

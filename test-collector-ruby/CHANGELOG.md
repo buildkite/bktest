@@ -6,6 +6,9 @@
   now submits executions as spans without also uploading legacy JSON, and the
   separate `otel_only` option has been removed. OpenTelemetry remains off by
   default.
+* Warn prominently, naming the HTTP status or connection error, the first time
+  Buildkite rejects or the collector drops `test.execution` spans, since OTLP is
+  now the only upload path.
 * Keep stable suite, CI worker/run, and VCS identity on OpenTelemetry resources,
   while moving Test Engine run metadata, framework details, and configured tags
   to each `test.execution` root. Child spans no longer carry execution-only

@@ -134,10 +134,11 @@ headers, including `Authorization`. Without an OTLP Authorization header, spans
 use `BUILDKITE_ANALYTICS_TOKEN`, which must be an agent OIDC token with the
 `write_uploads` scope; a suite API token is rejected by the OTLP endpoint.
 
-If OpenTelemetry cannot be configured, the collector prints a prominent
-warning. Tests continue to run, but there is no JSON fallback and no results are
-uploaded. See the [OpenTelemetry guide](docs/opentelemetry.md) for setup details
-and current limitations.
+If OpenTelemetry cannot be configured, or Buildkite rejects the exported
+`test.execution` spans, the collector prints a prominent warning. Tests continue
+to run, but there is no JSON fallback and the affected results are not uploaded.
+See the [OpenTelemetry guide](docs/opentelemetry.md) for setup details and
+current limitations.
 
 ## More information
 
