@@ -221,9 +221,11 @@ endpoint keeps failing.
 
 Export failures are reported through OpenTelemetry's own logger. Because
 `test.execution` spans are the submission, the collector also warns prominently
-the first time its reserved test span queue drops any of them, naming the HTTP
-status or connection error that caused the export to fail (for example a `403`
-when OTLP ingest is not enabled for the organization). If more are dropped after
+the first time its reserved test span queue drops any of them, usually naming
+the HTTP status or connection error that caused the export to fail (for example
+a `403` when OTLP ingest is not enabled for the organization). The OTLP exporter
+reports a `404` only through OpenTelemetry's logger, so a wrong endpoint shows
+up there rather than in the collector's warning. If more are dropped after
 that, the suite-end flush and the process-exit shutdown each report the total
 dropped since the last report, so a persistent failure is not mistaken for a
 one-off. The suite-end flush stops at the first rejected batch and leaves the
