@@ -57,6 +57,10 @@ module Buildkite
       self.env = env
       self.tags = worker_id_tag.merge(tags)
       self.otel_enabled = otel_enabled && test_runner == "rspec"
+      if otel_enabled && !otel_enabled?
+        warn "[buildkite-test_collector] otel_enabled is only supported with the rspec hook; " \
+          "the #{test_runner} hook will upload results as JSON instead"
+      end
       self.batch_size = ENV.fetch("BUILDKITE_ANALYTICS_UPLOAD_BATCH_SIZE") { DEFAULT_UPLOAD_BATCH_SIZE }.to_i
 
       trace_min_ms_string = ENV["BUILDKITE_ANALYTICS_TRACE_MIN_MS"]

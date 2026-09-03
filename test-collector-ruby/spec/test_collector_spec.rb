@@ -268,13 +268,15 @@ RSpec.describe Buildkite::TestCollector do
       expect(analytics.env).to match env
     end
 
-    it "does not enable the RSpec-only OpenTelemetry integration" do
+    it "warns and falls back to JSON instead of enabling the RSpec-only OpenTelemetry integration" do
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
 
-      Buildkite::TestCollector.configure(
-        hook: hook,
-        otel_enabled: true,
-      )
+      expect {
+        Buildkite::TestCollector.configure(
+          hook: hook,
+          otel_enabled: true,
+        )
+      }.to output(/otel_enabled is only supported with the rspec hook; the #{hook} hook will upload results as JSON/).to_stderr
       Buildkite::TestCollector.start_otel
 
       expect(Buildkite::TestCollector.otel_enabled?).to eq false
@@ -308,13 +310,15 @@ RSpec.describe Buildkite::TestCollector do
       expect(analytics.env).to match env
     end
 
-    it "does not enable the RSpec-only OpenTelemetry integration" do
+    it "warns and falls back to JSON instead of enabling the RSpec-only OpenTelemetry integration" do
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
 
-      Buildkite::TestCollector.configure(
-        hook: hook,
-        otel_enabled: true,
-      )
+      expect {
+        Buildkite::TestCollector.configure(
+          hook: hook,
+          otel_enabled: true,
+        )
+      }.to output(/otel_enabled is only supported with the rspec hook; the #{hook} hook will upload results as JSON/).to_stderr
       Buildkite::TestCollector.start_otel
 
       expect(Buildkite::TestCollector.otel_enabled?).to eq false
