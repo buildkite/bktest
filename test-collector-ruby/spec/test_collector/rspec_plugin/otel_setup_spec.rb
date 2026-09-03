@@ -39,7 +39,7 @@ RSpec.describe "RSpec OpenTelemetry setup" do
       api_token: nil,
       run_env: run_env,
       instrumentations: nil,
-      execution_tags: {},
+      tags: {},
     )
     expect(library_loaded_when_configured).to eq("constant")
   end

@@ -141,7 +141,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider.add_span_processor(processor)
     described_class.instance_variable_set(:@tracer, provider.tracer("attribute-priority-test"))
     described_class.instance_variable_set(
-      :@execution_attributes,
+      :@run_attributes,
       {
         "buildkite.run_key" => "run-123",
         "buildkite.message" => "optional metadata",
@@ -177,7 +177,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
   ensure
     described_class.instance_variable_set(:@tracer, nil)
-    described_class.instance_variable_set(:@execution_attributes, nil)
+    described_class.instance_variable_set(:@run_attributes, nil)
     provider&.shutdown
   end
 
@@ -234,64 +234,64 @@ RSpec.describe Buildkite::TestCollector::OTel do
   it "deactivates children, then shuts down test spans and children against one deadline" do
     success = OpenTelemetry::SDK::Trace::Export::SUCCESS
     forwarder = double("execution child forwarder")
-    execution_provider = double("execution provider")
+    test_span_provider = double("execution provider")
     child_processor = double("execution child processor")
-    described_class.instance_variable_set(:@execution_child_forwarder, forwarder)
-    described_class.instance_variable_set(:@execution_provider, execution_provider)
-    described_class.instance_variable_set(:@execution_child_processor, child_processor)
+    described_class.instance_variable_set(:@child_span_forwarder, forwarder)
+    described_class.instance_variable_set(:@test_span_provider, test_span_provider)
+    described_class.instance_variable_set(:@child_span_processor, child_processor)
     allow(Process).to receive(:clock_gettime)
       .with(Process::CLOCK_MONOTONIC)
       .and_return(10.0, 12.0, 13.0)
 
     expect(forwarder).to receive(:shutdown).ordered.and_return(success)
-    expect(execution_provider).to receive(:shutdown).with(timeout: 28.0).ordered.and_return(success)
+    expect(test_span_provider).to receive(:shutdown).with(timeout: 28.0).ordered.and_return(success)
     expect(child_processor).to receive(:shutdown).with(timeout: 27.0).ordered.and_return(success)
 
     described_class.shutdown
   end
 
   it "flushes test spans and children against one shared deadline" do
-    execution_provider = double("execution provider")
+    test_span_provider = double("execution provider")
     child_processor = double("execution child processor")
-    described_class.instance_variable_set(:@execution_provider, execution_provider)
-    described_class.instance_variable_set(:@execution_child_processor, child_processor)
+    described_class.instance_variable_set(:@test_span_provider, test_span_provider)
+    described_class.instance_variable_set(:@child_span_processor, child_processor)
     allow(Process).to receive(:clock_gettime)
       .with(Process::CLOCK_MONOTONIC)
       .and_return(10.0, 12.0, 13.0)
 
-    expect(execution_provider).to receive(:force_flush).with(timeout: 28.0).ordered
+    expect(test_span_provider).to receive(:force_flush).with(timeout: 28.0).ordered
     expect(child_processor).to receive(:force_flush).with(timeout: 27.0).ordered
 
     described_class.force_flush
   ensure
-    described_class.instance_variable_set(:@execution_provider, nil)
-    described_class.instance_variable_set(:@execution_child_processor, nil)
+    described_class.instance_variable_set(:@test_span_provider, nil)
+    described_class.instance_variable_set(:@child_span_processor, nil)
   end
 
   it "still flushes children when the test span flush fails" do
-    execution_provider = double("execution provider")
+    test_span_provider = double("execution provider")
     child_processor = double("execution child processor")
-    allow(execution_provider).to receive(:force_flush).and_raise("test span flush failed")
-    described_class.instance_variable_set(:@execution_provider, execution_provider)
-    described_class.instance_variable_set(:@execution_child_processor, child_processor)
+    allow(test_span_provider).to receive(:force_flush).and_raise("test span flush failed")
+    described_class.instance_variable_set(:@test_span_provider, test_span_provider)
+    described_class.instance_variable_set(:@child_span_processor, child_processor)
 
     expect(child_processor).to receive(:force_flush)
     expect { described_class.force_flush }
       .to output(/Could not flush OpenTelemetry spans.*test span flush failed/).to_stderr
   ensure
-    described_class.instance_variable_set(:@execution_provider, nil)
-    described_class.instance_variable_set(:@execution_child_processor, nil)
+    described_class.instance_variable_set(:@test_span_provider, nil)
+    described_class.instance_variable_set(:@child_span_processor, nil)
   end
 
   it "attempts child shutdown when test span shutdown fails" do
-    execution_provider = double("execution provider")
+    test_span_provider = double("execution provider")
     child_processor = spy(
       "execution child processor",
       shutdown: OpenTelemetry::SDK::Trace::Export::SUCCESS,
     )
-    allow(execution_provider).to receive(:shutdown).and_raise("test span shutdown failed")
-    described_class.instance_variable_set(:@execution_provider, execution_provider)
-    described_class.instance_variable_set(:@execution_child_processor, child_processor)
+    allow(test_span_provider).to receive(:shutdown).and_raise("test span shutdown failed")
+    described_class.instance_variable_set(:@test_span_provider, test_span_provider)
+    described_class.instance_variable_set(:@child_span_processor, child_processor)
 
     expect { described_class.shutdown }
       .to output(/Could not shut down OpenTelemetry span export: RuntimeError: test span shutdown failed/)
@@ -346,11 +346,11 @@ RSpec.describe Buildkite::TestCollector::OTel do
   end
 
   it "shuts down the execution processor when private provider setup fails" do
-    execution_processor = spy(
+    test_span_processor = spy(
       "OpenTelemetry execution processor",
       shutdown: OpenTelemetry::SDK::Trace::Export::SUCCESS,
     )
-    allow(described_class).to receive(:batch_processor).and_return(execution_processor)
+    allow(described_class).to receive(:batch_processor).and_return(test_span_processor)
     allow(OpenTelemetry::SDK::Trace::TracerProvider)
       .to receive(:new)
       .and_raise(ArgumentError, "invalid private provider configuration")
@@ -358,7 +358,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect do
       described_class.configure!(endpoint: "https://example.invalid/v1/traces")
     end.to output(/OpenTelemetry span export disabled: ArgumentError/).to_stderr
-    expect(execution_processor).to have_received(:shutdown).with(timeout: 0)
+    expect(test_span_processor).to have_received(:shutdown).with(timeout: 0)
     expect(described_class).not_to be_enabled
   end
 
@@ -382,7 +382,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     execution_span = described_class.start_test_span(test: execution_test)
     described_class.finish_test_span(execution_span, test: execution_test)
-    described_class.instance_variable_get(:@execution_provider).force_flush
+    described_class.instance_variable_get(:@test_span_provider).force_flush
 
     expect(described_class).to be_enabled
     expect(root_exporter.finished_spans.map(&:name)).to contain_exactly("test.execution")
@@ -393,7 +393,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
   it "makes a partially attached child forwarder inert and stops its worker" do
     success = OpenTelemetry::SDK::Trace::Export::SUCCESS
-    execution_processor = spy(
+    test_span_processor = spy(
       "execution processor",
       on_start: nil,
       on_finish: nil,
@@ -412,7 +412,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end
     allow(OpenTelemetry).to receive(:tracer_provider).and_return(suite_provider)
     allow(described_class).to receive(:batch_processor)
-      .and_return(execution_processor, child_processor)
+      .and_return(test_span_processor, child_processor)
 
     expect do
       described_class.configure!(endpoint: "https://example.invalid/v1/traces")
@@ -422,7 +422,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     trace_id = "\1" * 16
     context = OpenTelemetry::Context.empty.set_value(
-      described_class.send(:execution_context_key),
+      described_class.send(:test_span_context_key),
       trace_id,
     )
     span = double("suite span", context: double("span context", trace_id: trace_id))
@@ -434,7 +434,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(child_processor).not_to have_received(:on_finish)
 
     described_class.shutdown
-    expect(execution_processor).to have_received(:shutdown).once
+    expect(test_span_processor).to have_received(:shutdown).once
     expect(child_processor).to have_received(:shutdown).once
   ensure
     described_class.shutdown
@@ -442,7 +442,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
   it "cleans up a child worker when the SDK fails to install its provider" do
     success = OpenTelemetry::SDK::Trace::Export::SUCCESS
-    execution_processor = spy(
+    test_span_processor = spy(
       "execution processor",
       on_start: nil,
       on_finish: nil,
@@ -464,7 +464,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end
     allow(config).to receive(:resource=)
     allow(described_class).to receive(:batch_processor)
-      .and_return(execution_processor, child_processor)
+      .and_return(test_span_processor, child_processor)
 
     expect do
       described_class.configure!(
@@ -477,7 +477,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     trace_id = "\1" * 16
     context = OpenTelemetry::Context.empty.set_value(
-      described_class.send(:execution_context_key),
+      described_class.send(:test_span_context_key),
       trace_id,
     )
     span = double("collector span", context: double("span context", trace_id: trace_id))
@@ -489,7 +489,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(child_processor).not_to have_received(:on_finish)
 
     described_class.shutdown
-    expect(execution_processor).to have_received(:shutdown).once
+    expect(test_span_processor).to have_received(:shutdown).once
     expect(child_processor).to have_received(:shutdown).once
   ensure
     described_class.shutdown
@@ -523,7 +523,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     expect(config).to have_received(:id_generator=).with(generator)
     expect(config).to have_received(:add_span_processor)
-      .with(an_instance_of(described_class.const_get(:ExecutionChildForwarder, false)))
+      .with(an_instance_of(described_class.const_get(:ChildSpanForwarder, false)))
     expect(config).to have_received(:use_all).once
   ensure
     described_class.shutdown
@@ -629,22 +629,22 @@ RSpec.describe Buildkite::TestCollector::OTel do
     resource = described_class.send(:provider_resource, {})
     allow(described_class).to receive(:batch_processor).and_return(processor)
 
-    execution_provider = described_class.send(
-      :build_execution_provider,
+    test_span_provider = described_class.send(
+      :build_test_span_provider,
       "https://example.invalid/v1/traces",
       {},
       resource,
     )
 
-    expect(execution_provider.id_generator).to equal(generator)
-    expect(execution_provider.sampler).to equal(OpenTelemetry::SDK::Trace::Samplers::ALWAYS_ON)
-    expect(execution_provider.resource).to equal(resource)
+    expect(test_span_provider.id_generator).to equal(generator)
+    expect(test_span_provider.sampler).to equal(OpenTelemetry::SDK::Trace::Samplers::ALWAYS_ON)
+    expect(test_span_provider.resource).to equal(resource)
   ensure
-    execution_provider&.shutdown
+    test_span_provider&.shutdown
   end
 
   it "adds configure-level tags to test spans" do
-    attributes = described_class.send(:execution_attributes, {}, { "team" => "platform" })
+    attributes = described_class.send(:run_attributes, {}, { "team" => "platform" })
 
     expect(attributes).to include(
       "buildkite.tag.team" => "platform",
@@ -708,8 +708,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.finish_test_span(execution_span, test: execution_test)
     late_child.finish
     tracer.in_span("after-execution") { nil }
-    described_class.instance_variable_get(:@execution_provider).force_flush
-    described_class.instance_variable_get(:@execution_child_processor).force_flush
+    described_class.instance_variable_get(:@test_span_provider).force_flush
+    described_class.instance_variable_get(:@child_span_processor).force_flush
     provider.force_flush
 
     expect(OpenTelemetry.tracer_provider).to equal(provider)
@@ -779,7 +779,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(failing_exporter)
     allow(OpenTelemetry).to receive(:handle_error)
     described_class.configure!(endpoint: "https://example.invalid/v1/traces")
-    processor = described_class.instance_variable_get(:@execution_provider)
+    processor = described_class.instance_variable_get(:@test_span_provider)
       .instance_variable_get(:@span_processors).first
 
     record_execution = lambda do
@@ -847,8 +847,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
       provider.tracer("suite").in_span("sampled-out-child") { nil }
     end
     described_class.finish_test_span(execution_span, test: execution_test)
-    described_class.instance_variable_get(:@execution_provider).force_flush
-    described_class.instance_variable_get(:@execution_child_processor).force_flush
+    described_class.instance_variable_get(:@test_span_provider).force_flush
+    described_class.instance_variable_get(:@child_span_processor).force_flush
 
     expect(execution_span.context.trace_flags).to be_sampled
     expect(root_exporter.finished_spans.map(&:name)).to contain_exactly("test.execution")
@@ -872,7 +872,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider = nil
     execution_span = described_class.start_test_span(test: execution_test)
     described_class.finish_test_span(execution_span, test: execution_test)
-    described_class.instance_variable_get(:@execution_provider).force_flush
+    described_class.instance_variable_get(:@test_span_provider).force_flush
 
     expect(root_exporter.finished_spans.map(&:name)).to contain_exactly("test.execution")
   ensure
@@ -901,7 +901,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       )
       # Both the execution exporter and the child exporter carry the token.
       expect(exporter_authorization_headers).to eq(['Token token="before-refresh"'] * 2)
-      provider_before = described_class.instance_variable_get(:@execution_provider)
+      provider_before = described_class.instance_variable_get(:@test_span_provider)
 
       # A warm worker re-running configure with a refreshed (e.g. expiring
       # OIDC) token: the live exporters must adopt it, without rebuilding.
@@ -912,7 +912,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       )
 
       expect(exporter_authorization_headers).to eq(['Token token="after-refresh"'] * 2)
-      expect(described_class.instance_variable_get(:@execution_provider)).to equal(provider_before)
+      expect(described_class.instance_variable_get(:@test_span_provider)).to equal(provider_before)
     ensure
       described_class.shutdown
       suite_provider&.shutdown
@@ -1070,8 +1070,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
         OpenTelemetry.tracer_provider.tracer("application").in_span("child") { nil }
       end
       Buildkite::TestCollector::OTel.finish_test_span(span, test: test)
-      Buildkite::TestCollector::OTel.instance_variable_get(:@execution_provider).force_flush
-      Buildkite::TestCollector::OTel.instance_variable_get(:@execution_child_processor).force_flush
+      Buildkite::TestCollector::OTel.instance_variable_get(:@test_span_provider).force_flush
+      Buildkite::TestCollector::OTel.instance_variable_get(:@child_span_processor).force_flush
 
       root = exporters[0].finished_spans.find { |span| span.name == "test.execution" }
       child = exporters[1].finished_spans.find { |span| span.name == "child" }
@@ -1111,7 +1111,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     execution_span = described_class.start_test_span(test: execution_test)
     described_class.finish_test_span(execution_span, test: execution_test)
-    described_class.instance_variable_get(:@execution_provider).force_flush
+    described_class.instance_variable_get(:@test_span_provider).force_flush
 
     expect(described_class).to be_enabled
     expect(root_exporter.finished_spans.map(&:name)).to contain_exactly("test.execution")
@@ -1150,17 +1150,17 @@ RSpec.describe Buildkite::TestCollector::OTel do
       allow(ENV).to receive(:[]).with("BUILDKITE_BUILD_URL").and_return("https://buildkite.example/builds/123")
 
       buildkite = described_class.send(
-        :execution_attributes,
+        :run_attributes,
         { "CI" => "buildkite", "url" => "https://configured.example/run" },
         {},
       )
       generic = described_class.send(
-        :execution_attributes,
+        :run_attributes,
         { "CI" => "generic", "url" => "https://configured.example/generic-run" },
         {},
       )
       circle = described_class.send(
-        :execution_attributes,
+        :run_attributes,
         { "CI" => "circleci", "url" => "https://circle.example/jobs/123" },
         {},
       )
@@ -1203,7 +1203,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
           "language_version" => "3.4.1",
           "location_prefix" => "services/payments",
         },
-        execution_tags: { "team" => "platform", :speed => :fast },
+        tags: { "team" => "platform", :speed => :fast },
       )
 
       expect(described_class).to be_enabled

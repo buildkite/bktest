@@ -22,7 +22,7 @@ module Buildkite
             # still standing when a batch is dropped explains that drop.
             @mutex.synchronize { @last_export_failure = nil }
           when "otel.bsp.dropped_spans"
-            warn_dropped(increment, labels["reason"])
+            warn_first_drop(increment, labels["reason"])
           end
         end
 
@@ -30,7 +30,7 @@ module Buildkite
 
         def observe_value(_metric, value:, labels: {}); end
 
-        def warn_total
+        def warn_dropped_total
           total, warned = @mutex.synchronize do
             counts = [@dropped_since_report, @warned_count]
             @dropped_since_report = 0
@@ -45,7 +45,7 @@ module Buildkite
 
         private
 
-        def warn_dropped(count, reason)
+        def warn_first_drop(count, reason)
           export_failure = @mutex.synchronize do
             @dropped_since_report += count
             return if @warned_count

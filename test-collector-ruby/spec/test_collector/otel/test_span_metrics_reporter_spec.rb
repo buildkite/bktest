@@ -73,7 +73,7 @@ RSpec.describe reporter_class do
     end
   end
 
-  describe "#warn_total" do
+  describe "#warn_dropped_total" do
     def drop(count, reason: "export-failure")
       reporter.add_to_counter("otel.bsp.dropped_spans", increment: count, labels: { "reason" => reason })
     end
@@ -85,7 +85,7 @@ RSpec.describe reporter_class do
       drop(512)
       drop(7, reason: "terminating")
 
-      expect { reporter.warn_total }.to output(
+      expect { reporter.warn_dropped_total }.to output(
         "[buildkite-test_collector] TEST RESULTS MISSING: OpenTelemetry dropped 1031 test.execution span(s) " \
           "so far this run; those test executions were not uploaded to Buildkite Test Engine.\n"
       ).to_stderr
@@ -94,7 +94,7 @@ RSpec.describe reporter_class do
     it "stays silent when the first warning already named every dropped test span" do
       expect { drop(3) }.to output.to_stderr
 
-      expect { reporter.warn_total }.not_to output.to_stderr
+      expect { reporter.warn_dropped_total }.not_to output.to_stderr
     end
 
     it "starts a fresh count and inline warning for the next suite run" do
@@ -102,16 +102,16 @@ RSpec.describe reporter_class do
       # state its own losses rather than depending on process exit.
       expect { drop(512) }.to output.to_stderr
       drop(512)
-      expect { reporter.warn_total }.to output(/dropped 1024 test\.execution span\(s\) so far this run/).to_stderr
+      expect { reporter.warn_dropped_total }.to output(/dropped 1024 test\.execution span\(s\) so far this run/).to_stderr
 
       expect { drop(2) }.to output(/dropped 2 test\.execution span\(s\) \(export-failure\)/).to_stderr
-      expect { reporter.warn_total }.not_to output.to_stderr
+      expect { reporter.warn_dropped_total }.not_to output.to_stderr
     end
 
     it "stays silent when nothing was dropped" do
       reporter.add_to_counter("otel.bsp.export.success")
 
-      expect { reporter.warn_total }.not_to output.to_stderr
+      expect { reporter.warn_dropped_total }.not_to output.to_stderr
     end
   end
 end

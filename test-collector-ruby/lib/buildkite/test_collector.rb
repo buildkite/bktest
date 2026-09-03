@@ -83,7 +83,7 @@ module Buildkite
           run_env: Buildkite::TestCollector::CI.env,
           instrumentations: otel_instrumentations,
           # Include the automatic worker tag alongside caller-supplied tags.
-          execution_tags: self.tags,
+          tags: self.tags,
         }
       end
       self.hook_into(hook)

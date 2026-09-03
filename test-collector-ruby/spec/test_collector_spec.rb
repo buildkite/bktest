@@ -85,7 +85,7 @@ RSpec.describe Buildkite::TestCollector do
         api_token: "MyToken",
         run_env: run_env,
         instrumentations: [],
-        execution_tags: { "team" => "platform" },
+        tags: { "team" => "platform" },
       )
     end
 
@@ -133,7 +133,7 @@ RSpec.describe Buildkite::TestCollector do
         run_env: run_env,
         instrumentations: nil,
         # The merged tags, so the automatic worker tag reaches OTLP too.
-        execution_tags: { "ci.worker.id" => "agent-123", "team" => "platform" },
+        tags: { "ci.worker.id" => "agent-123", "team" => "platform" },
       )
     end
 

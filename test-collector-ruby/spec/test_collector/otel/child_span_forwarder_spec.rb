@@ -3,7 +3,7 @@
 require "opentelemetry/sdk"
 require "timeout"
 
-forwarder_class = Buildkite::TestCollector::OTel.const_get(:ExecutionChildForwarder, false)
+forwarder_class = Buildkite::TestCollector::OTel.const_get(:ChildSpanForwarder, false)
 
 RSpec.describe forwarder_class do
   subject(:forwarder) { described_class.new(processor, context_key: context_key) }
@@ -13,9 +13,9 @@ RSpec.describe forwarder_class do
     spy("execution child processor", on_finish: nil, force_flush: success, shutdown: success)
   end
   let(:context_key) { OpenTelemetry::Context.create_key("execution") }
-  let(:execution_trace_id) { "\1" * 16 }
-  let(:execution_context) { OpenTelemetry::Context.empty.set_value(context_key, execution_trace_id) }
-  let(:span) { double("span", context: double("span context", trace_id: execution_trace_id)) }
+  let(:test_span_trace_id) { "\1" * 16 }
+  let(:execution_context) { OpenTelemetry::Context.empty.set_value(context_key, test_span_trace_id) }
+  let(:span) { double("span", context: double("span context", trace_id: test_span_trace_id)) }
 
   it "forwards only spans from the execution trace" do
     unrelated_span = double("unrelated span")

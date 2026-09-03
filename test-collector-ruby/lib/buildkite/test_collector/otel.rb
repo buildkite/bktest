@@ -28,7 +28,7 @@ module Buildkite::TestCollector
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
 
     require_relative "otel/test_span_metrics_reporter"
-    require_relative "otel/execution_child_forwarder"
+    require_relative "otel/child_span_forwarder"
 
     # Avoid duplicate IDs when test suites seed Ruby's global PRNG.
     module SecureRandomIdGenerator
@@ -58,7 +58,7 @@ module Buildkite::TestCollector
         !@tracer.nil?
       end
 
-      def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, instrumentations: nil, execution_tags: {})
+      def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, instrumentations: nil, tags: {})
         if enabled?
           # One process serves one run: the exporters and providers live for
           # the whole process, so run identity is fixed at first configure.
@@ -99,10 +99,10 @@ module Buildkite::TestCollector
         # about the Test Engine run and test framework describe each execution
         # instead, so keep them on the test span rather than every child span.
         resource = provider_resource(run_env)
-        @execution_attributes = execution_attributes(run_env, execution_tags)
+        @run_attributes = run_attributes(run_env, tags)
 
-        @execution_provider = build_execution_provider(endpoint, headers, resource)
-        @tracer = @execution_provider.tracer(TRACER_NAME, Buildkite::TestCollector::VERSION)
+        @test_span_provider = build_test_span_provider(endpoint, headers, resource)
+        @tracer = @test_span_provider.tracer(TRACER_NAME, Buildkite::TestCollector::VERSION)
         configure_child_export(endpoint, headers, instrumentations, resource)
         register_shutdown_at_exit
       rescue LoadError, StandardError => e
@@ -117,7 +117,7 @@ module Buildkite::TestCollector
         # These three are the minimum needed to synthesize an execution. The
         # span is the submission, so every test span must carry the via marker.
         attributes = { EXECUTION_VIA_ATTRIBUTE => "otlp" }
-        run_key = (@execution_attributes || {})["buildkite.run_key"]
+        run_key = (@run_attributes || {})["buildkite.run_key"]
         attributes["buildkite.run_key"] = run_key if run_key
         # Reserve the result's position before test code can consume the
         # SDK's attribute budget. finish_test_span replaces this value.
@@ -143,7 +143,7 @@ module Buildkite::TestCollector
       def with_test_span(span)
         return yield unless span
 
-        OpenTelemetry::Context.with_value(execution_context_key, span.context.trace_id) do
+        OpenTelemetry::Context.with_value(test_span_context_key, span.context.trace_id) do
           OpenTelemetry::Trace.with_span(span) { yield }
         end
       end
@@ -190,11 +190,11 @@ module Buildkite::TestCollector
         # Report what this suite run has dropped so far. The SDK's flush stops
         # at the first rejected batch and re-queues the rest, so a persistent
         # failure leaves a balance that drains, and is reported, at shutdown.
-        @test_span_metrics_reporter&.warn_total
+        @test_span_metrics_reporter&.warn_dropped_total
       end
 
       def shutdown
-        forwarder_error = deactivate_child_forwarder(@execution_child_forwarder)
+        forwarder_error = deactivate_child_span_forwarder(@child_span_forwarder)
         export_error = each_export_component(PROCESSOR_TIMEOUT_SECONDS) do |component, remaining|
           component.shutdown(timeout: remaining)
         end
@@ -202,16 +202,16 @@ module Buildkite::TestCollector
         if error
           warn "[buildkite-test_collector] Could not shut down OpenTelemetry span export: #{error.class}: #{error.message}"
         end
-        @test_span_metrics_reporter&.warn_total
+        @test_span_metrics_reporter&.warn_dropped_total
       ensure
-        @execution_provider = nil
-        @execution_child_processor = nil
-        @execution_child_forwarder = nil
+        @test_span_provider = nil
+        @child_span_processor = nil
+        @child_span_forwarder = nil
         @exporters = nil
         @test_span_metrics_reporter = nil
         @api_token = nil
         @authorization_from_environment = nil
-        @execution_attributes = nil
+        @run_attributes = nil
         @run_key = nil
         @tracer = nil
       end
@@ -231,9 +231,9 @@ module Buildkite::TestCollector
         at_exit { Buildkite::TestCollector::OTel.shutdown }
       end
 
-      def build_execution_provider(endpoint, headers, resource)
+      def build_test_span_provider(endpoint, headers, resource)
         @test_span_metrics_reporter = TestSpanMetricsReporter.new
-        execution_processor = batch_processor(
+        test_span_processor = batch_processor(
           endpoint,
           headers,
           max_queue_size: TEST_SPAN_MAX_QUEUE_SIZE,
@@ -241,15 +241,15 @@ module Buildkite::TestCollector
           schedule_delay: TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS,
           metrics_reporter: @test_span_metrics_reporter,
         )
-        execution_provider = OpenTelemetry::SDK::Trace::TracerProvider.new(
+        test_span_provider = OpenTelemetry::SDK::Trace::TracerProvider.new(
           sampler: OpenTelemetry::SDK::Trace::Samplers::ALWAYS_ON,
           id_generator: SecureRandomIdGenerator,
           resource: resource,
         )
-        execution_provider.add_span_processor(execution_processor)
-        execution_provider
+        test_span_provider.add_span_processor(test_span_processor)
+        test_span_provider
       rescue StandardError
-        stop_processor(execution_processor)
+        stop_processor(test_span_processor)
         raise
       end
 
@@ -338,7 +338,7 @@ module Buildkite::TestCollector
       end
 
       # The collector-managed child provider carries the same producer resource
-      # as the execution provider. A suite-owned provider keeps its own resource.
+      # as the test span provider. A suite-owned provider keeps its own resource.
       def configure_child_export(endpoint, headers, instrumentations, resource)
         provider = OpenTelemetry.tracer_provider
         collector_managed = provider.is_a?(OpenTelemetry::Internal::ProxyTracerProvider)
@@ -347,9 +347,9 @@ module Buildkite::TestCollector
         end
 
         child_processor = batch_processor(endpoint, headers)
-        child_forwarder = ExecutionChildForwarder.new(
+        child_forwarder = ChildSpanForwarder.new(
           child_processor,
-          context_key: execution_context_key,
+          context_key: test_span_context_key,
         )
 
         if collector_managed
@@ -370,16 +370,16 @@ module Buildkite::TestCollector
           end
         end
 
-        @execution_child_processor = child_processor
-        @execution_child_forwarder = child_forwarder
+        @child_span_processor = child_processor
+        @child_span_forwarder = child_forwarder
       rescue StandardError => e
-        deactivate_child_forwarder(child_forwarder)
+        deactivate_child_span_forwarder(child_forwarder)
         stop_processor(child_processor)
         warn "[buildkite-test_collector] OpenTelemetry child span export disabled: #{e.class}: #{e.message}; test.execution export remains enabled"
       end
 
-      def execution_context_key
-        @execution_context_key ||= OpenTelemetry::Context.create_key("buildkite.test.execution")
+      def test_span_context_key
+        @test_span_context_key ||= OpenTelemetry::Context.create_key("buildkite.test.execution")
       end
 
       # User tags travel under the buildkite.tag. prefix, which the server
@@ -419,7 +419,7 @@ module Buildkite::TestCollector
       # These fields describe each test execution rather than the provider that
       # emitted its child spans. Configure-level tags apply to every test span;
       # tag_execution adds the per-test tags later when the result is finalized.
-      def execution_attributes(run_env, execution_tags)
+      def run_attributes(run_env, tags)
         _, pipeline_run_url = ci_pipeline_run(run_env)
         attributes = {
           "buildkite.run_key" => run_env["key"],
@@ -439,7 +439,7 @@ module Buildkite::TestCollector
           attributes["buildkite.test.framework.version"] = RSpec::Core::Version::STRING
         end
 
-        attributes.compact.merge(tag_attributes(execution_tags))
+        attributes.compact.merge(tag_attributes(tags))
       end
 
       # Use provider-native IDs for correlation with other CI telemetry. The
@@ -469,7 +469,7 @@ module Buildkite::TestCollector
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
         error = nil
 
-        [@execution_provider, @execution_child_processor].compact.each do |component|
+        [@test_span_provider, @child_span_processor].compact.each do |component|
           remaining = [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
           begin
             yield component, remaining
@@ -481,7 +481,7 @@ module Buildkite::TestCollector
         error
       end
 
-      def deactivate_child_forwarder(forwarder)
+      def deactivate_child_span_forwarder(forwarder)
         forwarder&.shutdown
         nil
       rescue StandardError => e
@@ -532,11 +532,11 @@ module Buildkite::TestCollector
 
       # Run metadata follows the test's attributes; tags come last of all.
       def add_run_metadata(span, test_attributes)
-        execution_attributes = @execution_attributes || {}
-        execution_attributes.each do |key, value|
+        run_attributes = @run_attributes || {}
+        run_attributes.each do |key, value|
           span.set_attribute(key, value) unless key.start_with?(TAG_ATTRIBUTE_PREFIX)
         end
-        execution_attributes.merge(test_attributes).each do |key, value|
+        run_attributes.merge(test_attributes).each do |key, value|
           span.set_attribute(key, value) if key.start_with?(TAG_ATTRIBUTE_PREFIX)
         end
       rescue StandardError => e

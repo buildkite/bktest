@@ -3,7 +3,7 @@
 module Buildkite
   module TestCollector
     module OTel
-      class ExecutionChildForwarder
+      class ChildSpanForwarder
         def initialize(processor, context_key:)
           @processor = processor
           @context_key = context_key
@@ -13,9 +13,9 @@ module Buildkite
         end
 
         def on_start(span, parent_context)
-          execution_trace_id = parent_context.value(@context_key)
-          return unless execution_trace_id
-          return unless execution_trace_id == span.context.trace_id
+          test_span_trace_id = parent_context.value(@context_key)
+          return unless test_span_trace_id
+          return unless test_span_trace_id == span.context.trace_id
 
           @mutex.synchronize do
             @spans[span] = true if @active
@@ -56,7 +56,7 @@ module Buildkite
           OpenTelemetry::SDK::Trace::Export::SUCCESS
         end
       end
-      private_constant :ExecutionChildForwarder
+      private_constant :ChildSpanForwarder
     end
   end
 end
