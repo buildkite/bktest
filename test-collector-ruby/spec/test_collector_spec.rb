@@ -188,6 +188,24 @@ RSpec.describe Buildkite::TestCollector do
       expect(Buildkite::TestCollector::Object).to have_received(:configure)
     end
 
+    it "says results will not be uploaded when only OTLP headers held the credential" do
+      # Header-only authentication (bktec's relay) has no token for the JSON
+      # path, so the fallback must not promise an upload Uploader will skip.
+      allow(Buildkite::TestCollector::OTel).to receive(:configure!)
+      allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { false }
+      allow(Buildkite::TestCollector).to receive(:hook_into)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
+      env_overlay["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "Authorization=Bearer%20relay"
+
+      Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
+
+      expect {
+        Buildkite::TestCollector.start_otel
+      }.to output(/OpenTelemetry could not be configured .*; results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set/).to_stderr
+
+      expect(Buildkite::TestCollector.otel_enabled?).to eq false
+    end
+
     it "routes annotations only to OpenTelemetry when it is enabled" do
       allow(Buildkite::TestCollector::OTel).to receive(:annotate)
       Buildkite::TestCollector.otel_enabled = true
@@ -308,13 +326,14 @@ RSpec.describe Buildkite::TestCollector do
 
     it "warns and falls back to JSON instead of enabling the RSpec-only OpenTelemetry integration" do
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "MyToken"
 
       expect {
         Buildkite::TestCollector.configure(
           hook: hook,
           otel_enabled: true,
         )
-      }.to output(/otel_enabled is only supported with the rspec hook; the #{hook} hook will upload results as JSON/).to_stderr
+      }.to output(/otel_enabled is only supported with the rspec hook, not #{hook}; uploading results as JSON instead/).to_stderr
       Buildkite::TestCollector.start_otel
 
       expect(Buildkite::TestCollector.otel_enabled?).to eq false
@@ -350,13 +369,14 @@ RSpec.describe Buildkite::TestCollector do
 
     it "warns and falls back to JSON instead of enabling the RSpec-only OpenTelemetry integration" do
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "MyToken"
 
       expect {
         Buildkite::TestCollector.configure(
           hook: hook,
           otel_enabled: true,
         )
-      }.to output(/otel_enabled is only supported with the rspec hook; the #{hook} hook will upload results as JSON/).to_stderr
+      }.to output(/otel_enabled is only supported with the rspec hook, not #{hook}; uploading results as JSON instead/).to_stderr
       Buildkite::TestCollector.start_otel
 
       expect(Buildkite::TestCollector.otel_enabled?).to eq false

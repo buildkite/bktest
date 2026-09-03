@@ -57,8 +57,8 @@ module Buildkite
       self.env = env
       self.tags = worker_id_tag.merge(tags)
       if otel_enabled && test_runner != "rspec"
-        warn "[buildkite-test_collector] otel_enabled is only supported with the rspec hook; " \
-          "the #{test_runner} hook will upload results as JSON instead"
+        warn "[buildkite-test_collector] otel_enabled is only supported with the rspec hook, " \
+          "not #{test_runner}; #{json_fallback_outcome}"
         otel_enabled = false
       end
       # Without a credential there is nothing to submit, and the JSON path
@@ -110,10 +110,22 @@ module Buildkite
       # suite: the Reporter, per-example tracer, and artifact all read
       # otel_enabled? lazily.
       warn "[buildkite-test_collector] otel_enabled is set, but OpenTelemetry could not be configured " \
-        "(see the warning above); uploading results as JSON instead"
+        "(see the warning above); #{json_fallback_outcome}"
       self.otel_enabled = false
       enable_tracing!
     end
+
+    # The JSON path needs BUILDKITE_ANALYTICS_TOKEN. A setup authenticated
+    # only through OTLP headers (such as bktec's relay) has no credential for
+    # it, so say so rather than promise an upload that Uploader will skip.
+    def self.json_fallback_outcome
+      if api_token
+        "uploading results as JSON instead"
+      else
+        "results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set"
+      end
+    end
+    private_class_method :json_fallback_outcome
 
     def self.otel_enabled?
       !!otel_enabled

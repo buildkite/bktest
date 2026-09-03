@@ -225,7 +225,9 @@ run. Reporting a new run requires a new process.
 Export never fails a test. If test span setup fails (for example on Ruby older
 than 3.3, or without the OpenTelemetry gems), the collector warns and uploads
 the run's results as JSON instead, exactly as it does with `otel_enabled` off.
-If optional child setup or attachment fails, the collector warns, cleans up that
+That JSON upload needs `BUILDKITE_ANALYTICS_TOKEN`; when the credential came
+only from OTLP header variables (as with bktec's relay), the warning says that
+results will not be uploaded. If optional child setup or attachment fails, the collector warns, cleans up that
 path, and continues exporting test spans. The suite-end flush and the
 process-exit shutdown each give the OpenTelemetry SDK a 30-second budget to
 export buffered spans; the SDK's own retry backoff can run past it when the
