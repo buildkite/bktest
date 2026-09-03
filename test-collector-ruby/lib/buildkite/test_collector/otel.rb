@@ -113,19 +113,17 @@ module Buildkite::TestCollector
       def start_test_span(test: nil)
         return unless enabled?
 
-        attributes = {}
+        # The SDK retains the earliest attributes at its configured limit.
+        # These three are the minimum needed to synthesize an execution. The
+        # span is the submission, so every root must carry the via marker.
+        attributes = { EXECUTION_VIA_ATTRIBUTE => "otlp" }
+        run_key = (@execution_attributes || {})["buildkite.run_key"]
+        attributes["buildkite.run_key"] = run_key if run_key
         if test
-          test_attributes = test.otel_attributes
-          # The SDK retains the earliest attributes at its configured limit.
-          # These three are the minimum needed to synthesize an execution.
-          via = test_attributes[EXECUTION_VIA_ATTRIBUTE]
-          attributes[EXECUTION_VIA_ATTRIBUTE] = via if via
-          run_key = (@execution_attributes || {})["buildkite.run_key"]
-          attributes["buildkite.run_key"] = run_key if run_key
           # Reserve the result's position before test code can consume the
           # SDK's attribute budget. finish_test_span replaces this value.
           attributes[RESULT_ATTRIBUTE] = "unset"
-          test_attributes.each do |key, value|
+          test.otel_attributes.each do |key, value|
             next if value.nil? || attributes.key?(key) || key.start_with?(TAG_ATTRIBUTE_PREFIX)
 
             attributes[key] = value

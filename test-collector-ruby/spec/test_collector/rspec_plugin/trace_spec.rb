@@ -88,9 +88,8 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
   describe "#otel_attributes" do
     let(:example) { fake_example(file_path: "./spec/foo_spec.rb") }
 
-    it "describes the OTLP execution, using the same path as the legacy upload" do
+    it "describes the test, using the same path as the legacy upload" do
       expect(trace.otel_attributes).to eq(
-        "buildkite.execution.via" => "otlp",
         "buildkite.test.scope" => example.example_group.metadata[:full_description],
         "buildkite.test.name" => example.description,
         "test.case.name" => example.full_description,

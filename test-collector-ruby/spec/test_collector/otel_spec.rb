@@ -113,6 +113,18 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(skipped.ended).to be(true)
   end
 
+  it "marks every root as the submission, even one no test describes" do
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    described_class.instance_variable_set(:@tracer, provider.tracer("via-marker-test"))
+
+    span = described_class.start_test_span
+
+    expect(span.to_span_data.attributes).to eq("buildkite.execution.via" => "otlp")
+  ensure
+    described_class.instance_variable_set(:@tracer, nil)
+    provider&.shutdown
+  end
+
   it "reserves synthesis attributes before descriptive fields, run metadata, and tags" do
     exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
@@ -137,7 +149,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
         "test.suite.name" => "Math",
         "code.file.path" => "spec/math_spec.rb",
         "code.line.number" => 12,
-        "buildkite.execution.via" => "otlp",
         "buildkite.test.execution.external_id" => "execution-123",
         "buildkite.tag.execution" => "optional tag",
       },
@@ -189,7 +200,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       calls += 1
       raise "no metadata for you" if calls > 1
 
-      { "buildkite.execution.via" => "otlp" }
+      {}
     end
 
     span = described_class.start_test_span(test: test)

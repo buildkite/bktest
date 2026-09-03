@@ -37,11 +37,10 @@ module Buildkite::TestCollector::RSpecPlugin
       result
     end
 
-    # What the span says about the test itself. OpenTelemetry spans are the
-    # execution submission, so every one opts in to server-side synthesis.
+    # What the span says about the test itself. OTel adds the submission
+    # marker and run metadata that describe every execution root.
     def otel_attributes
       attributes = {
-        "buildkite.execution.via" => "otlp",
         "buildkite.test.scope" => strip_invalid_utf8_chars(scope),
         "buildkite.test.name" => strip_invalid_utf8_chars(name),
         "test.case.name" => strip_invalid_utf8_chars(example.full_description),
