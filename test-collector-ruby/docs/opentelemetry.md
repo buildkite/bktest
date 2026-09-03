@@ -116,6 +116,13 @@ A failed test sets the span's status to error with the failure summary as its
 description. Each failure is a semconv `exception` event; the server maps these
 back to the execution's failure reason and expanded failure detail.
 
+Not every JSON `run_env` field has an OTLP equivalent. The execution name
+affixes (`BUILDKITE_ANALYTICS_EXECUTION_NAME_PREFIX` and
+`BUILDKITE_ANALYTICS_EXECUTION_NAME_SUFFIX`) and any custom `env:` values passed
+to `configure` are not sent over OTLP; `buildkite.test.name` is the example's
+description as written. Use `tags:` to distinguish runs that share a suite, or
+keep `otel_enabled` off if you rely on those fields.
+
 ## Choosing instrumentation
 
 The collector configures a global SDK provider for child spans and installs the
@@ -228,9 +235,8 @@ Export failures are reported through OpenTelemetry's own logger. Because
 `test.execution` spans are the submission, the collector also warns prominently
 the first time its reserved test span queue drops any of them, usually naming
 the HTTP status or connection error that caused the export to fail (for example
-a `403` when OTLP ingest is not enabled for the organization). The OTLP exporter
-reports a `404` only through OpenTelemetry's logger, so a wrong endpoint shows
-up there rather than in the collector's warning. If more are dropped after
+a `403` when OTLP ingest is not enabled for the organization, or a `404` for a
+wrong endpoint). If more are dropped after
 that, the suite-end flush and the process-exit shutdown each report the total
 dropped since the last report, so a persistent failure is not mistaken for a
 one-off. The suite-end flush stops at the first rejected batch and leaves the

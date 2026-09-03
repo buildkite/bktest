@@ -11,7 +11,10 @@
   at configure time for a non-RSpec hook, and at suite start when the
   OpenTelemetry gems are missing or Ruby is older than 3.3. Without a token or
   OTLP header variables, `otel_enabled` stays off and nothing is exported, the
-  same as the JSON path, which skips uploading without a token.
+  same as the JSON path, which skips uploading without a token. Execution name
+  affixes (`BUILDKITE_ANALYTICS_EXECUTION_NAME_PREFIX`/`SUFFIX`) and custom
+  `env:` values have no OTLP equivalent and are not sent when `otel_enabled` is
+  on; the JSON upload that carried them in the old dual mode no longer happens.
 * Warn prominently, usually naming the HTTP status or connection error, the first
   time Buildkite rejects or the collector drops `test.execution` spans, since
   OTLP is now the only upload path. When more are dropped after that, report the
