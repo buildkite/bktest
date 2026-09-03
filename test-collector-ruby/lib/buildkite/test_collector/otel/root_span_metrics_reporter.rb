@@ -40,7 +40,7 @@ module Buildkite
           return if total.zero? || total == warned
 
           warn "[buildkite-test_collector] TEST RESULTS MISSING: OpenTelemetry dropped #{total} test.execution span(s) " \
-            "in total; those test executions were not uploaded to Buildkite Test Engine."
+            "so far this run; those test executions were not uploaded to Buildkite Test Engine."
         end
 
         private

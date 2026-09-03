@@ -87,7 +87,7 @@ RSpec.describe reporter_class do
 
       expect { reporter.warn_total }.to output(
         "[buildkite-test_collector] TEST RESULTS MISSING: OpenTelemetry dropped 1031 test.execution span(s) " \
-          "in total; those test executions were not uploaded to Buildkite Test Engine.\n"
+          "so far this run; those test executions were not uploaded to Buildkite Test Engine.\n"
       ).to_stderr
     end
 
@@ -102,7 +102,7 @@ RSpec.describe reporter_class do
       # state its own losses rather than depending on process exit.
       drop(512)
       drop(512)
-      expect { reporter.warn_total }.to output(/dropped 1024 test\.execution span\(s\) in total/).to_stderr
+      expect { reporter.warn_total }.to output(/dropped 1024 test\.execution span\(s\) so far this run/).to_stderr
 
       expect { drop(2) }.to output(/dropped 2 test\.execution span\(s\) \(export-failure\)/).to_stderr
       expect { reporter.warn_total }.not_to output.to_stderr

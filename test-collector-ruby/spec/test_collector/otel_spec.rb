@@ -777,7 +777,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       .to output(/dropped 1 test\.execution span\(s\) \(export-failure\)/).to_stderr
     2.times { described_class.finish_test_span(described_class.start_test_span) }
     expect { described_class.force_flush }
-      .to output(/dropped 3 test\.execution span\(s\) in total/).to_stderr
+      .to output(/dropped 3 test\.execution span\(s\) so far this run/).to_stderr
 
     # A warm worker's next suite run gets its own inline warning; shutdown
     # has nothing new to add.
