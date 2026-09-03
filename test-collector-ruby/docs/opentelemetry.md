@@ -42,7 +42,7 @@ test.execution  "Buildkite::Pipeline creates a build"   12.4ms
 
 One example is one trace. Child spans share the root's trace ID, and the root is
 never nested under anything else, so a trace always belongs to exactly one test.
-On Buildkite Agent v3.110 or newer, the root span links to the Agent's propagated
+On Buildkite Agent v3.110 or newer, the test span links to the Agent's propagated
 job trace when tracing is enabled, letting you navigate between them without
 combining every test into one trace.
 
@@ -60,7 +60,7 @@ Three things worth knowing:
 
 ## OTLP execution attributes
 
-The `buildkite.execution.via=otlp` marker opts every exported execution span
+The `buildkite.execution.via=otlp` marker opts every exported test span
 into execution synthesis.
 Buildkite-specific execution fields are flat (`buildkite.run_key`,
 `buildkite.job_id`, ...); producer identity follows OpenTelemetry resource
