@@ -219,8 +219,8 @@ header environment variables are treated as unset.
 bktec's OTLP relay uses the trace-specific header variable to provide its local
 credential and forwards spans to Buildkite with its OIDC credential. Without an
 OTLP Authorization header, spans go directly to Buildkite using
-`BUILDKITE_ANALYTICS_TOKEN`, which must be an agent OIDC token with the
-`write_uploads` scope; a suite API token is rejected by the OTLP endpoint.
+`BUILDKITE_ANALYTICS_TOKEN`: either the suite API token or an agent OIDC token
+with the `write_uploads` scope.
 
 OpenTelemetry's SDK owns batching, retries, and transport. `test.execution`
 spans have a reserved, faster-draining queue and exporter. Forwarded children

@@ -131,8 +131,8 @@ reserved for a future release and disables span export with a warning. See the
 The collector honors standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (or the
 generic `OTEL_EXPORTER_OTLP_HEADERS`) and gives them precedence over its own
 headers, including `Authorization`. Without an OTLP Authorization header, spans
-use `BUILDKITE_ANALYTICS_TOKEN`, which must be an agent OIDC token with the
-`write_uploads` scope; a suite API token is rejected by the OTLP endpoint.
+use `BUILDKITE_ANALYTICS_TOKEN`: the suite API token from the setup above, or an
+agent OIDC token with the `write_uploads` scope.
 
 If OpenTelemetry cannot be configured, or Buildkite rejects the exported
 `test.execution` spans, the collector prints a prominent warning. Tests continue
