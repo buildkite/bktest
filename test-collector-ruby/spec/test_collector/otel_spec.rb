@@ -511,12 +511,14 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(config).to receive(:id_generator=)
     allow(config).to receive(:use_all)
     allow(described_class).to receive(:batch_processor).and_return(child_processor)
+    allow(config).to receive(:resource=)
 
     described_class.send(
       :configure_child_export,
       "https://example.invalid/v1/traces",
       {},
       nil,
+      OpenTelemetry::SDK::Resources::Resource.create({}),
     )
 
     expect(config).to have_received(:id_generator=).with(generator)
@@ -542,12 +544,14 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(config).to receive(:add_span_processor)
     allow(config).to receive(:use_all)
     allow(described_class).to receive(:batch_processor).and_return(child_processor)
+    allow(config).to receive(:resource=)
 
     described_class.send(
       :configure_child_export,
       "https://example.invalid/v1/traces",
       {},
       [],
+      OpenTelemetry::SDK::Resources::Resource.create({}),
     )
 
     expect(config).not_to have_received(:use_all)

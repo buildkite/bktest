@@ -103,7 +103,7 @@ module Buildkite::TestCollector
 
         @execution_provider = build_execution_provider(endpoint, headers, resource)
         @tracer = @execution_provider.tracer(TRACER_NAME, Buildkite::TestCollector::VERSION)
-        configure_child_export(endpoint, headers, instrumentations, resource: resource)
+        configure_child_export(endpoint, headers, instrumentations, resource)
         register_shutdown_at_exit
       rescue LoadError, StandardError => e
         warn "[buildkite-test_collector] OpenTelemetry span export disabled: #{e.class}: #{e.message}"
@@ -219,21 +219,8 @@ module Buildkite::TestCollector
 
       # Pushes any finished spans out now without stopping export. Used at the
       # end of a suite when the process (and maybe another suite run) lives on.
-      # Both queues share one budget, roots first, like shutdown_exports, so
-      # an unreachable endpoint cannot block the suite twice over.
       def force_flush
-        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + PROCESSOR_TIMEOUT_SECONDS
-        error = nil
-
-        [@execution_provider, @execution_child_processor].compact.each do |component|
-          remaining = [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
-          begin
-            component.force_flush(timeout: remaining)
-          rescue StandardError => e
-            error ||= e
-          end
-        end
-
+        error = each_export_component(:force_flush, PROCESSOR_TIMEOUT_SECONDS)
         if error
           warn "[buildkite-test_collector] Could not flush OpenTelemetry spans: #{error.class}: #{error.message}"
         end
@@ -245,7 +232,7 @@ module Buildkite::TestCollector
 
       def shutdown
         forwarder_error = deactivate_child_forwarder(@execution_child_forwarder)
-        export_error = shutdown_exports(PROCESSOR_TIMEOUT_SECONDS)
+        export_error = each_export_component(:shutdown, PROCESSOR_TIMEOUT_SECONDS)
         error = forwarder_error || export_error
         if error
           warn "[buildkite-test_collector] Could not shut down OpenTelemetry span export: #{error.class}: #{error.message}"
@@ -387,7 +374,7 @@ module Buildkite::TestCollector
 
       # The collector-managed child provider carries the same producer resource
       # as the execution provider. A suite-owned provider keeps its own resource.
-      def configure_child_export(endpoint, headers, instrumentations, resource: nil)
+      def configure_child_export(endpoint, headers, instrumentations, resource)
         provider = OpenTelemetry.tracer_provider
         collector_managed = provider.is_a?(OpenTelemetry::Internal::ProxyTracerProvider)
         unless collector_managed || provider.respond_to?(:add_span_processor)
@@ -402,7 +389,7 @@ module Buildkite::TestCollector
 
         if collector_managed
           OpenTelemetry::SDK.configure do |config|
-            config.resource = resource if resource
+            config.resource = resource
             config.id_generator = SecureRandomIdGenerator
             config.add_span_processor(child_forwarder)
             config.use_all if instrumentations.nil?
@@ -512,14 +499,17 @@ module Buildkite::TestCollector
         end
       end
 
-      def shutdown_exports(timeout)
+      # Flushes or shuts down both queues, roots first, within one shared
+      # budget so an unreachable endpoint cannot block the suite twice over.
+      # Returns the first error rather than raising so every queue gets a turn.
+      def each_export_component(operation, timeout)
         deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
         error = nil
 
         [@execution_provider, @execution_child_processor].compact.each do |component|
           remaining = [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
           begin
-            component.shutdown(timeout: remaining)
+            component.public_send(operation, timeout: remaining)
           rescue StandardError => e
             error ||= e
           end
@@ -541,7 +531,7 @@ module Buildkite::TestCollector
         nil
       end
 
-      def finish_span(span, end_timestamp = nil)
+      def finish_span(span, end_timestamp)
         # A backwards clock step while the test ran can put the captured
         # realtime end before the span's start; fall back to the SDK's own
         # monotonic timing rather than export an invalid span.

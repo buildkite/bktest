@@ -50,7 +50,8 @@ module Buildkite::TestCollector::RSpecPlugin
       }
       attributes["buildkite.test.execution.external_id"] = external_id if external_id
       tags&.each do |key, value|
-        attributes["buildkite.tag.#{key}"] = strip_invalid_utf8_chars(value.to_s)
+        prefix = Buildkite::TestCollector::OTel::TAG_ATTRIBUTE_PREFIX
+        attributes["#{prefix}#{key}"] = strip_invalid_utf8_chars(value.to_s)
       end
       attributes
     end
