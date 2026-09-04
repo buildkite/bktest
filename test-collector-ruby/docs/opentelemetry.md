@@ -224,10 +224,11 @@ warns on the first failure.
 
 The filter runs on whichever thread finishes each span, so it can be called
 concurrently and should not depend on shared mutable state. Spans that finish
-while the filter is running (for example, an instrumented cache lookup inside
-it) are exported without being filtered. Dropping a span does not drop its
-children: they are still exported with a `parent_span_id` that no longer
-arrives, so prefer filtering leaf spans such as database calls.
+on the same thread while the filter is running (for example, an instrumented
+cache lookup inside it, or another fiber's span if the filter blocks under a
+fiber scheduler) are exported without being filtered. Dropping a span does not
+drop its children: they are still exported with a `parent_span_id` that no
+longer arrives, so prefer filtering leaf spans such as database calls.
 
 Filtering happens after instrumentation has created and finished the span, so
 it reduces queueing, export, and ingestion volume rather than instrumentation

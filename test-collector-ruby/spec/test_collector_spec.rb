@@ -92,6 +92,12 @@ RSpec.describe Buildkite::TestCollector do
       )
     end
 
+    it "rejects an OpenTelemetry span filter that cannot be called" do
+      expect {
+        Buildkite::TestCollector.configure(hook: hook, otel_span_filter: true)
+      }.to raise_error(ArgumentError, "otel_span_filter must respond to #call")
+    end
+
     it "leaves OpenTelemetry off without a credential, like the JSON path" do
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
       env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil

@@ -25,11 +25,9 @@ RSpec.describe span_filter_class do
   end
 
   it "retains spans when the filter cannot be called with a span" do
-    [true, -> { false }].each do |unusable|
-      filter = described_class.from(unusable)
+    filter = described_class.from(-> { false })
 
-      expect { expect(filter.retain?(span)).to be(true) }
-        .to output(/Could not filter OpenTelemetry child span, retaining it/).to_stderr
-    end
+    expect { expect(filter.retain?(span)).to be(true) }
+      .to output(/Could not filter OpenTelemetry child span, retaining it/).to_stderr
   end
 end

@@ -48,6 +48,12 @@ module Buildkite
     end
 
     def self.configure(hook:, token: nil, url: nil, tracing_enabled: true, artifact_path: nil, location_prefix: nil, env: {}, tags: {}, otel_enabled: false, otel_instrumentations: nil, otel_span_filter: nil)
+      # A filter that raises at runtime fails open, but an object that cannot be
+      # called at all is a configuration mistake worth surfacing immediately.
+      unless otel_span_filter.nil? || otel_span_filter.respond_to?(:call)
+        raise ArgumentError, "otel_span_filter must respond to #call"
+      end
+
       self.api_token = (token || ENV["BUILDKITE_ANALYTICS_TOKEN"])&.strip
       self.url = url || ENV["BUILDKITE_ANALYTICS_ENDPOINT"] || DEFAULT_URL
       self.tracing_enabled = tracing_enabled
