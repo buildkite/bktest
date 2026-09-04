@@ -817,6 +817,36 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.shutdown
   end
 
+  it "filters child spans without filtering test spans" do
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)
+    root_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    child_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    allow(OpenTelemetry::Exporter::OTLP::Exporter)
+      .to receive(:new)
+      .and_return(root_exporter, child_exporter)
+    described_class.configure!(
+      endpoint: "https://example.invalid/v1/traces",
+      span_filter: ->(span) { span.name == "kept-child" },
+    )
+
+    execution_span = described_class.start_test_span(test: execution_test)
+    described_class.with_test_span(execution_span) do
+      tracer = provider.tracer("suite")
+      tracer.in_span("kept-child") { nil }
+      tracer.in_span("dropped-child") { nil }
+    end
+    described_class.finish_test_span(execution_span, test: execution_test)
+    described_class.instance_variable_get(:@test_span_provider).force_flush
+    described_class.instance_variable_get(:@child_span_processor).force_flush
+
+    expect(root_exporter.finished_spans.map(&:name)).to contain_exactly("test.execution")
+    expect(child_exporter.finished_spans.map(&:name)).to contain_exactly("kept-child")
+  ensure
+    described_class.shutdown
+    provider&.shutdown
+  end
+
   it "leaves instrumentation alone when the suite owns its provider" do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)

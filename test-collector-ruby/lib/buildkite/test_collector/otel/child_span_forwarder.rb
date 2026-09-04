@@ -4,9 +4,10 @@ module Buildkite
   module TestCollector
     module OTel
       class ChildSpanForwarder
-        def initialize(processor, context_key:)
+        def initialize(processor, context_key:, span_filter: nil)
           @processor = processor
           @context_key = context_key
+          @span_filter = SpanFilter.from(span_filter)
           @spans = {}
           @mutex = Mutex.new
           @active = true
@@ -25,8 +26,13 @@ module Buildkite
         end
 
         def on_finish(span)
+          return unless @mutex.synchronize { @active && @spans.delete(span) }
+          # The filter is caller code: run it outside the lock so a slow filter
+          # cannot stall other spans, and one that finishes a span cannot deadlock.
+          return unless @span_filter.retain?(span)
+
           @mutex.synchronize do
-            @processor.on_finish(span) if @active && @spans.delete(span)
+            @processor.on_finish(span) if @active
           end
         rescue StandardError => e
           warn "[buildkite-test_collector] Could not export OpenTelemetry child span: #{e.class}: #{e.message}"
