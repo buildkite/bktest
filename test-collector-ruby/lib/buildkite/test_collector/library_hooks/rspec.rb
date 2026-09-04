@@ -15,7 +15,7 @@ RSpec.configure do |config|
   end
 
   config.around(:each) do |example|
-    tracer = unless Buildkite::TestCollector.otel_only?
+    tracer = unless Buildkite::TestCollector.otel_enabled?
       Buildkite::TestCollector::Tracer.new(
         min_duration: Buildkite::TestCollector.trace_min_duration,
       )
@@ -34,7 +34,7 @@ RSpec.configure do |config|
       location_prefix: Buildkite::TestCollector.location_prefix,
       external_id: Buildkite::TestCollector::UUID.v7,
     )
-    otel_span, trace.trace_id = Buildkite::TestCollector::OTel.start_test_span(test: trace)
+    otel_span = Buildkite::TestCollector::OTel.start_test_span(test: trace) if Buildkite::TestCollector.otel_enabled?
 
     # example.run can raise errors (including from other middleware/hooks) so clean up in `ensure`.
     begin
@@ -45,7 +45,7 @@ RSpec.configure do |config|
 
       tracer&.finalize
 
-      trace.history = tracer ? tracer.history : {}
+      trace.history = tracer&.history || {}
 
       # Left open for Reporter to finish once RSpec settles the result;
       # the end timestamp keeps the span timing the example itself.
@@ -64,7 +64,7 @@ RSpec.configure do |config|
     # process-lifetime at_exit shutdown when it configured.
     Buildkite::TestCollector::OTel.force_flush
 
-    if !Buildkite::TestCollector.otel_only? && Buildkite::TestCollector.artifact_path
+    if Buildkite::TestCollector.artifact_path && !Buildkite::TestCollector.otel_enabled?
       filename = File.join(Buildkite::TestCollector.artifact_path, "buildkite-test-collector-rspec-#{Buildkite::TestCollector::UUID.call}.json.gz")
       data_set = { results: Buildkite::TestCollector.uploader.traces.values.map(&:as_hash) }
       File.open(filename, "wb") do |f|

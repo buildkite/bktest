@@ -41,24 +41,13 @@ module Buildkite
       attr_accessor :test_runner
       attr_accessor :env
       attr_accessor :tags
-      attr_accessor :otel_only
+      attr_accessor :otel_enabled
       attr_accessor :batch_size
       attr_accessor :trace_min_duration
       attr_accessor :span_filters
     end
 
-    def self.configure(hook:, token: nil, url: nil, tracing_enabled: true, artifact_path: nil, location_prefix: nil, env: {}, tags: {}, otel_enabled: nil, otel_instrumentations: nil, otel_only: false)
-      if otel_only && hook.to_sym != :rspec
-        raise ArgumentError.new("otel_only is currently only supported with the rspec hook")
-      end
-
-      # They name one choice of upload mode, not two independent switches, so
-      # any explicit otel_enabled (even false) contradicts otel_only. Its nil
-      # default keeps unspecified distinct from an explicit value.
-      if otel_only && !otel_enabled.nil?
-        raise ArgumentError.new("otel_enabled and otel_only are mutually exclusive; pass at most one")
-      end
-
+    def self.configure(hook:, token: nil, url: nil, tracing_enabled: true, artifact_path: nil, location_prefix: nil, env: {}, tags: {}, otel_enabled: false, otel_instrumentations: nil)
       self.api_token = (token || ENV["BUILDKITE_ANALYTICS_TOKEN"])&.strip
       self.url = url || ENV["BUILDKITE_ANALYTICS_ENDPOINT"] || DEFAULT_URL
       self.tracing_enabled = tracing_enabled
@@ -67,7 +56,20 @@ module Buildkite
       self.test_runner = hook.to_s
       self.env = env
       self.tags = worker_id_tag.merge(tags)
-      self.otel_only = otel_only
+      if otel_enabled && test_runner != "rspec"
+        warn "[buildkite-test_collector] otel_enabled is only supported with the rspec hook, " \
+          "not #{test_runner}; #{json_fallback_outcome}"
+        otel_enabled = false
+      end
+      # Without a credential there is nothing to submit, and the JSON path
+      # already treats that as "not reporting" (Uploader.upload skips the
+      # request without a token). Take the same quiet path here rather than
+      # export unauthenticated spans and warn that they were dropped, which
+      # is what a developer running the suite locally would otherwise see.
+      if otel_enabled && api_token.nil? && !Buildkite::TestCollector::OTel.headers_from_environment?
+        otel_enabled = false
+      end
+      self.otel_enabled = otel_enabled
       self.batch_size = ENV.fetch("BUILDKITE_ANALYTICS_UPLOAD_BATCH_SIZE") { DEFAULT_UPLOAD_BATCH_SIZE }.to_i
 
       trace_min_ms_string = ENV["BUILDKITE_ANALYTICS_TRACE_MIN_MS"]
@@ -81,24 +83,19 @@ module Buildkite
       end
 
       # Defer OTel setup until RSpec's before(:suite), after application and support files have loaded.
-      # otel_only already guarantees the rspec hook (checked above), so both
-      # modes use exactly the same OpenTelemetry setup.
-      @otel_options = nil
-      if otel_only || (otel_enabled && test_runner == "rspec")
-        @otel_options = {
+      @otel_options = if otel_enabled?
+        {
           # Undocumented, for development purposes.
           endpoint: ENV["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] || Buildkite::TestCollector::OTel::DEFAULT_ENDPOINT,
           api_token: api_token,
           run_env: Buildkite::TestCollector::CI.env,
           instrumentations: otel_instrumentations,
-          # Configure-level tags describe each test execution, not every child
-          # operation. Use the merged self.tags so the automatic worker tag is
-          # included alongside caller-supplied tags on each test root.
-          execution_tags: self.tags,
+          # Include the automatic worker tag alongside caller-supplied tags.
+          tags: self.tags,
         }
       end
       self.hook_into(hook)
-      enable_tracing! if test_runner == "rspec" && !otel_only?
+      enable_tracing! if test_runner == "rspec" && !otel_enabled?
     end
 
     def self.start_otel
@@ -107,39 +104,31 @@ module Buildkite
       return unless options
 
       Buildkite::TestCollector::OTel.configure!(**options)
-      warn_otel_only_disabled if otel_only? && !Buildkite::TestCollector::OTel.enabled?
+      return if Buildkite::TestCollector::OTel.enabled?
+
+      # Nothing has run yet, so the legacy path can still cover the whole
+      # suite: the Reporter, per-example tracer, and artifact all read
+      # otel_enabled? lazily.
+      warn "[buildkite-test_collector] otel_enabled is set, but OpenTelemetry could not be configured " \
+        "(see the warning above); #{json_fallback_outcome}"
+      self.otel_enabled = false
+      enable_tracing!
     end
 
-    def self.otel_only?
-      !!otel_only
-    end
-
-    # In otel_only mode OTLP is the only upload method, so if OpenTelemetry
-    # could not be set up (see the warning OTel.configure! just printed) there
-    # is nothing to fall back to: the suite still runs, but no results are
-    # uploaded at all. That deserves more than one easily-missed line.
-    def self.warn_otel_only_disabled
-      # Buildkite log output renders ANSI colour even though it isn't a TTY.
-      red, reset = if $stderr.tty? || ENV["BUILDKITE"]
-        ["\e[31;1m", "\e[0m"]
+    # The JSON path needs BUILDKITE_ANALYTICS_TOKEN. A setup authenticated
+    # only through OTLP headers (such as bktec's relay) has no credential for
+    # it, so say so rather than promise an upload that Uploader will skip.
+    def self.json_fallback_outcome
+      if api_token
+        "uploading results as JSON instead"
       else
-        ["", ""]
+        "results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set"
       end
+    end
+    private_class_method :json_fallback_outcome
 
-      warn <<~MESSAGE
-        #{red}
-        ############################################################
-        ##                                                        ##
-        ##  buildkite-test_collector: NO TEST RESULTS UPLOADED!   ##
-        ##                                                        ##
-        ##  otel_only is set, but OpenTelemetry could not be      ##
-        ##  configured (see the warning above). This mode has no  ##
-        ##  JSON fallback, so this run will upload NO results to  ##
-        ##  Buildkite Test Engine.                                ##
-        ##                                                        ##
-        ############################################################
-        #{reset}
-      MESSAGE
+    def self.otel_enabled?
+      !!otel_enabled
     end
 
     def self.hook_into(hook)
@@ -162,10 +151,7 @@ module Buildkite
     private_class_method :worker_id_tag
 
     def self.annotate(content)
-      # Keep the OpenTelemetry span identical in both export modes. The
-      # standard mode additionally records the annotation in its JSON trace.
-      Buildkite::TestCollector::OTel.annotate(content)
-      return if otel_only?
+      return Buildkite::TestCollector::OTel.annotate(content) if otel_enabled?
 
       tracer = Buildkite::TestCollector::Uploader.tracer
       tracer&.enter("annotation", **{ content: content })

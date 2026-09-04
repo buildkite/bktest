@@ -2,9 +2,29 @@
 
 ## Unreleased
 
+* **Breaking change to the experimental OpenTelemetry support:** opt-in
+  submission is now OTLP-only for RSpec. `otel_enabled: true` submits executions
+  as spans without also uploading legacy JSON, and the separate `otel_only`
+  option has been removed (passing it now raises `ArgumentError`). OpenTelemetry
+  remains off by default, so suites that never opted in are unaffected. When
+  OpenTelemetry cannot be used, the collector warns and uploads JSON instead:
+  at configure time for a non-RSpec hook, and at suite start when the
+  OpenTelemetry gems are missing or Ruby is older than 3.3. Without a token or
+  OTLP header variables, `otel_enabled` stays off and nothing is exported, the
+  same as the JSON path, which skips uploading without a token. When only OTLP
+  header variables held the credential, the fallback warning says results will
+  not be uploaded, since the JSON path has no token to use. Execution name
+  affixes (`BUILDKITE_ANALYTICS_EXECUTION_NAME_PREFIX`/`SUFFIX`) and custom
+  `env:` values have no OTLP equivalent and are not sent when `otel_enabled` is
+  on; the JSON upload that carried them in the old dual mode no longer happens.
+* Warn prominently, usually naming the HTTP status or connection error, the first
+  time Buildkite rejects or the collector drops `test.execution` spans, since
+  OTLP is now the only upload path. A test span that could not be started counts
+  as dropped too. When more are dropped after that, report the total at the
+  suite-end flush and again at process exit for anything still draining.
 * Keep stable suite, CI worker/run, and VCS identity on OpenTelemetry resources,
   while moving Test Engine run metadata, framework details, and configured tags
-  to each `test.execution` root. Child spans no longer carry execution-only
+  to each `test.execution` span. Child spans no longer carry execution-only
   metadata as duplicated resource attributes.
 * Send the Ruby version and configured location prefix with OpenTelemetry test
   executions so OTLP-only uploads retain their classic upload tags and selector
