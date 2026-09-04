@@ -17,6 +17,13 @@
   affixes (`BUILDKITE_ANALYTICS_EXECUTION_NAME_PREFIX`/`SUFFIX`) and custom
   `env:` values have no OTLP equivalent and are not sent when `otel_enabled` is
   on; the JSON upload that carried them in the old dual mode no longer happens.
+* Remove the experimental `otel_instrumentations` option (passing it now raises
+  `ArgumentError`). It only accepted `nil` or `[]`, and `[]` merely skipped
+  installing the instrumentation gems the suite had already required. Choose
+  instrumentation by requiring the gems you want (or by setting the SDK's
+  `OTEL_RUBY_INSTRUMENTATION_<NAME>_ENABLED=false` for one you require anyway);
+  the collector installs every registered instrumentation when it configures the
+  SDK, and installs none when the suite configures the SDK itself.
 * Warn prominently, usually naming the HTTP status or connection error, the first
   time Buildkite rejects or the collector drops `test.execution` spans, since
   OTLP is now the only upload path. A test span that could not be started counts

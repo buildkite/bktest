@@ -338,8 +338,14 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(described_class).to receive(:at_exit) { registrations += 1 }
 
     # A failed configure leaves nothing to shut down at exit.
+    provider_failures = 1
+    allow(described_class).to receive(:build_test_span_provider).and_wrap_original do |original, *args|
+      raise "test span provider setup failed" if (provider_failures -= 1) >= 0
+
+      original.call(*args)
+    end
     expect do
-      described_class.configure!(instrumentations: [:all])
+      described_class.configure!(endpoint: "https://example.invalid/v1/traces")
     end.to output(/OpenTelemetry span export disabled/).to_stderr
     expect(registrations).to eq(0)
 
@@ -474,14 +480,12 @@ RSpec.describe Buildkite::TestCollector::OTel do
       block.call(config)
     end
     allow(config).to receive(:resource=)
+    allow(config).to receive(:use_all)
     allow(described_class).to receive(:batch_processor)
       .and_return(test_span_processor, child_processor)
 
     expect do
-      described_class.configure!(
-        endpoint: "https://example.invalid/v1/traces",
-        instrumentations: [],
-      )
+      described_class.configure!(endpoint: "https://example.invalid/v1/traces")
     end.to output(
       /OpenTelemetry child span export disabled: RuntimeError: OpenTelemetry SDK did not install a tracer provider; test.execution export remains enabled/
     ).to_stderr
@@ -528,7 +532,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
       :configure_child_export,
       "https://example.invalid/v1/traces",
       {},
-      nil,
       OpenTelemetry::SDK::Resources::Resource.create({}),
     )
 
@@ -538,46 +541,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(config).to have_received(:use_all).once
   ensure
     described_class.shutdown
-  end
-
-  it "does not install registered instrumentation with an empty selection" do
-    provider = OpenTelemetry::Internal::ProxyTracerProvider.new
-    configured_provider = double("configured provider")
-    config = double("OpenTelemetry SDK configuration")
-    child_processor = spy(
-      "execution child processor",
-      shutdown: OpenTelemetry::SDK::Trace::Export::SUCCESS,
-    )
-    allow(OpenTelemetry).to receive(:tracer_provider)
-      .and_return(provider, configured_provider)
-    allow(OpenTelemetry::SDK).to receive(:configure).and_yield(config)
-    allow(config).to receive(:id_generator=)
-    allow(config).to receive(:add_span_processor)
-    allow(config).to receive(:use_all)
-    allow(described_class).to receive(:batch_processor).and_return(child_processor)
-    allow(config).to receive(:resource=)
-
-    described_class.send(
-      :configure_child_export,
-      "https://example.invalid/v1/traces",
-      {},
-      [],
-      OpenTelemetry::SDK::Resources::Resource.create({}),
-    )
-
-    expect(config).not_to have_received(:use_all)
-  ensure
-    described_class.shutdown
-  end
-
-  it "fails open for instrumentation selections reserved for a later release" do
-    expect do
-      described_class.configure!(instrumentations: [:all])
-    end.to output(
-      /OpenTelemetry span export disabled: ArgumentError: otel_instrumentations must be omitted or \[\]/
-    ).to_stderr
-
-    expect(described_class).not_to be_enabled
   end
 
   it "sends the run key and token as request headers" do
@@ -771,7 +734,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         original.call(exporter, **options)
       end
 
-    described_class.configure!(endpoint: "https://example.invalid/v1/traces", instrumentations: [])
+    described_class.configure!(endpoint: "https://example.invalid/v1/traces")
 
     # Test spans are built first; children keep the SDK's default (no-op) reporter.
     expect(exporter_reporters.first).to be_a(test_span_reporter)
@@ -817,7 +780,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.shutdown
   end
 
-  it "leaves instrumentation alone when the suite owns its provider" do
+  it "leaves the SDK and instrumentation alone when the suite owns its provider" do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)
     allow(OpenTelemetry::SDK).to receive(:configure)
@@ -826,15 +789,11 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end
 
     expect do
-      described_class.configure!(
-        endpoint: "https://example.invalid/v1/traces",
-        instrumentations: [],
-      )
-    end.to output(
-      /instrumentation selection ignored because the test suite already configured OpenTelemetry: \[\]/
-    ).to_stderr
+      described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+    end.not_to output.to_stderr
 
     expect(described_class).to be_enabled
+    # Instrumentation is only installed through SDK.configure (use_all).
     expect(OpenTelemetry::SDK).not_to have_received(:configure)
   ensure
     described_class.shutdown
@@ -1071,10 +1030,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         exporter
       end
 
-      Buildkite::TestCollector::OTel.configure!(
-        endpoint: "https://example.invalid/v1/traces",
-        instrumentations: [],
-      )
+      Buildkite::TestCollector::OTel.configure!(endpoint: "https://example.invalid/v1/traces")
       test = Struct.new(:otel_attributes, :otel_result).new({}, "passed")
       span = Buildkite::TestCollector::OTel.start_test_span(test: test)
       Buildkite::TestCollector::OTel.with_test_span(span) do

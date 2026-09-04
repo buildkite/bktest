@@ -132,9 +132,9 @@ collector-created provider's normal sampling. The forwarding filter
 excludes setup, teardown, detached traces, and other spans outside an active
 execution.
 
-Instrumentation selection applies only in this collector-managed setup. Add the
-OpenTelemetry SDK and OTLP exporter, plus the instrumentation you want, to your
-bundle. Require each instrumentation explicitly:
+You choose instrumentation by which gems you require. Add the OpenTelemetry SDK
+and OTLP exporter, plus the instrumentation you want, to your bundle. Require
+each instrumentation explicitly:
 
 ```ruby
 # Gemfile
@@ -168,25 +168,17 @@ the instrumentation immediately. The collector defers OpenTelemetry setup until
 RSpec's `before(:suite)` hooks and asks the SDK to install all registered
 instrumentation. The SDK skips instrumentation whose target library is absent
 or incompatible and reports individual installation failures without stopping
-the remaining installations.
+the remaining installations. To export only `test.execution` spans and any
+spans your suite creates by hand, require no instrumentation gems. To skip one
+that your bundle requires anyway (for example, through `Bundler.require`), set
+the SDK's per-instrumentation switch, such as
+`OTEL_RUBY_INSTRUMENTATION_REDIS_ENABLED=false`.
 
-To prevent the collector from installing registered instrumentation, pass an
-empty list. Manually created spans under an execution are still forwarded:
-
-```ruby
-Buildkite::TestCollector.configure(
-  hook: :rspec,
-  otel_enabled: true,
-  otel_instrumentations: [],
-)
-```
-
-Currently, omitting `otel_instrumentations` and setting it to `[]` are the
-only supported choices. Any other value is reserved for a future release and
-disables span export with a warning. The collector does not inspect
-instrumentation patches, so compatibility between customer-selected
-instrumentation and other APM or test-library patches remains the customer's
-responsibility.
+If your suite already configures the OpenTelemetry SDK, the collector attaches
+its forwarder to that provider and installs no instrumentation; install and
+configure instrumentation there as you normally would. The collector does not
+inspect instrumentation patches, so compatibility between the instrumentation
+you install and other APM or test-library patches remains your responsibility.
 
 ## What gets sent
 

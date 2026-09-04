@@ -67,7 +67,7 @@ module Buildkite::TestCollector
         HEADER_ENVIRONMENT_VARIABLES.any? { |name| !ENV[name].to_s.empty? }
       end
 
-      def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, instrumentations: nil, tags: {})
+      def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, tags: {})
         if enabled?
           # One process serves one run: the exporters and providers live for
           # the whole process, so run identity is fixed at first configure.
@@ -79,13 +79,6 @@ module Buildkite::TestCollector
           warn_run_mismatch(run_env)
           refresh_authorization(api_token)
           return
-        end
-
-        # Non-empty selections are reserved for future :all and preset support.
-        # Raising fails open by design: the rescue below reports the reserved
-        # value and disables export rather than crashing the suite.
-        unless instrumentations.nil? || instrumentations == []
-          raise ArgumentError, "otel_instrumentations must be omitted or []"
         end
 
         require "opentelemetry/sdk"
@@ -112,7 +105,7 @@ module Buildkite::TestCollector
 
         @test_span_provider = build_test_span_provider(endpoint, headers, resource)
         @tracer = @test_span_provider.tracer(TRACER_NAME, Buildkite::TestCollector::VERSION)
-        configure_child_export(endpoint, headers, instrumentations, resource)
+        configure_child_export(endpoint, headers, resource)
         register_shutdown_at_exit
       rescue LoadError, StandardError => e
         warn "[buildkite-test_collector] OpenTelemetry span export disabled: #{e.class}: #{e.message}"
@@ -349,8 +342,10 @@ module Buildkite::TestCollector
       end
 
       # The collector-managed child provider carries the same producer resource
-      # as the test span provider. A suite-owned provider keeps its own resource.
-      def configure_child_export(endpoint, headers, instrumentations, resource)
+      # as the test span provider and installs every registered instrumentation;
+      # the suite chooses instrumentation by which gems it requires. A
+      # suite-owned provider keeps its own resource and instrumentation.
+      def configure_child_export(endpoint, headers, resource)
         provider = OpenTelemetry.tracer_provider
         collector_managed = provider.is_a?(OpenTelemetry::Internal::ProxyTracerProvider)
         unless collector_managed || provider.respond_to?(:add_span_processor)
@@ -368,7 +363,7 @@ module Buildkite::TestCollector
             config.resource = resource
             config.id_generator = SecureRandomIdGenerator
             config.add_span_processor(child_forwarder)
-            config.use_all if instrumentations.nil?
+            config.use_all
           end
 
           if OpenTelemetry.tracer_provider.is_a?(OpenTelemetry::Internal::ProxyTracerProvider)
@@ -376,9 +371,6 @@ module Buildkite::TestCollector
           end
         else
           provider.add_span_processor(child_forwarder)
-          unless instrumentations.nil?
-            warn "[buildkite-test_collector] OpenTelemetry instrumentation selection ignored because the test suite already configured OpenTelemetry: #{instrumentations.inspect}"
-          end
         end
 
         @child_span_processor = child_processor
