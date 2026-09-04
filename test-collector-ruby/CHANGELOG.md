@@ -29,6 +29,9 @@
 * Send the Ruby version and configured location prefix with OpenTelemetry test
   executions so OTLP-only uploads retain their classic upload tags and selector
   paths.
+* Add `otel_span_filter` to drop selected OpenTelemetry child spans before they
+  are queued for export. `test.execution` spans are never filtered, and a
+  filter that cannot be called is ignored with a warning.
 
 ## v2.15.0
 

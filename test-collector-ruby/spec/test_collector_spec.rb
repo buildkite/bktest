@@ -62,6 +62,7 @@ RSpec.describe Buildkite::TestCollector do
 
     it "stores OpenTelemetry options without setting it up during configuration" do
       run_env = { "key" => "run-key" }
+      span_filter = ->(_span) { true }
       allow(Buildkite::TestCollector::CI).to receive(:env) { run_env }
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
       allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { true }
@@ -72,6 +73,7 @@ RSpec.describe Buildkite::TestCollector do
         tracing_enabled: false,
         otel_enabled: true,
         otel_instrumentations: [],
+        otel_span_filter: span_filter,
         tags: { "team" => "platform" },
       )
 
@@ -85,6 +87,7 @@ RSpec.describe Buildkite::TestCollector do
         api_token: "MyToken",
         run_env: run_env,
         instrumentations: [],
+        span_filter: span_filter,
         tags: { "team" => "platform" },
       )
     end
@@ -161,6 +164,7 @@ RSpec.describe Buildkite::TestCollector do
         api_token: "MyToken",
         run_env: run_env,
         instrumentations: nil,
+        span_filter: nil,
         # The merged tags, so the automatic worker tag reaches OTLP too.
         tags: { "ci.worker.id" => "agent-123", "team" => "platform" },
       )

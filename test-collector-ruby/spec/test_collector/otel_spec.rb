@@ -580,6 +580,65 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(described_class).not_to be_enabled
   end
 
+  it "ignores a span filter that cannot be called and exports every child span" do
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)
+    root_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    child_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    allow(OpenTelemetry::Exporter::OTLP::Exporter)
+      .to receive(:new)
+      .and_return(root_exporter, child_exporter)
+
+    expect do
+      described_class.configure!(endpoint: "https://example.invalid/v1/traces", span_filter: true)
+    end.to output(
+      /OpenTelemetry span filter ignored because otel_span_filter must accept one span argument: true/
+    ).to_stderr
+
+    execution_span = described_class.start_test_span(test: execution_test)
+    described_class.with_test_span(execution_span) do
+      provider.tracer("suite").in_span("child") { nil }
+    end
+    described_class.finish_test_span(execution_span, test: execution_test)
+    described_class.instance_variable_get(:@test_span_provider).force_flush
+    described_class.instance_variable_get(:@child_span_processor).force_flush
+
+    expect(described_class).to be_enabled
+    expect(root_exporter.finished_spans.map(&:name)).to contain_exactly("test.execution")
+    expect(child_exporter.finished_spans.map(&:name)).to contain_exactly("child")
+  ensure
+    described_class.shutdown
+    provider&.shutdown
+  end
+
+  it "ignores a span filter whose arity cannot take a span" do
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)
+    child_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    allow(OpenTelemetry::Exporter::OTLP::Exporter)
+      .to receive(:new)
+      .and_return(OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new, child_exporter)
+
+    expect do
+      # Honoured, this would drop every child span.
+      described_class.configure!(endpoint: "https://example.invalid/v1/traces", span_filter: -> { false })
+    end.to output(
+      /OpenTelemetry span filter ignored because otel_span_filter must accept one span argument: #<Proc/
+    ).to_stderr
+
+    execution_span = described_class.start_test_span(test: execution_test)
+    described_class.with_test_span(execution_span) do
+      provider.tracer("suite").in_span("child") { nil }
+    end
+    described_class.finish_test_span(execution_span, test: execution_test)
+    described_class.instance_variable_get(:@child_span_processor).force_flush
+
+    expect(child_exporter.finished_spans.map(&:name)).to contain_exactly("child")
+  ensure
+    described_class.shutdown
+    provider&.shutdown
+  end
+
   it "sends the run key and token as request headers" do
     headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
 
@@ -815,6 +874,37 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect { described_class.shutdown }.not_to output.to_stderr
   ensure
     described_class.shutdown
+  end
+
+  it "filters child spans without filtering test spans" do
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)
+    root_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    child_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    allow(OpenTelemetry::Exporter::OTLP::Exporter)
+      .to receive(:new)
+      .and_return(root_exporter, child_exporter)
+    span_filter = ->(span) { span.name == "kept-child" }
+    described_class.configure!(
+      endpoint: "https://example.invalid/v1/traces",
+      span_filter: span_filter,
+    )
+
+    execution_span = described_class.start_test_span(test: execution_test)
+    described_class.with_test_span(execution_span) do
+      tracer = provider.tracer("suite")
+      tracer.in_span("kept-child") { nil }
+      tracer.in_span("dropped-child") { nil }
+    end
+    described_class.finish_test_span(execution_span, test: execution_test)
+    described_class.instance_variable_get(:@test_span_provider).force_flush
+    described_class.instance_variable_get(:@child_span_processor).force_flush
+
+    expect(root_exporter.finished_spans.map(&:name)).to contain_exactly("test.execution")
+    expect(child_exporter.finished_spans.map(&:name)).to contain_exactly("kept-child")
+  ensure
+    described_class.shutdown
+    provider&.shutdown
   end
 
   it "leaves instrumentation alone when the suite owns its provider" do
