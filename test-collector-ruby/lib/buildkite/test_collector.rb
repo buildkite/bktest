@@ -56,6 +56,11 @@ module Buildkite
       self.test_runner = hook.to_s
       self.env = env
       self.tags = worker_id_tag.merge(tags)
+      # A filter that raises at runtime fails open, but an object that cannot be
+      # called at all is a configuration mistake worth surfacing immediately.
+      unless otel_span_filter.nil? || otel_span_filter.respond_to?(:call)
+        raise ArgumentError, "otel_span_filter must respond to #call"
+      end
       if otel_enabled && test_runner != "rspec"
         warn "[buildkite-test_collector] otel_enabled is only supported with the rspec hook, " \
           "not #{test_runner}; #{json_fallback_outcome}"
