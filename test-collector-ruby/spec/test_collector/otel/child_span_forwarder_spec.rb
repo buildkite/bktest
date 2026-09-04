@@ -108,7 +108,41 @@ RSpec.describe forwarder_class do
     expect(filter_calls).to eq(1)
     expect(processor).to have_received(:on_finish).with(nested_span).once
     expect(processor).not_to have_received(:on_finish).with(span)
-    expect(Thread.current[:buildkite_test_collector_span_filter_running]).to be_nil
+    expect(Thread.current.thread_variable_get(:buildkite_test_collector_span_filter_running)).to be_nil
+  end
+
+  it "retains spans the filter finishes in a fiber on the same thread" do
+    nested_span = double(
+      "nested span",
+      context: double("nested span context", trace_id: test_span_trace_id),
+    )
+    filter_calls = 0
+    filtered_forwarder = nil
+    # Fiber-local storage (Thread.current[]) would not see the guard here.
+    # Each fiber has its own stack, so unbounded re-entry would hang rather
+    # than raise SystemStackError; bail out early instead.
+    span_filter = lambda do |_span|
+      filter_calls += 1
+      raise "filter re-entered" if filter_calls > 1
+
+      Fiber.new do
+        filtered_forwarder.on_start(nested_span, execution_context)
+        filtered_forwarder.on_finish(nested_span)
+      end.resume
+      false
+    end
+    filtered_forwarder = described_class.new(
+      processor,
+      context_key: context_key,
+      span_filter: span_filter,
+    )
+    filtered_forwarder.on_start(span, execution_context)
+
+    filtered_forwarder.on_finish(span)
+
+    expect(filter_calls).to eq(1)
+    expect(processor).to have_received(:on_finish).with(nested_span).once
+    expect(processor).not_to have_received(:on_finish).with(span)
   end
 
   it "enqueues an accepted span before deactivation can begin" do

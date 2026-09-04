@@ -26,7 +26,7 @@ module Buildkite
         end
 
         def retain?(span)
-          return true if Thread.current[RUNNING]
+          return true if Thread.current.thread_variable_get(RUNNING)
 
           running { @callable.call(span) }
         rescue StandardError => e
@@ -36,11 +36,14 @@ module Buildkite
 
         private
 
+        # Thread.current[] is fiber-local, so a filter that finishes a span
+        # inside a fiber would not see the guard; thread variables are shared
+        # by every fiber on the thread.
         def running
-          Thread.current[RUNNING] = true
+          Thread.current.thread_variable_set(RUNNING, true)
           yield
         ensure
-          Thread.current[RUNNING] = nil
+          Thread.current.thread_variable_set(RUNNING, nil)
         end
 
         # A broken filter fails the same way for every span. Two threads may
