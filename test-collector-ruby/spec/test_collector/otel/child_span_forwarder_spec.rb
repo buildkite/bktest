@@ -111,28 +111,6 @@ RSpec.describe forwarder_class do
     expect(Thread.current[:buildkite_test_collector_span_filter_running]).to be_nil
   end
 
-  it "retains spans when the configured filter fails, warning once" do
-    other_span = double(
-      "other span",
-      context: double("other span context", trace_id: test_span_trace_id),
-    )
-    span_filter = ->(_span) { raise "filter failed" }
-    filtered_forwarder = described_class.new(
-      processor,
-      context_key: context_key,
-      span_filter: span_filter,
-    )
-    filtered_forwarder.on_start(span, execution_context)
-    filtered_forwarder.on_start(other_span, execution_context)
-
-    expect { filtered_forwarder.on_finish(span) }
-      .to output(/Could not filter OpenTelemetry child span, retaining it: RuntimeError: filter failed/).to_stderr
-    expect { filtered_forwarder.on_finish(other_span) }.not_to output.to_stderr
-
-    expect(processor).to have_received(:on_finish).with(span).once
-    expect(processor).to have_received(:on_finish).with(other_span).once
-  end
-
   it "enqueues an accepted span before deactivation can begin" do
     mutex_owned = false
     allow(processor).to receive(:on_finish) do

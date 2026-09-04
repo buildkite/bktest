@@ -589,50 +589,20 @@ RSpec.describe Buildkite::TestCollector::OTel do
       .to receive(:new)
       .and_return(root_exporter, child_exporter)
 
-    expect do
-      described_class.configure!(endpoint: "https://example.invalid/v1/traces", span_filter: true)
-    end.to output(
-      /OpenTelemetry span filter ignored because otel_span_filter must accept one span argument: true/
-    ).to_stderr
+    described_class.configure!(endpoint: "https://example.invalid/v1/traces", span_filter: true)
 
     execution_span = described_class.start_test_span(test: execution_test)
-    described_class.with_test_span(execution_span) do
-      provider.tracer("suite").in_span("child") { nil }
-    end
+    expect do
+      described_class.with_test_span(execution_span) do
+        provider.tracer("suite").in_span("child") { nil }
+      end
+    end.to output(/Could not filter OpenTelemetry child span, retaining it: NoMethodError/).to_stderr
     described_class.finish_test_span(execution_span, test: execution_test)
     described_class.instance_variable_get(:@test_span_provider).force_flush
     described_class.instance_variable_get(:@child_span_processor).force_flush
 
     expect(described_class).to be_enabled
     expect(root_exporter.finished_spans.map(&:name)).to contain_exactly("test.execution")
-    expect(child_exporter.finished_spans.map(&:name)).to contain_exactly("child")
-  ensure
-    described_class.shutdown
-    provider&.shutdown
-  end
-
-  it "ignores a span filter whose arity cannot take a span" do
-    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
-    allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)
-    child_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
-    allow(OpenTelemetry::Exporter::OTLP::Exporter)
-      .to receive(:new)
-      .and_return(OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new, child_exporter)
-
-    expect do
-      # Honoured, this would drop every child span.
-      described_class.configure!(endpoint: "https://example.invalid/v1/traces", span_filter: -> { false })
-    end.to output(
-      /OpenTelemetry span filter ignored because otel_span_filter must accept one span argument: #<Proc/
-    ).to_stderr
-
-    execution_span = described_class.start_test_span(test: execution_test)
-    described_class.with_test_span(execution_span) do
-      provider.tracer("suite").in_span("child") { nil }
-    end
-    described_class.finish_test_span(execution_span, test: execution_test)
-    described_class.instance_variable_get(:@child_span_processor).force_flush
-
     expect(child_exporter.finished_spans.map(&:name)).to contain_exactly("child")
   ensure
     described_class.shutdown

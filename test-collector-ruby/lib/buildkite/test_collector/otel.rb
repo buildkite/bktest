@@ -31,6 +31,7 @@ module Buildkite::TestCollector
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
 
     require_relative "otel/test_span_metrics_reporter"
+    require_relative "otel/span_filter"
     require_relative "otel/child_span_forwarder"
 
     # Avoid duplicate IDs when test suites seed Ruby's global PRNG.
@@ -351,13 +352,6 @@ module Buildkite::TestCollector
       # The collector-managed child provider carries the same producer resource
       # as the test span provider. A suite-owned provider keeps its own resource.
       def configure_child_export(endpoint, headers, instrumentations, resource, span_filter: nil)
-        # Catch an unusable filter here rather than warn on every child span.
-        # The filter is only an optimisation, so ignore it and export unfiltered.
-        unless span_filter.nil? || accepts_span?(span_filter)
-          warn "[buildkite-test_collector] OpenTelemetry span filter ignored because otel_span_filter must accept one span argument: #{span_filter.inspect}"
-          span_filter = nil
-        end
-
         provider = OpenTelemetry.tracer_provider
         collector_managed = provider.is_a?(OpenTelemetry::Internal::ProxyTracerProvider)
         unless collector_managed || provider.respond_to?(:add_span_processor)
@@ -399,17 +393,6 @@ module Buildkite::TestCollector
 
       def test_span_context_key
         @test_span_context_key ||= OpenTelemetry::Context.create_key("buildkite.test.execution")
-      end
-
-      # Whether the filter can be called with one span. Only lambdas and
-      # methods enforce their arity, so check those up front; plain procs and
-      # other callables are trusted. Negative arity means optional arguments
-      # follow (-arity - 1) required ones, so -1 and -2 both take a single span.
-      def accepts_span?(filter)
-        return false unless filter.respond_to?(:call)
-        return true unless filter.is_a?(Method) || (filter.is_a?(Proc) && filter.lambda?)
-
-        filter.arity == 1 || filter.arity.between?(-2, -1)
       end
 
       # User tags travel under the buildkite.tag. prefix, which the server

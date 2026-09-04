@@ -31,7 +31,7 @@
   paths.
 * Add `otel_span_filter` to drop selected OpenTelemetry child spans before they
   are queued for export. `test.execution` spans are never filtered, and a
-  filter that cannot be called is ignored with a warning.
+  filter that fails retains the span and warns once.
 
 ## v2.15.0
 
