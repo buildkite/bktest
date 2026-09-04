@@ -169,7 +169,10 @@ RSpec's `before(:suite)` hooks and asks the SDK to install all registered
 instrumentation. The SDK skips instrumentation whose target library is absent
 or incompatible and reports individual installation failures without stopping
 the remaining installations. To export only `test.execution` spans and any
-spans your suite creates by hand, require no instrumentation gems.
+spans your suite creates by hand, require no instrumentation gems. To skip one
+that your bundle requires anyway (for example, through `Bundler.require`), set
+the SDK's per-instrumentation switch, such as
+`OTEL_RUBY_INSTRUMENTATION_REDIS_ENABLED=false`.
 
 If your suite already configures the OpenTelemetry SDK, the collector attaches
 its forwarder to that provider and installs no instrumentation; install and

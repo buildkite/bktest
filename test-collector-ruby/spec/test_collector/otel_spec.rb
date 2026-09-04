@@ -784,7 +784,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)
     allow(OpenTelemetry::SDK).to receive(:configure)
-    allow(OpenTelemetry::Instrumentation.registry).to receive(:install_all)
     allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new) do
       OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     end
@@ -794,7 +793,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end.not_to output.to_stderr
 
     expect(described_class).to be_enabled
-    expect(OpenTelemetry::Instrumentation.registry).not_to have_received(:install_all)
+    # Instrumentation is only installed through SDK.configure (use_all).
     expect(OpenTelemetry::SDK).not_to have_received(:configure)
   ensure
     described_class.shutdown
