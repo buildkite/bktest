@@ -71,7 +71,6 @@ RSpec.describe Buildkite::TestCollector do
         hook: hook,
         tracing_enabled: false,
         otel_enabled: true,
-        otel_instrumentations: [],
         tags: { "team" => "platform" },
       )
 
@@ -84,7 +83,6 @@ RSpec.describe Buildkite::TestCollector do
         endpoint: "https://tests-otlp.buildkite.com/v1/traces",
         api_token: "MyToken",
         run_env: run_env,
-        instrumentations: [],
         tags: { "team" => "platform" },
       )
     end
@@ -160,7 +158,6 @@ RSpec.describe Buildkite::TestCollector do
         endpoint: "https://tests-otlp.buildkite.com/v1/traces",
         api_token: "MyToken",
         run_env: run_env,
-        instrumentations: nil,
         # The merged tags, so the automatic worker tag reaches OTLP too.
         tags: { "ci.worker.id" => "agent-123", "team" => "platform" },
       )
