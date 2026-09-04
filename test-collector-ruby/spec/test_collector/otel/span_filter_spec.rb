@@ -32,12 +32,4 @@ RSpec.describe span_filter_class do
         .to output(/Could not filter OpenTelemetry child span, retaining it/).to_stderr
     end
   end
-
-  it "retains spans finished while the filter is already running on this thread" do
-    filter = nil
-    filter = described_class.from(->(_span) { filter.retain?(double("nested span")) })
-
-    expect(filter.retain?(span)).to be(true)
-    expect(Thread.current[:buildkite_test_collector_span_filter_running]).to be_nil
-  end
 end

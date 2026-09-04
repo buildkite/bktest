@@ -28,7 +28,7 @@ module Buildkite
         def on_finish(span)
           return unless @mutex.synchronize { @active && @spans.delete(span) }
           # The filter is caller code: run it outside the lock so a slow filter
-          # cannot stall other spans, and one that starts a span cannot re-enter.
+          # cannot stall other spans, and one that finishes a span cannot deadlock.
           return unless @span_filter.retain?(span)
 
           @mutex.synchronize do
