@@ -172,13 +172,40 @@ the remaining installations. To export only `test.execution` spans and any
 spans your suite creates by hand, require no instrumentation gems. To skip one
 that your bundle requires anyway (for example, through `Bundler.require`), set
 the SDK's per-instrumentation switch, such as
-`OTEL_RUBY_INSTRUMENTATION_REDIS_ENABLED=false`.
+`OTEL_RUBY_INSTRUMENTATION_REDIS_ENABLED=false`. The name is the
+instrumentation's namespace upcased with `::` replaced by `_`, so
+`OpenTelemetry::Instrumentation::Net::HTTP` becomes
+`OTEL_RUBY_INSTRUMENTATION_NET_HTTP_ENABLED`. Neither the SDK nor the collector
+has a single switch that disables every registered instrumentation at once.
 
 If your suite already configures the OpenTelemetry SDK, the collector attaches
 its forwarder to that provider and installs no instrumentation; install and
-configure instrumentation there as you normally would. The collector does not
-inspect instrumentation patches, so compatibility between the instrumentation
-you install and other APM or test-library patches remains your responsibility.
+configure instrumentation there as you normally would. This is also the way to
+keep a bundle full of instrumentation gems (such as
+`opentelemetry-instrumentation-all`, loaded for production) unpatched under
+test: configure the SDK yourself, before the suite starts, without `use` or
+`use_all`, and the collector forwards only `test.execution` spans and any spans
+your suite creates by hand. Set `OTEL_TRACES_EXPORTER=none` as well, or the
+SDK adds its own default OTLP exporter aimed at `localhost:4318`:
+
+```ruby
+# spec/spec_helper.rb
+require "opentelemetry/sdk"
+require "buildkite/test_collector"
+
+# A provider with no instrumentation and no exporter of its own. The collector
+# attaches its forwarder to it in before(:suite) instead of configuring the SDK.
+ENV["OTEL_TRACES_EXPORTER"] ||= "none"
+OpenTelemetry::SDK.configure
+
+Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
+```
+
+Child spans from a suite-owned provider keep that provider's resource rather
+than the collector's (see [OTLP execution attributes](#otlp-execution-attributes)).
+The collector does not inspect instrumentation patches, so compatibility
+between the instrumentation you install and other APM or test-library patches
+remains your responsibility.
 
 ## Filtering child spans
 
