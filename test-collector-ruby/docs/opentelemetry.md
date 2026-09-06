@@ -132,9 +132,9 @@ collector-created provider's normal sampling. The forwarding filter
 excludes setup, teardown, detached traces, and other spans outside an active
 execution.
 
-Instrumentation selection applies only in this collector-managed setup. Add the
-OpenTelemetry SDK and OTLP exporter, plus the instrumentation you want, to your
-bundle. Require each instrumentation explicitly:
+You choose instrumentation by which gems you require. Add the OpenTelemetry SDK
+and OTLP exporter, plus the instrumentation you want, to your bundle. Require
+each instrumentation explicitly:
 
 ```ruby
 # Gemfile
@@ -168,25 +168,44 @@ the instrumentation immediately. The collector defers OpenTelemetry setup until
 RSpec's `before(:suite)` hooks and asks the SDK to install all registered
 instrumentation. The SDK skips instrumentation whose target library is absent
 or incompatible and reports individual installation failures without stopping
-the remaining installations.
+the remaining installations. To export only `test.execution` spans and any
+spans your suite creates by hand, require no instrumentation gems. To skip one
+that your bundle requires anyway (for example, through `Bundler.require`), set
+the SDK's per-instrumentation switch, such as
+`OTEL_RUBY_INSTRUMENTATION_REDIS_ENABLED=false`. The name is the
+instrumentation's namespace upcased with `::` replaced by `_`, so
+`OpenTelemetry::Instrumentation::Net::HTTP` becomes
+`OTEL_RUBY_INSTRUMENTATION_NET_HTTP_ENABLED`. Neither the SDK nor the collector
+has a single switch that disables every registered instrumentation at once.
 
-To prevent the collector from installing registered instrumentation, pass an
-empty list. Manually created spans under an execution are still forwarded:
+If your suite already configures the OpenTelemetry SDK, the collector attaches
+its forwarder to that provider and installs no instrumentation; install and
+configure instrumentation there as you normally would. This is also the way to
+keep a bundle full of instrumentation gems (such as
+`opentelemetry-instrumentation-all`, loaded for production) unpatched under
+test: configure the SDK yourself, before the suite starts, without `use` or
+`use_all`, and the collector forwards only `test.execution` spans and any spans
+your suite creates by hand. Set `OTEL_TRACES_EXPORTER=none` as well, or the
+SDK adds its own default OTLP exporter aimed at `localhost:4318`:
 
 ```ruby
-Buildkite::TestCollector.configure(
-  hook: :rspec,
-  otel_enabled: true,
-  otel_instrumentations: [],
-)
+# spec/spec_helper.rb
+require "opentelemetry/sdk"
+require "buildkite/test_collector"
+
+# A provider with no instrumentation and no exporter of its own. The collector
+# attaches its forwarder to it in before(:suite) instead of configuring the SDK.
+ENV["OTEL_TRACES_EXPORTER"] = "none"
+OpenTelemetry::SDK.configure
+
+Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
 ```
 
-Currently, omitting `otel_instrumentations` and setting it to `[]` are the
-only supported choices. Any other value is reserved for a future release and
-disables span export with a warning. The collector does not inspect
-instrumentation patches, so compatibility between customer-selected
-instrumentation and other APM or test-library patches remains the customer's
-responsibility.
+Child spans from a suite-owned provider keep that provider's resource rather
+than the collector's (see [OTLP execution attributes](#otlp-execution-attributes)).
+The collector does not inspect instrumentation patches, so compatibility
+between the instrumentation you install and other APM or test-library patches
+remains your responsibility.
 
 ## Filtering child spans
 

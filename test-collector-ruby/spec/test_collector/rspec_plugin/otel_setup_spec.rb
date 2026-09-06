@@ -38,7 +38,6 @@ RSpec.describe "RSpec OpenTelemetry setup" do
       endpoint: "https://tests-otlp.buildkite.com/v1/traces",
       api_token: "MyToken",
       run_env: run_env,
-      instrumentations: nil,
       span_filter: nil,
       tags: {},
     )
