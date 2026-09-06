@@ -31,6 +31,7 @@ module Buildkite::TestCollector
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
 
     require_relative "otel/test_span_metrics_reporter"
+    require_relative "otel/span_filter"
     require_relative "otel/child_span_forwarder"
 
     # Avoid duplicate IDs when test suites seed Ruby's global PRNG.
@@ -67,7 +68,7 @@ module Buildkite::TestCollector
         HEADER_ENVIRONMENT_VARIABLES.any? { |name| !ENV[name].to_s.empty? }
       end
 
-      def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, instrumentations: nil, tags: {})
+      def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, instrumentations: nil, span_filter: nil, tags: {})
         if enabled?
           # One process serves one run: the exporters and providers live for
           # the whole process, so run identity is fixed at first configure.
@@ -112,7 +113,7 @@ module Buildkite::TestCollector
 
         @test_span_provider = build_test_span_provider(endpoint, headers, resource)
         @tracer = @test_span_provider.tracer(TRACER_NAME, Buildkite::TestCollector::VERSION)
-        configure_child_export(endpoint, headers, instrumentations, resource)
+        configure_child_export(endpoint, headers, instrumentations, resource, span_filter: span_filter)
         register_shutdown_at_exit
       rescue LoadError, StandardError => e
         warn "[buildkite-test_collector] OpenTelemetry span export disabled: #{e.class}: #{e.message}"
@@ -350,7 +351,7 @@ module Buildkite::TestCollector
 
       # The collector-managed child provider carries the same producer resource
       # as the test span provider. A suite-owned provider keeps its own resource.
-      def configure_child_export(endpoint, headers, instrumentations, resource)
+      def configure_child_export(endpoint, headers, instrumentations, resource, span_filter: nil)
         provider = OpenTelemetry.tracer_provider
         collector_managed = provider.is_a?(OpenTelemetry::Internal::ProxyTracerProvider)
         unless collector_managed || provider.respond_to?(:add_span_processor)
@@ -361,6 +362,7 @@ module Buildkite::TestCollector
         child_forwarder = ChildSpanForwarder.new(
           child_processor,
           context_key: test_span_context_key,
+          span_filter: span_filter,
         )
 
         if collector_managed

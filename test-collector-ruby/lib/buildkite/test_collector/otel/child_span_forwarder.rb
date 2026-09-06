@@ -4,9 +4,10 @@ module Buildkite
   module TestCollector
     module OTel
       class ChildSpanForwarder
-        def initialize(processor, context_key:)
+        def initialize(processor, context_key:, span_filter: nil)
           @processor = processor
           @context_key = context_key
+          @span_filter = span_filter && SpanFilter.new(span_filter)
           @spans = {}
           @mutex = Mutex.new
           @active = true
@@ -24,9 +25,24 @@ module Buildkite
           warn "[buildkite-test_collector] Could not track OpenTelemetry child span: #{e.class}: #{e.message}"
         end
 
+        # Without a filter, a span is accepted and queued under one lock, so
+        # shutdown cannot deactivate the forwarder in between and lose it.
+        # A filter is caller code and runs outside the lock, so a slow filter
+        # cannot stall other spans and one that finishes a span cannot
+        # deadlock; a span still in its filter when shutdown runs is dropped.
         def on_finish(span)
+          unless @span_filter
+            @mutex.synchronize do
+              @processor.on_finish(span) if @active && @spans.delete(span)
+            end
+            return
+          end
+
+          return unless @mutex.synchronize { @active && @spans.delete(span) }
+          return unless @span_filter.retain?(span)
+
           @mutex.synchronize do
-            @processor.on_finish(span) if @active && @spans.delete(span)
+            @processor.on_finish(span) if @active
           end
         rescue StandardError => e
           warn "[buildkite-test_collector] Could not export OpenTelemetry child span: #{e.class}: #{e.message}"

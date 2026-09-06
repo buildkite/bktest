@@ -45,16 +45,122 @@ RSpec.describe forwarder_class do
     expect(processor).to have_received(:on_finish).with(span).once
   end
 
-  it "enqueues an accepted span before deactivation can begin" do
-    mutex_owned = false
-    allow(processor).to receive(:on_finish) do
-      mutex_owned = forwarder.instance_variable_get(:@mutex).owned?
+  it "forwards only spans accepted by the configured filter" do
+    rejected_span = double(
+      "rejected span",
+      context: double("rejected span context", trace_id: test_span_trace_id),
+    )
+    span_filter = ->(candidate) { candidate.equal?(span) }
+    filtered_forwarder = described_class.new(
+      processor,
+      context_key: context_key,
+      span_filter: span_filter,
+    )
+
+    filtered_forwarder.on_start(span, execution_context)
+    filtered_forwarder.on_start(rejected_span, execution_context)
+    filtered_forwarder.on_finish(span)
+    filtered_forwarder.on_finish(rejected_span)
+
+    expect(processor).to have_received(:on_finish).with(span).once
+    expect(processor).not_to have_received(:on_finish).with(rejected_span)
+    expect(filtered_forwarder.instance_variable_get(:@spans)).to be_empty
+  end
+
+  it "runs the filter without holding the lock" do
+    mutex_owned = nil
+    filtered_forwarder = described_class.new(
+      processor,
+      context_key: context_key,
+      span_filter: ->(_span) { mutex_owned = filtered_forwarder.instance_variable_get(:@mutex).owned? },
+    )
+    filtered_forwarder.on_start(span, execution_context)
+
+    filtered_forwarder.on_finish(span)
+
+    expect(mutex_owned).to be(false)
+  end
+
+  # The filter runs unlocked, so shutdown can complete while a span is still
+  # being filtered; that span must not reach the processor afterwards.
+  it "drops a span whose filter is still running when shutdown happens" do
+    filtered_forwarder = nil
+    filtered_forwarder = described_class.new(
+      processor,
+      context_key: context_key,
+      span_filter: lambda do |_span|
+        filtered_forwarder.shutdown
+        true
+      end,
+    )
+    filtered_forwarder.on_start(span, execution_context)
+
+    filtered_forwarder.on_finish(span)
+
+    expect(processor).not_to have_received(:on_finish)
+  end
+
+  # Stands in for an instrumented call inside the filter, whose span finishes
+  # on this thread while the filter is still running. Thread.current[] is
+  # fiber-local, so the guard must also hold when that call runs in a fiber.
+  {
+    "directly" => ->(&block) { block.call },
+    "in a fiber" => ->(&block) { Fiber.new(&block).resume },
+  }.each do |how, run|
+    it "retains spans the filter itself finishes #{how} instead of re-entering the filter" do
+      nested_span = double(
+        "nested span",
+        context: double("nested span context", trace_id: test_span_trace_id),
+      )
+      filter_calls = 0
+      filtered_forwarder = nil
+      span_filter = lambda do |_span|
+        filter_calls += 1
+        # Each fiber has its own stack, so unbounded re-entry would hang rather
+        # than raise SystemStackError; bail out early instead.
+        raise "filter re-entered" if filter_calls > 1
+
+        run.call do
+          filtered_forwarder.on_start(nested_span, execution_context)
+          filtered_forwarder.on_finish(nested_span)
+        end
+        false
+      end
+      filtered_forwarder = described_class.new(
+        processor,
+        context_key: context_key,
+        span_filter: span_filter,
+      )
+      filtered_forwarder.on_start(span, execution_context)
+
+      filtered_forwarder.on_finish(span)
+
+      expect(filter_calls).to eq(1)
+      expect(processor).to have_received(:on_finish).with(nested_span).once
+      expect(processor).not_to have_received(:on_finish).with(span)
+      expect(Thread.current.thread_variable_get(:buildkite_test_collector_span_filter_running)).to be_nil
     end
+  end
+
+  # Shutdown takes the same lock, so accepting and enqueueing a span under a
+  # single acquisition means deactivation cannot slip in between and lose it.
+  it "accepts and enqueues a span under one lock when no filter is configured" do
+    mutex = forwarder.instance_variable_get(:@mutex)
+    acquisitions = 0
+    allow(mutex).to receive(:synchronize).and_wrap_original do |original, &block|
+      acquisitions += 1
+      original.call(&block)
+    end
+    mutex_owned = false
+    allow(processor).to receive(:on_finish) { mutex_owned = mutex.owned? }
     forwarder.on_start(span, execution_context)
+    acquisitions = 0
 
     forwarder.on_finish(span)
 
+    expect(processor).to have_received(:on_finish).with(span).once
     expect(mutex_owned).to be(true)
+    expect(acquisitions).to eq(1)
   end
 
   it "becomes inert without shutting down the child processor" do

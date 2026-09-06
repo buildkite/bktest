@@ -188,6 +188,52 @@ instrumentation patches, so compatibility between customer-selected
 instrumentation and other APM or test-library patches remains the customer's
 responsibility.
 
+## Filtering child spans
+
+Pass `otel_span_filter` to decide which completed child spans are forwarded to
+the OTLP exporter. The filter receives an `OpenTelemetry::SDK::Trace::Span` and
+must return a truthy value to retain it. It runs synchronously as each span
+finishes, so it should return quickly and must not block.
+
+For example, this drops successful PostgreSQL and Redis spans shorter than 200
+microseconds while retaining their errors and every span from other
+instrumentation:
+
+```ruby
+minimum_database_duration_ns = 200_000
+database_scopes = [
+  "OpenTelemetry::Instrumentation::PG",
+  "OpenTelemetry::Instrumentation::Redis",
+]
+
+Buildkite::TestCollector.configure(
+  hook: :rspec,
+  otel_enabled: true,
+  otel_span_filter: lambda do |span|
+    !database_scopes.include?(span.instrumentation_scope.name) ||
+      span.status.code == OpenTelemetry::Trace::Status::ERROR ||
+      span.end_timestamp - span.start_timestamp >= minimum_database_duration_ns
+  end,
+)
+```
+
+The filter only sees child spans that belong to a test span; `test.execution`
+spans themselves are never filtered. A broken filter never costs you spans: if
+it raises or cannot be called with a span, the collector retains that span and
+warns on the first failure.
+
+The filter runs on whichever thread finishes each span, so it can be called
+concurrently and should not depend on shared mutable state. Spans that finish
+on the same thread while the filter is running (for example, an instrumented
+cache lookup inside it, or another fiber's span if the filter blocks under a
+fiber scheduler) are exported without being filtered. Dropping a span does not
+drop its children: they are still exported with a `parent_span_id` that no
+longer arrives, so prefer filtering leaf spans such as database calls.
+
+Filtering happens after instrumentation has created and finished the span, so
+it reduces queueing, export, and ingestion volume rather than instrumentation
+overhead.
+
 ## What gets sent
 
 The collector merges standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (or, when it

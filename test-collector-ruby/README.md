@@ -110,7 +110,8 @@ If Buildkite rejects the exported `test.execution` spans, the collector prints a
 prominent warning. Tests continue to run, but the affected results are not
 uploaded. See the
 [OpenTelemetry guide](docs/opentelemetry.md) for dependency setup,
-instrumentation, authentication, attributes, and current limitations.
+instrumentation, filtering noisy child spans with `otel_span_filter`,
+authentication, attributes, and current limitations.
 
 ## More information
 
