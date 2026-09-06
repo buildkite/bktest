@@ -195,7 +195,7 @@ require "buildkite/test_collector"
 
 # A provider with no instrumentation and no exporter of its own. The collector
 # attaches its forwarder to it in before(:suite) instead of configuring the SDK.
-ENV["OTEL_TRACES_EXPORTER"] ||= "none"
+ENV["OTEL_TRACES_EXPORTER"] = "none"
 OpenTelemetry::SDK.configure
 
 Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
