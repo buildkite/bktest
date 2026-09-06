@@ -81,6 +81,25 @@ RSpec.describe forwarder_class do
     expect(mutex_owned).to be(false)
   end
 
+  # The filter runs unlocked, so shutdown can complete while a span is still
+  # being filtered; that span must not reach the processor afterwards.
+  it "drops a span whose filter is still running when shutdown happens" do
+    filtered_forwarder = nil
+    filtered_forwarder = described_class.new(
+      processor,
+      context_key: context_key,
+      span_filter: lambda do |_span|
+        filtered_forwarder.shutdown
+        true
+      end,
+    )
+    filtered_forwarder.on_start(span, execution_context)
+
+    filtered_forwarder.on_finish(span)
+
+    expect(processor).not_to have_received(:on_finish)
+  end
+
   # Stands in for an instrumented call inside the filter, whose span finishes
   # on this thread while the filter is still running. Thread.current[] is
   # fiber-local, so the guard must also hold when that call runs in a fiber.
