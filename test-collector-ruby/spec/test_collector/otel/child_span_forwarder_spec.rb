@@ -123,16 +123,25 @@ RSpec.describe forwarder_class do
     end
   end
 
-  it "enqueues an accepted span before deactivation can begin" do
-    mutex_owned = false
-    allow(processor).to receive(:on_finish) do
-      mutex_owned = forwarder.instance_variable_get(:@mutex).owned?
+  # Shutdown takes the same lock, so accepting and enqueueing a span under a
+  # single acquisition means deactivation cannot slip in between and lose it.
+  it "accepts and enqueues a span under one lock when no filter is configured" do
+    mutex = forwarder.instance_variable_get(:@mutex)
+    acquisitions = 0
+    allow(mutex).to receive(:synchronize).and_wrap_original do |original, &block|
+      acquisitions += 1
+      original.call(&block)
     end
+    mutex_owned = false
+    allow(processor).to receive(:on_finish) { mutex_owned = mutex.owned? }
     forwarder.on_start(span, execution_context)
+    acquisitions = 0
 
     forwarder.on_finish(span)
 
+    expect(processor).to have_received(:on_finish).with(span).once
     expect(mutex_owned).to be(true)
+    expect(acquisitions).to eq(1)
   end
 
   it "becomes inert without shutting down the child processor" do

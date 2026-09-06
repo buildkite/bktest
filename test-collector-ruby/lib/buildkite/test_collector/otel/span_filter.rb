@@ -10,15 +10,8 @@ module Buildkite
       # (an instrumented call inside the filter) is retained rather than fed
       # back into the filter, which would recurse until SystemStackError.
       class SpanFilter
-        # Takes the filter's place when none is configured.
-        module RetainAll
-          def self.retain?(_span) = true
-        end
-
         RUNNING = :buildkite_test_collector_span_filter_running
         private_constant :RUNNING
-
-        def self.from(callable) = callable ? new(callable) : RetainAll
 
         def initialize(callable)
           @callable = callable
