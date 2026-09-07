@@ -195,6 +195,28 @@ RSpec.describe Buildkite::TestCollector do
       expect(Buildkite::TestCollector::Object).to have_received(:configure)
     end
 
+    it "warns once and falls back to JSON when the OpenTelemetry run key is invalid" do
+      allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "invalid key" } }
+      allow(Buildkite::TestCollector).to receive(:hook_into)
+      allow(Buildkite::TestCollector::Network).to receive(:configure)
+      allow(Buildkite::TestCollector::Object).to receive(:configure)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "MyToken"
+
+      Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
+
+      warning = "[buildkite-test_collector] Test results would be missing in OpenTelemetry mode because run key " \
+        "\"invalid key\" is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); " \
+        "it must be 1-255 printable ASCII characters without spaces. The collector is falling back to the JSON upload.\n"
+      expect {
+        Buildkite::TestCollector.start_otel
+      }.to output(warning).to_stderr
+
+      expect(Buildkite::TestCollector::OTel).not_to be_enabled
+      expect(Buildkite::TestCollector.otel_enabled?).to eq false
+      expect(Buildkite::TestCollector::Network).to have_received(:configure)
+      expect(Buildkite::TestCollector::Object).to have_received(:configure)
+    end
+
     it "says results will not be uploaded when only OTLP headers held the credential" do
       # Header-only authentication (bktec's relay) has no token for the JSON
       # path, so the fallback must not promise an upload Uploader will skip.

@@ -7,6 +7,9 @@ module Buildkite::TestCollector
   module OTel
     DEFAULT_ENDPOINT = "https://tests-otlp.buildkite.com/v1/traces"
 
+    # Accepted by the Buildkite OTLP traces receiver for its run-key header.
+    RUN_KEY_FORMAT = /\A[!-~]{1,255}\z/
+
     EXECUTION_VIA_ATTRIBUTE = "buildkite.execution.via"
     RESULT_ATTRIBUTE = "test.case.result.status"
     TAG_ATTRIBUTE_PREFIX = "buildkite.tag."
@@ -69,6 +72,13 @@ module Buildkite::TestCollector
       end
 
       def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, span_filter: nil, tags: {})
+        unless enabled? || RUN_KEY_FORMAT.match?(run_env["key"])
+          warn "[buildkite-test_collector] Test results would be missing in OpenTelemetry mode because run key " \
+            "#{run_env["key"].inspect} is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); " \
+            "it must be 1-255 printable ASCII characters without spaces. The collector is falling back to the JSON upload."
+          return false
+        end
+
         if enabled?
           # One process serves one run: the exporters and providers live for
           # the whole process, so run identity is fixed at first configure.

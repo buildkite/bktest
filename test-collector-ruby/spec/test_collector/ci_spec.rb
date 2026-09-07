@@ -115,6 +115,12 @@ RSpec.describe Buildkite::TestCollector::CI do
         })
       end
 
+      it "keeps the CI key when BUILDKITE_ANALYTICS_KEY is empty" do
+        fake_env("BUILDKITE_ANALYTICS_KEY", "")
+
+        expect(Buildkite::TestCollector::CI.env["key"]).to eq bk_build_uuid
+      end
+
       context "when setting the analytics env" do
         before do
           fake_env("BUILDKITE_ANALYTICS_KEY", key)

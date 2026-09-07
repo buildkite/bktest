@@ -11,6 +11,10 @@ RSpec.describe Buildkite::TestCollector::OTel do
     double("test", otel_attributes: {}, otel_result: "passed")
   end
 
+  def configure_otel(**options)
+    described_class.configure!(run_env: { "key" => "run-key" }, **options)
+  end
+
   it "starts the test span as a trace root and links it to the Agent job trace" do
     exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
@@ -326,6 +330,17 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(described_class).not_to be_enabled
   end
 
+  it "configures OpenTelemetry for a valid run key" do
+    described_class.configure!(
+      endpoint: "https://example.invalid/v1/traces",
+      run_env: { "key" => "run-123" },
+    )
+
+    expect(described_class).to be_enabled
+  ensure
+    described_class.shutdown
+  end
+
   it "registers a process-lifetime at_exit shutdown once, on successful configure" do
     suite_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     allow(OpenTelemetry).to receive(:tracer_provider).and_return(suite_provider)
@@ -345,16 +360,16 @@ RSpec.describe Buildkite::TestCollector::OTel do
       original.call(*args)
     end
     expect do
-      described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+      configure_otel(endpoint: "https://example.invalid/v1/traces")
     end.to output(/OpenTelemetry span export disabled/).to_stderr
     expect(registrations).to eq(0)
 
-    described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+    configure_otel(endpoint: "https://example.invalid/v1/traces")
     expect(registrations).to eq(1)
 
     # Reconfiguring after an explicit shutdown must not stack another handler.
     described_class.shutdown
-    described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+    configure_otel(endpoint: "https://example.invalid/v1/traces")
     expect(registrations).to eq(1)
   ensure
     described_class.shutdown
@@ -373,7 +388,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       .and_raise(ArgumentError, "invalid private provider configuration")
 
     expect do
-      described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+      configure_otel(endpoint: "https://example.invalid/v1/traces")
     end.to output(/OpenTelemetry span export disabled: ArgumentError/).to_stderr
     expect(test_span_processor).to have_received(:shutdown).with(timeout: 0)
     expect(described_class).not_to be_enabled
@@ -392,7 +407,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end
 
     expect do
-      described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+      configure_otel(endpoint: "https://example.invalid/v1/traces")
     end.to output(
       /OpenTelemetry child span export disabled: ArgumentError: invalid child queue configuration; test.execution export remains enabled/
     ).to_stderr
@@ -432,7 +447,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       .and_return(test_span_processor, child_processor)
 
     expect do
-      described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+      configure_otel(endpoint: "https://example.invalid/v1/traces")
     end.to output(
       /OpenTelemetry child span export disabled: RuntimeError: attachment failed; test.execution export remains enabled/
     ).to_stderr
@@ -485,7 +500,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       .and_return(test_span_processor, child_processor)
 
     expect do
-      described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+      configure_otel(endpoint: "https://example.invalid/v1/traces")
     end.to output(
       /OpenTelemetry child span export disabled: RuntimeError: OpenTelemetry SDK did not install a tracer provider; test.execution export remains enabled/
     ).to_stderr
@@ -664,7 +679,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       .with(child_exporter, metrics_reporter: nil)
       .ordered
       .and_call_original
-    described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+    configure_otel(endpoint: "https://example.invalid/v1/traces")
 
     tracer = provider.tracer("suite")
     tracer.in_span("before-execution") { nil }
@@ -734,7 +749,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         original.call(exporter, **options)
       end
 
-    described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+    configure_otel(endpoint: "https://example.invalid/v1/traces")
 
     # Test spans are built first; children keep the SDK's default (no-op) reporter.
     expect(exporter_reporters.first).to be_a(test_span_reporter)
@@ -752,7 +767,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end.new
     allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(failing_exporter)
     allow(OpenTelemetry).to receive(:handle_error)
-    described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+    configure_otel(endpoint: "https://example.invalid/v1/traces")
     processor = described_class.instance_variable_get(:@test_span_provider)
       .instance_variable_get(:@span_processors).first
 
@@ -788,7 +803,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(OpenTelemetry::Exporter::OTLP::Exporter)
       .to receive(:new)
       .and_return(root_exporter, child_exporter)
-    described_class.configure!(
+    configure_otel(
       endpoint: "https://example.invalid/v1/traces",
       span_filter: ->(span) { span.name == "kept-child" },
     )
@@ -819,7 +834,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end
 
     expect do
-      described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+      configure_otel(endpoint: "https://example.invalid/v1/traces")
     end.not_to output.to_stderr
 
     expect(described_class).to be_enabled
@@ -840,7 +855,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(OpenTelemetry::Exporter::OTLP::Exporter)
       .to receive(:new)
       .and_return(root_exporter, child_exporter)
-    described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+    configure_otel(endpoint: "https://example.invalid/v1/traces")
 
     execution_span = described_class.start_test_span(test: execution_test)
     described_class.with_test_span(execution_span) do
@@ -866,7 +881,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(OpenTelemetry::Exporter::OTLP::Exporter)
       .to receive(:new)
       .and_return(root_exporter, child_exporter)
-    described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+    configure_otel(endpoint: "https://example.invalid/v1/traces")
 
     provider.shutdown
     provider = nil
@@ -1014,7 +1029,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
       end
 
-      described_class.configure!(endpoint: "https://tests-otlp.example.invalid/v1/traces")
+      configure_otel(endpoint: "https://tests-otlp.example.invalid/v1/traces")
 
       expect(ignore_blocks.length).to eq(1)
       ignored = ignore_blocks.first
@@ -1037,7 +1052,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       end
 
       expect {
-        described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+        configure_otel(endpoint: "https://example.invalid/v1/traces")
       }.to output(/Could not exempt the OTLP endpoint from VCR/).to_stderr
 
       expect(described_class).to be_enabled
@@ -1060,7 +1075,10 @@ RSpec.describe Buildkite::TestCollector::OTel do
         exporter
       end
 
-      Buildkite::TestCollector::OTel.configure!(endpoint: "https://example.invalid/v1/traces")
+      Buildkite::TestCollector::OTel.configure!(
+        endpoint: "https://example.invalid/v1/traces",
+        run_env: { "key" => "run-key" },
+      )
       test = Struct.new(:otel_attributes, :otel_result).new({}, "passed")
       span = Buildkite::TestCollector::OTel.start_test_span(test: test)
       Buildkite::TestCollector::OTel.with_test_span(span) do
@@ -1101,7 +1119,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(root_exporter)
 
     expect do
-      described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+      configure_otel(endpoint: "https://example.invalid/v1/traces")
     end.to output(
       /OpenTelemetry child span export disabled: RuntimeError: existing OpenTelemetry tracer provider does not support adding a span processor; test.execution export remains enabled/
     ).to_stderr
