@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+export PATH="$HOME/.local/bin:$PATH"
+
+# Log elapsed time without shell tracing (which could disclose credentials).
+step() {
+  local label="$1" start=$SECONDS
+  shift
+  printf '\n--- %s\n' "$label"
+  "$@"
+  printf -- '--- %s: %ss\n' "$label" "$((SECONDS - start))"
+}
+
+system_packages() {
+  local package missing=()
+  # Compiler/native extensions, Swift/OTP/.NET runtimes, and Chromium/Cypress.
+  for package in build-essential curl ca-certificates unzip xz-utils pkg-config \
+    libssl-dev libyaml-dev zlib1g-dev libncurses6 libtinfo6 libodbc2 \
+    libicu72 libxml2 libcurl4 libedit2 libsqlite3-0 libpython3.11 \
+    libatomic1 clang libblocksruntime-dev \
+    libgtk-3-0 libgbm1 libnotify4 libnss3 libxss1 libasound2 libxtst6 \
+    libatk-bridge2.0-0 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+    libxfixes3 libxrandr2 libcups2 xvfb xauth fonts-liberation; do
+    if [[ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]]; then
+      missing+=("$package")
+    fi
+  done
+  if ((${#missing[@]})); then
+    sudo apt-get update -qq
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${missing[@]}"
+  fi
+}
+step 'System packages' system_packages
+
+if [[ ! -x "$HOME/.local/bin/mise" ]]; then
+  step 'Install mise' bash -c 'curl -fsSL https://mise.run | sh'
+fi
+mise trust "$repo_root/.agents/mise.toml"
+step 'Toolchains' mise -C "$repo_root/.agents" install
+eval "$(mise -C "$repo_root/.agents" env -s bash)"
+
+# Amp and supervised services use separate non-interactive login shells.
+# Keep activation scoped to this checkout, including collector subdirectories.
+profile_marker="# bktest orb toolchains: $repo_root"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >> "$HOME/.bash_profile" <<EOF
+
+$profile_marker
+if [[ "\$PWD" == "$repo_root" || "\$PWD" == "$repo_root/"* ]]; then
+  if [[ -z "\${BKTEST_ORB_ENV:-}" ]]; then
+    export BKTEST_ORB_ENV=1
+    eval "\$("$HOME/.local/bin/mise" -C "$repo_root/.agents" env -s bash)"
+  fi
+fi
+EOF
+fi
+
+javascript() (
+  cd "$repo_root/test-collector-javascript"
+  # A warm npm ci still deletes/reinstalls 791 packages (~6s measured).
+  # Invalidate on all workspace manifests and the actual Node/npm versions.
+  local fingerprint
+  fingerprint="$( { sha256sum package.json package-lock.json examples/*/package.json; node --version; npm --version; } | sha256sum)"
+  if [[ ! -f node_modules/.orb-dependencies || "$(cat node_modules/.orb-dependencies)" != "$fingerprint" ]]; then
+    npm ci --no-audit --no-fund
+    printf '%s\n' "$fingerprint" > node_modules/.orb-dependencies
+  fi
+  npx --no-install playwright install chromium
+  npm exec --no --workspace examples/cypress -- cypress install
+  npm exec --no --workspace examples/cypress -- cypress verify
+)
+python() (
+  cd "$repo_root/test-collector-python"
+  uv sync --locked --all-extras
+)
+ruby() (
+  cd "$repo_root/test-collector-ruby"
+  if ! gem list --installed --exact bundler --version 2.3.25 >/dev/null; then
+    gem install bundler --version 2.3.25 --no-document
+  fi
+  bundle _2.3.25_ check || bundle _2.3.25_ install --jobs 4
+)
+rust() (
+  cd "$repo_root/test-collector-rust"
+  rustup component add clippy rustfmt
+  cargo fetch --locked
+)
+elixir() (
+  cd "$repo_root/test_collector_elixir"
+  if ! mix archive | grep -q 'hex-'; then mix local.hex --force; fi
+  mix local.rebar --if-missing --force
+  mix deps.get --check-locked
+  MIX_ENV=test mix deps.compile
+)
+dotnet_deps() (
+  cd "$repo_root/test-collector-dotnet"
+  dotnet restore
+)
+swift_deps() (
+  cd "$repo_root/test-collector-swift"
+  swift package resolve
+)
+android() (
+  cd "$repo_root/test-collector-android"
+  if [[ ! -x "$ANDROID_HOME/cmdline-tools/19.0/bin/sdkmanager" ]]; then
+    local download
+    download="$(mktemp -d)"
+    trap 'rm -rf -- "$download"' EXIT
+    curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip -o "$download/tools.zip"
+    unzip -q "$download/tools.zip" -d "$download"
+    mkdir -p "$ANDROID_HOME/cmdline-tools"
+    mv "$download/cmdline-tools" "$ANDROID_HOME/cmdline-tools/19.0"
+  fi
+  # License acceptance is needed for the public Android SDK packages below.
+  # Feed a finite stream rather than `yes | ...` (SIGPIPE under pipefail).
+  sdkmanager --sdk_root="$ANDROID_HOME" --licenses <<< "$(printf 'y\n%.0s' {1..100})"
+  sdkmanager --sdk_root="$ANDROID_HOME" 'platforms;android-34' 'build-tools;34.0.0' 'platform-tools'
+  # Resolve the actual test/lint configurations, not just Gradle's wrapper.
+  # No emulator, publishing, analytics uploads, or persistent Gradle daemon.
+  ./gradlew --no-daemon --max-workers=2 -Pkotlin.compiler.execution.strategy=in-process \
+    --init-script "$repo_root/.agents/android-dependencies.gradle" orbDependencies
+)
+
+step 'JavaScript dependencies and browsers' javascript
+step 'Python dependencies' python
+step 'Ruby dependencies' ruby
+step 'Rust dependencies' rust
+step 'Elixir dependencies' elixir
+step '.NET dependencies' dotnet_deps
+step 'Swift dependencies' swift_deps
+step 'Android SDK and test dependencies' android
+printf '\nOrb setup complete.\n'

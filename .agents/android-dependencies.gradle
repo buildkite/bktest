@@ -1,0 +1,22 @@
+// Prefetch collector dependencies without executing tests or publishing.
+// The example app consumes a published collector snapshot, not local sources,
+// so it is intentionally excluded, just like the SDK-only CI test path.
+gradle.projectsEvaluated {
+    rootProject.tasks.register('orbDependencies') {
+        doLast {
+            rootProject.allprojects.findAll {
+                it == rootProject || it.path.startsWith(':collector:')
+            }.each { project ->
+                project.configurations.findAll { it.canBeResolved }.each {
+                    println "Resolving ${project.path}:${it.name}"
+                    // Local project artifacts don't exist until the agent builds.
+                    it.incoming.artifactView {
+                        componentFilter { id ->
+                            id instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                        }
+                    }.files.files
+                }
+            }
+        }
+    }
+}

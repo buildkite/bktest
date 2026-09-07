@@ -1,0 +1,28 @@
+# Orb-only defaults; collector CI matrices remain the compatibility contract.
+[tools]
+node = "22.23.2"
+python = "3.13.2"
+uv = "0.7.21"
+ruby = "3.3.12"
+rust = "1.98.1"
+erlang = "27.3.4.17"
+elixir = "1.18.5-otp-27"
+dotnet = "9.0.317"
+java = "temurin-17.0.20+101"
+swift = "6.0.3"
+
+[settings]
+# Debian 12 can use these Ubuntu 22.04 binaries. Never compile runtimes
+# during setup: a source build can exceed Amp's setup deadline.
+erlang.compile = false
+erlang.precompiled_os = "ubuntu-22.04"
+ruby.compile = false
+swift.platform = "ubuntu22.04"
+
+[env]
+_.path = ["{{ env.HOME }}/.local/share/bktest-android/cmdline-tools/19.0/bin", "{{ env.HOME }}/.local/share/bktest-android/platform-tools"]
+ANDROID_HOME = "{{ env.HOME }}/.local/share/bktest-android"
+ANDROID_SDK_ROOT = "{{ env.HOME }}/.local/share/bktest-android"
+DOTNET_CLI_TELEMETRY_OPTOUT = "1"
+DOTNET_NOLOGO = "1"
+LANG = "C.UTF-8"
