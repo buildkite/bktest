@@ -207,6 +207,15 @@ The collector does not inspect instrumentation patches, so compatibility
 between the instrumentation you install and other APM or test-library patches
 remains your responsibility.
 
+Suites using VCR do not need to record collector traffic: the collector ignores
+POST requests to the configured OTLP endpoint without changing other VCR rules.
+
+When WebMock is loaded, the collector adds the configured OTLP endpoint host to
+WebMock's allow list while preserving existing entries. Suites that reset
+WebMock configuration for each example should add
+`allow: "tests-otlp.buildkite.com"` themselves, plus the relay's loopback host
+when using bktec.
+
 ## Filtering child spans
 
 Pass `otel_span_filter` to decide which completed child spans are forwarded to

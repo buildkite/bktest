@@ -30,6 +30,15 @@ module Buildkite::TestCollector
     TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 512
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
 
+    module ExceptionHandling
+      FATAL_EXCEPTIONS = [SystemExit, SignalException, NoMemoryError].freeze
+
+      def self.reraise_fatal(exception)
+        raise exception if FATAL_EXCEPTIONS.any? { |fatal| exception.is_a?(fatal) }
+      end
+    end
+    private_constant :ExceptionHandling
+
     require_relative "otel/test_span_metrics_reporter"
     require_relative "otel/span_filter"
     require_relative "otel/child_span_forwarder"
@@ -87,6 +96,7 @@ module Buildkite::TestCollector
         require "opentelemetry/trace/propagation/trace_context"
 
         exempt_from_vcr(endpoint)
+        exempt_from_webmock(endpoint)
 
         @api_token = api_token
         @run_key = run_env["key"]
@@ -108,7 +118,8 @@ module Buildkite::TestCollector
         @tracer = @test_span_provider.tracer(TRACER_NAME, Buildkite::TestCollector::VERSION)
         configure_child_export(endpoint, headers, resource, span_filter: span_filter)
         register_shutdown_at_exit
-      rescue LoadError, StandardError => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] OpenTelemetry span export disabled: #{e.class}: #{e.message}"
         shutdown
       end
@@ -138,7 +149,8 @@ module Buildkite::TestCollector
           links: job_span_links,
           kind: :internal,
         )
-      rescue StandardError => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         # The example still runs, but with no span it reaches neither upload
         # path, so report it as a missing result rather than a stray warning.
         @test_span_metrics_reporter&.record_start_failure(e)
@@ -167,6 +179,9 @@ module Buildkite::TestCollector
         record_result(span, test)
         describe_test(span, test)
         finish_span(span, end_timestamp)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        warn "[buildkite-test_collector] Could not finish OpenTelemetry test span: #{e.class}: #{e.message}"
       end
 
       # Records a point-in-time annotation as an event on whichever span is
@@ -179,7 +194,8 @@ module Buildkite::TestCollector
         return unless span.recording?
 
         span.add_event("test.annotation", attributes: { "buildkite.annotation" => content.to_s })
-      rescue StandardError => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not annotate OpenTelemetry test span: #{e.class}: #{e.message}"
       end
 
@@ -196,6 +212,9 @@ module Buildkite::TestCollector
         # at the first rejected batch and re-queues the rest, so a persistent
         # failure leaves a balance that drains, and is reported, at shutdown.
         @test_span_metrics_reporter&.warn_dropped_total
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        warn "[buildkite-test_collector] Could not flush OpenTelemetry spans: #{e.class}: #{e.message}"
       end
 
       def shutdown
@@ -208,6 +227,9 @@ module Buildkite::TestCollector
           warn "[buildkite-test_collector] Could not shut down OpenTelemetry span export: #{error.class}: #{error.message}"
         end
         @test_span_metrics_reporter&.warn_dropped_total
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        warn "[buildkite-test_collector] Could not shut down OpenTelemetry span export: #{e.class}: #{e.message}"
       ensure
         @test_span_provider = nil
         @child_span_processor = nil
@@ -253,7 +275,8 @@ module Buildkite::TestCollector
         )
         test_span_provider.add_span_processor(test_span_processor)
         test_span_provider
-      rescue StandardError
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         stop_processor(test_span_processor)
         raise
       end
@@ -311,7 +334,8 @@ module Buildkite::TestCollector
         if refreshed < Array(@exporters).length
           warn "[buildkite-test_collector] Could not refresh the OTLP Authorization header; export continues with the previous token"
         end
-      rescue StandardError => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not refresh the OTLP Authorization header: #{e.class}: #{e.message}"
       end
 
@@ -321,8 +345,8 @@ module Buildkite::TestCollector
       # request shape - a POST to the configured OTLP endpoint - and leaves
       # the suite's network policy otherwise untouched. This runs from
       # RSpec's before(:suite), after the consumer's own VCR configuration
-      # has loaded. WebMock used without VCR has no equivalent additive API,
-      # so that case stays consumer-configured.
+      # has loaded. WebMock's allow list is also additive when its existing
+      # entries are retained.
       def exempt_from_vcr(endpoint)
         return unless defined?(::VCR)
 
@@ -334,12 +358,24 @@ module Buildkite::TestCollector
               uri.host == target.host &&
               uri.port == target.port &&
               uri.path == target.path
-          rescue StandardError
+          rescue Exception => e # rubocop:disable Lint/RescueException
+            ExceptionHandling.reraise_fatal(e)
             false
           end
         end
-      rescue StandardError => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not exempt the OTLP endpoint from VCR: #{e.class}: #{e.message}"
+      end
+
+      def exempt_from_webmock(endpoint)
+        return unless defined?(::WebMock)
+
+        config = ::WebMock::Config.instance
+        config.allow = Array(config.allow) << URI(endpoint).host
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        warn "[buildkite-test_collector] Could not exempt the OTLP endpoint from WebMock: #{e.class}: #{e.message}"
       end
 
       # The collector-managed child provider carries the same producer resource
@@ -377,7 +413,8 @@ module Buildkite::TestCollector
 
         @child_span_processor = child_processor
         @child_span_forwarder = child_forwarder
-      rescue StandardError => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         deactivate_child_span_forwarder(child_forwarder)
         stop_processor(child_processor)
         warn "[buildkite-test_collector] OpenTelemetry child span export disabled: #{e.class}: #{e.message}; test.execution export remains enabled"
@@ -478,7 +515,8 @@ module Buildkite::TestCollector
           remaining = [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
           begin
             yield queue, remaining
-          rescue StandardError => e
+          rescue Exception => e # rubocop:disable Lint/RescueException
+            ExceptionHandling.reraise_fatal(e)
             error ||= e
           end
         end
@@ -489,13 +527,15 @@ module Buildkite::TestCollector
       def deactivate_child_span_forwarder(forwarder)
         forwarder&.shutdown
         nil
-      rescue StandardError => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         e
       end
 
       def stop_processor(processor)
         processor&.shutdown(timeout: 0)
-      rescue StandardError
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         nil
       end
 
@@ -515,7 +555,8 @@ module Buildkite::TestCollector
         test.otel_exception_events.each do |attributes|
           span.add_event("exception", attributes: attributes)
         end
-      rescue StandardError => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not record the OpenTelemetry test result: #{e.class}: #{e.message}"
       end
 
@@ -524,7 +565,8 @@ module Buildkite::TestCollector
         test_span_attributes(test).each do |key, value|
           span.set_attribute(key, value)
         end
-      rescue StandardError => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not describe OpenTelemetry test span: #{e.class}: #{e.message}"
       end
 
@@ -553,13 +595,15 @@ module Buildkite::TestCollector
         else
           span.finish
         end
-      rescue StandardError => e
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not finish OpenTelemetry test span: #{e.class}: #{e.message}"
       end
 
       def precedes_start?(span, end_timestamp)
         (end_timestamp.to_r * 1_000_000_000).to_i < span.start_timestamp
-      rescue StandardError
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         false
       end
 
@@ -576,7 +620,8 @@ module Buildkite::TestCollector
         return [] unless span_context.valid?
 
         [OpenTelemetry::Trace::Link.new(span_context)]
-      rescue StandardError
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
         []
       end
 

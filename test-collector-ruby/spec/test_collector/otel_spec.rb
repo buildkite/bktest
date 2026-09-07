@@ -4,6 +4,7 @@ require "open3"
 require "opentelemetry/sdk"
 require "opentelemetry/exporter/otlp"
 require "opentelemetry/trace/propagation/trace_context"
+require "webmock/rspec"
 
 RSpec.describe Buildkite::TestCollector::OTel do
   # A passed test that describes nothing, for specs about the span itself.
@@ -292,6 +293,38 @@ RSpec.describe Buildkite::TestCollector::OTel do
   ensure
     described_class.instance_variable_set(:@test_span_provider, nil)
     described_class.instance_variable_set(:@child_span_processor, nil)
+  end
+
+  it "warns instead of propagating an Exception from force flush" do
+    exporter_error = Class.new(Exception)
+    test_span_provider = double("execution provider")
+    allow(test_span_provider).to receive(:force_flush).and_raise(exporter_error, "network blocked")
+    described_class.instance_variable_set(:@test_span_provider, test_span_provider)
+
+    expect { described_class.force_flush }
+      .to output(/Could not flush OpenTelemetry spans: .*network blocked/).to_stderr
+  ensure
+    described_class.instance_variable_set(:@test_span_provider, nil)
+  end
+
+  it "warns instead of propagating an Exception from shutdown" do
+    exporter_error = Class.new(Exception)
+    test_span_provider = double("execution provider")
+    allow(test_span_provider).to receive(:shutdown).and_raise(exporter_error, "network blocked")
+    described_class.instance_variable_set(:@test_span_provider, test_span_provider)
+
+    expect { described_class.shutdown }
+      .to output(/Could not shut down OpenTelemetry span export: .*network blocked/).to_stderr
+  end
+
+  it "re-raises fatal exceptions" do
+    test_span_provider = double("execution provider")
+    allow(test_span_provider).to receive(:force_flush).and_raise(SystemExit, 1)
+    described_class.instance_variable_set(:@test_span_provider, test_span_provider)
+
+    expect { described_class.force_flush }.to raise_error(SystemExit)
+  ensure
+    described_class.instance_variable_set(:@test_span_provider, nil)
   end
 
   it "attempts child shutdown when test span shutdown fails" do
@@ -1043,6 +1076,25 @@ RSpec.describe Buildkite::TestCollector::OTel do
       expect(described_class).to be_enabled
     ensure
       described_class.shutdown
+    end
+  end
+
+  describe "WebMock exemption" do
+    it "adds the OTLP endpoint host to WebMock's allow list" do
+      WebMock.disable_net_connect!(allow: "customer.example")
+      allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new) do
+        OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+      end
+
+      described_class.configure!(endpoint: "https://tests-otlp.example.invalid/v1/traces")
+
+      expect(WebMock.net_connect_allowed?(URI("https://tests-otlp.example.invalid/v1/traces"))).to be true
+      expect(WebMock.net_connect_allowed?(URI("https://customer.example"))).to be true
+      expect(WebMock.net_connect_allowed?(URI("https://blocked.example"))).to be false
+    ensure
+      described_class.shutdown
+      WebMock.allow_net_connect!
+      WebMock::Config.instance.allow = nil
     end
   end
 

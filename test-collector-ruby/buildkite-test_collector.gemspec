@@ -31,4 +31,5 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "ostruct"
   spec.add_development_dependency "rspec-core", '~> 3.10'
   spec.add_development_dependency "rspec-expectations", '~> 3.10'
+  spec.add_development_dependency "webmock"
 end
