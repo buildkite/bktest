@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# No backing services or authentication are needed for local collector tests.
+# Toolchains and dependencies live in the snapshot; login shells activate them.
+# Never install dependencies or persist staff credentials in this hook.
