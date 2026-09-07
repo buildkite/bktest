@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+* Apply standard OpenTelemetry exporter headers only when their configured
+  endpoint matches the Buildkite OTLP endpoint, preventing unrelated vendor
+  credentials and headers from overriding Buildkite authentication. Matching
+  relay configurations such as bktec continue to supply headers by environment.
+* Pin OpenTelemetry export to gzip compression and the system certificate store
+  without a client certificate, so process-wide exporter compression, custom
+  CA, and mTLS settings for another destination cannot affect Buildkite export.
 * **Breaking change to the experimental OpenTelemetry support:** opt-in
   submission is now OTLP-only for RSpec. `otel_enabled: true` submits executions
   as spans without also uploading legacy JSON, and the separate `otel_only`

@@ -64,8 +64,12 @@ module Buildkite::TestCollector
 
       # Whether the standard OTLP environment supplies request headers (which
       # may carry the credential, as bktec's relay does).
-      def headers_from_environment?
-        HEADER_ENVIRONMENT_VARIABLES.any? { |name| !ENV[name].to_s.empty? }
+      def headers_from_environment?(endpoint: ENV["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] || DEFAULT_ENDPOINT)
+        return false unless raw_otlp_headers_from_environment
+        return true if standard_otlp_endpoint_matches?(endpoint)
+
+        warn_ignored_otlp_headers
+        false
       end
 
       def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, span_filter: nil, tags: {})
@@ -92,7 +96,7 @@ module Buildkite::TestCollector
         @run_key = run_env["key"]
         # Passing collector headers to the exporter bypasses its environment
         # defaults, so merge the standard OTLP headers here instead.
-        environment_headers = otlp_headers_from_environment
+        environment_headers = otlp_headers_from_environment(endpoint)
         @authorization_from_environment = environment_headers.keys.any? do |key|
           key.casecmp?("Authorization")
         end
@@ -262,6 +266,10 @@ module Buildkite::TestCollector
         exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(
           endpoint: endpoint,
           headers: headers,
+          compression: "gzip",
+          certificate_file: nil,
+          client_certificate_file: nil,
+          client_key_file: nil,
           metrics_reporter: metrics_reporter,
         )
         # Retained so refresh_authorization can reach the headers each
@@ -580,7 +588,7 @@ module Buildkite::TestCollector
         []
       end
 
-      def request_headers(run_env, api_token, environment_headers = otlp_headers_from_environment)
+      def request_headers(run_env, api_token, environment_headers = otlp_headers_from_environment(DEFAULT_ENDPOINT))
         headers = { "Buildkite-Tests-Run-Key" => run_env["key"] }
         headers["Authorization"] = authorization_header(api_token) if api_token
         environment_headers.each do |key, value|
@@ -590,9 +598,13 @@ module Buildkite::TestCollector
         headers
       end
 
-      def otlp_headers_from_environment
-        raw = HEADER_ENVIRONMENT_VARIABLES.map { |name| ENV[name] }.find { |value| !value.to_s.empty? }
+      def otlp_headers_from_environment(endpoint)
+        raw = raw_otlp_headers_from_environment
         return {} unless raw
+        unless standard_otlp_endpoint_matches?(endpoint)
+          warn_ignored_otlp_headers
+          return {}
+        end
 
         entries = raw.split(",")
         raise ArgumentError, "invalid OTLP exporter headers" if entries.empty?
@@ -606,6 +618,44 @@ module Buildkite::TestCollector
           headers.delete_if { |existing, _| existing.casecmp?(key) }
           headers[key] = value
         end
+      end
+
+      def raw_otlp_headers_from_environment
+        HEADER_ENVIRONMENT_VARIABLES.map { |name| ENV[name] }.find { |value| !value.to_s.empty? }
+      end
+
+      def standard_otlp_endpoint_matches?(endpoint)
+        standard_endpoint = ENV["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
+        append_traces_path = false
+        if standard_endpoint.to_s.empty?
+          standard_endpoint = ENV["OTEL_EXPORTER_OTLP_ENDPOINT"]
+          return false if standard_endpoint.to_s.empty?
+
+          append_traces_path = true
+        end
+
+        standard_endpoint = normalized_otlp_endpoint(standard_endpoint, append_traces_path: append_traces_path)
+        collector_endpoint = normalized_otlp_endpoint(endpoint)
+        standard_endpoint && standard_endpoint == collector_endpoint
+      rescue URI::InvalidURIError
+        false
+      end
+
+      def normalized_otlp_endpoint(endpoint, append_traces_path: false)
+        uri = URI(endpoint)
+        return unless uri.scheme && uri.host
+
+        path = uri.path.sub(%r{/+\z}, "")
+        path = "#{path}/v1/traces" if append_traces_path
+        [uri.scheme.downcase, uri.host.downcase, uri.port, path]
+      end
+
+      def warn_ignored_otlp_headers
+        return if @ignored_otlp_headers_warning_emitted
+
+        @ignored_otlp_headers_warning_emitted = true
+        warn "[buildkite-test_collector] Standard OpenTelemetry exporter headers are ignored for the Buildkite endpoint; " \
+          "set OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT to the Buildkite endpoint to use them."
       end
 
       def authorization_header(api_token)

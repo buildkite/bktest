@@ -553,7 +553,14 @@ RSpec.describe Buildkite::TestCollector::OTel do
   end
 
   it "gives trace-specific OTLP headers precedence over generic and collector headers" do
+    endpoint = "http://bktec-relay.example/v1/traces"
     allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+      .and_return("#{endpoint}/")
+    allow(ENV).to receive(:[]).with("BUILDKITE_ANALYTICS_OTLP_ENDPOINT")
+      .and_return(endpoint)
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_ENDPOINT")
+      .and_return("https://otel.vendor.example")
     allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
       .and_return(
         "authorization=Bearer%20relay-token,buildkite-tests-run-key=relay-run,x-extra=hello%20world"
@@ -561,9 +568,17 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
       .and_return("authorization=Bearer%20generic-token")
 
-    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
+    expect {
+      environment_headers = described_class.send(:otlp_headers_from_environment, endpoint)
+      @headers = described_class.send(
+        :request_headers,
+        { "key" => "test-run-id" },
+        "suite-token",
+        environment_headers,
+      )
+    }.not_to output.to_stderr
 
-    expect(headers).to eq(
+    expect(@headers).to eq(
       "authorization" => "Bearer relay-token",
       "buildkite-tests-run-key" => "relay-run",
       "x-extra" => "hello world",
@@ -572,6 +587,9 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
   it "uses generic OTLP headers when trace-specific headers are empty" do
     allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").and_return("")
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_ENDPOINT")
+      .and_return("https://tests-otlp.buildkite.com")
     allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return("")
     allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
       .and_return("Authorization=Bearer%20generic-token")
@@ -579,6 +597,43 @@ RSpec.describe Buildkite::TestCollector::OTel do
     headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
 
     expect(headers["Authorization"]).to eq("Bearer generic-token")
+  end
+
+  it "ignores standard OTLP headers for a different endpoint and warns once" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").and_return(nil)
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_ENDPOINT")
+      .and_return("https://otel.vendor.example")
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return(nil)
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
+      .and_return("authorization=Bearer%20x")
+    described_class.instance_variable_set(:@ignored_otlp_headers_warning_emitted, nil)
+
+    expect {
+      2.times do
+        @headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
+      end
+    }.to output { |warning|
+      expect(warning.scan("Standard OpenTelemetry exporter headers are ignored for the Buildkite endpoint").length).to eq(1)
+    }.to_stderr
+
+    expect(@headers).to include("Authorization" => %(Token token="suite-token"))
+    expect(@headers.keys).not_to include("authorization")
+  ensure
+    described_class.instance_variable_set(:@ignored_otlp_headers_warning_emitted, nil)
+  end
+
+  it "does not treat standard OTLP headers for a different endpoint as collector credentials" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").and_return(nil)
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_ENDPOINT")
+      .and_return("https://otel.vendor.example")
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return(nil)
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
+      .and_return("authorization=Bearer%20x")
+    allow(described_class).to receive(:warn_ignored_otlp_headers)
+
+    expect(described_class.headers_from_environment?).to eq(false)
   end
 
   it "uses collector headers when both standard OTLP header variables are empty" do
@@ -592,6 +647,35 @@ RSpec.describe Buildkite::TestCollector::OTel do
       "Buildkite-Tests-Run-Key" => "test-run-id",
       "Authorization" => %(Token token="suite-token"),
     )
+  end
+
+  it "pins gzip compression despite the standard OTLP environment" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_COMPRESSION").and_return("none")
+
+    processor = described_class.send(:batch_processor, described_class::DEFAULT_ENDPOINT, {})
+    exporter = described_class.instance_variable_get(:@exporters).last
+
+    expect(exporter.instance_variable_get(:@compression)).to eq("gzip")
+  ensure
+    processor&.shutdown
+    described_class.instance_variable_set(:@exporters, nil)
+  end
+
+  it "ignores standard OTLP certificate files" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_CERTIFICATE").and_return("/nonexistent")
+
+    processor = described_class.send(:batch_processor, described_class::DEFAULT_ENDPOINT, {})
+    exporter = described_class.instance_variable_get(:@exporters).last
+    http = exporter.instance_variable_get(:@http)
+
+    expect(http.ca_file).to be_nil
+    expect(http.cert).to be_nil
+    expect(http.key).to be_nil
+  ensure
+    processor&.shutdown
+    described_class.instance_variable_set(:@exporters, nil)
   end
 
   it "uses an AlwaysOn sampler, process-safe random IDs, and the producer resource for test spans" do
@@ -924,6 +1008,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
       suite_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
       OpenTelemetry.tracer_provider = suite_provider
       allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        .and_return("https://example.invalid/v1/traces")
       allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
         .and_return("authorization=Bearer%20relay-token")
 
