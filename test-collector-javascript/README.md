@@ -56,6 +56,9 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
 
     ### Vitest
 
+    Supports Vitest 1–5. Vitest 5 requires Node.js 22.12+; the reporter
+    configuration below is unchanged when upgrading from Vitest 4.
+
     Update your [Vitest configuration](https://vitest.dev/config/):<br>
 
     ```js
