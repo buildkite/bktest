@@ -52,7 +52,19 @@ describe('examples/vitest', () => {
 			expect.objectContaining({ name: 'is pending', scope: 'passed nested', result: 'pending' }),
 			expect.objectContaining({ name: 'is skipped at runtime', scope: 'passed nested', result: 'skipped' }),
 		]);
+		expect(uploads[0].body.data[1].history.duration).toBeNull();
+		expect(uploads[0].body.data[2].history.duration).toBeNull();
 		expect(existsSync(path.join(cwd, '.vitest/json/output.json'))).toBe(false);
+	}, 10000);
+
+	test('it preserves missing timings when no tests in a module execute', async () => {
+		await promisify(exec)("npm test -- passed.test.js -t 'is skipped$|is pending$'", { cwd, env });
+
+		expect(uploads).toHaveLength(1);
+		expect(uploads[0].body.data).toHaveLength(4);
+		for (const test of uploads[0].body.data) {
+			expect(test.history).toEqual({ section: 'top', start_at: 0, end_at: 0, duration: null });
+		}
 	}, 10000);
 
 	describe('when token is defined through reporter options', () => {
