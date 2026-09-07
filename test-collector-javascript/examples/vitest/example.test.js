@@ -1,4 +1,4 @@
-import { test, describe, expect } from 'vitest';
+import { test, describe, expect, beforeAll } from 'vitest';
 
 // No scope
 test('1 + 2 to equal 3', () => {
@@ -11,3 +11,9 @@ describe('sum', () => {
     expect(40 + 1).toBe(42);
   });  
 })
+
+describe('hook fails', () => {
+  beforeAll(() => { throw new Error('intentional hook failure'); });
+  test('never runs', () => {});
+  test.todo('todo under failed hook');
+});

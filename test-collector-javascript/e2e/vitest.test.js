@@ -6,7 +6,8 @@ const path = require('path');
 const http = require('http');
 const { existsSync } = require('fs');
 const { promisify } = require('util');
-const supportsTaskLocation = Number(require('vitest/package.json').version.split('.')[0]) >= 2;
+const vitestMajor = Number(require('vitest/package.json').version.split('.')[0]);
+const supportsTaskLocation = vitestMajor >= 2;
 
 describe('examples/vitest', () => {
 	const cwd = path.join(__dirname, "../examples/vitest")
@@ -42,8 +43,9 @@ describe('examples/vitest', () => {
 	afterAll((done) => { server.close(done); });
 
 	test('it uploads once before exiting, without writing a JSON report', async () => {
-		await promisify(exec)('npm test -- passed.test.js', { cwd, env });
+		const { stdout } = await promisify(exec)('npm test -- passed.test.js', { cwd, env });
 
+		expect(stdout).toContain('Test Engine success response');
 		expect(uploads).toHaveLength(1);
 		expect(uploads[0].headers.authorization).toBe('Token token="xyz"');
 		expect(uploads[0].body.data).toEqual([
@@ -54,7 +56,26 @@ describe('examples/vitest', () => {
 		]);
 		expect(uploads[0].body.data[1].history.duration).toBeNull();
 		expect(uploads[0].body.data[2].history.duration).toBeNull();
+		// Modern public diagnostics and Vitest 1–2 JSON results omit runtime-skip timing.
+		expect(uploads[0].body.data[3].history.duration).toBeNull();
 		expect(existsSync(path.join(cwd, '.vitest/json/output.json'))).toBe(false);
+	}, 10000);
+
+	test('it reports todo tests beneath a failed suite hook', async () => {
+		const result = await promisify(exec)("npm test -- example.test.js -t 'hook fails'", { cwd, env })
+			.catch(error => error);
+
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain('intentional hook failure');
+		expect(result.stdout).toContain('Test Engine success response');
+		expect(uploads).toHaveLength(1);
+		const tests = uploads[0].body.data.filter(test => test.scope === 'hook fails');
+		expect(tests).toEqual([
+			// Vitest 1 leaves unexecuted tasks pending; later versions mark them skipped.
+			expect.objectContaining({ name: 'never runs', result: vitestMajor === 1 ? 'pending' : 'skipped' }),
+			// Public options preserve todo; the Vitest 2 legacy task is rewritten to skip.
+			expect.objectContaining({ name: 'todo under failed hook', result: vitestMajor === 2 ? 'skipped' : 'pending' }),
+		]);
 	}, 10000);
 
 	test('it preserves missing timings when no tests in a module execute', async () => {
