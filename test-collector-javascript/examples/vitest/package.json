@@ -6,6 +6,6 @@
   },
   "devDependencies": {
     "buildkite-test-collector": "file:../..",
-    "vitest": "^4.1.0"
+    "vitest": "^5.0.0"
   }
 }

@@ -1,57 +1,63 @@
-import { JsonReporter } from 'vitest/reporters'
 import { randomUUID } from 'node:crypto'
 import CI from '../util/ci.js'
 import uploadTestResults from '../util/uploadTestResults.js'
 import Paths from '../util/paths'
 
 /*
- * Vites JsonReporter returns all the test results we need
- * https://vitest.dev/guide/reporters.html#json-reporter
+ * A Vitest reporter built on the public reporter API
+ * https://vitest.dev/advanced/api/reporters
+ *
+ * It deliberately imports nothing from `vitest` at runtime. Earlier versions
+ * subclassed Vitest's internal JsonReporter (via the `vitest/reporters`
+ * entrypoint) and intercepted its `writeReport` method. Vitest 5 removed that
+ * entrypoint and inlined `writeReport`, so that approach both fails to load and,
+ * once the import is repointed, silently stops uploading. Working from the
+ * `TestModule` / `TestCase` objects handed to `onTestRunEnd` is stable from
+ * Vitest 3.0 onwards and lets one code path support 3.x, 4.x and 5.x.
  */
-class VitestBuildkiteTestEngineReporter extends JsonReporter {
+class VitestBuildkiteTestEngineReporter {
   constructor(options) {
-    super(options);
     this._options = options;
     this._testEnv = new CI().env('vitest');
     this._tags = options?.tags;
   }
 
   onInit(ctx) {
-    super.onInit(ctx)
-    this._paths = new Paths({ rootDir: ctx.config.root }, this._testEnv.location_prefix)
+    this._start = Date.now();
+    this._paths = new Paths({ rootDir: ctx.config.root }, this._testEnv.location_prefix);
   }
 
-  /*
-   * vitests JsonReporter.writeReport is called to save the JSON to a file
-   * we override it to upload the test results to Buildkite
-   * https://github.com/vitest-dev/vitest/blob/33b930a12feb9f8932b10ed9e41e078200f62379/packages/vitest/src/node/reporters/json.ts#L208
-   */
-  async writeReport(reportString) {
-    const report = JSON.parse(reportString);
-    const originStart = report.startTime;
-    const testResults = report.testResults.flatMap((testResult) => {
-      const prefixedTestPath = this._paths.prefixTestPath(testResult.name);
-      const assertionResults = testResult.assertionResults.map(
-        (assertionResult) => {
-          const id = randomUUID();
+  async onTestRunEnd(testModules) {
+    const originStart = this._start;
 
-          return {
-            id: id,
-            scope: assertionResult.ancestorTitles.join(' ').trim(),
-            name: assertionResult.title,
-            location: (prefixedTestPath && assertionResult.location)
-              ? `${prefixedTestPath}:${assertionResult.location.line}`
-              : null,
-            file_name: prefixedTestPath,
-            result: this.testEngineResult(assertionResult),
-            failure_reason: this.testEngineFailureReason(assertionResult),
-            failure_expanded: this.testEngineFailureExpanded(assertionResult),
-            history: this.testEngineHistory(originStart, testResult, assertionResult),
-          };
-        },
-      );
+    const testResults = testModules.flatMap((testModule) => {
+      const prefixedTestPath = this._paths.prefixTestPath(testModule.moduleId);
+      const tests = Array.from(testModule.children.allTests());
+      const { startTime, endTime } = this.fileTimings(tests, originStart);
 
-      return assertionResults;
+      return tests.map((test) => {
+        const result = test.result();
+        const failureMessages = this.testEngineFailureMessages(result);
+
+        return {
+          id: randomUUID(),
+          scope: this.ancestorTitles(test).join(' ').trim(),
+          name: test.name,
+          location: (prefixedTestPath && test.location)
+            ? `${prefixedTestPath}:${test.location.line}`
+            : null,
+          file_name: prefixedTestPath,
+          result: this.testEngineResult(test, result),
+          failure_reason: failureMessages[0],
+          failure_expanded: [{ expanded: failureMessages.slice(1) }],
+          history: {
+            section: 'top',
+            start_at: (startTime - originStart) / 1000,
+            end_at: (endTime - originStart) / 1000,
+            duration: (test.diagnostic()?.duration ?? 0) / 1000,
+          },
+        };
+      });
     });
 
     return uploadTestResults(
@@ -62,15 +68,47 @@ class VitestBuildkiteTestEngineReporter extends JsonReporter {
     );
   }
 
-  testEngineResult(assertionResults) {
+  /*
+   * Names of the enclosing describe blocks, outermost first. Stops at the
+   * test module (file) itself, which is the root of the parent chain.
+   */
+  ancestorTitles(test) {
+    const titles = [];
+    let parent = test.parent;
+    while (parent && parent.type === 'suite') {
+      titles.unshift(parent.name);
+      parent = parent.parent;
+    }
+    return titles;
+  }
+
+  /*
+   * The window in which a file's tests ran, matching what Vitest's own JSON
+   * reporter computes: earliest test start to the latest test end. Files
+   * whose tests never ran (all skipped) fall back to the run start.
+   */
+  fileTimings(tests, originStart) {
+    let startTime = Number.POSITIVE_INFINITY;
+    let endTime = 0;
+
+    for (const test of tests) {
+      const diagnostic = test.diagnostic();
+      if (!diagnostic) continue;
+      startTime = Math.min(startTime, diagnostic.startTime);
+      endTime = Math.max(endTime, diagnostic.startTime + diagnostic.duration);
+    }
+
+    if (startTime === Number.POSITIVE_INFINITY) startTime = originStart;
+    return { startTime, endTime: Math.max(endTime, startTime) };
+  }
+
+  testEngineResult(test, result) {
     /*
-     * https://github.com/vitest-dev/vitest/blob/33b930a12feb9f8932b10ed9e41e078200f62379/packages/vitest/src/node/reporters/json.ts#L22
-     * vitest test statuses:
-     * - failed
-     * - pending
+     * Vitest TestResult states:
      * - passed
-     * - skipped
-     * - todo
+     * - failed
+     * - skipped (includes todo tests)
+     * - pending (collected but not run)
      *
      * Buildkite Test Engine execution results:
      * - passed
@@ -79,39 +117,23 @@ class VitestBuildkiteTestEngineReporter extends JsonReporter {
      * - skipped
      * - unknown
      */
-    return {
-      failed: 'failed',
-      pending: 'pending',
-      passed: 'passed',
-      skipped: 'skipped',
-      todo: 'pending',
-    }[assertionResults.status];
+    switch (result.state) {
+      case 'passed': return 'passed';
+      case 'failed': return 'failed';
+      case 'pending': return 'pending';
+      default:
+        // Report todo tests as pending, as the JSON reporter used to
+        return test.task?.mode === 'todo' ? 'pending' : 'skipped';
+    }
   }
 
-  testEngineFailureMessages(assertionResults) {
+  testEngineFailureMessages(result) {
     // Strip ANSI color codes from messages and split each line
-    return assertionResults.failureMessages.join(' ').replace(/\u001b[^m]*?m/g,'').split("\n")
-  }
-
-  testEngineFailureReason(assertionResults) {
-    return this.testEngineFailureMessages(assertionResults)[0]
-  }
-
-  testEngineFailureExpanded(assertionResults) {
-    return [
-      {
-        expanded: this.testEngineFailureMessages(assertionResults).splice(1),
-      },
-    ];
-  }
-
-  testEngineHistory(originStart, testResult, assertionResults) {
-    return {
-      section: 'top',
-      start_at: (testResult.startTime - originStart) / 1000,
-      end_at: (testResult.endTime - originStart) / 1000,
-      duration: assertionResults.duration / 1000,
-    };
+    return (result.errors || [])
+      .map((error) => error.stack || error.message)
+      .join(' ')
+      .replace(/\u001b[^m]*?m/g, '')
+      .split("\n");
   }
 }
 
