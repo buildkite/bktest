@@ -285,6 +285,64 @@ is reconfigured, but run identity is fixed when export starts: reconfiguring
 with a different run key warns and keeps attributing results to the original
 run. Reporting a new run requires a new process.
 
+### Payload limits and batching
+
+One test-span export batch is one request. Buildkite enforces two request limits:
+
+- **900 KiB gzipped body at the edge:** larger requests return HTTP `413`, lose
+  the whole batch, and cause a collector warning.
+- **8 MiB decoded protobuf at ingestion:** larger requests are dropped in full
+  **silently**, even though the edge returns HTTP `200`. Compressible RSpec
+  failure output can hit this limit well before the gzip limit.
+
+The RSpec plugin limits the failure detail sent on each test span:
+
+| Field | Limit |
+| --- | --- |
+| `exception.message` | 10,240 characters per event |
+| `exception.stacktrace` | 16,384 characters per event |
+| `exception` events | first 100 nonempty events per span |
+| Span status description | 1,024 characters |
+
+Text exceeding a limit is truncated on a character boundary and ends with
+`… [truncated by buildkite-test_collector]`. The marker counts toward the limit.
+These limits apply only to the experimental RSpec OpenTelemetry path; legacy
+JSON failure detail is unchanged.
+
+The reserved test-span queue defaults to 8,192 spans, exporting at most **256**
+spans per batch with a one-second schedule delay. Configure sizes before the
+collector first starts exporting:
+
+| Environment variable | Default |
+| --- | --- |
+| `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE` | `256` |
+| `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE` | `8192` |
+
+Values must contain only decimal digits and be positive integers. Invalid
+values (including empty strings) warn with `[buildkite-test_collector]` and
+fall back to the corresponding default. If the resulting batch exceeds the
+queue, both sizes fall back to their defaults with a warning; a bad override
+never disables test export. Test-span processor options are explicit, so
+`OTEL_BSP_*` settings do not affect this queue; child spans keep SDK settings.
+
+The defaults leave room below 8 MiB for typical single-failure, mostly ASCII
+spans, not every possible payload. Multiple exception events, multibyte text,
+large attributes, or larger batch overrides can still exceed the decoded limit.
+Incompressible failure content can still exceed 900 KiB gzipped at any batch
+size; reducing the batch is not a guarantee that a request fits.
+
+In a mass-failure run with deep or unfiltered backtraces, Test Engine keeps
+backtraces only for roughly the first **90–220 executions of each request**.
+Its server-side per-request backtrace budget is 1 MiB / 10,000 lines, shared
+first-come across spans; the exact coverage depends on backtrace depth and line
+length. Smaller batches share that budget among fewer executions. Use RSpec's
+backtrace filtering to remove framework and dependency noise: the collector
+honours RSpec's already-filtered backtraces.
+
+To measure representative payloads locally without sending requests, run
+`bundle exec ruby script/payload_size.rb` from this gem's directory. See the
+script's header for custom span counts, backtrace lines and message bytes.
+
 ## When something goes wrong
 
 Export never fails a test. If test span setup fails (for example on Ruby older

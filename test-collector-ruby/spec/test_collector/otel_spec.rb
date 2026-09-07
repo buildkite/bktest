@@ -11,6 +11,101 @@ RSpec.describe Buildkite::TestCollector::OTel do
     double("test", otel_attributes: {}, otel_result: "passed")
   end
 
+  describe "test span batch configuration" do
+    let(:batch_env) { "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE" }
+    let(:queue_env) { "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE" }
+    let(:exporter) { OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new }
+
+    before do
+      allow(ENV).to receive(:[]).and_call_original
+      allow(ENV).to receive(:[]).with(batch_env).and_return(nil)
+      allow(ENV).to receive(:[]).with(queue_env).and_return(nil)
+      allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(exporter)
+      allow(described_class).to receive(:configure_child_export)
+    end
+
+    after { described_class.shutdown }
+
+    def expect_test_processor(batch:, queue:)
+      expect(OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor).to receive(:new).with(
+        exporter,
+        max_queue_size: queue,
+        max_export_batch_size: batch,
+        schedule_delay: 1_000,
+        exporter_timeout: 30_000,
+        start_thread_on_boot: true,
+        metrics_reporter: an_instance_of(described_class.const_get(:TestSpanMetricsReporter, false)),
+      ).and_call_original
+    end
+
+    def configure_and_export_test
+      described_class.configure!(endpoint: "https://example.invalid/v1/traces")
+      expect(described_class).to be_enabled
+      test = execution_test
+      described_class.finish_test_span(described_class.start_test_span(test: test), test: test)
+      described_class.force_flush
+      expect(exporter.finished_spans.map(&:name)).to eq(["test.execution"])
+    end
+
+    it "defaults to 256 spans per batch and an 8192-span queue, ignoring OTEL_BSP_*" do
+      %w[MAX_QUEUE_SIZE MAX_EXPORT_BATCH_SIZE SCHEDULE_DELAY EXPORT_TIMEOUT].each do |option|
+        allow(ENV).to receive(:[]).with("OTEL_BSP_#{option}").and_return("0")
+      end
+      allow(ENV).to receive(:[]).with("OTEL_RUBY_BSP_START_THREAD_ON_BOOT").and_return("false")
+      expect_test_processor(batch: 256, queue: 8_192)
+
+      expect { configure_and_export_test }.not_to output.to_stderr
+    end
+
+    it "applies valid overrides, including a batch equal to the queue" do
+      allow(ENV).to receive(:[]).with(batch_env).and_return("32")
+      allow(ENV).to receive(:[]).with(queue_env).and_return("32")
+      expect_test_processor(batch: 32, queue: 32)
+
+      expect { configure_and_export_test }.not_to output.to_stderr
+    end
+
+    it "allows a batch of one without changing the queue default" do
+      allow(ENV).to receive(:[]).with(batch_env).and_return("1")
+      expect_test_processor(batch: 1, queue: 8_192)
+
+      expect { configure_and_export_test }.not_to output.to_stderr
+    end
+
+    it "allows a queue override without changing the batch default" do
+      allow(ENV).to receive(:[]).with(queue_env).and_return("1024")
+      expect_test_processor(batch: 256, queue: 1_024)
+
+      expect { configure_and_export_test }.not_to output.to_stderr
+    end
+
+    ["", "0", "-1", "1.5", "abc", "12abc", "1e3", " 32", "32\n"].each do |value|
+      [:batch, :queue].each do |setting|
+        it "warns and uses the default for #{setting} override #{value.inspect}" do
+          env = setting == :batch ? batch_env : queue_env
+          allow(ENV).to receive(:[]).with(env).and_return(value)
+          expect_test_processor(batch: 256, queue: 8_192)
+
+          expect { configure_and_export_test }.to output(
+            /\[buildkite-test_collector\] #{env} must be a positive integer; using default/,
+          ).to_stderr
+        end
+      end
+    end
+
+    [["64", "32"], [nil, "32"], ["8193", nil]].each do |batch, queue|
+      it "falls back to both defaults when batch #{batch.inspect} exceeds queue #{queue.inspect}" do
+        allow(ENV).to receive(:[]).with(batch_env).and_return(batch)
+        allow(ENV).to receive(:[]).with(queue_env).and_return(queue)
+        expect_test_processor(batch: 256, queue: 8_192)
+
+        expect { configure_and_export_test }.to output(
+          /\[buildkite-test_collector\] #{batch_env} must be <= #{queue_env}; using defaults/,
+        ).to_stderr
+      end
+    end
+  end
+
   it "starts the test span as a trace root and links it to the Agent job trace" do
     exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
@@ -654,6 +749,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
         max_queue_size: described_class::TEST_SPAN_MAX_QUEUE_SIZE,
         max_export_batch_size: described_class::TEST_SPAN_MAX_EXPORT_BATCH_SIZE,
         schedule_delay: described_class::TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS,
+        exporter_timeout: described_class::PROCESSOR_TIMEOUT_SECONDS * 1_000,
+        start_thread_on_boot: true,
         metrics_reporter: an_instance_of(test_span_reporter),
       )
       .ordered

@@ -168,5 +168,72 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
       expect(trace.otel_failure_reason).to be_nil
       expect(trace.otel_exception_events).to eq([])
     end
+
+    {
+      "exception.message" => [:expanded, 10_240],
+      "exception.stacktrace" => [:backtrace, 16_384],
+      "status description" => [nil, 1_024],
+    }.each do |field, (key, limit)|
+      context "with #{field}" do
+        let(:failure_value) do
+          key ? trace.otel_exception_events.first.fetch(field) : trace.otel_failure_reason
+        end
+
+        it "preserves content at the #{limit}-character boundary" do
+          original = "界" * limit
+          trace.failure_reason = original
+          trace.failure_expanded = [{ key => [original] }] if key
+
+          expect(failure_value).to eq(original)
+        end
+
+        it "caps content at #{limit} characters, including the visible marker" do
+          original = "😀" * (limit + 1)
+          trace.failure_reason = original
+          trace.failure_expanded = [{ key => [original] }] if key
+          marker = "… [truncated by buildkite-test_collector]"
+
+          value = failure_value
+
+          expect(value.length).to eq(limit)
+          expect(value).to eq("😀" * (limit - marker.length) + marker)
+          expect(value).to be_valid_encoding
+          expect(trace.failure_reason).to eq(original)
+          expect(trace.failure_expanded).to eq([{ key => [original] }]) if key
+        end
+
+        it "replaces invalid UTF-8 before applying the limit" do
+          original = "\xC8" + "a" * (limit - 1)
+          trace.failure_reason = original
+          trace.failure_expanded = [{ key => [original] }] if key
+
+          expect(failure_value).to eq("�" + "a" * (limit - 1))
+          expect(failure_value).to be_valid_encoding
+        end
+      end
+    end
+
+    it "keeps only the first 100 nonempty exception events" do
+      trace.failure_expanded = [{ expanded: [] }] + Array.new(101) do |i|
+        { expanded: ["failure #{i}"] }
+      end
+
+      expect(trace.otel_exception_events).to eq(
+        Array.new(100) { |i| { "exception.message" => "failure #{i}" } },
+      )
+      expect(trace.failure_expanded.length).to eq(102)
+    end
+
+    it "keeps the default single-failure batch estimate below ingestion's decoded limit" do
+      # Ingestion silently drops an entire request above 8 MiB decoded protobuf,
+      # even when the gzip body fits at the edge. Allow ~2 KiB for attributes,
+      # status and protobuf overhead per span. This is an ASCII, one-exception
+      # estimate, not a byte guarantee for Unicode, many events or large tags.
+      bytes_per_span = described_class::OTEL_EXCEPTION_MESSAGE_MAX_LENGTH +
+        described_class::OTEL_EXCEPTION_STACKTRACE_MAX_LENGTH + 2 * 1_024
+      batch_size = Buildkite::TestCollector::OTel::TEST_SPAN_MAX_EXPORT_BATCH_SIZE
+
+      expect(batch_size * bytes_per_span).to be <= 8 * 1_024 * 1_024
+    end
   end
 end

@@ -26,8 +26,10 @@ module Buildkite::TestCollector
     TRACER_NAME = "buildkite-test-collector"
 
     TEST_SPAN_NAME = "test.execution"
+    # Smaller batches leave room for failure detail under ingestion's decoded
+    # request limit and share its per-request backtrace budget among fewer tests.
     TEST_SPAN_MAX_QUEUE_SIZE = 8_192
-    TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 512
+    TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 256
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
 
     require_relative "otel/test_span_metrics_reporter"
@@ -238,12 +240,26 @@ module Buildkite::TestCollector
 
       def build_test_span_provider(endpoint, headers, resource)
         @test_span_metrics_reporter = TestSpanMetricsReporter.new
+        queue_size = positive_integer_env("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE", TEST_SPAN_MAX_QUEUE_SIZE)
+        batch_size = positive_integer_env("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE", TEST_SPAN_MAX_EXPORT_BATCH_SIZE)
+        if batch_size > queue_size
+          warn "[buildkite-test_collector] BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
+            "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults " \
+            "(batch #{TEST_SPAN_MAX_EXPORT_BATCH_SIZE}, queue #{TEST_SPAN_MAX_QUEUE_SIZE})"
+          queue_size = TEST_SPAN_MAX_QUEUE_SIZE
+          batch_size = TEST_SPAN_MAX_EXPORT_BATCH_SIZE
+        end
+
+        # Explicit options isolate test submissions from OTEL_BSP_* settings
+        # intended for the suite's instrumented child spans.
         test_span_processor = batch_processor(
           endpoint,
           headers,
-          max_queue_size: TEST_SPAN_MAX_QUEUE_SIZE,
-          max_export_batch_size: TEST_SPAN_MAX_EXPORT_BATCH_SIZE,
+          max_queue_size: queue_size,
+          max_export_batch_size: batch_size,
           schedule_delay: TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS,
+          exporter_timeout: PROCESSOR_TIMEOUT_SECONDS * 1_000,
+          start_thread_on_boot: true,
           metrics_reporter: @test_span_metrics_reporter,
         )
         test_span_provider = OpenTelemetry::SDK::Trace::TracerProvider.new(
@@ -256,6 +272,15 @@ module Buildkite::TestCollector
       rescue StandardError
         stop_processor(test_span_processor)
         raise
+      end
+
+      def positive_integer_env(name, default)
+        value = ENV[name]
+        return default if value.nil?
+        return value.to_i if value.match?(/\A[0-9]+\z/) && value.to_i.positive?
+
+        warn "[buildkite-test_collector] #{name} must be a positive integer; using default #{default}"
+        default
       end
 
       def batch_processor(endpoint, headers, metrics_reporter: nil, **processor_options)

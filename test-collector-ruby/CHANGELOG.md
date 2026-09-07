@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+* Bound experimental RSpec OpenTelemetry failure detail: 10,240 characters per
+  exception message, 16,384 per stacktrace, 100 exception events per span, and
+  1,024 characters for the status description. Truncated text ends with
+  `… [truncated by buildkite-test_collector]`, included in each character limit.
+* Reduce the default test-span export batch from 512 to 256 to leave more room
+  under ingestion's decoded request and backtrace budgets. Add positive-integer
+  `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE` and
+  `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE` overrides (defaults 256 and
+  8192); invalid values warn and fall back without disabling export.
 * **Breaking change to the experimental OpenTelemetry support:** opt-in
   submission is now OTLP-only for RSpec. `otel_enabled: true` submits executions
   as spans without also uploading legacy JSON, and the separate `otel_only`

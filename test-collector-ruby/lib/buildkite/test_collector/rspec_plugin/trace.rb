@@ -14,6 +14,14 @@ module Buildkite::TestCollector::RSpecPlugin
 
     FILE_PATH_REGEX = /^(.*?\.(rb|feature))/
 
+    # Character limits (including the marker), not byte limits. Keep failure
+    # payloads bounded without splitting UTF-8 characters; JSON is unchanged.
+    OTEL_EXCEPTION_MESSAGE_MAX_LENGTH = 10_240
+    OTEL_EXCEPTION_STACKTRACE_MAX_LENGTH = 16_384
+    OTEL_STATUS_DESCRIPTION_MAX_LENGTH = 1_024
+    OTEL_EXCEPTION_MAX_EVENTS = 100
+    OTEL_TRUNCATION_MARKER = "… [truncated by buildkite-test_collector]"
+
     def initialize(example, history:, failure_reason: nil, failure_expanded: [], tags: nil, location_prefix: nil, external_id: nil)
       @example = example
       @history = history
@@ -55,21 +63,28 @@ module Buildkite::TestCollector::RSpecPlugin
     end
 
     def otel_failure_reason
-      strip_invalid_utf8_chars(failure_reason) if failure_reason
+      otel_truncate(failure_reason, OTEL_STATUS_DESCRIPTION_MAX_LENGTH) if failure_reason
     end
 
     def otel_exception_events
-      (failure_expanded || []).filter_map do |failure|
+      (failure_expanded || []).lazy.filter_map do |failure|
         message = Array(failure[:expanded]).join("\n")
         stacktrace = Array(failure[:backtrace]).join("\n")
         attributes = {}
-        attributes["exception.message"] = strip_invalid_utf8_chars(message) unless message.empty?
-        attributes["exception.stacktrace"] = strip_invalid_utf8_chars(stacktrace) unless stacktrace.empty?
+        attributes["exception.message"] = otel_truncate(message, OTEL_EXCEPTION_MESSAGE_MAX_LENGTH) unless message.empty?
+        attributes["exception.stacktrace"] = otel_truncate(stacktrace, OTEL_EXCEPTION_STACKTRACE_MAX_LENGTH) unless stacktrace.empty?
         attributes unless attributes.empty?
-      end
+      end.take(OTEL_EXCEPTION_MAX_EVENTS).to_a
     end
 
     private
+
+    def otel_truncate(value, limit)
+      value = strip_invalid_utf8_chars(value)
+      return value if value.length <= limit
+
+      value[0, limit - OTEL_TRUNCATION_MARKER.length] + OTEL_TRUNCATION_MARKER
+    end
 
     # Shared examples report the location of the shared block, so use the call
     # site instead, the same way file_name does.
