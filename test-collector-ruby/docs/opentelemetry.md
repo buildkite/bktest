@@ -264,6 +264,11 @@ specification. URLs are compared by scheme, host, port, and path, ignoring a
 trailing slash. This allows bktec to supply relay credentials without sending
 unrelated process-wide tracing credentials to Buildkite. When the endpoints do
 not match, the collector ignores the standard headers and warns once.
+For direct export, use
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://tests-otlp.buildkite.com/v1/traces`
+or `OTEL_EXPORTER_OTLP_ENDPOINT=https://tests-otlp.buildkite.com` (without the
+trace path). For a relay, both the collector destination and the standard
+endpoint must identify that relay.
 
 When standard headers do apply, they take precedence over collector headers.
 Header names are matched case-insensitively, so a standard `authorization`
@@ -284,13 +289,17 @@ exported and `otel_enabled` is left off for the run, so a suite that hard-codes
 `otel_enabled: true` stays quiet on a developer machine. This matches the JSON
 path, which does not upload without a token.
 
-The exporter honours `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` and
-`OTEL_EXPORTER_OTLP_TIMEOUT`. For reliable and isolated Buildkite submission,
+The exporter's default timeout still comes from
+`OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` or `OTEL_EXPORTER_OTLP_TIMEOUT`; the batch
+processor supplies its own timeout when exporting, including the remaining
+suite-end flush budget. For isolated Buildkite submission,
 the collector pins compression to gzip and ignores the standard
 `OTEL_EXPORTER_OTLP_*_COMPRESSION`, `*_CERTIFICATE`, `*_CLIENT_CERTIFICATE`, and
 `*_CLIENT_KEY` settings. Buildkite export therefore uses the system certificate
 store and no client certificate, even when the process configures compression,
-a custom CA, or mTLS for another OpenTelemetry destination.
+a custom CA, or mTLS for another OpenTelemetry destination. HTTPS peer
+verification is always enabled: `OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_NONE`
+cannot disable it, and `OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_PEER` is not consulted.
 
 OpenTelemetry's SDK owns batching, retries, and transport. `test.execution`
 spans have a reserved, faster-draining queue and exporter. Forwarded children

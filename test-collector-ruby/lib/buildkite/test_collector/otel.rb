@@ -270,6 +270,7 @@ module Buildkite::TestCollector
           certificate_file: nil,
           client_certificate_file: nil,
           client_key_file: nil,
+          ssl_verify_mode: OpenSSL::SSL::VERIFY_PEER,
           metrics_reporter: metrics_reporter,
         )
         # Retained so refresh_authorization can reach the headers each
@@ -655,7 +656,8 @@ module Buildkite::TestCollector
 
         @ignored_otlp_headers_warning_emitted = true
         warn "[buildkite-test_collector] Standard OpenTelemetry exporter headers are ignored for the Buildkite endpoint; " \
-          "set OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT to the Buildkite endpoint to use them."
+          "to use them, set OTEL_EXPORTER_OTLP_TRACES_ENDPOINT to the collector's full endpoint, " \
+          "or OTEL_EXPORTER_OTLP_ENDPOINT to its base URL without /v1/traces."
       end
 
       def authorization_header(api_token)

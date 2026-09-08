@@ -9,6 +9,8 @@
 * Pin OpenTelemetry export to gzip compression and the system certificate store
   without a client certificate, so process-wide exporter compression, custom
   CA, and mTLS settings for another destination cannot affect Buildkite export.
+  HTTPS peer verification cannot be disabled by the Ruby exporter's environment
+  switches.
 * **Breaking change to the experimental OpenTelemetry support:** opt-in
   submission is now OTLP-only for RSpec. `otel_enabled: true` submits executions
   as spans without also uploading legacy JSON, and the separate `otel_only`

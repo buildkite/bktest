@@ -600,6 +600,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
   end
 
   it "ignores standard OTLP headers for a different endpoint and warns once" do
+    previous = described_class.instance_variable_get(:@ignored_otlp_headers_warning_emitted)
     allow(ENV).to receive(:[]).and_call_original
     allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").and_return(nil)
     allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -619,8 +620,14 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     expect(@headers).to include("Authorization" => %(Token token="suite-token"))
     expect(@headers.keys).not_to include("authorization")
+    expect do
+      2.times { described_class.configure!(api_token: "suite-token") }
+      described_class.shutdown
+      described_class.configure!(api_token: "suite-token")
+    end.not_to output.to_stderr
   ensure
-    described_class.instance_variable_set(:@ignored_otlp_headers_warning_emitted, nil)
+    described_class.shutdown
+    described_class.instance_variable_set(:@ignored_otlp_headers_warning_emitted, previous)
   end
 
   it "does not treat standard OTLP headers for a different endpoint as collector credentials" do
@@ -676,6 +683,60 @@ RSpec.describe Buildkite::TestCollector::OTel do
   ensure
     processor&.shutdown
     described_class.instance_variable_set(:@exporters, nil)
+  end
+
+  it "isolates both exporters from vendor endpoints, compression, certificates, and TLS verification switches" do
+    previous = described_class.instance_variable_get(:@ignored_otlp_headers_warning_emitted)
+    allow(ENV).to receive(:[]).and_call_original
+    %w[OTEL_EXPORTER_OTLP OTEL_EXPORTER_OTLP_TRACES].each do |prefix|
+      allow(ENV).to receive(:[]).with("#{prefix}_ENDPOINT").and_return("https://vendor.example/v1/traces")
+      allow(ENV).to receive(:[]).with("#{prefix}_COMPRESSION").and_return("unsupported")
+      %w[CERTIFICATE CLIENT_CERTIFICATE CLIENT_KEY].each do |suffix|
+        allow(ENV).to receive(:[]).with("#{prefix}_#{suffix}").and_return("/nonexistent")
+      end
+    end
+    allow(ENV).to receive(:key?).and_call_original
+    allow(ENV).to receive(:key?).with("OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_PEER").and_return(false)
+    allow(ENV).to receive(:key?).with("OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_NONE").and_return(true)
+
+    described_class.configure!(endpoint: described_class::DEFAULT_ENDPOINT)
+    exporters = described_class.instance_variable_get(:@exporters)
+    expect(exporters.length).to eq(2)
+    exporters.each do |exporter|
+      expect(exporter.instance_variable_get(:@uri).to_s).to eq(described_class::DEFAULT_ENDPOINT)
+      expect(exporter.instance_variable_get(:@compression)).to eq("gzip")
+      http = exporter.instance_variable_get(:@http)
+      expect(http.ca_file).to be_nil
+      expect(http.cert).to be_nil
+      expect(http.key).to be_nil
+      expect(http.verify_mode).to eq(OpenSSL::SSL::VERIFY_PEER)
+    end
+  ensure
+    described_class.shutdown
+    described_class.instance_variable_set(:@ignored_otlp_headers_warning_emitted, previous)
+  end
+
+  it "applies the same endpoint comparison to header parsing and credential detection" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return("Authorization=Bearer%20relay")
+    allow(described_class).to receive(:warn_ignored_otlp_headers)
+    [
+      ["HTTPS://TESTS-OTLP.BUILDKITE.COM:443/v1/traces/", nil, true],
+      ["https://tests-otlp.buildkite.com:444/v1/traces", nil, false],
+      ["http://tests-otlp.buildkite.com/v1/traces", nil, false],
+      ["https://tests-otlp.buildkite.com/v1/uploads", nil, false],
+      [nil, "https://tests-otlp.buildkite.com/", true],
+      ["", "https://tests-otlp.buildkite.com:443", true],
+      [nil, "https://tests-otlp.buildkite.com/v1/traces", false],
+      ["not a URL", "https://tests-otlp.buildkite.com", false],
+      [nil, nil, false],
+    ].each do |traces_endpoint, generic_endpoint, matches|
+      allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").and_return(traces_endpoint)
+      allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_ENDPOINT").and_return(generic_endpoint)
+      expect(described_class.headers_from_environment?(endpoint: described_class::DEFAULT_ENDPOINT)).to eq(matches)
+      headers = described_class.send(:otlp_headers_from_environment, described_class::DEFAULT_ENDPOINT)
+      expect(headers).to eq(matches ? { "Authorization" => "Bearer relay" } : {})
+    end
   end
 
   it "uses an AlwaysOn sampler, process-safe random IDs, and the producer resource for test spans" do
