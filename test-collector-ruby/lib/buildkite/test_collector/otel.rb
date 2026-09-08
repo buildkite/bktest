@@ -388,7 +388,9 @@ module Buildkite::TestCollector
         return unless defined?(::WebMock)
 
         config = ::WebMock::Config.instance
-        config.allow = Array(config.allow) << URI(endpoint).host
+        # Array() returns an existing Array itself, and suites commonly pass a
+        # frozen constant to disable_net_connect!, so build a new list.
+        config.allow = Array(config.allow) + [URI(endpoint).host]
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not exempt the OTLP endpoint from WebMock: #{e.class}: #{e.message}"

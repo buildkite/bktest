@@ -1145,8 +1145,14 @@ RSpec.describe Buildkite::TestCollector::OTel do
   end
 
   describe "WebMock exemption" do
-    ["customer.example", ["customer.example"], /customer\.example/, nil].each do |allowed|
-      it "preserves a #{allowed.class} allow list when exempting the OTLP endpoint" do
+    {
+      "String" => "customer.example",
+      "Array" => ["customer.example"],
+      "frozen Array" => %w[customer.example].freeze,
+      "Regexp" => /customer\.example/,
+      "nil" => nil,
+    }.each do |description, allowed|
+      it "preserves a #{description} allow list when exempting the OTLP endpoint" do
         config = WebMock::Config.instance
         previous = [config.allow, config.allow_net_connect]
         WebMock.disable_net_connect!(allow: allowed)
