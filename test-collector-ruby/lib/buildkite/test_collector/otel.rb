@@ -39,15 +39,11 @@ module Buildkite::TestCollector
     end
     private_constant :ExceptionHandling
 
-    # The SDK only rescues StandardError in its batch worker. Guard export on
-    # our exporter instances, not globally, so a network-blocking Exception
-    # returns a failed batch instead of permanently killing either worker.
-    # A blocked endpoint fails every batch the same way, about once a second,
-    # so each exception class is named once; the dropped-span totals keep
-    # counting every batch.
-    module ExportErrorHandling
+    # BatchSpanProcessor#export_batch only rescues StandardError; a non-fatal
+    # Exception must fail the batch without terminating its worker.
+    module ExporterGuard
       @mutex = Mutex.new
-      @warned = {}
+      @warned_exception_classes = {}
 
       def export(spans, timeout: nil)
         super
@@ -56,14 +52,16 @@ module Buildkite::TestCollector
         # Mirror the exporter's own accounting for failures it detects, so the
         # dropped-span report can name this cause too.
         @metrics_reporter&.add_to_counter("otel.otlp_exporter.failure", labels: { "reason" => e.class.to_s })
-        ExportErrorHandling.warn_once(e)
+        ExporterGuard.warn_once(e)
         OpenTelemetry::SDK::Trace::Export::FAILURE
       end
 
       class << self
         def warn_once(exception)
-          first = @mutex.synchronize { @warned[exception.class] = true unless @warned.key?(exception.class) }
-          return unless first
+          first_failure = @mutex.synchronize do
+            @warned_exception_classes[exception.class] = true unless @warned_exception_classes.key?(exception.class)
+          end
+          return unless first_failure
 
           # WebMock's message includes the request body and Authorization header.
           warn "[buildkite-test_collector] Could not export OpenTelemetry spans: #{exception.class}. " \
@@ -71,11 +69,11 @@ module Buildkite::TestCollector
         end
 
         def reset
-          @mutex.synchronize { @warned.clear }
+          @mutex.synchronize { @warned_exception_classes.clear }
         end
       end
     end
-    private_constant :ExportErrorHandling
+    private_constant :ExporterGuard
 
     require_relative "otel/test_span_metrics_reporter"
     require_relative "otel/span_filter"
@@ -273,7 +271,7 @@ module Buildkite::TestCollector
         @child_span_processor = nil
         @child_span_forwarder = nil
         @exporters = nil
-        ExportErrorHandling.reset
+        ExporterGuard.reset
         @test_span_metrics_reporter = nil
         @api_token = nil
         @authorization_from_environment = nil
@@ -326,7 +324,7 @@ module Buildkite::TestCollector
           headers: headers,
           metrics_reporter: metrics_reporter,
         )
-        exporter.singleton_class.prepend(ExportErrorHandling)
+        exporter.singleton_class.prepend(ExporterGuard)
         # Retained so refresh_authorization can reach the headers each
         # exporter snapshotted at construction.
         (@exporters ||= []) << exporter
@@ -379,14 +377,8 @@ module Buildkite::TestCollector
         warn "[buildkite-test_collector] Could not refresh the OTLP Authorization header: #{e.class}: #{e.message}"
       end
 
-      # Test suites that stub HTTP with VCR would otherwise intercept our
-      # span export and fail the run (or record it into a cassette). VCR's
-      # ignore_request hooks are additive, so this exempts exactly one
-      # request shape - a POST to the configured OTLP endpoint - and leaves
-      # the suite's network policy otherwise untouched. This runs from
-      # RSpec's before(:suite), after the consumer's own VCR configuration
-      # has loaded. WebMock's allow list is also additive when its existing
-      # entries are retained.
+      # VCR's additive ignore_request hook keeps collector traffic out of
+      # cassettes without replacing the suite's network policy.
       def exempt_from_vcr(endpoint)
         return unless defined?(::VCR)
 

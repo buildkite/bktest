@@ -295,50 +295,51 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.instance_variable_set(:@child_span_processor, nil)
   end
 
-  it "warns instead of propagating an Exception from force flush" do
-    exporter_error = Class.new(Exception)
-    test_span_provider = double("execution provider")
-    allow(test_span_provider).to receive(:force_flush).and_raise(exporter_error, "network blocked")
-    described_class.instance_variable_set(:@test_span_provider, test_span_provider)
+  describe "exceptions at exporter and provider boundaries" do
+    let(:test_span_provider) { double("test span provider", tracer: double("tracer"), shutdown: nil) }
+    let(:exporter_error) { Class.new(Exception) }
 
-    expect { described_class.force_flush }
-      .to output(/Could not flush OpenTelemetry spans: .*network blocked/).to_stderr
-  ensure
-    described_class.instance_variable_set(:@test_span_provider, nil)
-  end
+    before do
+      allow(described_class).to receive(:build_test_span_provider).and_return(test_span_provider)
+      allow(described_class).to receive(:configure_child_export)
+      described_class.configure!(endpoint: "https://example.invalid/v1/traces", run_env: { "key" => "run-123" })
+    end
 
-  it "warns instead of propagating an Exception from shutdown" do
-    exporter_error = Class.new(Exception)
-    test_span_provider = double("execution provider")
-    allow(test_span_provider).to receive(:shutdown).and_raise(exporter_error, "network blocked")
-    described_class.instance_variable_set(:@test_span_provider, test_span_provider)
+    after { described_class.shutdown }
 
-    expect { described_class.shutdown }
-      .to output(/Could not shut down OpenTelemetry span export: .*network blocked/).to_stderr
-  end
+    it "warns instead of propagating a non-fatal Exception from force flush" do
+      allow(test_span_provider).to receive(:force_flush).and_raise(exporter_error, "network blocked")
 
-  [SystemExit.new(1), Interrupt.new, SignalException.new("TERM"), NoMemoryError.new].each do |fatal|
-    it "re-raises #{fatal.class} from export and lifecycle boundaries" do
-      exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(endpoint: "https://example.invalid/v1/traces")
-      allow(exporter).to receive(:export).and_raise(fatal)
-      allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(exporter)
-      processor = described_class.send(:batch_processor, "https://example.invalid/v1/traces", {})
-      expect { exporter.export([]) }.to raise_error(fatal.class)
+      expect { described_class.force_flush }
+        .to output(/Could not flush OpenTelemetry spans: .*network blocked/).to_stderr
+    end
 
-      provider = double("execution provider")
-      allow(provider).to receive(:force_flush).and_raise(fatal)
-      allow(provider).to receive(:shutdown).and_raise(fatal)
-      described_class.instance_variable_set(:@test_span_provider, provider)
-      expect { described_class.force_flush }.to raise_error(fatal.class)
-      expect { described_class.shutdown }.to raise_error(fatal.class)
-    ensure
-      described_class.instance_variable_set(:@test_span_provider, nil)
-      processor&.shutdown
-      described_class.shutdown
+    it "warns instead of propagating a non-fatal Exception from shutdown" do
+      allow(test_span_provider).to receive(:shutdown).and_raise(exporter_error, "network blocked")
+
+      expect { described_class.shutdown }
+        .to output(/Could not shut down OpenTelemetry span export: .*network blocked/).to_stderr
+    end
+
+    [SystemExit.new(1), Interrupt.new, SignalException.new("TERM"), NoMemoryError.new].each do |fatal|
+      it "re-raises #{fatal.class} from export and lifecycle boundaries" do
+        exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(endpoint: "https://example.invalid/v1/traces")
+        allow(exporter).to receive(:export).and_raise(fatal)
+        allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(exporter)
+        processor = described_class.send(:batch_processor, "https://example.invalid/v1/traces", {})
+        expect { exporter.export([]) }.to raise_error(fatal.class)
+
+        allow(test_span_provider).to receive(:force_flush).and_raise(fatal)
+        allow(test_span_provider).to receive(:shutdown).and_raise(fatal)
+        expect { described_class.force_flush }.to raise_error(fatal.class)
+        expect { described_class.shutdown }.to raise_error(fatal.class)
+      ensure
+        processor&.shutdown
+      end
     end
   end
 
-  it "names each non-fatal export exception class once and fails the batch" do
+  it "names each non-fatal export exception class once, fails the batch, and records its cause" do
     blocked = stub_const("SuiteNetworkBlocked", Class.new(Exception))
     reporter = described_class.const_get(:TestSpanMetricsReporter).new
     exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(endpoint: "https://example.invalid/v1/traces", metrics_reporter: reporter)
@@ -353,8 +354,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(results).to all(eq(OpenTelemetry::SDK::Trace::Export::FAILURE))
     expect { exporter.export([]) }.not_to output.to_stderr
 
-    # The exception bypasses the exporter's own failure accounting, so the
-    # dropped-span report would otherwise not say why the batch was lost.
     expect { reporter.add_to_counter("otel.bsp.dropped_spans", increment: 2, labels: { "reason" => "export-failure" }) }
       .to output(/TEST RESULTS MISSING.*\(export-failure, last OTLP failure: SuiteNetworkBlocked\)/).to_stderr
 
@@ -365,7 +364,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.shutdown
   end
 
-  it "keeps both batch workers alive after WebMock blocks an export" do
+  it "recovers both batch workers after a WebMock policy reset and tolerates blocked exports at exit" do
     script = <<~'RUBY'
       require "buildkite/test_collector"
       require "opentelemetry/sdk"
@@ -378,7 +377,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
       otel = Buildkite::TestCollector::OTel
       endpoint = "https://example.invalid/v1/traces"
       otel.configure!(endpoint: endpoint)
-      # Suites can replace their network policy after before(:suite).
       WebMock.disable_net_connect!
       test = Struct.new(:otel_attributes, :otel_result).new({}, "passed")
       root = otel.start_test_span(test: test)
@@ -407,7 +405,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
       otel.finish_test_span(root, test: test)
       otel.force_flush
       assert_requested(:post, endpoint, times: 2)
-      # Leave a blocked request for the real at_exit handler, too.
       WebMock.reset!
       otel.finish_test_span(otel.start_test_span(test: test), test: test)
       puts "workers recovered"
