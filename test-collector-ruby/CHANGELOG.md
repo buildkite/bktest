@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+* Reduce the experimental OpenTelemetry test span batch size from 512 to 240
+  to reduce export payload sizes.
+* Allow test span batch and queue sizes to be configured with
+  `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE` and
+  `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE`. Invalid settings warn and
+  fall back to defaults.
+* Limit OpenTelemetry test span attribute values to 4,096 characters, event
+  attribute values to 16,384 characters, and events to the newest 100 per span
+  using the SDK's span limits. Longer values are truncated by the SDK.
 * **Breaking change to the experimental OpenTelemetry support:** opt-in
   submission is now OTLP-only for RSpec. `otel_enabled: true` submits executions
   as spans without also uploading legacy JSON, and the separate `otel_only`

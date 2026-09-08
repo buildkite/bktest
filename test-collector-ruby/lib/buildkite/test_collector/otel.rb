@@ -27,8 +27,11 @@ module Buildkite::TestCollector
 
     TEST_SPAN_NAME = "test.execution"
     TEST_SPAN_MAX_QUEUE_SIZE = 8_192
-    TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 512
+    TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 240
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
+    TEST_SPAN_ATTRIBUTE_LENGTH_LIMIT = 4_096
+    TEST_SPAN_EVENT_ATTRIBUTE_LENGTH_LIMIT = 16_384
+    TEST_SPAN_EVENT_COUNT_LIMIT = 100
 
     require_relative "otel/test_span_metrics_reporter"
     require_relative "otel/span_filter"
@@ -237,25 +240,52 @@ module Buildkite::TestCollector
       end
 
       def build_test_span_provider(endpoint, headers, resource)
+        max_queue_size = span_processor_config_value("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE", default: TEST_SPAN_MAX_QUEUE_SIZE)
+        max_export_batch_size = span_processor_config_value("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE", default: TEST_SPAN_MAX_EXPORT_BATCH_SIZE)
+        if max_export_batch_size > max_queue_size
+          warn "[buildkite-test_collector] BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
+            "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults " \
+            "(batch #{TEST_SPAN_MAX_EXPORT_BATCH_SIZE}, queue #{TEST_SPAN_MAX_QUEUE_SIZE})"
+          max_queue_size = TEST_SPAN_MAX_QUEUE_SIZE
+          max_export_batch_size = TEST_SPAN_MAX_EXPORT_BATCH_SIZE
+        end
+
         @test_span_metrics_reporter = TestSpanMetricsReporter.new
         test_span_processor = batch_processor(
           endpoint,
           headers,
-          max_queue_size: TEST_SPAN_MAX_QUEUE_SIZE,
-          max_export_batch_size: TEST_SPAN_MAX_EXPORT_BATCH_SIZE,
+          max_queue_size: max_queue_size,
+          max_export_batch_size: max_export_batch_size,
           schedule_delay: TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS,
+          start_thread_on_boot: true,
           metrics_reporter: @test_span_metrics_reporter,
         )
         test_span_provider = OpenTelemetry::SDK::Trace::TracerProvider.new(
           sampler: OpenTelemetry::SDK::Trace::Samplers::ALWAYS_ON,
           id_generator: SecureRandomIdGenerator,
           resource: resource,
+          # Lengths are characters, not bytes; explicit limits isolate test spans
+          # from the customer's OTEL_SPAN_* environment settings.
+          span_limits: OpenTelemetry::SDK::Trace::SpanLimits.new(
+            attribute_length_limit: TEST_SPAN_ATTRIBUTE_LENGTH_LIMIT,
+            event_attribute_length_limit: TEST_SPAN_EVENT_ATTRIBUTE_LENGTH_LIMIT,
+            event_count_limit: TEST_SPAN_EVENT_COUNT_LIMIT,
+          ),
         )
         test_span_provider.add_span_processor(test_span_processor)
         test_span_provider
       rescue StandardError
         stop_processor(test_span_processor)
         raise
+      end
+
+      def span_processor_config_value(name, default:)
+        value = ENV[name]
+        return default if value.nil?
+        return value.to_i if value.ascii_only? && value.match?(/\A[0-9]+\z/) && value.to_i.positive?
+
+        warn "[buildkite-test_collector] #{name} must be a positive integer, using default #{default}"
+        default
       end
 
       def batch_processor(endpoint, headers, metrics_reporter: nil, **processor_options)
