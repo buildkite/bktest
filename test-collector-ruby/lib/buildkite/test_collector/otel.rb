@@ -30,6 +30,9 @@ module Buildkite::TestCollector
     # request limit and share its per-request backtrace budget among fewer tests.
     TEST_SPAN_MAX_QUEUE_SIZE = 8_192
     TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 256
+    # 256 * (26 KiB exception payload + 1 KiB status + 2 KiB overhead)
+    # = 7.25 MiB, below the 8 MiB decoded ingestion limit.
+    TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT = 256
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
 
     require_relative "otel/test_span_metrics_reporter"
@@ -242,6 +245,12 @@ module Buildkite::TestCollector
         @test_span_metrics_reporter = TestSpanMetricsReporter.new
         queue_size = positive_integer_env("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE", TEST_SPAN_MAX_QUEUE_SIZE)
         batch_size = positive_integer_env("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE", TEST_SPAN_MAX_EXPORT_BATCH_SIZE)
+        if batch_size > TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT
+          warn "[buildkite-test_collector] BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE exceeds " \
+            "#{TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT}, clamping to #{TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT} " \
+            "to stay under the 8 MiB ingestion limit"
+          batch_size = TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT
+        end
         if batch_size > queue_size
           warn "[buildkite-test_collector] BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
             "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults " \

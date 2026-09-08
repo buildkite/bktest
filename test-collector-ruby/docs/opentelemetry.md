@@ -299,15 +299,31 @@ The RSpec plugin limits the failure detail sent on each test span:
 
 | Field | Limit |
 | --- | --- |
-| `exception.message` | 10,240 characters per event |
-| `exception.stacktrace` | 16,384 characters per event |
-| `exception` events | first 100 nonempty events per span |
-| Span status description | 1,024 characters |
+| `exception.message` | 10,240 bytes per event |
+| `exception.stacktrace` | 16,384 bytes per event |
+| Combined exception detail | 26 KiB per span, shared across events |
+| `exception` events | at most 100 events per span, including the omission summary |
+| Span status description | 1,024 bytes |
 
 Text exceeding a limit is truncated on a character boundary and ends with
-`… [truncated by buildkite-test_collector]`. The marker counts toward the limit.
+`… [truncated by buildkite-test_collector]`. The marker's bytes count toward the
+limit, including the three-byte ellipsis. Invalid UTF-8 is replaced before
+truncation, and the result remains valid UTF-8.
 These limits apply only to the experimental RSpec OpenTelemetry path; legacy
 JSON failure detail is unchanged.
+
+The first exception can use the full 10 KiB message and 16 KiB stacktrace
+allowance. Later events share what remains, reserving 128 bytes per additional
+event for protobuf framing so many small failures cannot bypass the budget.
+The next event is truncated to fit, preferring its message, if a marker and
+some content fit; otherwise collection stops. A final message-only exception
+event says `<N> more failures omitted by buildkite-test_collector`. It counts
+unvisited failure records, not partially retained events; its bytes are covered
+by the separate span-overhead allowance below. RSpec supplies an array, so the
+count does not require reading the omitted detail. Unsized lazy enumerators
+use `More failures omitted by buildkite-test_collector` rather than consuming
+their tail to count it. If necessary, the summary replaces the 100th detail
+event to keep the total at 100.
 
 The reserved test-span queue defaults to 8,192 spans, exporting at most **256**
 spans per batch with a one-second schedule delay. Configure sizes before the
@@ -320,24 +336,30 @@ collector first starts exporting:
 
 Values must contain only decimal digits and be positive integers. Invalid
 values (including empty strings) warn with `[buildkite-test_collector]` and
-fall back to the corresponding default. If the resulting batch exceeds the
-queue, both sizes fall back to their defaults with a warning; a bad override
+fall back to the corresponding default. A batch override above 256 warns once
+and is clamped to 256; the queue override is not clamped. If the resulting batch
+exceeds the queue, both sizes fall back to their defaults with a warning; a bad override
 never disables test export. Test-span processor options are explicit, so
 `OTEL_BSP_*` settings do not affect this queue; child spans keep SDK settings.
 
-The defaults leave room below 8 MiB for typical single-failure, mostly ASCII
-spans, not every possible payload. Multiple exception events, multibyte text,
-large attributes, or larger batch overrides can still exceed the decoded limit.
-For example, just four spans with 100 near-limit exception events each can
-exceed 10 MiB decoded and lose every execution in the request. The character
-limits are not a per-request byte budget or a guarantee of root-span delivery.
+Under the 2 KiB per-span overhead assumption, a full batch of 256 test spans
+encodes to at most **~7.3 MiB**, under the 8 MiB ingestion limit:
+256 × (26 KiB event budget + 1 KiB status + 2 KiB overhead) = 7.25 MiB.
+This bound applies to multibyte text and aggregate failures, not just a single
+ASCII failure. The remaining assumption is that other span fields, attributes,
+resource, first-event framing and the omission summary fit within 2 KiB per
+span. `script/payload_size.rb` measures **1,848 bytes** for that overhead with
+realistic span fields and near-limit aggregate failures (1,796 excluding the
+omission message). Additional-event framing is reserved within the event budget.
+Arbitrary large tags, names, resource attributes or user-added annotations can
+violate this assumption; the collector does not impose a serialized request cap.
 Incompressible failure content can still exceed 900 KiB gzipped at any batch
 size; reducing the batch is not a guarantee that a request fits.
 
 Test Engine's per-request backtrace budget is 1 MiB / 10,000 lines, shared
 first-come across spans. At 16 KiB of ASCII stacktrace per execution, the byte
 budget covers only about **64 executions per request**, and fewer with
-multibyte text or multiple events. Shorter backtraces fit more executions;
+multiple stacktrace events. Shorter backtraces fit more executions;
 the line budget can run out first. Smaller batches share that budget among
 fewer executions. Use RSpec's backtrace filtering to remove framework and
 dependency noise: the collector honours RSpec's already-filtered backtraces.

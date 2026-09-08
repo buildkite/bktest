@@ -5,12 +5,14 @@
 # Run from test-collector-ruby after bundle install:
 #   bundle exec ruby script/payload_size.rb
 #   bundle exec ruby script/payload_size.rb --spans 128 --backtrace-lines 170 --message-bytes 20480
-# Defaults to the shipped batch size and five representative rows. Supplying
+# Defaults to the shipped batch size and representative rows. Supplying
 # either failure option selects one custom failing row (the other defaults to
 # 100 lines / 10 KiB). Message bytes are exact ASCII input bytes, before applying
 # the RSpec plugin's real limits. Backtraces vary line numbers and method names;
 # diffs and test attributes vary per example rather than repeating one span.
-# This estimates compressible, single-exception payloads, not worst-case sizes.
+# Includes aggregate failures; gzip sizes still depend on compressibility.
+# Aggregate rows also fill the status-description budget and assert the decoded
+# bound. The many-small-failures row checks protobuf framing, not just text size.
 # Uses the exporter's private #encode API, so SDK upgrades may require changes.
 
 require "bundler/setup"
@@ -21,7 +23,7 @@ require "zlib"
 require_relative "../lib/buildkite/test_collector"
 require_relative "../lib/buildkite/test_collector/rspec_plugin/trace"
 
-def span_data(i, failing:, backtrace_lines:, message_bytes:)
+def span_data(i, failing:, backtrace_lines:, message_bytes:, failures: 1)
   attrs = {
     "buildkite.execution.via" => "otlp",
     "buildkite.run_key" => "83d96bfd-2388-4508-a8eb-070df6648da8",
@@ -65,8 +67,8 @@ def span_data(i, failing:, backtrace_lines:, message_bytes:)
     trace = Buildkite::TestCollector::RSpecPlugin::Trace.new(
       nil,
       history: {},
-      failure_reason: "Failure/Error: expected x got y ##{i}",
-      failure_expanded: [{ expanded: [message], backtrace: backtrace }],
+      failure_reason: "Failure/Error: expected x got y ##{i}" * (failures > 1 ? 100 : 1),
+      failure_expanded: Array.new(failures) { { expanded: [message], backtrace: backtrace } },
     )
     events = trace.otel_exception_events.map do |attributes|
       OpenTelemetry::SDK::Trace::Event.new("exception", attributes, timestamp)
@@ -114,7 +116,7 @@ end
 rows = if options.key?(:lines) || options.key?(:bytes)
   [[true, options.fetch(:lines, 100), options.fetch(:bytes, 10 * 1_024)]]
 else
-  [[false, 0, 0], [true, 30, 1_024], [true, 60, 4 * 1_024], [true, 100, 10 * 1_024], [true, 170, 10 * 1_024]]
+  [[false, 0, 0], [true, 30, 1_024], [true, 60, 4 * 1_024], [true, 100, 10 * 1_024], [true, 170, 10 * 1_024], [true, 170, 10 * 1_024, 100], [true, 1, 160, 100]]
 end
 # Only #encode is called: no processor, export, or network request is started.
 # Still bypass constructor defaults so unrelated OTLP credentials or missing
@@ -130,12 +132,34 @@ exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(
   timeout: 10,
 )
 puts "RSpec limits applied; limits: raw <= 8192 KiB, gzip <= 900 KiB"
-rows.each do |failing, lines, bytes|
-  spans = Array.new(options[:spans]) { |i| span_data(i, failing: failing, backtrace_lines: lines, message_bytes: bytes) }
+rows.each do |failing, lines, bytes, failures|
+  failures ||= 1
+  spans = Array.new(options[:spans]) { |i| span_data(i, failing: failing, backtrace_lines: lines, message_bytes: bytes, failures: failures) }
   raw = exporter.send(:encode, spans)
   gzip = Zlib.gzip(raw)
-  printf "%d spans failing=%-5s backtrace_lines=%3d message_bytes=%5d: raw=%7.1f KiB gzip=%6.1f KiB%s%s\n",
-    options[:spans], failing, lines, bytes, raw.bytesize / 1024.0, gzip.bytesize / 1024.0,
+  printf "%d spans failing=%-5s backtrace_lines=%3d message_bytes=%5d failures=%3d: raw=%7.1f KiB gzip=%6.1f KiB%s%s\n",
+    options[:spans], failing, lines, bytes, failures, raw.bytesize / 1024.0, gzip.bytesize / 1024.0,
     raw.bytesize > 8 * 1024 * 1024 ? " OVER decoded limit" : "",
     gzip.bytesize > 900 * 1024 ? " OVER gzip limit" : ""
+  if failures == 100
+    overhead = spans.map do |span|
+      payload = span.events.sum { |event| event.attributes.values.sum(&:bytesize) }
+      exporter.send(:encode, [span]).bytesize - payload - span.status.description.to_s.bytesize
+    end.max
+    puts "  maximum single-span protobuf overhead (including resource): #{overhead} bytes"
+    unreserved = spans.map do |span|
+      details = span.events.reject { |event| event.attributes["exception.message"]&.end_with?("failures omitted by buildkite-test_collector") }
+      payload = details.sum { |event| event.attributes.values.sum(&:bytesize) }
+      reserved = [details.length - 1, 0].max * Buildkite::TestCollector::RSpecPlugin::Trace::OTEL_EXCEPTION_EVENT_OVERHEAD_BYTES
+      exporter.send(:encode, [span]).bytesize - payload - reserved - span.status.description.to_s.bytesize
+    end.max
+    puts "  overhead after additional-event reservations (including omission): #{unreserved} bytes"
+    abort "representative span exceeds 2 KiB overhead allowance" if unreserved > 2_048
+    trace_class = Buildkite::TestCollector::RSpecPlugin::Trace
+    bound = options[:spans] * (trace_class::OTEL_EXCEPTION_EVENTS_MAX_BYTES + trace_class::OTEL_STATUS_DESCRIPTION_MAX_BYTES + 2_048)
+    abort "aggregate-failure request exceeds its span-budget bound" if raw.bytesize > bound
+    if options[:spans] <= Buildkite::TestCollector::OTel::TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT
+      abort "aggregate-failure request exceeds decoded limit" if raw.bytesize > 8 * 1024 * 1024
+    end
+  end
 end

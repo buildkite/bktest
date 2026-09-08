@@ -14,11 +14,16 @@ module Buildkite::TestCollector::RSpecPlugin
 
     FILE_PATH_REGEX = /^(.*?\.(rb|feature))/
 
-    # Character limits (including the marker), not byte limits. Keep failure
-    # payloads bounded without splitting UTF-8 characters; JSON is unchanged.
-    OTEL_EXCEPTION_MESSAGE_MAX_LENGTH = 10_240
-    OTEL_EXCEPTION_STACKTRACE_MAX_LENGTH = 16_384
-    OTEL_STATUS_DESCRIPTION_MAX_LENGTH = 1_024
+    # Byte limits include the marker; truncation preserves valid UTF-8.
+    # Legacy JSON failure detail is unchanged.
+    OTEL_EXCEPTION_MESSAGE_MAX_BYTES = 10_240
+    OTEL_EXCEPTION_STACKTRACE_MAX_BYTES = 16_384
+    OTEL_STATUS_DESCRIPTION_MAX_BYTES = 1_024
+    OTEL_EXCEPTION_EVENTS_MAX_BYTES = 26 * 1_024
+    # Reserve protobuf framing for each additional event (two fixed attribute
+    # names, lengths, event name and timestamp). The first event and omission
+    # summary fit in the batch's separate 2 KiB span-overhead allowance.
+    OTEL_EXCEPTION_EVENT_OVERHEAD_BYTES = 128
     OTEL_EXCEPTION_MAX_EVENTS = 100
     OTEL_TRUNCATION_MARKER = "… [truncated by buildkite-test_collector]"
 
@@ -63,27 +68,84 @@ module Buildkite::TestCollector::RSpecPlugin
     end
 
     def otel_failure_reason
-      otel_truncate(failure_reason, OTEL_STATUS_DESCRIPTION_MAX_LENGTH) if failure_reason
+      otel_truncate(failure_reason, OTEL_STATUS_DESCRIPTION_MAX_BYTES) if failure_reason
     end
 
     def otel_exception_events
-      (failure_expanded || []).lazy.filter_map do |failure|
+      failures = failure_expanded || []
+      events = []
+      remaining = OTEL_EXCEPTION_EVENTS_MAX_BYTES
+      consumed = 0
+      stopped = false
+      failures.each do |failure|
         message = Array(failure[:expanded]).join("\n")
         stacktrace = Array(failure[:backtrace]).join("\n")
         attributes = {}
-        attributes["exception.message"] = otel_truncate(message, OTEL_EXCEPTION_MESSAGE_MAX_LENGTH) unless message.empty?
-        attributes["exception.stacktrace"] = otel_truncate(stacktrace, OTEL_EXCEPTION_STACKTRACE_MAX_LENGTH) unless stacktrace.empty?
-        attributes unless attributes.empty?
-      end.take(OTEL_EXCEPTION_MAX_EVENTS).to_a
+        attributes["exception.message"] = otel_truncate(message, OTEL_EXCEPTION_MESSAGE_MAX_BYTES) unless message.empty?
+        attributes["exception.stacktrace"] = otel_truncate(stacktrace, OTEL_EXCEPTION_STACKTRACE_MAX_BYTES) unless stacktrace.empty?
+        unless attributes.empty? || events.empty?
+          remaining -= OTEL_EXCEPTION_EVENT_OVERHEAD_BYTES
+          if remaining <= OTEL_TRUNCATION_MARKER.bytesize
+            stopped = true
+            break
+          end
+        end
+        if attributes.values.sum(&:bytesize) > remaining
+          attributes = otel_fit_event(attributes, remaining)
+          stopped = true
+          break if attributes.empty?
+        else
+          remaining -= attributes.values.sum(&:bytesize)
+        end
+        consumed += 1
+        events << attributes unless attributes.empty?
+        stopped ||= remaining <= OTEL_TRUNCATION_MARKER.bytesize || events.length == OTEL_EXCEPTION_MAX_EVENTS
+        break if stopped
+      end
+
+      # RSpec supplies an Array. A sized lazy enumerable also gives an exact
+      # count without traversing its tail; an unsized one must remain lazy.
+      total = failures.size
+      omitted = total.is_a?(Integer) ? total - consumed : (stopped ? nil : 0)
+      if omitted.nil? || omitted.positive?
+        if events.length == OTEL_EXCEPTION_MAX_EVENTS
+          events.pop
+          omitted += 1 if omitted
+        end
+        count = omitted ? "#{omitted} more" : "More"
+        events << { "exception.message" => "#{count} failures omitted by buildkite-test_collector" }
+      end
+      events
     end
 
     private
 
+    def otel_fit_event(attributes, budget)
+      first_key, first_value = attributes.first
+      # Keep the message intact if a truncated stacktrace can still carry a
+      # marker plus a full UTF-8 character (at most four bytes).
+      if attributes.length == 2 && budget - first_value.bytesize >= OTEL_TRUNCATION_MARKER.bytesize + 4
+        return {
+          first_key => first_value,
+          "exception.stacktrace" => otel_truncate(attributes.fetch("exception.stacktrace"), budget - first_value.bytesize),
+        }
+      end
+
+      if attributes.length == 2
+        first_value += OTEL_TRUNCATION_MARKER
+        budget = [budget, OTEL_EXCEPTION_MESSAGE_MAX_BYTES].min
+      end
+      value = otel_truncate(first_value, budget)
+      return {} if value == OTEL_TRUNCATION_MARKER
+
+      { first_key => value }
+    end
+
     def otel_truncate(value, limit)
       value = strip_invalid_utf8_chars(value)
-      return value if value.length <= limit
+      return value if value.bytesize <= limit
 
-      value[0, limit - OTEL_TRUNCATION_MARKER.length] + OTEL_TRUNCATION_MARKER
+      value.byteslice(0, limit - OTEL_TRUNCATION_MARKER.bytesize).scrub("") + OTEL_TRUNCATION_MARKER
     end
 
     # Shared examples report the location of the shared block, so use the call

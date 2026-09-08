@@ -11,6 +11,13 @@ RSpec.describe Buildkite::TestCollector::OTel do
     double("test", otel_attributes: {}, otel_result: "passed")
   end
 
+  it "encodes full batches of near-limit and many smaller failures within the request budget" do
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, "script/payload_size.rb")
+
+    expect(status).to be_success, "#{stdout}\n#{stderr}"
+    expect(stdout.scan("failures=100").length).to eq(2)
+  end
+
   describe "test span batch configuration" do
     let(:batch_env) { "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE" }
     let(:queue_env) { "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE" }
@@ -94,7 +101,28 @@ RSpec.describe Buildkite::TestCollector::OTel do
       end
     end
 
-    [["64", "32"], [nil, "32"], ["8193", nil]].each do |batch, queue|
+    it "clamps an oversized batch once without changing the queue override" do
+      allow(ENV).to receive(:[]).with(batch_env).and_return("8193")
+      allow(ENV).to receive(:[]).with(queue_env).and_return("512")
+      expect_test_processor(batch: 256, queue: 512)
+
+      expect { configure_and_export_test }.to output(
+        "[buildkite-test_collector] #{batch_env} exceeds 256, clamping to 256 to stay under the 8 MiB ingestion limit\n",
+      ).to_stderr
+    end
+
+    it "checks the queue after clamping an oversized batch" do
+      allow(ENV).to receive(:[]).with(batch_env).and_return("512")
+      allow(ENV).to receive(:[]).with(queue_env).and_return("128")
+      expect_test_processor(batch: 256, queue: 8_192)
+
+      expect { configure_and_export_test }.to output(
+        "[buildkite-test_collector] #{batch_env} exceeds 256, clamping to 256 to stay under the 8 MiB ingestion limit\n" \
+        "[buildkite-test_collector] #{batch_env} must be <= #{queue_env}; using defaults (batch 256, queue 8192)\n",
+      ).to_stderr
+    end
+
+    [["64", "32"], [nil, "32"]].each do |batch, queue|
       it "falls back to both defaults when batch #{batch.inspect} exceeds queue #{queue.inspect}" do
         allow(ENV).to receive(:[]).with(batch_env).and_return(batch)
         allow(ENV).to receive(:[]).with(queue_env).and_return(queue)
