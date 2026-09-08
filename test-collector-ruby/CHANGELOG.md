@@ -3,26 +3,15 @@
 ## Unreleased
 
 * Bound experimental RSpec OpenTelemetry failure detail: 10,240 bytes per
-  exception message, 16,384 per stacktrace, and 1,024 for the status description.
-  Share a 26 KiB budget across exception events, reserving protobuf framing for
-  additional events; append an omission-count event when failures are omitted.
-  The total remains capped at 100 events, including the omission summary.
-  Truncated text remains valid UTF-8 and ends with
-  `… [truncated by buildkite-test_collector]`, included in each byte limit.
-* Cap every string attribute value on an experimental OpenTelemetry test span
-  (test descriptions, file paths, tags and run metadata such as the commit
-  message) at 1,024 bytes with the same marker, replacing invalid UTF-8, so a
-  long description cannot push a full 240-span batch over ingestion's 8 MiB
-  limit. Annotations and resource attributes are not capped.
-* Reduce the default test-span export batch from 512 to 240 to leave more room
-  under ingestion's decoded request and backtrace budgets. Add positive-integer
+  message, 16,384 per stacktrace, and 1,024 for status descriptions, with a
+  shared 26 KiB exception-event budget and a 100-event cap including omission
+  summaries. Truncation preserves valid UTF-8 and includes a visible marker.
+* Cap collector-set OpenTelemetry test-span string attributes at 1,024 bytes,
+  replacing invalid UTF-8. Annotations and resource attributes remain uncapped.
+* Limit test-span export batches to 240 spans. Add positive-integer
   `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE` and
   `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE` overrides (defaults 240 and
-  8192); invalid values warn and fall back without disabling export. Batch
-  overrides above 240 warn and clamp before checking the queue size. With a
-  2 KiB per-span overhead allowance and three attribute values at their cap, the
-  maximum batch is bounded at 7.5 MiB decoded protobuf, 512 KiB below
-  ingestion's 8 MiB limit.
+  8192). Invalid values warn and fall back; batches above 240 warn and clamp.
 * **Breaking change to the experimental OpenTelemetry support:** opt-in
   submission is now OTLP-only for RSpec. `otel_enabled: true` submits executions
   as spans without also uploading legacy JSON, and the separate `otel_only`

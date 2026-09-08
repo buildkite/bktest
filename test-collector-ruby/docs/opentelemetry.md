@@ -347,23 +347,17 @@ exceeds the queue, both sizes fall back to their defaults with a warning; a bad 
 never disables test export. Test-span processor options are explicit, so
 `OTEL_BSP_*` settings do not affect this queue; child spans keep SDK settings.
 
-Under the 2 KiB per-span overhead assumption, a full batch of 240 test spans
-encodes to at most **~6.8 MiB**, under the 8 MiB ingestion limit:
-240 × (26 KiB event budget + 1 KiB status + 2 KiB overhead) = 6.8 MiB.
-This bound applies to multibyte text and aggregate failures, not just a single
-ASCII failure. The remaining assumption is that other span fields, attributes,
-resource, first-event framing and the omission summary fit within 2 KiB per
-span. `script/payload_size.rb` measures **1,858 bytes** for that overhead with
-realistic span fields and near-limit aggregate failures (1,806 excluding the
-omission message). Additional-event framing is reserved within the event budget.
-Each string attribute value is capped at 1,024 bytes, so a long RSpec
-description (which reaches the scope, suite name and full description together)
-adds at most 3 KiB: 240 × (26 KiB + 1 KiB + 3 KiB + 2 KiB) = 7.5 MiB, leaving
-512 KiB of headroom for bytes the model does not count; the script measures
-about 7.4 MiB for that case. Four or more capped values per
-span (for example several kilobyte-long tags on every test) on top of
-near-limit failures, resource attributes and user-added annotations remain
-outside the bound; the collector does not impose a serialized request cap.
+With 2 KiB per span for other fields, attributes, resource, first-event framing
+and the omission summary, a full 240-span batch is bounded at **~6.8 MiB**.
+Allowing three additional attribute values at their 1 KiB cap raises the bound
+to **7.5 MiB**, leaving 512 KiB below ingestion's limit. Both bounds include
+multibyte text and aggregate failures; additional-event framing is reserved
+within the event budget.
+
+These are conditional bounds, not a serialized request cap. Four or more capped
+values per span (for example several kilobyte-long tags on every test), resource
+attributes, and user-added annotations on top of near-limit failures remain
+outside the model.
 Incompressible failure content can still exceed 900 KiB gzipped at any batch
 size; reducing the batch is not a guarantee that a request fits.
 
@@ -376,8 +370,8 @@ fewer executions. Use RSpec's backtrace filtering to remove framework and
 dependency noise: the collector honours RSpec's already-filtered backtraces.
 
 To measure representative payloads locally without sending requests, run
-`bundle exec ruby script/payload_size.rb` from this gem's directory. See the
-script's header for custom span counts, backtrace lines and message bytes.
+`bundle exec ruby script/payload_size.rb` from this gem's directory. Use
+`--help` for custom span counts, backtrace lines and message bytes.
 
 ## When something goes wrong
 

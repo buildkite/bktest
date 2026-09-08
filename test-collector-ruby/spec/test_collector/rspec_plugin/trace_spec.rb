@@ -260,9 +260,9 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
       ]
 
       events = trace.otel_exception_events
-      remaining = 26 * 1_024 - 10_240 - 16_000 - described_class::OTEL_EXCEPTION_EVENT_OVERHEAD_BYTES
+      remaining = 26 * 1_024 - 10_240 - 16_000 - described_class::EXCEPTION_EVENT_FRAMING_BYTES
       expect(events[1].fetch("exception.message").bytesize).to be <= remaining
-      expect(events[1].fetch("exception.message")).to end_with(described_class::OTEL_TRUNCATION_MARKER)
+      expect(events[1].fetch("exception.message")).to end_with(described_class::TRUNCATION_MARKER)
       expect(events[1].fetch("exception.message")).to be_valid_encoding
       expect(events.last).to eq("exception.message" => "1 more failures omitted by buildkite-test_collector")
     end
@@ -286,7 +286,7 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
 
     [42, 512, 10_280].each do |space|
       it "preserves valid byte bounds when the next two-field event has #{space} bytes left" do
-        first_size = 26 * 1_024 - described_class::OTEL_EXCEPTION_EVENT_OVERHEAD_BYTES - space
+        first_size = 26 * 1_024 - described_class::EXCEPTION_EVENT_FRAMING_BYTES - space
         trace.failure_expanded = [
           { expanded: ["m" * 10_240], backtrace: ["s" * (first_size - 10_240)] },
           { expanded: ["😀" * (space == 512 ? 16 : 2_560)], backtrace: ["界" * 1_000] },
@@ -307,27 +307,19 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
       end
     end
 
-    it "keeps the maximum batch below ingestion's decoded limit with the span-overhead allowance" do
-      # script/payload_size.rb measures 1858 bytes of single-span overhead
-      # including resource/framing/omission with near-limit failures. Additional
-      # event framing is reserved within the 26 KiB budget. Assume other span fields,
-      # attributes/resource, first-event framing and omission fit in 2048 bytes.
-      bytes_per_span = described_class::OTEL_EXCEPTION_EVENTS_MAX_BYTES +
-        described_class::OTEL_STATUS_DESCRIPTION_MAX_BYTES + 2_048
+    it "keeps the maximum batch below ingestion's decoded limit with 2 KiB of span overhead" do
+      bytes_per_span = described_class::EXCEPTION_EVENTS_MAX_BYTES +
+        described_class::STATUS_DESCRIPTION_MAX_BYTES + 2_048
       batch_size = Buildkite::TestCollector::OTel::TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT
 
       expect(batch_size * bytes_per_span).to be <= 8 * 1_024 * 1_024
       expect(Buildkite::TestCollector::OTel::TEST_SPAN_MAX_EXPORT_BATCH_SIZE).to be <= batch_size
     end
 
-    it "keeps 512 KiB of headroom under the decoded limit when three attribute values hit their cap" do
-      # A long RSpec description reaches the scope, the suite name and the full
-      # description together; each is capped, so the span grows by at most three
-      # capped values over the realistic 2 KiB overhead. The headroom covers
-      # bytes the model does not count (resource attributes, annotations).
+    it "keeps 512 KiB of headroom with three capped attributes and 2 KiB of span overhead" do
       otel = Buildkite::TestCollector::OTel
-      bytes_per_span = described_class::OTEL_EXCEPTION_EVENTS_MAX_BYTES +
-        described_class::OTEL_STATUS_DESCRIPTION_MAX_BYTES +
+      bytes_per_span = described_class::EXCEPTION_EVENTS_MAX_BYTES +
+        described_class::STATUS_DESCRIPTION_MAX_BYTES +
         3 * otel::ATTRIBUTE_VALUE_MAX_BYTES + 2_048
 
       expect(otel::TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT * bytes_per_span).to be <= 8 * 1_024 * 1_024 - 512 * 1_024

@@ -34,7 +34,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     after { described_class.shutdown }
 
-    def expect_test_processor(batch:, queue:)
+    def expect_test_span_processor(batch:, queue:)
       expect(OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor).to receive(:new).with(
         exporter,
         max_queue_size: queue,
@@ -46,7 +46,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       ).and_call_original
     end
 
-    def configure_and_export_test
+    def export_test_span
       described_class.configure!(endpoint: "https://example.invalid/v1/traces")
       expect(described_class).to be_enabled
       test = execution_test
@@ -61,31 +61,31 @@ RSpec.describe Buildkite::TestCollector::OTel do
         allow(ENV).to receive(:fetch).with("OTEL_BSP_#{option}", anything).and_return("0")
       end
       allow(ENV).to receive(:fetch).with("OTEL_RUBY_BSP_START_THREAD_ON_BOOT", anything).and_return("false")
-      expect_test_processor(batch: 240, queue: 8_192)
+      expect_test_span_processor(batch: 240, queue: 8_192)
 
-      expect { configure_and_export_test }.not_to output.to_stderr
+      expect { export_test_span }.not_to output.to_stderr
     end
 
     it "applies valid overrides, including a batch equal to the queue" do
       allow(ENV).to receive(:[]).with(batch_env).and_return("32")
       allow(ENV).to receive(:[]).with(queue_env).and_return("32")
-      expect_test_processor(batch: 32, queue: 32)
+      expect_test_span_processor(batch: 32, queue: 32)
 
-      expect { configure_and_export_test }.not_to output.to_stderr
+      expect { export_test_span }.not_to output.to_stderr
     end
 
     it "allows a batch of one without changing the queue default" do
       allow(ENV).to receive(:[]).with(batch_env).and_return("1")
-      expect_test_processor(batch: 1, queue: 8_192)
+      expect_test_span_processor(batch: 1, queue: 8_192)
 
-      expect { configure_and_export_test }.not_to output.to_stderr
+      expect { export_test_span }.not_to output.to_stderr
     end
 
     it "allows a queue override without changing the batch default" do
       allow(ENV).to receive(:[]).with(queue_env).and_return("1024")
-      expect_test_processor(batch: 240, queue: 1_024)
+      expect_test_span_processor(batch: 240, queue: 1_024)
 
-      expect { configure_and_export_test }.not_to output.to_stderr
+      expect { export_test_span }.not_to output.to_stderr
     end
 
     ["", "0", "-1", "1.5", "abc", "12abc", "1e3", " 32", " 12 ", "32\n", "\xff"].each do |value|
@@ -93,9 +93,9 @@ RSpec.describe Buildkite::TestCollector::OTel do
         it "warns and uses the default for #{setting} override #{value.inspect}" do
           env = setting == :batch ? batch_env : queue_env
           allow(ENV).to receive(:[]).with(env).and_return(value)
-          expect_test_processor(batch: 240, queue: 8_192)
+          expect_test_span_processor(batch: 240, queue: 8_192)
 
-          expect { configure_and_export_test }.to output(
+          expect { export_test_span }.to output(
             /\[buildkite-test_collector\] #{env} must be a positive integer; using default/,
           ).to_stderr
         end
@@ -105,9 +105,9 @@ RSpec.describe Buildkite::TestCollector::OTel do
     it "clamps an oversized batch once without changing the queue override" do
       allow(ENV).to receive(:[]).with(batch_env).and_return("8193")
       allow(ENV).to receive(:[]).with(queue_env).and_return("512")
-      expect_test_processor(batch: 240, queue: 512)
+      expect_test_span_processor(batch: 240, queue: 512)
 
-      expect { configure_and_export_test }.to output(
+      expect { export_test_span }.to output(
         "[buildkite-test_collector] #{batch_env} exceeds 240, clamping to 240 to stay under the 8 MiB ingestion limit\n",
       ).to_stderr
     end
@@ -115,9 +115,9 @@ RSpec.describe Buildkite::TestCollector::OTel do
     it "checks the queue after clamping an oversized batch" do
       allow(ENV).to receive(:[]).with(batch_env).and_return("512")
       allow(ENV).to receive(:[]).with(queue_env).and_return("128")
-      expect_test_processor(batch: 240, queue: 8_192)
+      expect_test_span_processor(batch: 240, queue: 8_192)
 
-      expect { configure_and_export_test }.to output(
+      expect { export_test_span }.to output(
         "[buildkite-test_collector] #{batch_env} exceeds 240, clamping to 240 to stay under the 8 MiB ingestion limit\n" \
         "[buildkite-test_collector] #{batch_env} must be <= #{queue_env}; using defaults (batch 240, queue 8192)\n",
       ).to_stderr
@@ -127,9 +127,9 @@ RSpec.describe Buildkite::TestCollector::OTel do
       it "falls back to both defaults when batch #{batch.inspect} exceeds queue #{queue.inspect}" do
         allow(ENV).to receive(:[]).with(batch_env).and_return(batch)
         allow(ENV).to receive(:[]).with(queue_env).and_return(queue)
-        expect_test_processor(batch: 240, queue: 8_192)
+        expect_test_span_processor(batch: 240, queue: 8_192)
 
-        expect { configure_and_export_test }.to output(
+        expect { export_test_span }.to output(
           "[buildkite-test_collector] #{batch_env} must be <= #{queue_env}; using defaults (batch 240, queue 8192)\n",
         ).to_stderr
       end
@@ -363,15 +363,13 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
   it "caps test span attribute values at 1 KiB of valid UTF-8 at start and finish" do
     exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
-    processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
-    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
-    provider.add_span_processor(processor)
-    described_class.instance_variable_set(:@tracer, provider.tracer("attribute-cap-test"))
-    described_class.instance_variable_set(:@run_attributes, {
-      "buildkite.run_key" => "run-123",
-      "buildkite.message" => "fix: \xFF#{"m" * 5_000}",
-      "buildkite.tag.team" => "é" * 2_000,
-    })
+    allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(exporter)
+    allow(described_class).to receive(:configure_child_export)
+    described_class.configure!(
+      endpoint: "https://example.invalid/v1/traces",
+      run_env: { "key" => "run-123", "message" => "fix: \xFF#{"m" * 5_000}" },
+      tags: { "team" => "é" * 2_000 },
+    )
     test = double("test", otel_result: "passed", otel_attributes: {
       "test.case.name" => "x" * 5_000,
       "code.file.path" => "./spec/short_spec.rb",
@@ -380,8 +378,9 @@ RSpec.describe Buildkite::TestCollector::OTel do
     })
 
     span = described_class.start_test_span(test: test)
+    expect(span.to_span_data.attributes.fetch("test.case.name").bytesize).to eq(1_024)
     described_class.finish_test_span(span, test: test)
-    provider.force_flush
+    described_class.force_flush
 
     marker = described_class::TRUNCATION_MARKER
     attributes = exporter.finished_spans.fetch(0).attributes
@@ -401,9 +400,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       "buildkite.run_key" => "run-123",
     )
   ensure
-    described_class.instance_variable_set(:@tracer, nil)
-    described_class.instance_variable_set(:@run_attributes, nil)
-    provider&.shutdown
+    described_class.shutdown
   end
 
   it "asks nothing of the test when there is no span" do

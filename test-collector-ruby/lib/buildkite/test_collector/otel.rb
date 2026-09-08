@@ -26,21 +26,13 @@ module Buildkite::TestCollector
     TRACER_NAME = "buildkite-test-collector"
 
     TEST_SPAN_NAME = "test.execution"
-    # Smaller batches leave room for failure detail under ingestion's decoded
-    # request limit and share its per-request backtrace budget among fewer tests.
     TEST_SPAN_MAX_QUEUE_SIZE = 8_192
     TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 240
-    # 240 * (26 KiB exception payload + 1 KiB status + 2 KiB overhead)
-    # = 6.8 MiB, below the 8 MiB decoded ingestion limit. With three attribute
-    # values at ATTRIBUTE_VALUE_MAX_BYTES on top, the bound is 7.5 MiB, leaving
-    # 512 KiB of headroom for bytes the model does not count.
+    # 240 * (26 KiB events + 1 KiB status + 3 KiB attributes + 2 KiB overhead)
+    # leaves 512 KiB below ingestion's 8 MiB limit; see docs/opentelemetry.md.
     TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT = 240
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
 
-    # Test-span attribute values (test descriptions, the commit message, tags,
-    # external IDs) are otherwise unbounded, and the batch bound above assumes
-    # 2 KiB per span for everything but failure detail. Cap each value so one
-    # long input cannot push a full batch over the ingestion limit.
     ATTRIBUTE_VALUE_MAX_BYTES = 1_024
     TRUNCATION_MARKER = "… [truncated by buildkite-test_collector]"
 
@@ -76,14 +68,11 @@ module Buildkite::TestCollector
         !@tracer.nil?
       end
 
-      # Bounds a string to `limit` bytes as valid UTF-8. A cut string ends with
-      # TRUNCATION_MARKER, whose bytes count toward the limit. Also used by the
-      # RSpec plugin for failure detail, so every truncation looks the same.
-      def truncate(value, limit)
+      def truncate_string(value, max_bytes:)
         value = value.encode("UTF-8", invalid: :replace, undef: :replace)
-        return value if value.bytesize <= limit
+        return value if value.bytesize <= max_bytes
 
-        value.byteslice(0, limit - TRUNCATION_MARKER.bytesize).scrub("") + TRUNCATION_MARKER
+        value.byteslice(0, max_bytes - TRUNCATION_MARKER.bytesize).scrub("") + TRUNCATION_MARKER
       end
 
       # Whether the standard OTLP environment supplies request headers (which
@@ -152,7 +141,7 @@ module Buildkite::TestCollector
         test.otel_attributes.each do |key, value|
           next if value.nil? || attributes.key?(key) || key.start_with?(TAG_ATTRIBUTE_PREFIX)
 
-          attributes[key] = bound_attribute_value(value)
+          attributes[key] = truncate_attribute_value(value)
         end
 
         @tracer.start_span(
@@ -262,32 +251,10 @@ module Buildkite::TestCollector
 
       def build_test_span_provider(endpoint, headers, resource)
         @test_span_metrics_reporter = TestSpanMetricsReporter.new
-        queue_size = positive_integer_env("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE", TEST_SPAN_MAX_QUEUE_SIZE)
-        batch_size = positive_integer_env("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE", TEST_SPAN_MAX_EXPORT_BATCH_SIZE)
-        if batch_size > TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT
-          warn "[buildkite-test_collector] BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE exceeds " \
-            "#{TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT}, clamping to #{TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT} " \
-            "to stay under the 8 MiB ingestion limit"
-          batch_size = TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT
-        end
-        if batch_size > queue_size
-          warn "[buildkite-test_collector] BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
-            "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults " \
-            "(batch #{TEST_SPAN_MAX_EXPORT_BATCH_SIZE}, queue #{TEST_SPAN_MAX_QUEUE_SIZE})"
-          queue_size = TEST_SPAN_MAX_QUEUE_SIZE
-          batch_size = TEST_SPAN_MAX_EXPORT_BATCH_SIZE
-        end
-
-        # Explicit options isolate test submissions from OTEL_BSP_* settings
-        # intended for the suite's instrumented child spans.
         test_span_processor = batch_processor(
           endpoint,
           headers,
-          max_queue_size: queue_size,
-          max_export_batch_size: batch_size,
-          schedule_delay: TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS,
-          exporter_timeout: PROCESSOR_TIMEOUT_SECONDS * 1_000,
-          start_thread_on_boot: true,
+          **test_span_processor_options,
           metrics_reporter: @test_span_metrics_reporter,
         )
         test_span_provider = OpenTelemetry::SDK::Trace::TracerProvider.new(
@@ -302,7 +269,35 @@ module Buildkite::TestCollector
         raise
       end
 
-      def positive_integer_env(name, default)
+      # Explicit options isolate test submissions from OTEL_BSP_* settings
+      # intended for the suite's instrumented child spans.
+      def test_span_processor_options
+        max_queue_size = span_processor_config_value("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE", default: TEST_SPAN_MAX_QUEUE_SIZE)
+        max_export_batch_size = span_processor_config_value("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE", default: TEST_SPAN_MAX_EXPORT_BATCH_SIZE)
+        if max_export_batch_size > TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT
+          warn "[buildkite-test_collector] BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE exceeds " \
+            "#{TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT}, clamping to #{TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT} " \
+            "to stay under the 8 MiB ingestion limit"
+          max_export_batch_size = TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT
+        end
+        if max_export_batch_size > max_queue_size
+          warn "[buildkite-test_collector] BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
+            "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults " \
+            "(batch #{TEST_SPAN_MAX_EXPORT_BATCH_SIZE}, queue #{TEST_SPAN_MAX_QUEUE_SIZE})"
+          max_queue_size = TEST_SPAN_MAX_QUEUE_SIZE
+          max_export_batch_size = TEST_SPAN_MAX_EXPORT_BATCH_SIZE
+        end
+
+        {
+          max_queue_size: max_queue_size,
+          max_export_batch_size: max_export_batch_size,
+          schedule_delay: TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS,
+          exporter_timeout: PROCESSOR_TIMEOUT_SECONDS * 1_000,
+          start_thread_on_boot: true,
+        }
+      end
+
+      def span_processor_config_value(name, default:)
         value = ENV[name]
         return default if value.nil?
         return value.to_i if value.ascii_only? && value.match?(/\A[0-9]+\z/) && value.to_i.positive?
@@ -593,11 +588,11 @@ module Buildkite::TestCollector
         test_attributes.reject(&tag)
           .merge(run_attributes.reject(&tag))
           .merge(run_attributes.merge(test_attributes).select(&tag))
-          .transform_values { |value| bound_attribute_value(value) }
+          .transform_values { |value| truncate_attribute_value(value) }
       end
 
-      def bound_attribute_value(value)
-        value.is_a?(String) ? truncate(value, ATTRIBUTE_VALUE_MAX_BYTES) : value
+      def truncate_attribute_value(value)
+        value.is_a?(String) ? truncate_string(value, max_bytes: ATTRIBUTE_VALUE_MAX_BYTES) : value
       end
 
       def finish_span(span, end_timestamp)
