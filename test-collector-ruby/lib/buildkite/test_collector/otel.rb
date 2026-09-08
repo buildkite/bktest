@@ -31,9 +31,17 @@ module Buildkite::TestCollector
     TEST_SPAN_MAX_QUEUE_SIZE = 8_192
     TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 256
     # 256 * (26 KiB exception payload + 1 KiB status + 2 KiB overhead)
-    # = 7.25 MiB, below the 8 MiB decoded ingestion limit.
+    # = 7.25 MiB, below the 8 MiB decoded ingestion limit. With three attribute
+    # values at ATTRIBUTE_VALUE_MAX_BYTES on top, the bound is exactly 8 MiB.
     TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT = 256
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
+
+    # Test-span attribute values (test descriptions, the commit message, tags,
+    # external IDs) are otherwise unbounded, and the batch bound above assumes
+    # 2 KiB per span for everything but failure detail. Cap each value so one
+    # long input cannot push a full batch over the ingestion limit.
+    ATTRIBUTE_VALUE_MAX_BYTES = 1_024
+    TRUNCATION_MARKER = "… [truncated by buildkite-test_collector]"
 
     require_relative "otel/test_span_metrics_reporter"
     require_relative "otel/span_filter"
@@ -65,6 +73,16 @@ module Buildkite::TestCollector
     class << self
       def enabled?
         !@tracer.nil?
+      end
+
+      # Bounds a string to `limit` bytes as valid UTF-8. A cut string ends with
+      # TRUNCATION_MARKER, whose bytes count toward the limit. Also used by the
+      # RSpec plugin for failure detail, so every truncation looks the same.
+      def truncate(value, limit)
+        value = value.encode("UTF-8", invalid: :replace, undef: :replace)
+        return value if value.bytesize <= limit
+
+        value.byteslice(0, limit - TRUNCATION_MARKER.bytesize).scrub("") + TRUNCATION_MARKER
       end
 
       # Whether the standard OTLP environment supplies request headers (which
@@ -133,7 +151,7 @@ module Buildkite::TestCollector
         test.otel_attributes.each do |key, value|
           next if value.nil? || attributes.key?(key) || key.start_with?(TAG_ATTRIBUTE_PREFIX)
 
-          attributes[key] = value
+          attributes[key] = bound_attribute_value(value)
         end
 
         @tracer.start_span(
@@ -574,6 +592,11 @@ module Buildkite::TestCollector
         test_attributes.reject(&tag)
           .merge(run_attributes.reject(&tag))
           .merge(run_attributes.merge(test_attributes).select(&tag))
+          .transform_values { |value| bound_attribute_value(value) }
+      end
+
+      def bound_attribute_value(value)
+        value.is_a?(String) ? truncate(value, ATTRIBUTE_VALUE_MAX_BYTES) : value
       end
 
       def finish_span(span, end_timestamp)

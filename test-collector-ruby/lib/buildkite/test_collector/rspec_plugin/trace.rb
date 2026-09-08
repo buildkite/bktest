@@ -25,7 +25,7 @@ module Buildkite::TestCollector::RSpecPlugin
     # summary fit in the batch's separate 2 KiB span-overhead allowance.
     OTEL_EXCEPTION_EVENT_OVERHEAD_BYTES = 128
     OTEL_EXCEPTION_MAX_EVENTS = 100
-    OTEL_TRUNCATION_MARKER = "… [truncated by buildkite-test_collector]"
+    OTEL_TRUNCATION_MARKER = Buildkite::TestCollector::OTel::TRUNCATION_MARKER
 
     def initialize(example, history:, failure_reason: nil, failure_expanded: [], tags: nil, location_prefix: nil, external_id: nil)
       @example = example
@@ -142,10 +142,7 @@ module Buildkite::TestCollector::RSpecPlugin
     end
 
     def otel_truncate(value, limit)
-      value = strip_invalid_utf8_chars(value)
-      return value if value.bytesize <= limit
-
-      value.byteslice(0, limit - OTEL_TRUNCATION_MARKER.bytesize).scrub("") + OTEL_TRUNCATION_MARKER
+      Buildkite::TestCollector::OTel.truncate(value, limit)
     end
 
     # Shared examples report the location of the shared block, so use the call

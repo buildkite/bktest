@@ -9,6 +9,11 @@
   The total remains capped at 100 events, including the omission summary.
   Truncated text remains valid UTF-8 and ends with
   `… [truncated by buildkite-test_collector]`, included in each byte limit.
+* Cap every string attribute value on an experimental OpenTelemetry test span
+  (test descriptions, file paths, tags and run metadata such as the commit
+  message) at 1,024 bytes with the same marker, replacing invalid UTF-8, so a
+  long description cannot push a full 256-span batch over ingestion's 8 MiB
+  limit. Annotations and resource attributes are not capped.
 * Reduce the default test-span export batch from 512 to 256 to leave more room
   under ingestion's decoded request and backtrace budgets. Add positive-integer
   `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE` and

@@ -11,11 +11,12 @@ RSpec.describe Buildkite::TestCollector::OTel do
     double("test", otel_attributes: {}, otel_result: "passed")
   end
 
-  it "encodes full batches of near-limit and many smaller failures within the request budget" do
+  it "encodes full batches of near-limit, many smaller and long-description failures within the request budget" do
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, "script/payload_size.rb")
 
     expect(status).to be_success, "#{stdout}\n#{stderr}"
-    expect(stdout.scan("failures=100").length).to eq(2)
+    expect(stdout.scan("failures=100").length).to eq(3)
+    expect(stdout).to include("3 attribute values at the 1024-byte cap")
   end
 
   describe "test span batch configuration" do
@@ -357,6 +358,51 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
   ensure
     described_class.instance_variable_set(:@tracer, nil)
+    provider&.shutdown
+  end
+
+  it "caps test span attribute values at 1 KiB of valid UTF-8 at start and finish" do
+    exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    provider.add_span_processor(processor)
+    described_class.instance_variable_set(:@tracer, provider.tracer("attribute-cap-test"))
+    described_class.instance_variable_set(:@run_attributes, {
+      "buildkite.run_key" => "run-123",
+      "buildkite.message" => "fix: \xFF#{"m" * 5_000}",
+      "buildkite.tag.team" => "é" * 2_000,
+    })
+    test = double("test", otel_result: "passed", otel_attributes: {
+      "test.case.name" => "x" * 5_000,
+      "code.file.path" => "./spec/short_spec.rb",
+      "code.line.number" => 12,
+      "buildkite.tag.worker" => "w" * 1_024,
+    })
+
+    span = described_class.start_test_span(test: test)
+    described_class.finish_test_span(span, test: test)
+    provider.force_flush
+
+    marker = described_class::TRUNCATION_MARKER
+    attributes = exporter.finished_spans.fetch(0).attributes
+    attributes.each_value do |value|
+      next unless value.is_a?(String)
+
+      expect(value).to be_valid_encoding
+      expect(value.bytesize).to be <= described_class::ATTRIBUTE_VALUE_MAX_BYTES
+    end
+    expect(attributes.fetch("test.case.name")).to end_with(marker)
+    expect(attributes.fetch("buildkite.message")).to start_with("fix: \uFFFDmmm").and end_with(marker)
+    expect(attributes.fetch("buildkite.tag.team")).to end_with(marker)
+    expect(attributes.fetch("buildkite.tag.worker")).to eq("w" * 1_024)
+    expect(attributes).to include(
+      "code.file.path" => "./spec/short_spec.rb",
+      "code.line.number" => 12,
+      "buildkite.run_key" => "run-123",
+    )
+  ensure
+    described_class.instance_variable_set(:@tracer, nil)
+    described_class.instance_variable_set(:@run_attributes, nil)
     provider&.shutdown
   end
 

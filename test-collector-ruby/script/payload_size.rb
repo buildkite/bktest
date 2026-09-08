@@ -23,15 +23,22 @@ require "zlib"
 require_relative "../lib/buildkite/test_collector"
 require_relative "../lib/buildkite/test_collector/rspec_plugin/trace"
 
-def span_data(i, failing:, backtrace_lines:, message_bytes:, failures: 1)
+def span_data(i, failing:, backtrace_lines:, message_bytes:, failures: 1, description_bytes: nil)
+  scope = "Some::Deeply::Nested::ServiceObject with a long context description ##{i}"
+  name = "does the thing when the other thing is configured correctly ##{i}"
+  if description_bytes
+    # A generated group description (e.g. an inspected fixture) grows the
+    # scope, the suite name and the full description together.
+    scope = ("#{scope} " * (description_bytes.fdiv(scope.bytesize + 1).ceil)).byteslice(0, description_bytes - name.bytesize - 1)
+  end
   attrs = {
     "buildkite.execution.via" => "otlp",
     "buildkite.run_key" => "83d96bfd-2388-4508-a8eb-070df6648da8",
     "test.case.result.status" => failing ? "fail" : "pass",
-    "buildkite.test.scope" => "Some::Deeply::Nested::ServiceObject with a long context description ##{i}",
-    "buildkite.test.name" => "does the thing when the other thing is configured correctly ##{i}",
-    "test.case.name" => "Some::Deeply::Nested::ServiceObject with a long context description does the thing when the other thing is configured correctly ##{i}",
-    "test.suite.name" => "Some::Deeply::Nested::ServiceObject with a long context description",
+    "buildkite.test.scope" => scope,
+    "buildkite.test.name" => name,
+    "test.case.name" => "#{scope} #{name}",
+    "test.suite.name" => scope,
     "code.file.path" => "./spec/services/some/deeply/nested/service_object_spec_#{i % 50}.rb",
     "code.line.number" => 120 + i % 300,
     "buildkite.test.execution.external_id" => "019a0b3c-#{i.to_s.rjust(4, '0')}-7abc-8def-0123456789ab",
@@ -45,6 +52,8 @@ def span_data(i, failing:, backtrace_lines:, message_bytes:, failures: 1)
     "buildkite.test.framework.version" => "3.13.0",
     "buildkite.tag.worker" => "agent-#{i % 8}",
   }
+  # The collector caps every attribute value the same way before setting it.
+  attrs.transform_values! { |value| Buildkite::TestCollector::OTel.send(:bound_attribute_value, value) }
   timestamp = 1_700_000_000_000_000_000
   events = []
   status = OpenTelemetry::Trace::Status.unset
@@ -116,7 +125,12 @@ end
 rows = if options.key?(:lines) || options.key?(:bytes)
   [[true, options.fetch(:lines, 100), options.fetch(:bytes, 10 * 1_024)]]
 else
-  [[false, 0, 0], [true, 30, 1_024], [true, 60, 4 * 1_024], [true, 100, 10 * 1_024], [true, 170, 10 * 1_024], [true, 170, 10 * 1_024, 100], [true, 1, 160, 100]]
+  [
+    [false, 0, 0], [true, 30, 1_024], [true, 60, 4 * 1_024], [true, 100, 10 * 1_024], [true, 170, 10 * 1_024],
+    [true, 170, 10 * 1_024, 100], [true, 1, 160, 100],
+    # Near-limit failures on tests whose 4 KiB descriptions hit the attribute cap.
+    [true, 170, 10 * 1_024, 100, 4 * 1_024],
+  ]
 end
 # Only #encode is called: no processor, export, or network request is started.
 # Still bypass constructor defaults so unrelated OTLP credentials or missing
@@ -132,16 +146,30 @@ exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(
   timeout: 10,
 )
 puts "RSpec limits applied; limits: raw <= 8192 KiB, gzip <= 900 KiB"
-rows.each do |failing, lines, bytes, failures|
+rows.each do |failing, lines, bytes, failures, description_bytes|
   failures ||= 1
-  spans = Array.new(options[:spans]) { |i| span_data(i, failing: failing, backtrace_lines: lines, message_bytes: bytes, failures: failures) }
+  spans = Array.new(options[:spans]) do |i|
+    span_data(i, failing: failing, backtrace_lines: lines, message_bytes: bytes, failures: failures, description_bytes: description_bytes)
+  end
   raw = exporter.send(:encode, spans)
   gzip = Zlib.gzip(raw)
-  printf "%d spans failing=%-5s backtrace_lines=%3d message_bytes=%5d failures=%3d: raw=%7.1f KiB gzip=%6.1f KiB%s%s\n",
-    options[:spans], failing, lines, bytes, failures, raw.bytesize / 1024.0, gzip.bytesize / 1024.0,
+  printf "%d spans failing=%-5s backtrace_lines=%3d message_bytes=%5d failures=%3d%s: raw=%7.1f KiB gzip=%6.1f KiB%s%s\n",
+    options[:spans], failing, lines, bytes, failures, description_bytes ? " description_bytes=#{description_bytes}" : "",
+    raw.bytesize / 1024.0, gzip.bytesize / 1024.0,
     raw.bytesize > 8 * 1024 * 1024 ? " OVER decoded limit" : "",
     gzip.bytesize > 900 * 1024 ? " OVER gzip limit" : ""
-  if failures == 100
+  if description_bytes
+    capped = spans.first.attributes.values.count { |value| value.is_a?(String) && value.end_with?(Buildkite::TestCollector::OTel::TRUNCATION_MARKER) }
+    overhead = spans.map do |span|
+      payload = span.events.sum { |event| event.attributes.values.sum(&:bytesize) }
+      exporter.send(:encode, [span]).bytesize - payload - span.status.description.to_s.bytesize
+    end.max
+    puts "  #{capped} attribute values at the #{Buildkite::TestCollector::OTel::ATTRIBUTE_VALUE_MAX_BYTES}-byte cap; " \
+      "maximum single-span protobuf overhead (including resource): #{overhead} bytes"
+    if options[:spans] <= Buildkite::TestCollector::OTel::TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT
+      abort "long-description request exceeds decoded limit" if raw.bytesize > 8 * 1024 * 1024
+    end
+  elsif failures == 100
     overhead = spans.map do |span|
       payload = span.events.sum { |event| event.attributes.values.sum(&:bytesize) }
       exporter.send(:encode, [span]).bytesize - payload - span.status.description.to_s.bytesize

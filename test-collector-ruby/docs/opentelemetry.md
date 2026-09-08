@@ -304,13 +304,18 @@ The RSpec plugin limits the failure detail sent on each test span:
 | Combined exception detail | 26 KiB per span, shared across events |
 | `exception` events | at most 100 events per span, including the omission summary |
 | Span status description | 1,024 bytes |
+| Test span attribute values (descriptions, paths, tags, run metadata) | 1,024 bytes each |
 
 Text exceeding a limit is truncated on a character boundary and ends with
 `… [truncated by buildkite-test_collector]`. The marker's bytes count toward the
 limit, including the three-byte ellipsis. Invalid UTF-8 is replaced before
 truncation, and the result remains valid UTF-8.
-These limits apply only to the experimental RSpec OpenTelemetry path; legacy
-JSON failure detail is unchanged.
+These limits apply only to the experimental OpenTelemetry path; legacy
+JSON failure detail is unchanged. The attribute cap applies to every string
+attribute the collector sets on a test span, including per-test tags,
+`configure` tags and the run metadata read from the CI environment (for example
+the commit message); it does not apply to user-added annotations or to resource
+attributes.
 
 The first exception can use the full 10 KiB message and 16 KiB stacktrace
 allowance. Later events share what remains, reserving 128 bytes per additional
@@ -348,11 +353,16 @@ encodes to at most **~7.3 MiB**, under the 8 MiB ingestion limit:
 This bound applies to multibyte text and aggregate failures, not just a single
 ASCII failure. The remaining assumption is that other span fields, attributes,
 resource, first-event framing and the omission summary fit within 2 KiB per
-span. `script/payload_size.rb` measures **1,848 bytes** for that overhead with
-realistic span fields and near-limit aggregate failures (1,796 excluding the
+span. `script/payload_size.rb` measures **1,858 bytes** for that overhead with
+realistic span fields and near-limit aggregate failures (1,806 excluding the
 omission message). Additional-event framing is reserved within the event budget.
-Arbitrary large tags, names, resource attributes or user-added annotations can
-violate this assumption; the collector does not impose a serialized request cap.
+Each string attribute value is capped at 1,024 bytes, so a long RSpec
+description (which reaches the scope, suite name and full description together)
+adds at most 3 KiB: 256 × (26 KiB + 1 KiB + 3 KiB + 2 KiB) = 8 MiB exactly,
+and the script measures 7.9 MiB for that case. Four or more capped values per
+span (for example several kilobyte-long tags on every test) on top of
+near-limit failures, resource attributes and user-added annotations remain
+outside the bound; the collector does not impose a serialized request cap.
 Incompressible failure content can still exceed 900 KiB gzipped at any batch
 size; reducing the batch is not a guarantee that a request fits.
 
