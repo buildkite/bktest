@@ -289,11 +289,10 @@ exported and `otel_enabled` is left off for the run, so a suite that hard-codes
 `otel_enabled: true` stays quiet on a developer machine. This matches the JSON
 path, which does not upload without a token.
 
-The exporter's default timeout still comes from
+The exporter's default timeout comes from
 `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` or `OTEL_EXPORTER_OTLP_TIMEOUT`; the batch
 processor supplies its own timeout when exporting, including the remaining
-suite-end flush budget. For isolated Buildkite submission,
-the collector pins compression to gzip and ignores the standard
+suite-end flush budget. The collector pins compression to gzip and ignores the standard
 `OTEL_EXPORTER_OTLP_*_COMPRESSION`, `*_CERTIFICATE`, `*_CLIENT_CERTIFICATE`, and
 `*_CLIENT_KEY` settings. Buildkite export therefore uses the system certificate
 store and no client certificate, even when the process configures compression,

@@ -652,9 +652,9 @@ module Buildkite::TestCollector
       end
 
       def warn_ignored_otlp_headers
-        return if @ignored_otlp_headers_warning_emitted
+        return if @warned_ignored_otlp_headers
 
-        @ignored_otlp_headers_warning_emitted = true
+        @warned_ignored_otlp_headers = true
         warn "[buildkite-test_collector] Standard OpenTelemetry exporter headers are ignored for the Buildkite endpoint; " \
           "to use them, set OTEL_EXPORTER_OTLP_TRACES_ENDPOINT to the collector's full endpoint, " \
           "or OTEL_EXPORTER_OTLP_ENDPOINT to its base URL without /v1/traces."

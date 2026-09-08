@@ -568,9 +568,10 @@ RSpec.describe Buildkite::TestCollector::OTel do
     allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
       .and_return("authorization=Bearer%20generic-token")
 
+    headers = nil
     expect {
       environment_headers = described_class.send(:otlp_headers_from_environment, endpoint)
-      @headers = described_class.send(
+      headers = described_class.send(
         :request_headers,
         { "key" => "test-run-id" },
         "suite-token",
@@ -578,7 +579,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       )
     }.not_to output.to_stderr
 
-    expect(@headers).to eq(
+    expect(headers).to eq(
       "authorization" => "Bearer relay-token",
       "buildkite-tests-run-key" => "relay-run",
       "x-extra" => "hello world",
@@ -600,34 +601,31 @@ RSpec.describe Buildkite::TestCollector::OTel do
   end
 
   it "ignores standard OTLP headers for a different endpoint and warns once" do
-    previous = described_class.instance_variable_get(:@ignored_otlp_headers_warning_emitted)
-    allow(ENV).to receive(:[]).and_call_original
-    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").and_return(nil)
-    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_ENDPOINT")
-      .and_return("https://otel.vendor.example")
-    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return(nil)
-    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
-      .and_return("authorization=Bearer%20x")
-    described_class.instance_variable_set(:@ignored_otlp_headers_warning_emitted, nil)
+    script = <<~'RUBY'
+      require "buildkite/test_collector"
+      ENV.delete("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+      ENV.delete("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
+      ENV["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://otel.vendor.example"
+      ENV["OTEL_EXPORTER_OTLP_HEADERS"] = "authorization=Bearer%20x"
+      otel = Buildkite::TestCollector::OTel
 
-    expect {
       2.times do
-        @headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
+        puts JSON.generate(otel.send(:request_headers, { "key" => "test-run-id" }, "suite-token"))
       end
-    }.to output { |warning|
-      expect(warning.scan("Standard OpenTelemetry exporter headers are ignored for the Buildkite endpoint").length).to eq(1)
-    }.to_stderr
+      2.times { otel.configure!(api_token: "suite-token", run_env: { "key" => "test-run-id" }) }
+      otel.shutdown
+      otel.configure!(api_token: "suite-token", run_env: { "key" => "test-run-id" })
+      otel.shutdown
+    RUBY
 
-    expect(@headers).to include("Authorization" => %(Token token="suite-token"))
-    expect(@headers.keys).not_to include("authorization")
-    expect do
-      2.times { described_class.configure!(api_token: "suite-token") }
-      described_class.shutdown
-      described_class.configure!(api_token: "suite-token")
-    end.not_to output.to_stderr
-  ensure
-    described_class.shutdown
-    described_class.instance_variable_set(:@ignored_otlp_headers_warning_emitted, previous)
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-Ilib", "-e", script)
+
+    expect(status).to be_success, stderr
+    expect(stdout.lines.map { |line| JSON.parse(line) }).to eq(
+      [{ "Buildkite-Tests-Run-Key" => "test-run-id", "Authorization" => %(Token token="suite-token") }] * 2,
+    )
+    expect(stderr.lines.length).to eq(1)
+    expect(stderr).to include("Standard OpenTelemetry exporter headers are ignored for the Buildkite endpoint")
   end
 
   it "does not treat standard OTLP headers for a different endpoint as collector credentials" do
@@ -666,7 +664,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(exporter.instance_variable_get(:@compression)).to eq("gzip")
   ensure
     processor&.shutdown
-    described_class.instance_variable_set(:@exporters, nil)
+    described_class.shutdown
   end
 
   it "ignores standard OTLP certificate files" do
@@ -682,11 +680,11 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(http.key).to be_nil
   ensure
     processor&.shutdown
-    described_class.instance_variable_set(:@exporters, nil)
+    described_class.shutdown
   end
 
   it "isolates both exporters from vendor endpoints, compression, certificates, and TLS verification switches" do
-    previous = described_class.instance_variable_get(:@ignored_otlp_headers_warning_emitted)
+    allow(described_class).to receive(:warn_ignored_otlp_headers)
     allow(ENV).to receive(:[]).and_call_original
     %w[OTEL_EXPORTER_OTLP OTEL_EXPORTER_OTLP_TRACES].each do |prefix|
       allow(ENV).to receive(:[]).with("#{prefix}_ENDPOINT").and_return("https://vendor.example/v1/traces")
@@ -695,6 +693,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         allow(ENV).to receive(:[]).with("#{prefix}_#{suffix}").and_return("/nonexistent")
       end
     end
+    # Exporter.ssl_verify_mode checks presence with ENV.key?, not the value.
     allow(ENV).to receive(:key?).and_call_original
     allow(ENV).to receive(:key?).with("OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_PEER").and_return(false)
     allow(ENV).to receive(:key?).with("OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_NONE").and_return(true)
@@ -713,7 +712,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end
   ensure
     described_class.shutdown
-    described_class.instance_variable_set(:@ignored_otlp_headers_warning_emitted, previous)
   end
 
   it "applies the same endpoint comparison to header parsing and credential detection" do
