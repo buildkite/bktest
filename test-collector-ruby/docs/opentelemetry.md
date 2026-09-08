@@ -300,6 +300,9 @@ store and no client certificate, even when the process configures compression,
 a custom CA, or mTLS for another OpenTelemetry destination. HTTPS peer
 verification is always enabled: `OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_NONE`
 cannot disable it, and `OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_PEER` is not consulted.
+Behind a TLS-inspecting proxy that re-signs traffic with a private CA, add that
+CA to the system store by exporting `SSL_CERT_FILE` or `SSL_CERT_DIR` before
+the Ruby process starts; Ruby's default `OpenSSL::X509::Store` honours both.
 
 OpenTelemetry's SDK owns batching, retries, and transport. `test.execution`
 spans have a reserved, faster-draining queue and exporter. Forwarded children
