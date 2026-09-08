@@ -317,14 +317,79 @@ RSpec.describe Buildkite::TestCollector::OTel do
       .to output(/Could not shut down OpenTelemetry span export: .*network blocked/).to_stderr
   end
 
-  it "re-raises fatal exceptions" do
-    test_span_provider = double("execution provider")
-    allow(test_span_provider).to receive(:force_flush).and_raise(SystemExit, 1)
-    described_class.instance_variable_set(:@test_span_provider, test_span_provider)
+  [SystemExit.new(1), Interrupt.new, SignalException.new("TERM"), NoMemoryError.new].each do |fatal|
+    it "re-raises #{fatal.class} from export and lifecycle boundaries" do
+      exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(endpoint: "https://example.invalid/v1/traces")
+      allow(exporter).to receive(:export).and_raise(fatal)
+      allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(exporter)
+      processor = described_class.send(:batch_processor, "https://example.invalid/v1/traces", {})
+      expect { exporter.export([]) }.to raise_error(fatal.class)
 
-    expect { described_class.force_flush }.to raise_error(SystemExit)
-  ensure
-    described_class.instance_variable_set(:@test_span_provider, nil)
+      provider = double("execution provider")
+      allow(provider).to receive(:force_flush).and_raise(fatal)
+      allow(provider).to receive(:shutdown).and_raise(fatal)
+      described_class.instance_variable_set(:@test_span_provider, provider)
+      expect { described_class.force_flush }.to raise_error(fatal.class)
+      expect { described_class.shutdown }.to raise_error(fatal.class)
+    ensure
+      described_class.instance_variable_set(:@test_span_provider, nil)
+      processor&.shutdown
+      described_class.shutdown
+    end
+  end
+
+  it "keeps both batch workers alive after WebMock blocks an export" do
+    script = <<~'RUBY'
+      require "buildkite/test_collector"
+      require "opentelemetry/sdk"
+      require "opentelemetry/exporter/otlp"
+      require "webmock"
+      include WebMock::API
+      WebMock.enable!
+      WebMock.disable_net_connect!
+      Thread.abort_on_exception = true
+      otel = Buildkite::TestCollector::OTel
+      endpoint = "https://example.invalid/v1/traces"
+      otel.configure!(endpoint: endpoint)
+      # Suites can replace their network policy after before(:suite).
+      WebMock.disable_net_connect!
+      test = Struct.new(:otel_attributes, :otel_result).new({}, "passed")
+      root = otel.start_test_span(test: test)
+      otel.with_test_span(root) do
+        OpenTelemetry.tracer_provider.tracer("suite").in_span("child") {}
+      end
+      otel.finish_test_span(root, test: test)
+      test_processor = otel.instance_variable_get(:@test_span_provider).instance_variable_get(:@span_processors).first
+      processors = [test_processor, otel.instance_variable_get(:@child_span_processor)]
+      # Wake the real workers without waiting for the child queue's 5s timer.
+      processors.each { |p| p.instance_variable_get(:@mutex).synchronize { p.instance_variable_get(:@condition).signal } }
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+      until processors.all? { |p| p.instance_variable_get(:@spans).empty? }
+        raise "workers did not drain" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        sleep 0.01
+      end
+      # Synchronize with export completion, not just dequeue.
+      processors.each { |p| p.instance_variable_get(:@export_mutex).synchronize {} }
+      raise "worker died" unless processors.all? { |p| p.instance_variable_get(:@thread).alive? }
+      WebMock.reset!
+      stub_request(:post, endpoint).to_return(status: 200)
+      root = otel.start_test_span(test: test)
+      otel.with_test_span(root) do
+        OpenTelemetry.tracer_provider.tracer("suite").in_span("child") {}
+      end
+      otel.finish_test_span(root, test: test)
+      otel.force_flush
+      assert_requested(:post, endpoint, times: 2)
+      # Leave a blocked request for the real at_exit handler, too.
+      WebMock.reset!
+      otel.finish_test_span(otel.start_test_span(test: test), test: test)
+      puts "workers recovered"
+    RUBY
+
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-Ilib", "-e", script)
+    expect(status).to be_success, stderr
+    expect(stdout).to include("workers recovered")
+    expect(stderr).to include("WebMock::NetConnectNotAllowedError", "TEST RESULTS MISSING")
   end
 
   it "attempts child shutdown when test span shutdown fails" do
@@ -1080,21 +1145,24 @@ RSpec.describe Buildkite::TestCollector::OTel do
   end
 
   describe "WebMock exemption" do
-    it "adds the OTLP endpoint host to WebMock's allow list" do
-      WebMock.disable_net_connect!(allow: "customer.example")
-      allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new) do
-        OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    ["customer.example", ["customer.example"], /customer\.example/, nil].each do |allowed|
+      it "preserves a #{allowed.class} allow list when exempting the OTLP endpoint" do
+        config = WebMock::Config.instance
+        previous = [config.allow, config.allow_net_connect]
+        WebMock.disable_net_connect!(allow: allowed)
+        allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new) do
+          OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+        end
+
+        described_class.configure!(endpoint: "https://tests-otlp.example.invalid/v1/traces")
+
+        expect(WebMock.net_connect_allowed?("https://tests-otlp.example.invalid/v1/traces")).to be true
+        expect(WebMock.net_connect_allowed?("https://customer.example")).to eq(!allowed.nil?)
+        expect(WebMock.net_connect_allowed?("https://blocked.example")).to be false
+      ensure
+        described_class.shutdown
+        config.allow, config.allow_net_connect = previous
       end
-
-      described_class.configure!(endpoint: "https://tests-otlp.example.invalid/v1/traces")
-
-      expect(WebMock.net_connect_allowed?(URI("https://tests-otlp.example.invalid/v1/traces"))).to be true
-      expect(WebMock.net_connect_allowed?(URI("https://customer.example"))).to be true
-      expect(WebMock.net_connect_allowed?(URI("https://blocked.example"))).to be false
-    ensure
-      described_class.shutdown
-      WebMock.allow_net_connect!
-      WebMock::Config.instance.allow = nil
     end
   end
 

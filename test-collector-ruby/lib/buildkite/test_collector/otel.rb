@@ -39,6 +39,21 @@ module Buildkite::TestCollector
     end
     private_constant :ExceptionHandling
 
+    # The SDK only rescues StandardError in its batch worker. Guard export on
+    # our exporter instances, not globally, so a network-blocking Exception
+    # returns a failed batch instead of permanently killing either worker.
+    module ExportErrorHandling
+      def export(spans, timeout: nil)
+        super
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        # WebMock's message includes the request body and Authorization header.
+        warn "[buildkite-test_collector] Could not export OpenTelemetry spans: #{e.class}"
+        OpenTelemetry::SDK::Trace::Export::FAILURE
+      end
+    end
+    private_constant :ExportErrorHandling
+
     require_relative "otel/test_span_metrics_reporter"
     require_relative "otel/span_filter"
     require_relative "otel/child_span_forwarder"
@@ -287,6 +302,7 @@ module Buildkite::TestCollector
           headers: headers,
           metrics_reporter: metrics_reporter,
         )
+        exporter.singleton_class.prepend(ExportErrorHandling)
         # Retained so refresh_authorization can reach the headers each
         # exporter snapshotted at construction.
         (@exporters ||= []) << exporter
