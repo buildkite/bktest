@@ -42,14 +42,37 @@ module Buildkite::TestCollector
     # The SDK only rescues StandardError in its batch worker. Guard export on
     # our exporter instances, not globally, so a network-blocking Exception
     # returns a failed batch instead of permanently killing either worker.
+    # A blocked endpoint fails every batch the same way, about once a second,
+    # so each exception class is named once; the dropped-span totals keep
+    # counting every batch.
     module ExportErrorHandling
+      @mutex = Mutex.new
+      @warned = {}
+
       def export(spans, timeout: nil)
         super
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
-        # WebMock's message includes the request body and Authorization header.
-        warn "[buildkite-test_collector] Could not export OpenTelemetry spans: #{e.class}"
+        # Mirror the exporter's own accounting for failures it detects, so the
+        # dropped-span report can name this cause too.
+        @metrics_reporter&.add_to_counter("otel.otlp_exporter.failure", labels: { "reason" => e.class.to_s })
+        ExportErrorHandling.warn_once(e)
         OpenTelemetry::SDK::Trace::Export::FAILURE
+      end
+
+      class << self
+        def warn_once(exception)
+          first = @mutex.synchronize { @warned[exception.class] = true unless @warned.key?(exception.class) }
+          return unless first
+
+          # WebMock's message includes the request body and Authorization header.
+          warn "[buildkite-test_collector] Could not export OpenTelemetry spans: #{exception.class}. " \
+            "Further #{exception.class} export failures will not be reported."
+        end
+
+        def reset
+          @mutex.synchronize { @warned.clear }
+        end
       end
     end
     private_constant :ExportErrorHandling
@@ -250,6 +273,7 @@ module Buildkite::TestCollector
         @child_span_processor = nil
         @child_span_forwarder = nil
         @exporters = nil
+        ExportErrorHandling.reset
         @test_span_metrics_reporter = nil
         @api_token = nil
         @authorization_from_environment = nil

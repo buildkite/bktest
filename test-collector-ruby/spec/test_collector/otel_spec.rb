@@ -338,6 +338,33 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end
   end
 
+  it "names each non-fatal export exception class once and fails the batch" do
+    blocked = stub_const("SuiteNetworkBlocked", Class.new(Exception))
+    reporter = described_class.const_get(:TestSpanMetricsReporter).new
+    exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(endpoint: "https://example.invalid/v1/traces", metrics_reporter: reporter)
+    allow(exporter).to receive(:export).and_raise(blocked, "body and Authorization header")
+    allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(exporter)
+    processor = described_class.send(:batch_processor, "https://example.invalid/v1/traces", {}, metrics_reporter: reporter)
+
+    results = nil
+    expect { results = Array.new(3) { exporter.export([]) } }
+      .to output(/\A\[buildkite-test_collector\] Could not export OpenTelemetry spans: SuiteNetworkBlocked\. Further SuiteNetworkBlocked export failures will not be reported\.\n\z/)
+      .to_stderr
+    expect(results).to all(eq(OpenTelemetry::SDK::Trace::Export::FAILURE))
+    expect { exporter.export([]) }.not_to output.to_stderr
+
+    # The exception bypasses the exporter's own failure accounting, so the
+    # dropped-span report would otherwise not say why the batch was lost.
+    expect { reporter.add_to_counter("otel.bsp.dropped_spans", increment: 2, labels: { "reason" => "export-failure" }) }
+      .to output(/TEST RESULTS MISSING.*\(export-failure, last OTLP failure: SuiteNetworkBlocked\)/).to_stderr
+
+    described_class.shutdown
+    expect { exporter.export([]) }.to output(/SuiteNetworkBlocked/).to_stderr
+  ensure
+    processor&.shutdown
+    described_class.shutdown
+  end
+
   it "keeps both batch workers alive after WebMock blocks an export" do
     script = <<~'RUBY'
       require "buildkite/test_collector"

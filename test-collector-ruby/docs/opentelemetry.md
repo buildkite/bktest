@@ -299,7 +299,9 @@ run. Reporting a new run requires a new process.
 
 Non-fatal export errors, including WebMock network blocks, do not fail a test
 or stop the batch workers from exporting later spans. A blocked batch is still
-lost and reported; the allow-list exemption prevents that loss. Process-control
+lost and counted in the dropped-span report; the exception class itself is
+named once per run, not once per batch. The allow-list exemption prevents that
+loss. Process-control
 exceptions (`SystemExit`, `SignalException`, including `Interrupt`, and
 `NoMemoryError`) are re-raised, including during process-exit shutdown.
 If test span setup fails (for example on Ruby older than 3.3, or without the
