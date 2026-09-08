@@ -330,26 +330,26 @@ use `More failures omitted by buildkite-test_collector` rather than consuming
 their tail to count it. If necessary, the summary replaces the 100th detail
 event to keep the total at 100.
 
-The reserved test-span queue defaults to 8,192 spans, exporting at most **256**
+The reserved test-span queue defaults to 8,192 spans, exporting at most **240**
 spans per batch with a one-second schedule delay. Configure sizes before the
 collector first starts exporting:
 
 | Environment variable | Default |
 | --- | --- |
-| `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE` | `256` |
+| `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE` | `240` |
 | `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE` | `8192` |
 
 Values must contain only decimal digits and be positive integers. Invalid
 values (including empty strings) warn with `[buildkite-test_collector]` and
-fall back to the corresponding default. A batch override above 256 warns once
-and is clamped to 256; the queue override is not clamped. If the resulting batch
+fall back to the corresponding default. A batch override above 240 warns once
+and is clamped to 240; the queue override is not clamped. If the resulting batch
 exceeds the queue, both sizes fall back to their defaults with a warning; a bad override
 never disables test export. Test-span processor options are explicit, so
 `OTEL_BSP_*` settings do not affect this queue; child spans keep SDK settings.
 
-Under the 2 KiB per-span overhead assumption, a full batch of 256 test spans
-encodes to at most **~7.3 MiB**, under the 8 MiB ingestion limit:
-256 × (26 KiB event budget + 1 KiB status + 2 KiB overhead) = 7.25 MiB.
+Under the 2 KiB per-span overhead assumption, a full batch of 240 test spans
+encodes to at most **~6.8 MiB**, under the 8 MiB ingestion limit:
+240 × (26 KiB event budget + 1 KiB status + 2 KiB overhead) = 6.8 MiB.
 This bound applies to multibyte text and aggregate failures, not just a single
 ASCII failure. The remaining assumption is that other span fields, attributes,
 resource, first-event framing and the omission summary fit within 2 KiB per
@@ -358,8 +358,9 @@ realistic span fields and near-limit aggregate failures (1,806 excluding the
 omission message). Additional-event framing is reserved within the event budget.
 Each string attribute value is capped at 1,024 bytes, so a long RSpec
 description (which reaches the scope, suite name and full description together)
-adds at most 3 KiB: 256 × (26 KiB + 1 KiB + 3 KiB + 2 KiB) = 8 MiB exactly,
-and the script measures 7.9 MiB for that case. Four or more capped values per
+adds at most 3 KiB: 240 × (26 KiB + 1 KiB + 3 KiB + 2 KiB) = 7.5 MiB, leaving
+512 KiB of headroom for bytes the model does not count; the script measures
+about 7.4 MiB for that case. Four or more capped values per
 span (for example several kilobyte-long tags on every test) on top of
 near-limit failures, resource attributes and user-added annotations remain
 outside the bound; the collector does not impose a serialized request cap.

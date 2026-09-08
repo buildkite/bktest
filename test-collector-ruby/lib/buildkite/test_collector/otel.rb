@@ -29,11 +29,12 @@ module Buildkite::TestCollector
     # Smaller batches leave room for failure detail under ingestion's decoded
     # request limit and share its per-request backtrace budget among fewer tests.
     TEST_SPAN_MAX_QUEUE_SIZE = 8_192
-    TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 256
-    # 256 * (26 KiB exception payload + 1 KiB status + 2 KiB overhead)
-    # = 7.25 MiB, below the 8 MiB decoded ingestion limit. With three attribute
-    # values at ATTRIBUTE_VALUE_MAX_BYTES on top, the bound is exactly 8 MiB.
-    TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT = 256
+    TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 240
+    # 240 * (26 KiB exception payload + 1 KiB status + 2 KiB overhead)
+    # = 6.8 MiB, below the 8 MiB decoded ingestion limit. With three attribute
+    # values at ATTRIBUTE_VALUE_MAX_BYTES on top, the bound is 7.5 MiB, leaving
+    # 512 KiB of headroom for bytes the model does not count.
+    TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT = 240
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
 
     # Test-span attribute values (test descriptions, the commit message, tags,

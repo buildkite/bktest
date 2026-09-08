@@ -320,16 +320,17 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
       expect(Buildkite::TestCollector::OTel::TEST_SPAN_MAX_EXPORT_BATCH_SIZE).to be <= batch_size
     end
 
-    it "keeps the maximum batch within the decoded limit when three attribute values hit their cap" do
+    it "keeps 512 KiB of headroom under the decoded limit when three attribute values hit their cap" do
       # A long RSpec description reaches the scope, the suite name and the full
       # description together; each is capped, so the span grows by at most three
-      # capped values over the realistic 2 KiB overhead.
+      # capped values over the realistic 2 KiB overhead. The headroom covers
+      # bytes the model does not count (resource attributes, annotations).
       otel = Buildkite::TestCollector::OTel
       bytes_per_span = described_class::OTEL_EXCEPTION_EVENTS_MAX_BYTES +
         described_class::OTEL_STATUS_DESCRIPTION_MAX_BYTES +
         3 * otel::ATTRIBUTE_VALUE_MAX_BYTES + 2_048
 
-      expect(otel::TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT * bytes_per_span).to be <= 8 * 1_024 * 1_024
+      expect(otel::TEST_SPAN_MAX_EXPORT_BATCH_SIZE_LIMIT * bytes_per_span).to be <= 8 * 1_024 * 1_024 - 512 * 1_024
     end
   end
 end

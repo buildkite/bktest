@@ -55,13 +55,13 @@ RSpec.describe Buildkite::TestCollector::OTel do
       expect(exporter.finished_spans.map(&:name)).to eq(["test.execution"])
     end
 
-    it "defaults to 256 spans per batch and an 8192-span queue, ignoring OTEL_BSP_*" do
+    it "defaults to 240 spans per batch and an 8192-span queue, ignoring OTEL_BSP_*" do
       allow(ENV).to receive(:fetch).and_call_original
       %w[MAX_QUEUE_SIZE MAX_EXPORT_BATCH_SIZE SCHEDULE_DELAY EXPORT_TIMEOUT].each do |option|
         allow(ENV).to receive(:fetch).with("OTEL_BSP_#{option}", anything).and_return("0")
       end
       allow(ENV).to receive(:fetch).with("OTEL_RUBY_BSP_START_THREAD_ON_BOOT", anything).and_return("false")
-      expect_test_processor(batch: 256, queue: 8_192)
+      expect_test_processor(batch: 240, queue: 8_192)
 
       expect { configure_and_export_test }.not_to output.to_stderr
     end
@@ -83,7 +83,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     it "allows a queue override without changing the batch default" do
       allow(ENV).to receive(:[]).with(queue_env).and_return("1024")
-      expect_test_processor(batch: 256, queue: 1_024)
+      expect_test_processor(batch: 240, queue: 1_024)
 
       expect { configure_and_export_test }.not_to output.to_stderr
     end
@@ -93,7 +93,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         it "warns and uses the default for #{setting} override #{value.inspect}" do
           env = setting == :batch ? batch_env : queue_env
           allow(ENV).to receive(:[]).with(env).and_return(value)
-          expect_test_processor(batch: 256, queue: 8_192)
+          expect_test_processor(batch: 240, queue: 8_192)
 
           expect { configure_and_export_test }.to output(
             /\[buildkite-test_collector\] #{env} must be a positive integer; using default/,
@@ -105,21 +105,21 @@ RSpec.describe Buildkite::TestCollector::OTel do
     it "clamps an oversized batch once without changing the queue override" do
       allow(ENV).to receive(:[]).with(batch_env).and_return("8193")
       allow(ENV).to receive(:[]).with(queue_env).and_return("512")
-      expect_test_processor(batch: 256, queue: 512)
+      expect_test_processor(batch: 240, queue: 512)
 
       expect { configure_and_export_test }.to output(
-        "[buildkite-test_collector] #{batch_env} exceeds 256, clamping to 256 to stay under the 8 MiB ingestion limit\n",
+        "[buildkite-test_collector] #{batch_env} exceeds 240, clamping to 240 to stay under the 8 MiB ingestion limit\n",
       ).to_stderr
     end
 
     it "checks the queue after clamping an oversized batch" do
       allow(ENV).to receive(:[]).with(batch_env).and_return("512")
       allow(ENV).to receive(:[]).with(queue_env).and_return("128")
-      expect_test_processor(batch: 256, queue: 8_192)
+      expect_test_processor(batch: 240, queue: 8_192)
 
       expect { configure_and_export_test }.to output(
-        "[buildkite-test_collector] #{batch_env} exceeds 256, clamping to 256 to stay under the 8 MiB ingestion limit\n" \
-        "[buildkite-test_collector] #{batch_env} must be <= #{queue_env}; using defaults (batch 256, queue 8192)\n",
+        "[buildkite-test_collector] #{batch_env} exceeds 240, clamping to 240 to stay under the 8 MiB ingestion limit\n" \
+        "[buildkite-test_collector] #{batch_env} must be <= #{queue_env}; using defaults (batch 240, queue 8192)\n",
       ).to_stderr
     end
 
@@ -127,10 +127,10 @@ RSpec.describe Buildkite::TestCollector::OTel do
       it "falls back to both defaults when batch #{batch.inspect} exceeds queue #{queue.inspect}" do
         allow(ENV).to receive(:[]).with(batch_env).and_return(batch)
         allow(ENV).to receive(:[]).with(queue_env).and_return(queue)
-        expect_test_processor(batch: 256, queue: 8_192)
+        expect_test_processor(batch: 240, queue: 8_192)
 
         expect { configure_and_export_test }.to output(
-          "[buildkite-test_collector] #{batch_env} must be <= #{queue_env}; using defaults (batch 256, queue 8192)\n",
+          "[buildkite-test_collector] #{batch_env} must be <= #{queue_env}; using defaults (batch 240, queue 8192)\n",
         ).to_stderr
       end
     end
