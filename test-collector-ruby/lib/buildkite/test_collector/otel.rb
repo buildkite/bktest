@@ -72,10 +72,18 @@ module Buildkite::TestCollector
       end
 
       def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, span_filter: nil, tags: {})
-        unless enabled? || RUN_KEY_FORMAT.match?(run_env["key"])
+        key = run_env["key"]
+        unless enabled? || (key.is_a?(String) && key.valid_encoding? && key.ascii_only? && RUN_KEY_FORMAT.match?(key))
+          fallback = if api_token
+            "The collector is falling back to the JSON upload."
+          else
+            "OpenTelemetry is disabled; results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set."
+          end
           warn "[buildkite-test_collector] Test results would be missing in OpenTelemetry mode because run key " \
-            "#{run_env["key"].inspect} is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); " \
-            "it must be 1-255 printable ASCII characters without spaces. The collector is falling back to the JSON upload."
+            "#{key.inspect} is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); " \
+            "it must be 1-255 printable ASCII characters without spaces. #{fallback}"
+          # The caller disables OTel and enables legacy tracing; false means
+          # this warning already explains the fallback and needs no second one.
           return false
         end
 
@@ -594,6 +602,10 @@ module Buildkite::TestCollector
         headers = { "Buildkite-Tests-Run-Key" => run_env["key"] }
         headers["Authorization"] = authorization_header(api_token) if api_token
         environment_headers.each do |key, value|
+          # The receiver header must carry the same validated identity as the
+          # test spans, even when a relay supplies other request headers.
+          next if key.casecmp?("Buildkite-Tests-Run-Key")
+
           headers.delete_if { |existing, _| existing.casecmp?(key) }
           headers[key] = value
         end

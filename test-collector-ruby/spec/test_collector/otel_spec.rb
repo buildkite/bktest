@@ -341,6 +341,33 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.shutdown
   end
 
+  it "rejects invalid run keys before loading dependencies or registering providers and shutdown hooks" do
+    original_provider = OpenTelemetry.tracer_provider
+    expect(described_class).not_to receive(:require)
+    expect(described_class).not_to receive(:at_exit)
+    [nil, "", "bad key", "key\n", "é", "x" * 256, "\xff", 123].each do |key|
+      expect do
+        expect(described_class.configure!(run_env: { "key" => key }, api_token: "suite-token")).to be false
+      end.to output(/Fix BUILDKITE_ANALYTICS_KEY.*1-255.*falling back to the JSON upload/).to_stderr
+      expect(described_class).not_to be_enabled
+      expect(described_class.instance_variable_get(:@test_span_provider)).to be_nil
+      expect(OpenTelemetry.tracer_provider).to equal(original_provider)
+    end
+  end
+
+  it "accepts the receiver's boundary lengths and printable ASCII punctuation" do
+    allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new) do
+      OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    end
+    ["!", "~" * 255, (33..126).map(&:chr).join].each do |key|
+      configure_otel(run_env: { "key" => key })
+      expect(described_class).to be_enabled
+      described_class.shutdown
+    end
+  ensure
+    described_class.shutdown
+  end
+
   it "registers a process-lifetime at_exit shutdown once, on successful configure" do
     suite_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     allow(OpenTelemetry).to receive(:tracer_provider).and_return(suite_provider)
@@ -567,11 +594,11 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
   end
 
-  it "gives trace-specific OTLP headers precedence over generic and collector headers" do
+  it "gives trace-specific credentials precedence without allowing headers to replace the run identity" do
     allow(ENV).to receive(:[]).and_call_original
     allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
       .and_return(
-        "authorization=Bearer%20relay-token,buildkite-tests-run-key=relay-run,x-extra=hello%20world"
+        "authorization=Bearer%20relay-token,buildkite-tests-run-key=invalid%20key,x-extra=hello%20world"
       )
     allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
       .and_return("authorization=Bearer%20generic-token")
@@ -580,7 +607,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     expect(headers).to eq(
       "authorization" => "Bearer relay-token",
-      "buildkite-tests-run-key" => "relay-run",
+      "Buildkite-Tests-Run-Key" => "test-run-id",
       "x-extra" => "hello world",
     )
   end

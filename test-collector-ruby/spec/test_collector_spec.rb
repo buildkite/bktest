@@ -217,6 +217,20 @@ RSpec.describe Buildkite::TestCollector do
       expect(Buildkite::TestCollector::Object).to have_received(:configure)
     end
 
+    it "warns once about missing JSON credentials when an invalid run key disables header-only export" do
+      allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "invalid key" } }
+      allow(Buildkite::TestCollector).to receive(:hook_into)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
+      env_overlay["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "Authorization=Bearer%20relay"
+
+      Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
+      expect { Buildkite::TestCollector.start_otel }.to output(
+        /\A\[buildkite-test_collector\] .*Fix BUILDKITE_ANALYTICS_KEY.*results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set\.\n\z/
+      ).to_stderr
+      expect(Buildkite::TestCollector.otel_enabled?).to be false
+      expect(Buildkite::TestCollector::OTel).not_to be_enabled
+    end
+
     it "says results will not be uploaded when only OTLP headers held the credential" do
       # Header-only authentication (bktec's relay) has no token for the JSON
       # path, so the fallback must not promise an upload Uploader will skip.
