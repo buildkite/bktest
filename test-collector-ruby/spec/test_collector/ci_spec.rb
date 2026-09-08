@@ -46,7 +46,7 @@ RSpec.describe Buildkite::TestCollector::CI do
       expect(result).to include("test_runner" => "rspec")
     end
 
-    it "preserves a Pathname location prefix even when its directory is empty" do
+    it "keeps a Pathname location prefix, which the empty-string check must not discard" do
       Dir.mktmpdir do |directory|
         prefix = Pathname.new(directory)
         Buildkite::TestCollector.configure(hook: :rspec, location_prefix: prefix)
