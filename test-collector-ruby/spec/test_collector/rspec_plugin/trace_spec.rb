@@ -224,6 +224,18 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
       expect(trace.failure_expanded.length).to eq(102)
     end
 
+    it "stops reading lazy failure detail after the first 100 nonempty events" do
+      trace.failure_expanded = Enumerator.new do |failures|
+        failures << { expanded: [] }
+        100.times { |i| failures << { expanded: ["failure #{i}"] } }
+        raise "read past the exception event limit"
+      end.lazy
+
+      expect(trace.otel_exception_events).to eq(
+        Array.new(100) { |i| { "exception.message" => "failure #{i}" } },
+      )
+    end
+
     it "keeps the default single-failure batch estimate below ingestion's decoded limit" do
       # Ingestion silently drops an entire request above 8 MiB decoded protobuf,
       # even when the gzip body fits at the edge. Allow ~2 KiB for attributes,

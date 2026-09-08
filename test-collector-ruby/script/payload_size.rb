@@ -117,7 +117,18 @@ else
   [[false, 0, 0], [true, 30, 1_024], [true, 60, 4 * 1_024], [true, 100, 10 * 1_024], [true, 170, 10 * 1_024]]
 end
 # Only #encode is called: no processor, export, or network request is started.
-exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(endpoint: "http://127.0.0.1:1/v1/traces")
+# Still bypass constructor defaults so unrelated OTLP credentials or missing
+# certificate files cannot prevent this offline measurement from running.
+exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(
+  endpoint: "http://127.0.0.1:1/v1/traces",
+  headers: {},
+  certificate_file: nil,
+  client_certificate_file: nil,
+  client_key_file: nil,
+  ssl_verify_mode: OpenSSL::SSL::VERIFY_PEER,
+  compression: "gzip",
+  timeout: 10,
+)
 puts "RSpec limits applied; limits: raw <= 8192 KiB, gzip <= 900 KiB"
 rows.each do |failing, lines, bytes|
   spans = Array.new(options[:spans]) { |i| span_data(i, failing: failing, backtrace_lines: lines, message_bytes: bytes) }

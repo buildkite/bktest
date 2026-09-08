@@ -277,7 +277,7 @@ module Buildkite::TestCollector
       def positive_integer_env(name, default)
         value = ENV[name]
         return default if value.nil?
-        return value.to_i if value.match?(/\A[0-9]+\z/) && value.to_i.positive?
+        return value.to_i if value.ascii_only? && value.match?(/\A[0-9]+\z/) && value.to_i.positive?
 
         warn "[buildkite-test_collector] #{name} must be a positive integer; using default #{default}"
         default

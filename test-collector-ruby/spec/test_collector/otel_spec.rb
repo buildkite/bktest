@@ -48,10 +48,11 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end
 
     it "defaults to 256 spans per batch and an 8192-span queue, ignoring OTEL_BSP_*" do
+      allow(ENV).to receive(:fetch).and_call_original
       %w[MAX_QUEUE_SIZE MAX_EXPORT_BATCH_SIZE SCHEDULE_DELAY EXPORT_TIMEOUT].each do |option|
-        allow(ENV).to receive(:[]).with("OTEL_BSP_#{option}").and_return("0")
+        allow(ENV).to receive(:fetch).with("OTEL_BSP_#{option}", anything).and_return("0")
       end
-      allow(ENV).to receive(:[]).with("OTEL_RUBY_BSP_START_THREAD_ON_BOOT").and_return("false")
+      allow(ENV).to receive(:fetch).with("OTEL_RUBY_BSP_START_THREAD_ON_BOOT", anything).and_return("false")
       expect_test_processor(batch: 256, queue: 8_192)
 
       expect { configure_and_export_test }.not_to output.to_stderr
@@ -79,7 +80,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       expect { configure_and_export_test }.not_to output.to_stderr
     end
 
-    ["", "0", "-1", "1.5", "abc", "12abc", "1e3", " 32", "32\n"].each do |value|
+    ["", "0", "-1", "1.5", "abc", "12abc", "1e3", " 32", " 12 ", "32\n", "\xff"].each do |value|
       [:batch, :queue].each do |setting|
         it "warns and uses the default for #{setting} override #{value.inspect}" do
           env = setting == :batch ? batch_env : queue_env
@@ -100,7 +101,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         expect_test_processor(batch: 256, queue: 8_192)
 
         expect { configure_and_export_test }.to output(
-          /\[buildkite-test_collector\] #{batch_env} must be <= #{queue_env}; using defaults/,
+          "[buildkite-test_collector] #{batch_env} must be <= #{queue_env}; using defaults (batch 256, queue 8192)\n",
         ).to_stderr
       end
     end

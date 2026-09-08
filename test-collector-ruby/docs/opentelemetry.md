@@ -328,16 +328,19 @@ never disables test export. Test-span processor options are explicit, so
 The defaults leave room below 8 MiB for typical single-failure, mostly ASCII
 spans, not every possible payload. Multiple exception events, multibyte text,
 large attributes, or larger batch overrides can still exceed the decoded limit.
+For example, just four spans with 100 near-limit exception events each can
+exceed 10 MiB decoded and lose every execution in the request. The character
+limits are not a per-request byte budget or a guarantee of root-span delivery.
 Incompressible failure content can still exceed 900 KiB gzipped at any batch
 size; reducing the batch is not a guarantee that a request fits.
 
-In a mass-failure run with deep or unfiltered backtraces, Test Engine keeps
-backtraces only for roughly the first **90–220 executions of each request**.
-Its server-side per-request backtrace budget is 1 MiB / 10,000 lines, shared
-first-come across spans; the exact coverage depends on backtrace depth and line
-length. Smaller batches share that budget among fewer executions. Use RSpec's
-backtrace filtering to remove framework and dependency noise: the collector
-honours RSpec's already-filtered backtraces.
+Test Engine's per-request backtrace budget is 1 MiB / 10,000 lines, shared
+first-come across spans. At 16 KiB of ASCII stacktrace per execution, the byte
+budget covers only about **64 executions per request**, and fewer with
+multibyte text or multiple events. Shorter backtraces fit more executions;
+the line budget can run out first. Smaller batches share that budget among
+fewer executions. Use RSpec's backtrace filtering to remove framework and
+dependency noise: the collector honours RSpec's already-filtered backtraces.
 
 To measure representative payloads locally without sending requests, run
 `bundle exec ruby script/payload_size.rb` from this gem's directory. See the
