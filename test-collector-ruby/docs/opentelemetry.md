@@ -299,9 +299,9 @@ CI variable from which it was generated.
 Empty `BUILDKITE_ANALYTICS_KEY`, `BUILDKITE_ANALYTICS_URL`,
 `BUILDKITE_ANALYTICS_BRANCH`, `BUILDKITE_ANALYTICS_SHA`,
 `BUILDKITE_ANALYTICS_NUMBER`, `BUILDKITE_ANALYTICS_JOB_ID`, and
-`BUILDKITE_ANALYTICS_MESSAGE` overrides no longer clear detected CI metadata, including on the
-legacy JSON path. Empty execution-name affixes are omitted. Explicit `env:`
-values retain their precedence, including empty values.
+`BUILDKITE_ANALYTICS_MESSAGE` overrides preserve detected CI metadata, including
+on the legacy JSON path. Empty execution-name affixes are omitted. Explicit
+`env:` values retain their precedence, including empty values.
 
 Export never fails a test. If test span setup fails (for example on Ruby older
 than 3.3, or without the OpenTelemetry gems), the collector warns and uploads

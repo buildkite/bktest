@@ -1,9 +1,6 @@
 # frozen_string_literal: true
 
 RSpec.describe Buildkite::TestCollector do
-  # Perhaps there's a better way to make a stubbed ENV overlay that resets between tests.
-  # We could probably use allow(ENV).to receive(...) although I find that more fragile.
-  # Also, I hadn't seen spec/support/fake_env_helpers.rb when I wrote this :|
   ENV_REAL = ENV
   let(:env_overlay) { Hash.new { |_h, k| ENV_REAL[k] } }
   before { stub_const("ENV", env_overlay) }

@@ -46,7 +46,7 @@ RSpec.describe Buildkite::TestCollector::CI do
       expect(result).to include("test_runner" => "rspec")
     end
 
-    it "keeps a Pathname location prefix, which the empty-string check must not discard" do
+    it "preserves a Pathname location prefix" do
       Dir.mktmpdir do |directory|
         prefix = Pathname.new(directory)
         Buildkite::TestCollector.configure(hook: :rspec, location_prefix: prefix)
@@ -133,9 +133,15 @@ RSpec.describe Buildkite::TestCollector::CI do
         %w[KEY URL BRANCH SHA NUMBER JOB_ID MESSAGE EXECUTION_NAME_PREFIX EXECUTION_NAME_SUFFIX].each do |suffix|
           fake_env("BUILDKITE_ANALYTICS_#{suffix}", "")
         end
+
         expect(Buildkite::TestCollector::CI.env).to include(
-          "key" => bk_build_uuid, "url" => bk_build_url, "branch" => bk_branch,
-          "commit_sha" => bk_sha, "number" => bk_number, "job_id" => bk_job_id, "message" => bk_message,
+          "key" => bk_build_uuid,
+          "url" => bk_build_url,
+          "branch" => bk_branch,
+          "commit_sha" => bk_sha,
+          "number" => bk_number,
+          "job_id" => bk_job_id,
+          "message" => bk_message,
         )
         expect(Buildkite::TestCollector::CI.env).not_to include("execution_name_prefix", "execution_name_suffix")
       end
