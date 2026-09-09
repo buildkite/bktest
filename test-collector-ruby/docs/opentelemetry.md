@@ -303,9 +303,8 @@ The run key must be 1–255 printable ASCII characters without spaces. The
 collector validates it and, if it is invalid, warns and falls back to the JSON
 path before creating any OTel providers or shutdown hooks. JSON uploading still
 requires `BUILDKITE_ANALYTICS_TOKEN`; a header-only setup instead warns that no
-results will be uploaded. A key the JSON upload cannot encode (malformed UTF-8)
-has no fallback either, and the warning says so. Set `BUILDKITE_ANALYTICS_KEY` to
-a valid key or fix the CI variable from which it was generated.
+results will be uploaded. Set `BUILDKITE_ANALYTICS_KEY` to a valid key or fix
+the CI variable from which it was generated.
 
 Empty `BUILDKITE_ANALYTICS_KEY`, `BUILDKITE_ANALYTICS_URL`,
 `BUILDKITE_ANALYTICS_BRANCH`, `BUILDKITE_ANALYTICS_SHA`,

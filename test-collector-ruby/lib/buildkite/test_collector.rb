@@ -109,16 +109,14 @@ module Buildkite
       @otel_options = nil
       return unless options
 
-      configuration_result = Buildkite::TestCollector::OTel.configure!(**options)
+      Buildkite::TestCollector::OTel.configure!(**options)
       return if Buildkite::TestCollector::OTel.enabled?
 
       # Nothing has run yet, so the legacy path can still cover the whole
       # suite: the Reporter, per-example tracer, and artifact all read
       # otel_enabled? lazily.
-      unless configuration_result == false
-        warn "[buildkite-test_collector] otel_enabled is set, but OpenTelemetry could not be configured " \
-          "(see the warning above); #{json_fallback_outcome}"
-      end
+      warn "[buildkite-test_collector] otel_enabled is set, but OpenTelemetry could not be configured " \
+        "(see the warning above); #{json_fallback_outcome}"
       self.otel_enabled = false
       enable_tracing!
     end

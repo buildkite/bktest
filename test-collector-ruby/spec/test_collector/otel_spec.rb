@@ -467,32 +467,14 @@ RSpec.describe Buildkite::TestCollector::OTel do
     original_provider = OpenTelemetry.tracer_provider
     expect(described_class).not_to receive(:require)
     expect(described_class).not_to receive(:at_exit)
-    [nil, "", "bad key", "key\n", "é", "x" * 256, 123].each do |key|
+    [nil, "", "bad key", "key\n", "é", "\xff", "x" * 256, 123].each do |key|
       expect do
-        expect(described_class.configure!(run_env: { "key" => key }, api_token: "suite-token")).to be false
-      end.to output(/Fix BUILDKITE_ANALYTICS_KEY.*1-255.*falling back to the JSON upload/).to_stderr
+        described_class.configure!(run_env: { "key" => key }, api_token: "suite-token")
+      end.to output(/\A\[buildkite-test_collector\] OpenTelemetry span export disabled: run key .* is invalid\. Fix BUILDKITE_ANALYTICS_KEY.*1-255.*\n\z/).to_stderr
       expect(described_class).not_to be_enabled
       expect(described_class.instance_variable_get(:@test_span_provider)).to be_nil
       expect(OpenTelemetry.tracer_provider).to equal(original_provider)
     end
-  end
-
-  it "does not promise a JSON fallback for a run key the JSON upload cannot encode" do
-    # HTTPClient#post_upload calls to_json on run_env, which raises on
-    # malformed UTF-8 before any request is made.
-    expect { { "key" => "\xff" }.to_json }.to raise_error(JSON::GeneratorError)
-
-    expect do
-      expect(described_class.configure!(run_env: { "key" => "\xff" }, api_token: "suite-token")).to be false
-    end.to output(
-      /Fix BUILDKITE_ANALYTICS_KEY.*results will not be uploaded because the JSON upload cannot encode this key either\.\n\z/
-    ).to_stderr
-    expect(described_class).not_to be_enabled
-
-    # Without a token the missing credential is the reason, whatever the key.
-    expect do
-      described_class.configure!(run_env: { "key" => "\xff" })
-    end.to output(/because BUILDKITE_ANALYTICS_TOKEN is not set\.\n\z/).to_stderr
   end
 
   it "accepts the receiver's boundary lengths and printable ASCII punctuation" do

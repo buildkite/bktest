@@ -124,9 +124,8 @@ module Buildkite::TestCollector
         # anything that would need shutting down. An already-enabled process
         # validated its key when it was first configured.
         if !enabled? && !valid_run_key?(run_key)
-          warn_invalid_run_key(run_key, api_token: api_token)
-          # false tells start_otel that the fallback warning is already emitted.
-          return false
+          warn_invalid_run_key(run_key)
+          return
         end
 
         if enabled?
@@ -301,27 +300,11 @@ module Buildkite::TestCollector
         run_key.is_a?(String) && run_key.valid_encoding? && run_key.ascii_only? && RUN_KEY_FORMAT.match?(run_key)
       end
 
-      def warn_invalid_run_key(run_key, api_token:)
-        fallback = if api_token.nil?
-          "OpenTelemetry is disabled; results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set."
-        elsif json_run_key?(run_key)
-          "The collector is falling back to the JSON upload."
-        else
-          "OpenTelemetry is disabled; results will not be uploaded because the JSON upload cannot encode this key either."
-        end
-        warn "[buildkite-test_collector] Test results would be missing in OpenTelemetry mode because run key " \
-          "#{run_key.inspect} is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); " \
-          "it must be 1-255 printable ASCII characters without spaces. #{fallback}"
-      end
-
-      # The JSON upload serializes run_env with to_json, which raises on
-      # malformed UTF-8 before any request is made, so a key it cannot encode
-      # has no fallback path.
-      def json_run_key?(run_key)
-        run_key.to_json
-        true
-      rescue JSON::GeneratorError
-        false
+      # start_otel reports the fallback outcome, as for every other failure.
+      def warn_invalid_run_key(run_key)
+        warn "[buildkite-test_collector] OpenTelemetry span export disabled: run key #{run_key.inspect} is invalid. " \
+          "Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); " \
+          "it must be 1-255 printable ASCII characters without spaces."
       end
 
       # Suite hooks only flush, because a suite's before/after(:suite) can run
