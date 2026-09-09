@@ -265,11 +265,28 @@ overhead.
 
 ## What gets sent
 
-The collector merges standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (or, when it
-is absent, `OTEL_EXPORTER_OTLP_HEADERS`) over its own OTLP headers. Header names
-are matched case-insensitively, so a standard `authorization` entry takes
-precedence over the credential sourced from `BUILDKITE_ANALYTICS_TOKEN`. Empty
-header environment variables are treated as unset.
+The collector honours standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (or, when it
+is absent, `OTEL_EXPORTER_OTLP_HEADERS`) only when the corresponding standard
+endpoint resolves to the same URL as the collector's Buildkite endpoint. It
+uses `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` when set; otherwise it appends
+`/v1/traces` to `OTEL_EXPORTER_OTLP_ENDPOINT`, as required by the OpenTelemetry
+specification. URLs are compared by scheme, host, port, and path, ignoring a
+trailing slash. This allows bktec to supply relay credentials without sending
+unrelated process-wide tracing credentials to Buildkite. When the endpoints do
+not match, the collector ignores the standard headers and warns once.
+For direct export, use
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://tests-otlp.buildkite.com/v1/traces`
+or `OTEL_EXPORTER_OTLP_ENDPOINT=https://tests-otlp.buildkite.com` (without the
+trace path). For a relay, both the collector destination and the standard
+endpoint must identify that relay.
+
+When standard headers do apply, they take precedence over collector headers.
+Header names are matched case-insensitively, so a standard `authorization`
+entry replaces the credential sourced from `BUILDKITE_ANALYTICS_TOKEN`. Empty
+header environment variables are treated as unset. The standard endpoint
+variables only control whether these headers apply; they do not change where
+the collector exports. Set `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` to change that
+destination.
 The `Buildkite-Tests-Run-Key` header cannot be overridden by OTLP headers; it
 always uses the validated run key carried by the test spans.
 
@@ -279,10 +296,24 @@ OTLP Authorization header, spans go directly to Buildkite using
 `BUILDKITE_ANALYTICS_TOKEN`: either the suite API token or an agent OIDC token
 with the `write_uploads` scope.
 
-With neither a token nor OTLP header variables set, nothing is exported and
-`otel_enabled` is left off for the run, so a suite that hard-codes
+With neither a token nor applicable OTLP header variables set, nothing is
+exported and `otel_enabled` is left off for the run, so a suite that hard-codes
 `otel_enabled: true` stays quiet on a developer machine. This matches the JSON
 path, which does not upload without a token.
+
+The exporter's default timeout comes from
+`OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` or `OTEL_EXPORTER_OTLP_TIMEOUT`; the batch
+processor supplies its own timeout when exporting, including the remaining
+suite-end flush budget. The collector pins compression to gzip and ignores the standard
+`OTEL_EXPORTER_OTLP_*_COMPRESSION`, `*_CERTIFICATE`, `*_CLIENT_CERTIFICATE`, and
+`*_CLIENT_KEY` settings. Buildkite export therefore uses the system certificate
+store and no client certificate, even when the process configures compression,
+a custom CA, or mTLS for another OpenTelemetry destination. HTTPS peer
+verification is always enabled: `OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_NONE`
+cannot disable it, and `OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_PEER` is not consulted.
+Behind a TLS-inspecting proxy that re-signs traffic with a private CA, add that
+CA to the system store by exporting `SSL_CERT_FILE` or `SSL_CERT_DIR` before
+the Ruby process starts; Ruby's default `OpenSSL::X509::Store` honours both.
 
 OpenTelemetry's SDK owns batching, retries, and transport. `test.execution`
 spans have a reserved, faster-draining queue and exporter. Forwarded children

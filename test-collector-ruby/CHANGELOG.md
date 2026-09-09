@@ -11,6 +11,12 @@
 * Prevent OTLP headers from overriding the validated run key.
 * Ignore empty `BUILDKITE_ANALYTICS_*` metadata overrides so they do not replace
   values detected from the CI environment.
+* Apply standard OpenTelemetry exporter headers only when their configured
+  endpoint matches the collector destination, preserving relay authentication
+  without forwarding unrelated vendor credentials.
+* Pin OpenTelemetry export to gzip, HTTPS peer verification, and the system
+  certificate store without a client certificate, ignoring process-wide OTLP
+  transport overrides.
 * **Breaking change to the experimental OpenTelemetry support:** opt-in
   submission is now OTLP-only for RSpec. `otel_enabled: true` submits executions
   as spans without also uploading legacy JSON, and the separate `otel_only`

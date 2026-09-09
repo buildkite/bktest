@@ -112,6 +112,8 @@ RSpec.describe Buildkite::TestCollector do
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
       allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { true }
       env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
+      env_overlay["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "https://tests-otlp.buildkite.com/v1/traces"
+      env_overlay["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] = "https://tests-otlp.buildkite.com/v1/traces"
       env_overlay["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "Authorization=Bearer%20relay"
 
       Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
@@ -235,6 +237,7 @@ RSpec.describe Buildkite::TestCollector do
       allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { false }
       allow(Buildkite::TestCollector).to receive(:hook_into)
       env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
+      env_overlay["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "https://tests-otlp.buildkite.com/v1/traces"
       env_overlay["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "Authorization=Bearer%20relay"
 
       Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
