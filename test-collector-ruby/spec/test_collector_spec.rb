@@ -220,6 +220,7 @@ RSpec.describe Buildkite::TestCollector do
       allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "invalid key" } }
       allow(Buildkite::TestCollector).to receive(:hook_into)
       env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
+      env_overlay["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "https://tests-otlp.buildkite.com/v1/traces"
       env_overlay["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "Authorization=Bearer%20relay"
 
       Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
