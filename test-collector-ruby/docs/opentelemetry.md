@@ -270,6 +270,8 @@ is absent, `OTEL_EXPORTER_OTLP_HEADERS`) over its own OTLP headers. Header names
 are matched case-insensitively, so a standard `authorization` entry takes
 precedence over the credential sourced from `BUILDKITE_ANALYTICS_TOKEN`. Empty
 header environment variables are treated as unset.
+The `Buildkite-Tests-Run-Key` header cannot be overridden by OTLP headers; it
+always uses the validated run key carried by the test spans.
 
 bktec's OTLP relay uses the trace-specific header variable to provide its local
 credential and forwards spans to Buildkite with its OIDC credential. Without an
@@ -296,6 +298,20 @@ with a different run key warns and keeps attributing results to the original
 run. Reporting a new run requires a new process.
 
 ## When something goes wrong
+
+The run key must be 1–255 printable ASCII characters without spaces. The
+collector validates it and, if it is invalid, warns and falls back to the JSON
+path before creating any OTel providers or shutdown hooks. JSON uploading still
+requires `BUILDKITE_ANALYTICS_TOKEN`; a header-only setup instead warns that no
+results will be uploaded. Set `BUILDKITE_ANALYTICS_KEY` to a valid key or fix the
+CI variable from which it was generated.
+
+Empty `BUILDKITE_ANALYTICS_KEY`, `BUILDKITE_ANALYTICS_URL`,
+`BUILDKITE_ANALYTICS_BRANCH`, `BUILDKITE_ANALYTICS_SHA`,
+`BUILDKITE_ANALYTICS_NUMBER`, `BUILDKITE_ANALYTICS_JOB_ID`, and
+`BUILDKITE_ANALYTICS_MESSAGE` overrides preserve detected CI metadata, including
+on the legacy JSON path. Empty execution-name affixes are omitted. Explicit
+`env:` values retain their precedence, including empty values.
 
 Non-fatal export errors, including WebMock network blocks, do not fail a test
 or stop the batch workers from exporting later spans. A blocked batch is still

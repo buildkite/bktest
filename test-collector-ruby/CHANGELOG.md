@@ -5,6 +5,12 @@
 * Prevent OpenTelemetry export failures outside `StandardError`, including
   WebMock network-blocking errors, from failing the test suite.
 * Add the OTLP endpoint host to WebMock's allow list when WebMock is loaded.
+* Validate OpenTelemetry run keys before export and fall back to the JSON upload
+  with a warning when they are invalid (or report that results cannot be
+  uploaded when no JSON token is available).
+* Prevent OTLP headers from overriding the validated run key.
+* Ignore empty `BUILDKITE_ANALYTICS_*` metadata overrides so they do not replace
+  values detected from the CI environment.
 * **Breaking change to the experimental OpenTelemetry support:** opt-in
   submission is now OTLP-only for RSpec. `otel_enabled: true` submits executions
   as spans without also uploading legacy JSON, and the separate `otel_only`
