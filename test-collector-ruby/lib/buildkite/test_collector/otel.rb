@@ -118,6 +118,17 @@ module Buildkite::TestCollector
       end
 
       def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, span_filter: nil, tags: {})
+        run_key = run_env["key"]
+        # Only first-time setup validates the key: the receiver rejects every
+        # batch sent with an invalid run key, so check it before building
+        # anything that would need shutting down. An already-enabled process
+        # validated its key when it was first configured.
+        if !enabled? && !valid_run_key?(run_key)
+          warn_invalid_run_key(run_key, api_token: api_token)
+          # false tells start_otel that the fallback warning is already emitted.
+          return false
+        end
+
         if enabled?
           # One process serves one run: the exporters and providers live for
           # the whole process, so run identity is fixed at first configure.
@@ -129,15 +140,6 @@ module Buildkite::TestCollector
           warn_run_mismatch(run_env)
           refresh_authorization(api_token)
           return
-        end
-
-        # The receiver rejects every batch sent with an invalid run key, so
-        # check it before building anything that would need shutting down.
-        run_key = run_env["key"]
-        unless valid_run_key?(run_key)
-          warn_invalid_run_key(run_key, api_token: api_token)
-          # false tells start_otel that the fallback warning is already emitted.
-          return false
         end
 
         require "opentelemetry/sdk"
