@@ -328,6 +328,31 @@ is reconfigured, but run identity is fixed when export starts: reconfiguring
 with a different run key warns and keeps attributing results to the original
 run. Reporting a new run requires a new process.
 
+## Test span sizes and batching
+
+The collector exports `test.execution` spans in batches of up to 240, with a
+queue of 8,192 spans and a 1,000 ms schedule delay. Set
+`BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE` or
+`BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE` before export is configured to
+override the batch or queue size. Unset values use the defaults. Overrides must
+contain only ASCII decimal digits and be positive; invalid values warn and use
+the corresponding default. If the resolved batch size exceeds the queue size,
+the collector warns once and resets both to their defaults. There is no upper
+batch clamp: larger batches reduce request frequency but increase payload size.
+
+The SDK truncates test span attribute values to 4,096 characters and event
+attribute values (including exception messages and stack traces) to 16,384
+characters. Each test span retains at most 100 events, dropping the oldest when
+full. Truncated values end in `...`, included within the character limit, not a
+byte limit. These three span limits and the batch/queue settings are independent
+of customer `OTEL_*` settings for child spans; other span limits keep SDK defaults.
+
+These settings do not guarantee that requests fit the server limits. Gzip
+bodies over 900 KiB are rejected with HTTP 413 and logged by the exporter.
+Decoded requests over 8 MiB are dropped by ingestion without a client-side
+signal. If your suite produces very large failure output, lower
+`BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE` to reduce request sizes.
+
 ## When something goes wrong
 
 The run key must be 1–255 printable ASCII characters without spaces. The
