@@ -22,7 +22,8 @@ module Buildkite
           return true if Thread.current.thread_variable_get(RUNNING)
 
           running { @callable.call(span) }
-        rescue StandardError => e
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          ExceptionHandling.reraise_fatal(e)
           report_once(e)
           true
         end

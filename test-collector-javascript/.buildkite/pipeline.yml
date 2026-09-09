@@ -34,3 +34,19 @@ steps:
               # BUILDKITE_BUILD_ID are passed through to the container and
               # mess up the CI detection — we want a clean process.env.
               mount-buildkite-agent: false
+      - label: ":vitest: Vitest {{matrix}} compatibility"
+        matrix:
+          - "1.6.1"
+          - "2.1.9"
+          - "3.0.0"
+          - "4.0.18"
+          - "4.1.0"
+        command:
+          - "cd test-collector-javascript"
+          - "npm pkg set 'devDependencies.vitest={{matrix}}' --include-workspace-root --workspace examples/vitest"
+          - "npm install --ignore-scripts --legacy-peer-deps"
+          - "npm test -- --runInBand e2e/vitest.test.js"
+        plugins:
+          - docker#v3.7.0:
+              image: node:22.15.0
+              mount-buildkite-agent: false

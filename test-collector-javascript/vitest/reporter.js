@@ -1,57 +1,54 @@
-import { JsonReporter } from 'vitest/reporters'
+import { version } from 'vitest/package.json'
 import { randomUUID } from 'node:crypto'
 import CI from '../util/ci.js'
 import uploadTestResults from '../util/uploadTestResults.js'
 import Paths from '../util/paths'
 
-/*
- * Vites JsonReporter returns all the test results we need
- * https://vitest.dev/guide/reporters.html#json-reporter
- */
-class VitestBuildkiteTestEngineReporter extends JsonReporter {
+class VitestBuildkiteTestEngineReporter {
   constructor(options) {
-    super(options);
     this._options = options;
     this._testEnv = new CI().env('vitest');
     this._tags = options?.tags;
   }
 
   onInit(ctx) {
-    super.onInit(ctx)
+    this._start = Date.now()
     this._paths = new Paths({ rootDir: ctx.config.root }, this._testEnv.location_prefix)
   }
 
-  /*
-   * vitests JsonReporter.writeReport is called to save the JSON to a file
-   * we override it to upload the test results to Buildkite
-   * https://github.com/vitest-dev/vitest/blob/33b930a12feb9f8932b10ed9e41e078200f62379/packages/vitest/src/node/reporters/json.ts#L208
-   */
-  async writeReport(reportString) {
-    const report = JSON.parse(reportString);
-    const originStart = report.startTime;
-    const testResults = report.testResults.flatMap((testResult) => {
-      const prefixedTestPath = this._paths.prefixTestPath(testResult.name);
-      const assertionResults = testResult.assertionResults.map(
-        (assertionResult) => {
-          const id = randomUUID();
+  // Vitest 3+ exposes test results through the public reporter API. In Vitest 5,
+  // JsonReporter no longer calls writeReport, so subclassing it loses uploads.
+  async onTestRunEnd(testModules) {
+    const originStart = this._start;
+    const testResults = testModules.flatMap((testModule) => {
+      const prefixedTestPath = this._paths.prefixTestPath(testModule.moduleId);
+      const tests = Array.from(testModule.children.allTests());
+      const { startTime, endTime } = this.fileTimings(tests, originStart);
 
-          return {
-            id: id,
-            scope: assertionResult.ancestorTitles.join(' ').trim(),
-            name: assertionResult.title,
-            location: (prefixedTestPath && assertionResult.location)
-              ? `${prefixedTestPath}:${assertionResult.location.line}`
-              : null,
-            file_name: prefixedTestPath,
-            result: this.testEngineResult(assertionResult),
-            failure_reason: this.testEngineFailureReason(assertionResult),
-            failure_expanded: this.testEngineFailureExpanded(assertionResult),
-            history: this.testEngineHistory(originStart, testResult, assertionResult),
-          };
-        },
-      );
+      return tests.map((test) => {
+        const result = test.result();
+        const failureMessages = this.testEngineFailureMessages(result);
 
-      return assertionResults;
+        return {
+          id: randomUUID(),
+          scope: this.ancestorTitles(test).join(' ').trim(),
+          name: test.name,
+          location: (prefixedTestPath && test.location)
+            ? `${prefixedTestPath}:${test.location.line}`
+            : null,
+          file_name: prefixedTestPath,
+          result: result.state === 'skipped' && test.options.mode === 'todo' ? 'pending' : result.state,
+          failure_reason: failureMessages[0],
+          failure_expanded: [{ expanded: failureMessages.slice(1) }],
+          history: {
+            section: 'top',
+            start_at: (startTime - originStart) / 1000,
+            end_at: (endTime - originStart) / 1000,
+            // Preserve null in JSON for tests with no execution timing.
+            duration: test.diagnostic()?.duration / 1000,
+          },
+        };
+      });
     });
 
     return uploadTestResults(
@@ -62,57 +59,45 @@ class VitestBuildkiteTestEngineReporter extends JsonReporter {
     );
   }
 
-  testEngineResult(assertionResults) {
-    /*
-     * https://github.com/vitest-dev/vitest/blob/33b930a12feb9f8932b10ed9e41e078200f62379/packages/vitest/src/node/reporters/json.ts#L22
-     * vitest test statuses:
-     * - failed
-     * - pending
-     * - passed
-     * - skipped
-     * - todo
-     *
-     * Buildkite Test Engine execution results:
-     * - passed
-     * - failed
-     * - pending
-     * - skipped
-     * - unknown
-     */
-    return {
-      failed: 'failed',
-      pending: 'pending',
-      passed: 'passed',
-      skipped: 'skipped',
-      todo: 'pending',
-    }[assertionResults.status];
+  ancestorTitles(test) {
+    const titles = [];
+    let parent = test.parent;
+    while (parent.type === 'suite') {
+      titles.unshift(parent.name);
+      parent = parent.parent;
+    }
+    return titles;
   }
 
-  testEngineFailureMessages(assertionResults) {
+  // Match the JSON reporter's file-wide window, falling back to the run start
+  // when no tests in the file executed.
+  fileTimings(tests, originStart) {
+    let startTime = Number.POSITIVE_INFINITY;
+    let endTime = 0;
+
+    for (const test of tests) {
+      const diagnostic = test.diagnostic();
+      if (!diagnostic) continue;
+      startTime = Math.min(startTime, diagnostic.startTime);
+      endTime = Math.max(endTime, diagnostic.startTime + diagnostic.duration);
+    }
+
+    if (startTime === Number.POSITIVE_INFINITY) startTime = originStart;
+    return { startTime, endTime: Math.max(endTime, startTime) };
+  }
+
+  testEngineFailureMessages(result) {
     // Strip ANSI color codes from messages and split each line
-    return assertionResults.failureMessages.join(' ').replace(/\u001b[^m]*?m/g,'').split("\n")
-  }
-
-  testEngineFailureReason(assertionResults) {
-    return this.testEngineFailureMessages(assertionResults)[0]
-  }
-
-  testEngineFailureExpanded(assertionResults) {
-    return [
-      {
-        expanded: this.testEngineFailureMessages(assertionResults).splice(1),
-      },
-    ];
-  }
-
-  testEngineHistory(originStart, testResult, assertionResults) {
-    return {
-      section: 'top',
-      start_at: (testResult.startTime - originStart) / 1000,
-      end_at: (testResult.endTime - originStart) / 1000,
-      duration: assertionResults.duration / 1000,
-    };
+    return (result.errors || [])
+      .map((error) => error.stack || error.message)
+      .join(' ')
+      .replace(/\u001b[^m]*?m/g, '')
+      .split("\n");
   }
 }
 
-export default VitestBuildkiteTestEngineReporter;
+// Freeze the original implementation for Vitest 1–2. Its removed import must
+// never be loaded on Vitest 5.
+export default Number(version.split('.')[0]) < 3
+  ? (await import('./legacy-reporter.js')).default
+  : VitestBuildkiteTestEngineReporter;

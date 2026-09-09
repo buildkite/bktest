@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* Prevent OpenTelemetry export failures outside `StandardError`, including
+  WebMock network-blocking errors, from failing the test suite.
+* Add the OTLP endpoint host to WebMock's allow list when WebMock is loaded.
 * Validate OpenTelemetry run keys before export and fall back to the JSON upload
   with a warning when they are invalid (or report that results cannot be
   uploaded when no JSON token is available).
