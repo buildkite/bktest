@@ -21,7 +21,8 @@ module Buildkite
           @mutex.synchronize do
             @spans[span] = true if @active
           end
-        rescue StandardError => e
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          ExceptionHandling.reraise_fatal(e)
           warn "[buildkite-test_collector] Could not track OpenTelemetry child span: #{e.class}: #{e.message}"
         end
 
@@ -44,7 +45,8 @@ module Buildkite
           @mutex.synchronize do
             @processor.on_finish(span) if @active
           end
-        rescue StandardError => e
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          ExceptionHandling.reraise_fatal(e)
           warn "[buildkite-test_collector] Could not export OpenTelemetry child span: #{e.class}: #{e.message}"
         end
 
@@ -53,7 +55,8 @@ module Buildkite
           return success unless active
 
           @processor.force_flush(timeout: timeout)
-        rescue StandardError => e
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          ExceptionHandling.reraise_fatal(e)
           warn "[buildkite-test_collector] Could not flush OpenTelemetry child spans: #{e.class}: #{e.message}"
           OpenTelemetry::SDK::Trace::Export::FAILURE
         end

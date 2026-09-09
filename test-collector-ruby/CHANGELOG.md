@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* Prevent OpenTelemetry export failures outside `StandardError`, including
+  WebMock network-blocking errors, from failing the test suite.
+* Add the OTLP endpoint host to WebMock's allow list when WebMock is loaded.
 * **Breaking change to the experimental OpenTelemetry support:** opt-in
   submission is now OTLP-only for RSpec. `otel_enabled: true` submits executions
   as spans without also uploading legacy JSON, and the separate `otel_only`
