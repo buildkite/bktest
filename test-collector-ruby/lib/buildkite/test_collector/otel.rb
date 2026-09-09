@@ -7,7 +7,8 @@ module Buildkite::TestCollector
   module OTel
     DEFAULT_ENDPOINT = "https://tests-otlp.buildkite.com/v1/traces"
 
-    # Accepted by the Buildkite OTLP traces receiver for its run-key header.
+    # Accepted by the Buildkite OTLP traces receiver for its run-key header
+    # (Analytics::API::TracesController::RUN_KEY_FORMAT); keep them in sync.
     RUN_KEY_FORMAT = /\A[!-~]{1,255}\z/
 
     EXECUTION_VIA_ATTRIBUTE = "buildkite.execution.via"
@@ -297,14 +298,26 @@ module Buildkite::TestCollector
       end
 
       def warn_invalid_run_key(run_key, api_token:)
-        fallback = if api_token
+        fallback = if api_token.nil?
+          "OpenTelemetry is disabled; results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set."
+        elsif json_run_key?(run_key)
           "The collector is falling back to the JSON upload."
         else
-          "OpenTelemetry is disabled; results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set."
+          "OpenTelemetry is disabled; results will not be uploaded because the JSON upload cannot encode this key either."
         end
         warn "[buildkite-test_collector] Test results would be missing in OpenTelemetry mode because run key " \
           "#{run_key.inspect} is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); " \
           "it must be 1-255 printable ASCII characters without spaces. #{fallback}"
+      end
+
+      # The JSON upload serializes run_env with to_json, which raises on
+      # malformed UTF-8 before any request is made, so a key it cannot encode
+      # has no fallback path.
+      def json_run_key?(run_key)
+        run_key.to_json
+        true
+      rescue JSON::GeneratorError
+        false
       end
 
       # Suite hooks only flush, because a suite's before/after(:suite) can run
