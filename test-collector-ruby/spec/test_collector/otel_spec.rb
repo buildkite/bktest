@@ -380,7 +380,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       Thread.abort_on_exception = true
       otel = Buildkite::TestCollector::OTel
       endpoint = "https://example.invalid/v1/traces"
-      otel.configure!(endpoint: endpoint)
+      otel.configure!(endpoint: endpoint, run_env: { "key" => "run-key" })
       WebMock.disable_net_connect!
       test = Struct.new(:otel_attributes, :otel_result).new({}, "passed")
       root = otel.start_test_span(test: test)
@@ -1226,7 +1226,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
           OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
         end
 
-        described_class.configure!(endpoint: "https://tests-otlp.example.invalid/v1/traces")
+        configure_otel(endpoint: "https://tests-otlp.example.invalid/v1/traces")
 
         expect(WebMock.net_connect_allowed?("https://tests-otlp.example.invalid/v1/traces")).to be true
         expect(WebMock.net_connect_allowed?("https://customer.example")).to eq(!allowed.nil?)
