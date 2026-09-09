@@ -207,6 +207,16 @@ The collector does not inspect instrumentation patches, so compatibility
 between the instrumentation you install and other APM or test-library patches
 remains your responsibility.
 
+Suites using VCR do not need to record collector traffic: the collector ignores
+POST requests to the configured OTLP endpoint without changing other VCR rules.
+
+When WebMock is loaded before RSpec's `before(:suite)` setup, the collector adds
+the configured OTLP endpoint host to WebMock's allow list while preserving
+existing entries. Suites that load WebMock later or reset WebMock configuration
+for each example should add
+`allow: "tests-otlp.buildkite.com"` themselves, plus the relay's loopback host
+when using bktec.
+
 ## Filtering child spans
 
 Pass `otel_span_filter` to decide which completed child spans are forwarded to
@@ -287,9 +297,15 @@ run. Reporting a new run requires a new process.
 
 ## When something goes wrong
 
-Export never fails a test. If test span setup fails (for example on Ruby older
-than 3.3, or without the OpenTelemetry gems), the collector warns and uploads
-the run's results as JSON instead, exactly as it does with `otel_enabled` off.
+Non-fatal export errors, including WebMock network blocks, do not fail a test
+or stop the batch workers from exporting later spans. A blocked batch is still
+lost and counted in the dropped-span report; the exception class itself is
+named once per run, not once per batch. The allow-list exemption prevents that
+loss. Process-control exceptions (`SystemExit`, `SignalException`, including `Interrupt`, and
+`NoMemoryError`) are re-raised, including during process-exit shutdown.
+If test span setup fails (for example on Ruby older than 3.3, or without the
+OpenTelemetry gems), the collector warns and uploads the run's results as JSON
+instead, exactly as it does with `otel_enabled` off.
 That JSON upload needs `BUILDKITE_ANALYTICS_TOKEN`; when the credential came
 only from OTLP header variables (as with bktec's relay), the warning says that
 results will not be uploaded. If optional child setup or attachment fails, the collector warns, cleans up that
