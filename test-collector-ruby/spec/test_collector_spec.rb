@@ -96,7 +96,7 @@ RSpec.describe Buildkite::TestCollector do
     it "leaves OpenTelemetry off without a credential, like the JSON path" do
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
       env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
-      Buildkite::TestCollector::OTel::HEADER_ENVIRONMENT_VARIABLES.each { |name| env_overlay[name] = nil }
+      env_overlay["BUILDKITE_TESTS_OTLP_TOKEN"] = nil
 
       expect {
         Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
@@ -107,18 +107,47 @@ RSpec.describe Buildkite::TestCollector do
       expect(Buildkite::TestCollector::OTel).not_to have_received(:configure!)
     end
 
-    it "keeps OpenTelemetry on when the OTLP environment supplies the headers" do
+    it "exports to bktec's relay with its token, which the JSON path never sees" do
       allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "run-key" } }
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
       allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { true }
       env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
-      env_overlay["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "Authorization=Bearer%20relay"
+      env_overlay["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] = "http://127.0.0.1:4318/v1/traces"
+      env_overlay["BUILDKITE_TESTS_OTLP_TOKEN"] = "relay"
 
       Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
       Buildkite::TestCollector.start_otel
 
       expect(Buildkite::TestCollector.otel_enabled?).to eq true
-      expect(Buildkite::TestCollector::OTel).to have_received(:configure!).with(hash_including(api_token: nil))
+      expect(Buildkite::TestCollector.api_token).to be_nil
+      expect(Buildkite::TestCollector::OTel).to have_received(:configure!).with(
+        hash_including(endpoint: "http://127.0.0.1:4318/v1/traces", api_token: "relay")
+      )
+    end
+
+    it "prefers the relay token over BUILDKITE_ANALYTICS_TOKEN for OpenTelemetry export" do
+      allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "run-key" } }
+      allow(Buildkite::TestCollector::OTel).to receive(:configure!)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "suite"
+      env_overlay["BUILDKITE_TESTS_OTLP_TOKEN"] = "relay"
+
+      Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
+      Buildkite::TestCollector.start_otel
+
+      expect(Buildkite::TestCollector.api_token).to eq "suite"
+      expect(Buildkite::TestCollector::OTel).to have_received(:configure!).with(hash_including(api_token: "relay"))
+    end
+
+    it "treats a blank relay token as unset" do
+      allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "run-key" } }
+      allow(Buildkite::TestCollector::OTel).to receive(:configure!)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "suite"
+      env_overlay["BUILDKITE_TESTS_OTLP_TOKEN"] = " "
+
+      Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
+      Buildkite::TestCollector.start_otel
+
+      expect(Buildkite::TestCollector::OTel).to have_received(:configure!).with(hash_including(api_token: "suite"))
     end
 
     it "can override the endpoint for local development" do
@@ -216,11 +245,11 @@ RSpec.describe Buildkite::TestCollector do
       expect(Buildkite::TestCollector::Object).to have_received(:configure)
     end
 
-    it "warns about missing JSON credentials when an invalid run key disables header-only export" do
+    it "warns about missing JSON credentials when an invalid run key disables relay-only export" do
       allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "invalid key" } }
       allow(Buildkite::TestCollector).to receive(:hook_into)
       env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
-      env_overlay["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "Authorization=Bearer%20relay"
+      env_overlay["BUILDKITE_TESTS_OTLP_TOKEN"] = "relay"
 
       Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
       expect { Buildkite::TestCollector.start_otel }.to output(
@@ -230,14 +259,12 @@ RSpec.describe Buildkite::TestCollector do
       expect(Buildkite::TestCollector::OTel).not_to be_enabled
     end
 
-    it "says results will not be uploaded when only OTLP headers held the credential" do
-      # Header-only authentication (bktec's relay) has no token for the JSON
-      # path, so the fallback must not promise an upload Uploader will skip.
+    it "says results will not be uploaded when only the relay token held the credential" do
       allow(Buildkite::TestCollector::OTel).to receive(:configure!)
       allow(Buildkite::TestCollector::OTel).to receive(:enabled?) { false }
       allow(Buildkite::TestCollector).to receive(:hook_into)
       env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
-      env_overlay["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "Authorization=Bearer%20relay"
+      env_overlay["BUILDKITE_TESTS_OTLP_TOKEN"] = "relay"
 
       Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
 

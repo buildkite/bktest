@@ -67,13 +67,12 @@ module Buildkite
           "not #{test_runner}; #{json_fallback_outcome}"
         otel_enabled = false
       end
-      # Without a credential there is nothing to submit, and the JSON path
-      # already treats that as "not reporting" (Uploader.upload skips the
-      # request without a token). Take the same quiet path here rather than
-      # export unauthenticated spans and warn that they were dropped, which
-      # is what a developer running the suite locally would otherwise see.
-      if otel_enabled && api_token.nil? && !Buildkite::TestCollector::OTel.headers_from_environment?
-        otel_enabled = false
+      # Without a credential there is nothing to submit; stay quiet like the
+      # JSON path (Uploader.upload skips the request without a token) rather
+      # than warn a developer running the suite locally.
+      if otel_enabled
+        otel_token = Buildkite::TestCollector::OTel.api_token || api_token
+        otel_enabled = false if otel_token.nil?
       end
       self.otel_enabled = otel_enabled
       self.batch_size = ENV.fetch("BUILDKITE_ANALYTICS_UPLOAD_BATCH_SIZE") { DEFAULT_UPLOAD_BATCH_SIZE }.to_i
@@ -91,9 +90,8 @@ module Buildkite
       # Defer OTel setup until RSpec's before(:suite), after application and support files have loaded.
       @otel_options = if otel_enabled?
         {
-          # Undocumented, for development purposes.
-          endpoint: ENV["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] || Buildkite::TestCollector::OTel::DEFAULT_ENDPOINT,
-          api_token: api_token,
+          endpoint: Buildkite::TestCollector::OTel.endpoint,
+          api_token: otel_token,
           run_env: Buildkite::TestCollector::CI.env,
           span_filter: otel_span_filter,
           # Include the automatic worker tag alongside caller-supplied tags.
@@ -121,9 +119,8 @@ module Buildkite
       enable_tracing!
     end
 
-    # The JSON path needs BUILDKITE_ANALYTICS_TOKEN. A setup authenticated
-    # only through OTLP headers (such as bktec's relay) has no credential for
-    # it, so say so rather than promise an upload that Uploader will skip.
+    # The JSON path needs BUILDKITE_ANALYTICS_TOKEN; bktec's relay token is
+    # no use to it, so say so rather than promise an upload Uploader will skip.
     def self.json_fallback_outcome
       if api_token
         "uploading results as JSON instead"
