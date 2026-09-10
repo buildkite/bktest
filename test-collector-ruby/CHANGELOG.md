@@ -8,9 +8,15 @@
 * Validate OpenTelemetry run keys before export and fall back to the JSON upload
   with a warning when they are invalid (or report that results cannot be
   uploaded when no JSON token is available).
-* Prevent OTLP headers from overriding the validated run key.
 * Ignore empty `BUILDKITE_ANALYTICS_*` metadata overrides so they do not replace
   values detected from the CI environment.
+* Read bktec's relay credential from `BUILDKITE_TESTS_OTLP_TOKEN` and stop
+  reading `OTEL_EXPORTER_OTLP_*_HEADERS`, so credentials the process configures
+  for other OpenTelemetry destinations are never sent to Buildkite.
+* Pin OpenTelemetry export to gzip, peer-verified HTTPS, and the system
+  certificate store, ignoring process-wide `OTEL_EXPORTER_OTLP_*` transport
+  overrides. Requires `opentelemetry-exporter-otlp` 0.29+; older versions fall
+  back to the JSON upload with a warning.
 * Reduce the experimental OpenTelemetry test span batch size from 512 to 120 so
   a batch of failures with maximum-length output fits the server's request size
   limit. Override the batch and queue sizes with
@@ -31,11 +37,11 @@
   remains off by default, so suites that never opted in are unaffected. When
   OpenTelemetry cannot be used, the collector warns and uploads JSON instead:
   at configure time for a non-RSpec hook, and at suite start when the
-  OpenTelemetry gems are missing or Ruby is older than 3.3. Without a token or
-  OTLP header variables, `otel_enabled` stays off and nothing is exported, the
-  same as the JSON path, which skips uploading without a token. When only OTLP
-  header variables held the credential, the fallback warning says results will
-  not be uploaded, since the JSON path has no token to use. Execution name
+  OpenTelemetry gems are missing or Ruby is older than 3.3. Without a token,
+  `otel_enabled` stays off and nothing is exported, the same as the JSON path,
+  which skips uploading without a token. When only `BUILDKITE_TESTS_OTLP_TOKEN`
+  held the credential, the fallback warning says results will not be uploaded,
+  since the JSON path has no token to use. Execution name
   affixes (`BUILDKITE_ANALYTICS_EXECUTION_NAME_PREFIX`/`SUFFIX`) and custom
   `env:` values have no OTLP equivalent and are not sent when `otel_enabled` is
   on; the JSON upload that carried them in the old dual mode no longer happens.

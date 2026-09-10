@@ -716,46 +716,113 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
   end
 
-  it "gives trace-specific credentials precedence without allowing headers to replace the run identity" do
+  it "takes the relay endpoint and credential from BUILDKITE_* variables" do
     allow(ENV).to receive(:[]).and_call_original
-    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
-      .and_return(
-        "authorization=Bearer%20relay-token,buildkite-tests-run-key=invalid%20key,x-extra=hello%20world"
+    allow(ENV).to receive(:[]).with("BUILDKITE_ANALYTICS_OTLP_ENDPOINT").and_return("http://127.0.0.1:4318/v1/traces")
+    allow(ENV).to receive(:[]).with("BUILDKITE_TESTS_OTLP_TOKEN").and_return("relay-token")
+
+    configure_otel
+    exporters = described_class.instance_variable_get(:@exporters)
+    expect(exporters.length).to eq(2)
+    exporters.each do |exporter|
+      expect(exporter.instance_variable_get(:@uri).to_s).to eq("http://127.0.0.1:4318/v1/traces")
+      expect(exporter.instance_variable_get(:@headers)).to include(
+        "Buildkite-Tests-Run-Key" => "run-key",
+        "Authorization" => %(Token token="relay-token"),
       )
-    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
-      .and_return("authorization=Bearer%20generic-token")
-
-    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
-
-    expect(headers).to eq(
-      "authorization" => "Bearer relay-token",
-      "Buildkite-Tests-Run-Key" => "test-run-id",
-      "x-extra" => "hello world",
-    )
+    end
+  ensure
+    described_class.shutdown
   end
 
-  it "uses generic OTLP headers when trace-specific headers are empty" do
-    allow(ENV).to receive(:[]).and_call_original
-    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return("")
-    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS")
-      .and_return("Authorization=Bearer%20generic-token")
+  it "ignores standard OTLP header variables even for its own endpoint" do
+    script = <<~'RUBY'
+      require "buildkite/test_collector"
+      otel = Buildkite::TestCollector::OTel
+      ENV["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = otel::DEFAULT_ENDPOINT
+      ENV["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "authorization=Bearer%20x,x-vendor=1"
+      ENV["OTEL_EXPORTER_OTLP_HEADERS"] = "authorization=Bearer%20y"
 
-    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
+      otel.configure!(api_token: "suite-token", run_env: { "key" => "test-run-id" })
+      otel.instance_variable_get(:@exporters).each do |exporter|
+        puts JSON.generate(exporter.instance_variable_get(:@headers))
+      end
+      otel.shutdown
+    RUBY
 
-    expect(headers["Authorization"]).to eq("Bearer generic-token")
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-Ilib", "-e", script)
+
+    expect(status).to be_success, stderr
+    expect(stderr.lines.grep(/\[buildkite-test_collector\]/)).to be_empty
+    exporter_headers = stdout.lines.map { |line| JSON.parse(line) }
+    expect(exporter_headers.length).to eq(2)
+    exporter_headers.each do |headers|
+      expect(headers).to include(
+        "Buildkite-Tests-Run-Key" => "test-run-id",
+        "Authorization" => %(Token token="suite-token"),
+      )
+      expect(headers.keys.grep(/authorization/i)).to eq(["Authorization"])
+      expect(headers.keys.grep(/x-vendor/i)).to be_empty
+    end
   end
 
-  it "uses collector headers when both standard OTLP header variables are empty" do
+  it "pins gzip compression despite the standard OTLP environment" do
     allow(ENV).to receive(:[]).and_call_original
-    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS").and_return("")
-    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_HEADERS").and_return("")
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_COMPRESSION").and_return("none")
 
-    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
+    processor = described_class.send(:batch_processor, described_class::DEFAULT_ENDPOINT, {})
+    exporter = described_class.instance_variable_get(:@exporters).last
 
-    expect(headers).to eq(
-      "Buildkite-Tests-Run-Key" => "test-run-id",
-      "Authorization" => %(Token token="suite-token"),
-    )
+    expect(exporter.instance_variable_get(:@compression)).to eq("gzip")
+  ensure
+    processor&.shutdown
+    described_class.shutdown
+  end
+
+  it "ignores standard OTLP certificate files" do
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_CERTIFICATE").and_return("/nonexistent")
+
+    processor = described_class.send(:batch_processor, described_class::DEFAULT_ENDPOINT, {})
+    exporter = described_class.instance_variable_get(:@exporters).last
+    http = exporter.instance_variable_get(:@http)
+
+    expect(http.ca_file).to be_nil
+    expect(http.cert).to be_nil
+    expect(http.key).to be_nil
+  ensure
+    processor&.shutdown
+    described_class.shutdown
+  end
+
+  it "isolates both exporters from vendor endpoints, compression, certificates, and TLS verification switches" do
+    allow(ENV).to receive(:[]).and_call_original
+    %w[OTEL_EXPORTER_OTLP OTEL_EXPORTER_OTLP_TRACES].each do |prefix|
+      allow(ENV).to receive(:[]).with("#{prefix}_ENDPOINT").and_return("https://vendor.example/v1/traces")
+      allow(ENV).to receive(:[]).with("#{prefix}_COMPRESSION").and_return("unsupported")
+      %w[CERTIFICATE CLIENT_CERTIFICATE CLIENT_KEY].each do |suffix|
+        allow(ENV).to receive(:[]).with("#{prefix}_#{suffix}").and_return("/nonexistent")
+      end
+    end
+    # Exporter.ssl_verify_mode checks presence with ENV.key?, not the value.
+    allow(ENV).to receive(:key?).and_call_original
+    allow(ENV).to receive(:key?).with("OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_PEER").and_return(false)
+    allow(ENV).to receive(:key?).with("OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_NONE").and_return(true)
+
+    configure_otel(endpoint: described_class::DEFAULT_ENDPOINT)
+    exporters = described_class.instance_variable_get(:@exporters)
+    expect(exporters.length).to eq(2)
+    exporters.each do |exporter|
+      expect(exporter.instance_variable_get(:@uri).to_s).to eq(described_class::DEFAULT_ENDPOINT)
+      expect(exporter.instance_variable_get(:@compression)).to eq("gzip")
+      http = exporter.instance_variable_get(:@http)
+      expect(http.ca_file).to be_nil
+      expect(http.cert).to be_nil
+      expect(http.key).to be_nil
+      expect(http.verify_mode).to eq(OpenSSL::SSL::VERIFY_PEER)
+    end
+  ensure
+    described_class.shutdown
   end
 
   it "uses an AlwaysOn sampler, process-safe random IDs, and the producer resource for test spans" do
@@ -1248,32 +1315,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
       expect(exporter_authorization_headers).to eq(['Token token="after-refresh"'] * 2)
       expect(described_class.instance_variable_get(:@test_span_provider)).to equal(provider_before)
-    ensure
-      described_class.shutdown
-      suite_provider&.shutdown
-      OpenTelemetry.tracer_provider = original
-    end
-
-    it "does not replace standard OTLP authorization when the collector token changes" do
-      original = OpenTelemetry.tracer_provider
-      suite_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
-      OpenTelemetry.tracer_provider = suite_provider
-      allow(ENV).to receive(:[]).and_call_original
-      allow(ENV).to receive(:[]).with("OTEL_EXPORTER_OTLP_TRACES_HEADERS")
-        .and_return("authorization=Bearer%20relay-token")
-
-      described_class.configure!(
-        endpoint: "https://example.invalid/v1/traces",
-        api_token: "before-refresh",
-        run_env: { "key" => "run-123" },
-      )
-      described_class.configure!(
-        endpoint: "https://example.invalid/v1/traces",
-        api_token: "after-refresh",
-        run_env: { "key" => "run-123" },
-      )
-
-      expect(exporter_authorization_headers).to eq(["Bearer relay-token"] * 2)
     ensure
       described_class.shutdown
       suite_provider&.shutdown
