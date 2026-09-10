@@ -789,6 +789,167 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
   end
 
+  describe "test span limits and batching" do
+    # The SDK reads these from the real ENV (ENV.fetch and ENV.values_at, not
+    # ENV#[]), so stubbing ENV#[] would leave them in effect; set and restore
+    # the real variables instead.
+    environment_variables = %w[
+      BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE
+      BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE
+      OTEL_BSP_EXPORT_TIMEOUT
+      OTEL_BSP_MAX_EXPORT_BATCH_SIZE
+      OTEL_BSP_MAX_QUEUE_SIZE
+      OTEL_BSP_SCHEDULE_DELAY
+      OTEL_RUBY_BSP_START_THREAD_ON_BOOT
+      OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT
+      OTEL_EVENT_ATTRIBUTE_VALUE_LENGTH_LIMIT
+      OTEL_SPAN_EVENT_COUNT_LIMIT
+    ].freeze
+
+    let(:exporter) { OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new }
+    let(:provider) do
+      configure_otel(endpoint: "https://example.invalid/v1/traces")
+      described_class.instance_variable_get(:@test_span_provider)
+    end
+    let(:processor) { provider.instance_variable_get(:@span_processors).fetch(0) }
+
+    # What the processor resolved its options to, not what it was passed.
+    def processor_settings(processor)
+      {
+        batch_size: processor.instance_variable_get(:@batch_size),
+        max_queue_size: processor.instance_variable_get(:@max_queue_size),
+        delay_seconds: processor.instance_variable_get(:@delay_seconds),
+        exporter_timeout_seconds: processor.instance_variable_get(:@exporter_timeout_seconds),
+        worker_started: !processor.instance_variable_get(:@thread).nil?,
+      }
+    end
+
+    around do |example|
+      saved = ENV.slice(*environment_variables)
+      environment_variables.each { |name| ENV.delete(name) }
+      example.run
+    ensure
+      environment_variables.each { |name| ENV.delete(name) }
+      ENV.update(saved)
+    end
+
+    before do
+      allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new).and_return(exporter)
+    end
+
+    after { described_class.shutdown }
+
+    it "uses collector settings independently of the process-wide batch processor environment" do
+      ENV["OTEL_BSP_MAX_EXPORT_BATCH_SIZE"] = "1"
+      ENV["OTEL_BSP_MAX_QUEUE_SIZE"] = "2"
+      ENV["OTEL_BSP_SCHEDULE_DELAY"] = "60000"
+      ENV["OTEL_BSP_EXPORT_TIMEOUT"] = "100"
+      ENV["OTEL_RUBY_BSP_START_THREAD_ON_BOOT"] = "false"
+
+      expect { provider }.not_to output.to_stderr
+      expect(processor_settings(processor)).to eq(
+        batch_size: 120,
+        max_queue_size: 8_192,
+        delay_seconds: 1.0,
+        exporter_timeout_seconds: 30.0,
+        worker_started: true,
+      )
+    end
+
+    [1_000, 2_000].each do |queue_size|
+      it "accepts a batch of 1000 and queue of #{queue_size} without an upper batch clamp" do
+        ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE"] = "01000"
+        ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE"] = queue_size.to_s
+
+        expect { provider }.not_to output.to_stderr
+        expect(processor_settings(processor)).to include(batch_size: 1_000, max_queue_size: queue_size)
+      end
+    end
+
+    it "accepts sizes up to 2**31 - 1" do
+      ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE"] = (2**31 - 1).to_s
+      ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE"] = (2**31 - 1).to_s
+
+      expect { provider }.not_to output.to_stderr
+      expect(processor_settings(processor)).to include(batch_size: 2**31 - 1, max_queue_size: 2**31 - 1)
+    end
+
+    { "BATCH" => 120, "QUEUE" => 8_192 }.each do |setting, default|
+      ["0", "-1", "1.5", "abc", "", " 12", "+12", "12\n", "１２", "12\xFF", (2**31).to_s].each do |value|
+        it "warns once and uses the default for #{setting}=#{value.inspect}" do
+          name = "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_#{setting}_SIZE"
+          ENV[name] = value
+
+          expect { provider }.to output(
+            "[buildkite-test_collector] #{name} must be a positive integer up to 2147483647, using default #{default}\n"
+          ).to_stderr
+          expect(processor_settings(processor)).to include(batch_size: 120, max_queue_size: 8_192)
+        end
+      end
+    end
+
+    it "warns once and resets both defaults when the resolved batch exceeds the queue" do
+      ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE"] = "501"
+      ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE"] = "500"
+
+      expect { provider }.to output(
+        "[buildkite-test_collector] BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
+          "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults (batch 120, queue 8192)\n"
+      ).to_stderr
+      expect(processor_settings(processor)).to include(batch_size: 120, max_queue_size: 8_192)
+    end
+
+    it "truncates span attributes in characters independently of the process-wide span environment" do
+      ENV["OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT"] = "1"
+      span = provider.tracer("limits-test").start_span("test.execution")
+      span.set_attribute("long", "é" * 10_243 + "tail")
+      span.set_attribute("boundary", "界" * 10_243)
+      span.finish
+      provider.force_flush
+
+      expect(exporter.finished_spans.fetch(0).attributes).to include(
+        "long" => "é" * 10_240 + "...",
+        "boundary" => "界" * 10_243,
+      )
+    end
+
+    it "truncates exception attributes in characters and retains the newest 100 events" do
+      ENV["OTEL_SPAN_EVENT_COUNT_LIMIT"] = "1"
+      ENV["OTEL_EVENT_ATTRIBUTE_VALUE_LENGTH_LIMIT"] = "1"
+      span = provider.tracer("limits-test").start_span("test.execution")
+      101.times { |i| span.add_event("annotation-#{i}") }
+      span.add_event("exception", attributes: {
+        "exception.message" => "é" * 16_384 + "tail",
+        "exception.stacktrace" => "界" * 16_384 + "tail",
+      })
+      span.finish
+      provider.force_flush
+
+      events = exporter.finished_spans.fetch(0).events
+      expect(events.map(&:name)).to eq((2..100).map { |i| "annotation-#{i}" } + ["exception"])
+      expect(events.last.attributes).to eq(
+        "exception.message" => "é" * 16_381 + "...",
+        "exception.stacktrace" => "界" * 16_381 + "...",
+      )
+    end
+
+    it "configures the child span processor explicitly, independently of the process-wide batch processor environment" do
+      # Would raise ArgumentError (batch > queue) if the SDK defaults applied.
+      ENV["OTEL_BSP_MAX_EXPORT_BATCH_SIZE"] = "4096"
+      ENV["OTEL_BSP_MAX_QUEUE_SIZE"] = "100"
+      ENV["OTEL_RUBY_BSP_START_THREAD_ON_BOOT"] = "false"
+      provider
+
+      expect(processor_settings(described_class.instance_variable_get(:@child_span_processor))).to eq(
+        batch_size: 512,
+        max_queue_size: 2_048,
+        delay_seconds: 5.0,
+        exporter_timeout_seconds: 30.0,
+        worker_started: true,
+      )
+    end
+  end
+
   it "exports test spans privately and only forwards their children" do
     suite_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     allow(suite_exporter).to receive(:shutdown).and_call_original
@@ -815,6 +976,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
       .to receive(:new)
       .with(
         root_exporter,
+        exporter_timeout: described_class::EXPORT_TIMEOUT_MILLISECONDS,
+        start_thread_on_boot: true,
         max_queue_size: described_class::TEST_SPAN_MAX_QUEUE_SIZE,
         max_export_batch_size: described_class::TEST_SPAN_MAX_EXPORT_BATCH_SIZE,
         schedule_delay: described_class::TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS,
@@ -822,10 +985,18 @@ RSpec.describe Buildkite::TestCollector::OTel do
       )
       .ordered
       .and_call_original
-    # Children keep the SDK defaults, including its no-op metrics reporter.
+    # Children keep the SDK's no-op metrics reporter.
     expect(OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor)
       .to receive(:new)
-      .with(child_exporter, metrics_reporter: nil)
+      .with(
+        child_exporter,
+        exporter_timeout: described_class::EXPORT_TIMEOUT_MILLISECONDS,
+        start_thread_on_boot: true,
+        max_queue_size: described_class::CHILD_SPAN_MAX_QUEUE_SIZE,
+        max_export_batch_size: described_class::CHILD_SPAN_MAX_EXPORT_BATCH_SIZE,
+        schedule_delay: described_class::CHILD_SPAN_SCHEDULE_DELAY_MILLISECONDS,
+        metrics_reporter: nil,
+      )
       .ordered
       .and_call_original
     configure_otel(endpoint: "https://example.invalid/v1/traces")
@@ -1558,6 +1729,37 @@ RSpec.describe Buildkite::TestCollector::OTel do
     )
     expect(finished.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
     expect(finished.status.description).to eq("kaboom")
+  ensure
+    described_class.instance_variable_set(:@tracer, nil)
+    provider&.shutdown
+  end
+
+  it "caps the failure reason in the span status at the server's failure summary length" do
+    exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    provider.add_span_processor(
+      OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
+    )
+    described_class.instance_variable_set(:@tracer, provider.tracer("exception-test"))
+
+    limit = described_class::FAILURE_REASON_MAX_LENGTH
+    reason = "é" * limit + "tail"
+    test = double(
+      "trace",
+      otel_attributes: {},
+      otel_result: "failed",
+      otel_failure_reason: reason,
+      otel_exception_events: [],
+    )
+
+    span = described_class.start_test_span(test: execution_test)
+    described_class.finish_test_span(span, test: test)
+    provider.force_flush
+
+    finished = exporter.finished_spans.fetch(0)
+    expect(limit).to eq(1_024)
+    expect(finished.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+    expect(finished.status.description).to eq("é" * limit)
   ensure
     described_class.instance_variable_set(:@tracer, nil)
     provider&.shutdown
