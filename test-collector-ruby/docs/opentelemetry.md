@@ -308,6 +308,65 @@ is reconfigured, but run identity is fixed when export starts: reconfiguring
 with a different run key warns and keeps attributing results to the original
 run. Reporting a new run requires a new process.
 
+## Test span sizes and batching
+
+The collector exports `test.execution` spans in batches of up to 120, with a
+queue of 8,192 spans, a 1,000 ms schedule delay, and a 30-second export
+timeout. Set `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` or
+`BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` before export is configured to
+override the batch or queue size. Unset values use the defaults. Overrides must
+be positive decimal integers no greater than 2,147,483,647; invalid values warn
+and use the corresponding default. If the resolved batch size exceeds the queue
+size, the collector warns once and resets both to their defaults. There is no
+upper batch clamp: larger batches reduce request frequency but increase payload
+size.
+
+The default batch size is set for the worst case, not the typical one. The
+server rejects request bodies over 900 KiB (gzip). A batch of failures at the
+message and stack trace limits with high-entropy text (UUIDs, timestamps)
+compresses to roughly 4.2 KiB per span, so 120 fits with headroom; typical
+batches compress to roughly 0.3 KiB per span.
+
+That favours large failure payloads over throughput. Exporting directly to
+Buildkite, each batch is one round trip, so a suite that finishes more than
+roughly 1,000 examples per second for over 10 seconds can fill the queue, after
+which the oldest spans are dropped with a warning; raise
+`BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` and
+`BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` in that case. Exporting via
+the `bktec` relay is unaffected because it acknowledges each batch locally.
+
+New OpenTelemetry settings use the `BUILDKITE_TESTS_OTEL_` prefix, alongside
+the `BUILDKITE_TESTS_OTLP_*` variables `bktec` exports.
+`BUILDKITE_ANALYTICS_OTLP_ENDPOINT` keeps its name because `bktec` sets it.
+
+Both batch processors set every option explicitly, so the SDK's `OTEL_BSP_*`
+and `OTEL_RUBY_BSP_START_THREAD_ON_BOOT` variables are ignored. Child spans use
+a 2,048-span queue, batches of up to 512, a 5,000 ms schedule delay, and the
+same 30-second export timeout. Both export threads start when export is
+configured.
+
+The SDK truncates test span attribute values to 10,243 characters and event
+attribute values (including exception messages and stack traces) to 16,384
+characters. Each test span retains at most 100 events, dropping the oldest when
+full. Limits are characters, not bytes, and truncated values end in `...`. The
+attribute limit matches the server, which truncates test names to 10,240
+characters before deriving the test ID, so a long test name keeps the same
+identity and history as the JSON upload. The collector also caps the failure
+reason in the span status at 1,024 characters and each exception message at
+10,243 characters, the server's failure summary and message quotas; stack traces
+keep the 16,384-character event limit because the server keeps up to 100 KiB of
+stack trace per execution. These limits ignore the process-wide `OTEL_SPAN_*`
+and `OTEL_EVENT_*` settings; attribute and link count limits keep SDK defaults.
+
+These settings do not guarantee that requests fit the server limits. Request
+bodies over 900 KiB are rejected with HTTP 413 and logged by the exporter.
+Ingestion also keeps at most 1 MiB and 10,000 lines of stack traces per
+request, spent in span order: once a batch exhausts that budget, later failures
+in the same request keep their message but lose their stack trace. If your
+suite produces very large failure output, lower
+`BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE`: smaller batches reduce
+request sizes and spread the stack trace budget across fewer failures.
+
 ## When something goes wrong
 
 The run key must be 1–255 printable ASCII characters without spaces. An invalid

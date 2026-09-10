@@ -27,9 +27,37 @@ module Buildkite::TestCollector
     TRACER_NAME = "buildkite-test-collector"
 
     TEST_SPAN_NAME = "test.execution"
+
+    # Passed explicitly to both batch processors so the process-wide OTEL_BSP_*
+    # settings do not affect Buildkite export. SDK defaults unless noted.
+    EXPORT_TIMEOUT_MILLISECONDS = 30_000
     TEST_SPAN_MAX_QUEUE_SIZE = 8_192
-    TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 512
+    # The server rejects gzip request bodies over 900 KiB. Failures at the
+    # message and stack trace limits with high-entropy text gzip to about
+    # 4.2 KiB per span, so 120 leaves headroom; typical batches are ~0.3 KiB
+    # per span.
+    TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 120
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
+    CHILD_SPAN_MAX_QUEUE_SIZE = 2_048
+    CHILD_SPAN_MAX_EXPORT_BATCH_SIZE = 512
+    CHILD_SPAN_SCHEDULE_DELAY_MILLISECONDS = 5_000
+    # Sanity cap for batch and queue overrides.
+    SPAN_PROCESSOR_SIZE_LIMIT = 2**31 - 1
+
+    # Keep in sync with Test.NAME_MAX_LENGTH (10,240) in ta-ingestion. The SDK
+    # truncates to 10,240 characters plus "..." and the server truncates that
+    # back to 10,240 before deriving the test ID, so a long test name keeps the
+    # same identity as the JSON upload.
+    TEST_SPAN_ATTRIBUTE_LENGTH_LIMIT = 10_243
+    TEST_SPAN_EVENT_ATTRIBUTE_LENGTH_LIMIT = 16_384
+    TEST_SPAN_EVENT_COUNT_LIMIT = 100
+    # Mirrors TestResult.FAILURE_REASON_MAX_LENGTH in ta-ingestion.
+    FAILURE_REASON_MAX_LENGTH = 1_024
+    # Keep in sync with TestResult.FAILURE_EXPANDED_MAX_LENGTH (10,240) in
+    # ta-ingestion, which keeps that many message characters per execution and
+    # truncates away the trailing "...". Stack traces have a separate 100 KiB
+    # quota, so they keep the event attribute limit.
+    EXCEPTION_MESSAGE_MAX_LENGTH = 10_243
 
     module ExceptionHandling
       FATAL_EXCEPTIONS = [SystemExit, SignalException, NoMemoryError].freeze
@@ -312,12 +340,22 @@ module Buildkite::TestCollector
       end
 
       def build_test_span_provider(endpoint, headers, resource)
+        max_queue_size = span_processor_config_value("BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE", default: TEST_SPAN_MAX_QUEUE_SIZE)
+        max_export_batch_size = span_processor_config_value("BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE", default: TEST_SPAN_MAX_EXPORT_BATCH_SIZE)
+        if max_export_batch_size > max_queue_size
+          warn "[buildkite-test_collector] BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
+            "BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults " \
+            "(batch #{TEST_SPAN_MAX_EXPORT_BATCH_SIZE}, queue #{TEST_SPAN_MAX_QUEUE_SIZE})"
+          max_queue_size = TEST_SPAN_MAX_QUEUE_SIZE
+          max_export_batch_size = TEST_SPAN_MAX_EXPORT_BATCH_SIZE
+        end
+
         @test_span_metrics_reporter = TestSpanMetricsReporter.new
         test_span_processor = batch_processor(
           endpoint,
           headers,
-          max_queue_size: TEST_SPAN_MAX_QUEUE_SIZE,
-          max_export_batch_size: TEST_SPAN_MAX_EXPORT_BATCH_SIZE,
+          max_queue_size: max_queue_size,
+          max_export_batch_size: max_export_batch_size,
           schedule_delay: TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS,
           metrics_reporter: @test_span_metrics_reporter,
         )
@@ -325,6 +363,14 @@ module Buildkite::TestCollector
           sampler: OpenTelemetry::SDK::Trace::Samplers::ALWAYS_ON,
           id_generator: SecureRandomIdGenerator,
           resource: resource,
+          # Lengths are characters, not bytes. Explicit so the process-wide
+          # OTEL_SPAN_*/OTEL_EVENT_* length and event count limits do not apply
+          # to test spans; the other count limits keep SDK defaults.
+          span_limits: OpenTelemetry::SDK::Trace::SpanLimits.new(
+            attribute_length_limit: TEST_SPAN_ATTRIBUTE_LENGTH_LIMIT,
+            event_attribute_length_limit: TEST_SPAN_EVENT_ATTRIBUTE_LENGTH_LIMIT,
+            event_count_limit: TEST_SPAN_EVENT_COUNT_LIMIT,
+          ),
         )
         test_span_provider.add_span_processor(test_span_processor)
         test_span_provider
@@ -332,6 +378,20 @@ module Buildkite::TestCollector
         ExceptionHandling.reraise_fatal(e)
         stop_processor(test_span_processor)
         raise
+      end
+
+      def span_processor_config_value(name, default:)
+        value = ENV[name]
+        return default if value.nil?
+
+        # match? raises on an invalid byte sequence.
+        if value.valid_encoding? && value.match?(/\A[0-9]+\z/) && (1..SPAN_PROCESSOR_SIZE_LIMIT).cover?(value.to_i)
+          return value.to_i
+        end
+
+        warn "[buildkite-test_collector] #{name} must be a positive integer up to #{SPAN_PROCESSOR_SIZE_LIMIT}, " \
+          "using default #{default}"
+        default
       end
 
       def batch_processor(endpoint, headers, metrics_reporter: nil, **processor_options)
@@ -352,6 +412,8 @@ module Buildkite::TestCollector
         (@exporters ||= []) << exporter
         OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(
           exporter,
+          exporter_timeout: EXPORT_TIMEOUT_MILLISECONDS,
+          start_thread_on_boot: true,
           metrics_reporter: metrics_reporter,
           **processor_options,
         )
@@ -441,7 +503,13 @@ module Buildkite::TestCollector
           raise "existing OpenTelemetry tracer provider does not support adding a span processor"
         end
 
-        child_processor = batch_processor(endpoint, headers)
+        child_processor = batch_processor(
+          endpoint,
+          headers,
+          max_queue_size: CHILD_SPAN_MAX_QUEUE_SIZE,
+          max_export_batch_size: CHILD_SPAN_MAX_EXPORT_BATCH_SIZE,
+          schedule_delay: CHILD_SPAN_SCHEDULE_DELAY_MILLISECONDS,
+        )
         child_forwarder = ChildSpanForwarder.new(
           child_processor,
           context_key: test_span_context_key,
@@ -602,14 +670,24 @@ module Buildkite::TestCollector
         # The failure summary rides as the span status description, and
         # each individual failure as a semconv exception event - the
         # native OTel shapes, which the server maps back to the
-        # execution's failure_reason and failure_expanded.
-        span.status = OpenTelemetry::Trace::Status.error(test.otel_failure_reason.to_s)
+        # execution's failure_reason and failure_expanded, each capped at the
+        # server's limit.
+        span.status = OpenTelemetry::Trace::Status.error(test.otel_failure_reason.to_s[0, FAILURE_REASON_MAX_LENGTH])
         test.otel_exception_events.each do |attributes|
-          span.add_event("exception", attributes: attributes)
+          span.add_event("exception", attributes: cap_exception_message(attributes))
         end
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not record the OpenTelemetry test result: #{e.class}: #{e.message}"
+      end
+
+      def cap_exception_message(attributes)
+        message = attributes["exception.message"]
+        return attributes unless message.is_a?(String) && message.size > EXCEPTION_MESSAGE_MAX_LENGTH
+
+        attributes.merge(
+          "exception.message" => OpenTelemetry::Common::Utilities.truncate(message, EXCEPTION_MESSAGE_MAX_LENGTH)
+        )
       end
 
       # What the test was, and the run it belongs to.
