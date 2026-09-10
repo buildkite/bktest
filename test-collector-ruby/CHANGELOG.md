@@ -18,18 +18,18 @@
   overrides. Requires `opentelemetry-exporter-otlp` 0.29+; older versions fall
   back to the JSON upload with a warning.
 * Reduce the experimental OpenTelemetry test span batch size from 512 to 120 so
-  a batch of failures with maximum-length output fits the server's request size
-  limit. Override the batch and queue sizes with
-  `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE` and
-  `BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE`; invalid values warn and use
+  a batch of failures with maximum-length output fits the server's 900 KiB
+  request limit. Override the batch and queue sizes with
+  `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` and
+  `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE`; invalid values warn and use
   the defaults.
 * Set every OpenTelemetry batch processor option explicitly, including the export
   timeout and starting the export thread on boot, so `OTEL_BSP_*` and
   `OTEL_RUBY_BSP_START_THREAD_ON_BOOT` no longer affect Buildkite export.
 * Truncate OpenTelemetry test span attributes to 10,243 characters (test names
-  keep the same identity as the JSON upload), event attributes to 16,384
-  characters, events to the newest 100 per span, and the failure summary in the
-  span status to 1,024 characters.
+  keep the same identity as the JSON upload), exception messages to 10,243
+  characters, other event attributes to 16,384 characters, events to the newest
+  100 per span, and the failure summary in the span status to 1,024 characters.
 * **Breaking change to the experimental OpenTelemetry support:** opt-in
   submission is now OTLP-only for RSpec. `otel_enabled: true` submits executions
   as spans without also uploading legacy JSON, and the separate `otel_only`

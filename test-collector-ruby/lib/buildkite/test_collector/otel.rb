@@ -32,8 +32,10 @@ module Buildkite::TestCollector
     # settings do not affect Buildkite export. SDK defaults unless noted.
     EXPORT_TIMEOUT_MILLISECONDS = 30_000
     TEST_SPAN_MAX_QUEUE_SIZE = 8_192
-    # 120 failed spans at TEST_SPAN_EVENT_ATTRIBUTE_LENGTH_LIMIT gzip to about
-    # 750 KiB, under the server's 900 KiB request limit; 240 did not fit.
+    # The server rejects gzip request bodies over 900 KiB. Failures at the
+    # message and stack trace limits with high-entropy text gzip to about
+    # 4.2 KiB per span, so 120 leaves headroom; typical batches are ~0.3 KiB
+    # per span.
     TEST_SPAN_MAX_EXPORT_BATCH_SIZE = 120
     TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
     CHILD_SPAN_MAX_QUEUE_SIZE = 2_048
@@ -51,6 +53,11 @@ module Buildkite::TestCollector
     TEST_SPAN_EVENT_COUNT_LIMIT = 100
     # Mirrors TestResult.FAILURE_REASON_MAX_LENGTH in ta-ingestion.
     FAILURE_REASON_MAX_LENGTH = 1_024
+    # Keep in sync with TestResult.FAILURE_EXPANDED_MAX_LENGTH (10,240) in
+    # ta-ingestion, which keeps that many message characters per execution and
+    # truncates away the trailing "...". Stack traces have a separate 100 KiB
+    # quota, so they keep the event attribute limit.
+    EXCEPTION_MESSAGE_MAX_LENGTH = 10_243
 
     module ExceptionHandling
       FATAL_EXCEPTIONS = [SystemExit, SignalException, NoMemoryError].freeze
@@ -333,11 +340,11 @@ module Buildkite::TestCollector
       end
 
       def build_test_span_provider(endpoint, headers, resource)
-        max_queue_size = span_processor_config_value("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE", default: TEST_SPAN_MAX_QUEUE_SIZE)
-        max_export_batch_size = span_processor_config_value("BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE", default: TEST_SPAN_MAX_EXPORT_BATCH_SIZE)
+        max_queue_size = span_processor_config_value("BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE", default: TEST_SPAN_MAX_QUEUE_SIZE)
+        max_export_batch_size = span_processor_config_value("BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE", default: TEST_SPAN_MAX_EXPORT_BATCH_SIZE)
         if max_export_batch_size > max_queue_size
-          warn "[buildkite-test_collector] BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
-            "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults " \
+          warn "[buildkite-test_collector] BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
+            "BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults " \
             "(batch #{TEST_SPAN_MAX_EXPORT_BATCH_SIZE}, queue #{TEST_SPAN_MAX_QUEUE_SIZE})"
           max_queue_size = TEST_SPAN_MAX_QUEUE_SIZE
           max_export_batch_size = TEST_SPAN_MAX_EXPORT_BATCH_SIZE
@@ -663,15 +670,24 @@ module Buildkite::TestCollector
         # The failure summary rides as the span status description, and
         # each individual failure as a semconv exception event - the
         # native OTel shapes, which the server maps back to the
-        # execution's failure_reason and failure_expanded. The summary is capped
-        # at the server's limit; the events keep the full message.
+        # execution's failure_reason and failure_expanded, each capped at the
+        # server's limit.
         span.status = OpenTelemetry::Trace::Status.error(test.otel_failure_reason.to_s[0, FAILURE_REASON_MAX_LENGTH])
         test.otel_exception_events.each do |attributes|
-          span.add_event("exception", attributes: attributes)
+          span.add_event("exception", attributes: cap_exception_message(attributes))
         end
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not record the OpenTelemetry test result: #{e.class}: #{e.message}"
+      end
+
+      def cap_exception_message(attributes)
+        message = attributes["exception.message"]
+        return attributes unless message.is_a?(String) && message.size > EXCEPTION_MESSAGE_MAX_LENGTH
+
+        attributes.merge(
+          "exception.message" => OpenTelemetry::Common::Utilities.truncate(message, EXCEPTION_MESSAGE_MAX_LENGTH)
+        )
       end
 
       # What the test was, and the run it belongs to.

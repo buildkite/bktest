@@ -861,8 +861,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
     # ENV#[]), so stubbing ENV#[] would leave them in effect; set and restore
     # the real variables instead.
     environment_variables = %w[
-      BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE
-      BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE
+      BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE
+      BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE
       OTEL_BSP_EXPORT_TIMEOUT
       OTEL_BSP_MAX_EXPORT_BATCH_SIZE
       OTEL_BSP_MAX_QUEUE_SIZE
@@ -925,8 +925,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     [1_000, 2_000].each do |queue_size|
       it "accepts a batch of 1000 and queue of #{queue_size} without an upper batch clamp" do
-        ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE"] = "01000"
-        ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE"] = queue_size.to_s
+        ENV["BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE"] = "01000"
+        ENV["BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE"] = queue_size.to_s
 
         expect { provider }.not_to output.to_stderr
         expect(processor_settings(processor)).to include(batch_size: 1_000, max_queue_size: queue_size)
@@ -934,8 +934,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end
 
     it "accepts sizes up to 2**31 - 1" do
-      ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE"] = (2**31 - 1).to_s
-      ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE"] = (2**31 - 1).to_s
+      ENV["BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE"] = (2**31 - 1).to_s
+      ENV["BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE"] = (2**31 - 1).to_s
 
       expect { provider }.not_to output.to_stderr
       expect(processor_settings(processor)).to include(batch_size: 2**31 - 1, max_queue_size: 2**31 - 1)
@@ -944,7 +944,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     { "BATCH" => 120, "QUEUE" => 8_192 }.each do |setting, default|
       ["0", "-1", "1.5", "abc", "", " 12", "+12", "12\n", "１２", "12\xFF", (2**31).to_s].each do |value|
         it "warns once and uses the default for #{setting}=#{value.inspect}" do
-          name = "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_#{setting}_SIZE"
+          name = "BUILDKITE_TESTS_OTEL_TEST_SPAN_#{setting}_SIZE"
           ENV[name] = value
 
           expect { provider }.to output(
@@ -956,12 +956,12 @@ RSpec.describe Buildkite::TestCollector::OTel do
     end
 
     it "warns once and resets both defaults when the resolved batch exceeds the queue" do
-      ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE"] = "501"
-      ENV["BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE"] = "500"
+      ENV["BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE"] = "501"
+      ENV["BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE"] = "500"
 
       expect { provider }.to output(
-        "[buildkite-test_collector] BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
-          "BUILDKITE_TEST_ENGINE_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults (batch 120, queue 8192)\n"
+        "[buildkite-test_collector] BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
+          "BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults (batch 120, queue 8192)\n"
       ).to_stderr
       expect(processor_settings(processor)).to include(batch_size: 120, max_queue_size: 8_192)
     end
@@ -1801,6 +1801,42 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(limit).to eq(1_024)
     expect(finished.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
     expect(finished.status.description).to eq("é" * limit)
+  ensure
+    described_class.instance_variable_set(:@tracer, nil)
+    provider&.shutdown
+  end
+
+  it "caps exception messages at the server's message quota and leaves stack traces to the event limit" do
+    exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    provider.add_span_processor(
+      OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
+    )
+    described_class.instance_variable_set(:@tracer, provider.tracer("exception-test"))
+
+    limit = described_class::EXCEPTION_MESSAGE_MAX_LENGTH
+    stacktrace = "界" * (limit + 1)
+    test = double(
+      "trace",
+      otel_attributes: {},
+      otel_result: "failed",
+      otel_failure_reason: "kaboom",
+      otel_exception_events: [
+        { "exception.message" => "é" * limit, "exception.stacktrace" => stacktrace },
+        { "exception.message" => "é" * limit + "tail" },
+      ],
+    )
+
+    span = described_class.start_test_span(test: execution_test)
+    described_class.finish_test_span(span, test: test)
+    provider.force_flush
+
+    events = exporter.finished_spans.fetch(0).events.select { |e| e.name == "exception" }
+    expect(limit).to eq(10_243)
+    expect(events.map(&:attributes)).to eq([
+      { "exception.message" => "é" * limit, "exception.stacktrace" => stacktrace },
+      { "exception.message" => "é" * (limit - 3) + "..." },
+    ])
   ensure
     described_class.instance_variable_set(:@tracer, nil)
     provider&.shutdown
