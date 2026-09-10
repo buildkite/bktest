@@ -1,9 +1,6 @@
 # frozen_string_literal: true
 
 RSpec.describe Buildkite::TestCollector do
-  # Perhaps there's a better way to make a stubbed ENV overlay that resets between tests.
-  # We could probably use allow(ENV).to receive(...) although I find that more fragile.
-  # Also, I hadn't seen spec/support/fake_env_helpers.rb when I wrote this :|
   ENV_REAL = ENV
   let(:env_overlay) { Hash.new { |_h, k| ENV_REAL[k] } }
   before { stub_const("ENV", env_overlay) }
@@ -193,6 +190,44 @@ RSpec.describe Buildkite::TestCollector do
       expect(Buildkite::TestCollector.otel_enabled?).to eq false
       expect(Buildkite::TestCollector::Network).to have_received(:configure)
       expect(Buildkite::TestCollector::Object).to have_received(:configure)
+    end
+
+    it "warns and falls back to JSON when the OpenTelemetry run key is invalid" do
+      allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "invalid key" } }
+      allow(Buildkite::TestCollector).to receive(:hook_into)
+      allow(Buildkite::TestCollector::Network).to receive(:configure)
+      allow(Buildkite::TestCollector::Object).to receive(:configure)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = "MyToken"
+
+      Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
+
+      warning = "[buildkite-test_collector] OpenTelemetry span export disabled: run key \"invalid key\" is invalid. " \
+        "Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); " \
+        "it must be 1-255 printable ASCII characters without spaces.\n" \
+        "[buildkite-test_collector] otel_enabled is set, but OpenTelemetry could not be configured " \
+        "(see the warning above); uploading results as JSON instead\n"
+      expect {
+        Buildkite::TestCollector.start_otel
+      }.to output(warning).to_stderr
+
+      expect(Buildkite::TestCollector::OTel).not_to be_enabled
+      expect(Buildkite::TestCollector.otel_enabled?).to eq false
+      expect(Buildkite::TestCollector::Network).to have_received(:configure)
+      expect(Buildkite::TestCollector::Object).to have_received(:configure)
+    end
+
+    it "warns about missing JSON credentials when an invalid run key disables header-only export" do
+      allow(Buildkite::TestCollector::CI).to receive(:env) { { "key" => "invalid key" } }
+      allow(Buildkite::TestCollector).to receive(:hook_into)
+      env_overlay["BUILDKITE_ANALYTICS_TOKEN"] = nil
+      env_overlay["OTEL_EXPORTER_OTLP_TRACES_HEADERS"] = "Authorization=Bearer%20relay"
+
+      Buildkite::TestCollector.configure(hook: hook, otel_enabled: true)
+      expect { Buildkite::TestCollector.start_otel }.to output(
+        /\A\[buildkite-test_collector\] .*Fix BUILDKITE_ANALYTICS_KEY.*\n\[buildkite-test_collector\] .*results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set\n\z/
+      ).to_stderr
+      expect(Buildkite::TestCollector.otel_enabled?).to be false
+      expect(Buildkite::TestCollector::OTel).not_to be_enabled
     end
 
     it "says results will not be uploaded when only OTLP headers held the credential" do

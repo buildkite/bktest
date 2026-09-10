@@ -270,6 +270,8 @@ is absent, `OTEL_EXPORTER_OTLP_HEADERS`) over its own OTLP headers. Header names
 are matched case-insensitively, so a standard `authorization` entry takes
 precedence over the credential sourced from `BUILDKITE_ANALYTICS_TOKEN`. Empty
 header environment variables are treated as unset.
+The `Buildkite-Tests-Run-Key` header cannot be overridden by OTLP headers; it
+always uses the validated run key carried by the test spans.
 
 bktec's OTLP relay uses the trace-specific header variable to provide its local
 credential and forwards spans to Buildkite with its OIDC credential. Without an
@@ -296,6 +298,18 @@ with a different run key warns and keeps attributing results to the original
 run. Reporting a new run requires a new process.
 
 ## When something goes wrong
+
+The run key must be 1–255 printable ASCII characters without spaces. An invalid
+key disables OpenTelemetry export with a warning and the collector falls back to
+the JSON upload, which still requires `BUILDKITE_ANALYTICS_TOKEN`; a header-only
+setup instead warns that no results will be uploaded. Set
+`BUILDKITE_ANALYTICS_KEY` to a valid key or fix the CI variable from which it
+was generated.
+
+An empty `BUILDKITE_ANALYTICS_*` metadata override (key, URL, branch, SHA,
+number, job ID, message) is ignored, so detected CI metadata is kept on both
+the OpenTelemetry and JSON paths. Explicit `env:` values still take precedence,
+including empty ones.
 
 Non-fatal export errors, including WebMock network blocks, do not fail a test
 or stop the batch workers from exporting later spans. A blocked batch is still

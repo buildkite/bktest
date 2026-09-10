@@ -43,7 +43,7 @@ class Buildkite::TestCollector::CI
       "location_prefix" => Buildkite::TestCollector.location_prefix,
       "test_runner" => Buildkite::TestCollector.test_runner,
       "trace_min_duration" => Buildkite::TestCollector.trace_min_duration&.to_s,
-    }.select { |_, value| !value.nil? }
+    }.reject { |_, value| value.nil? || value == "" }
   end
 
   def generic
