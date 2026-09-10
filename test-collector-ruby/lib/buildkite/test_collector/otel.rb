@@ -24,9 +24,6 @@ module Buildkite::TestCollector
 
     PROCESSOR_TIMEOUT_SECONDS = 30
 
-    # Standard OTLP exporter header variables, most specific first.
-    HEADER_ENVIRONMENT_VARIABLES = %w[OTEL_EXPORTER_OTLP_TRACES_HEADERS OTEL_EXPORTER_OTLP_HEADERS].freeze
-
     TRACER_NAME = "buildkite-test-collector"
 
     TEST_SPAN_NAME = "test.execution"
@@ -111,13 +108,17 @@ module Buildkite::TestCollector
         !@tracer.nil?
       end
 
-      # Whether the standard OTLP environment supplies request headers (which
-      # may carry the credential, as bktec's relay does).
-      def headers_from_environment?
-        HEADER_ENVIRONMENT_VARIABLES.any? { |name| !ENV[name].to_s.empty? }
+      # bktec's relay sets its loopback listener here and its credential in api_token.
+      def endpoint
+        ENV["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] || DEFAULT_ENDPOINT
       end
 
-      def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, span_filter: nil, tags: {})
+      def api_token
+        token = ENV["BUILDKITE_TESTS_OTLP_TOKEN"]&.strip
+        token unless token.nil? || token.empty?
+      end
+
+      def configure!(endpoint: self.endpoint, api_token: self.api_token, run_env: {}, span_filter: nil, tags: {})
         run_key = run_env["key"]
         # The receiver rejects every batch sent with an invalid run key, so
         # fail before loading anything; an enabled process already passed this.
@@ -148,13 +149,7 @@ module Buildkite::TestCollector
 
         @api_token = api_token
         @run_key = run_env["key"]
-        # Passing collector headers to the exporter bypasses its environment
-        # defaults, so merge the standard OTLP headers here instead.
-        environment_headers = otlp_headers_from_environment
-        @authorization_from_environment = environment_headers.keys.any? do |key|
-          key.casecmp?("Authorization")
-        end
-        headers = request_headers(run_env, api_token, environment_headers)
+        headers = request_headers(run_env, api_token)
 
         # Resources identify the entities that produced the telemetry. Details
         # about the Test Engine run and test framework describe each execution
@@ -286,7 +281,6 @@ module Buildkite::TestCollector
         ExporterGuard.reset
         @test_span_metrics_reporter = nil
         @api_token = nil
-        @authorization_from_environment = nil
         @run_attributes = nil
         @run_key = nil
         @tracer = nil
@@ -341,9 +335,15 @@ module Buildkite::TestCollector
       end
 
       def batch_processor(endpoint, headers, metrics_reporter: nil, **processor_options)
+        # Explicit values bypass the exporter's OTEL_EXPORTER_OTLP_* defaults.
         exporter = OpenTelemetry::Exporter::OTLP::Exporter.new(
           endpoint: endpoint,
           headers: headers,
+          compression: "gzip",
+          certificate_file: nil,
+          client_certificate_file: nil,
+          client_key_file: nil,
+          ssl_verify_mode: OpenSSL::SSL::VERIFY_PEER,
           metrics_reporter: metrics_reporter,
         )
         exporter.singleton_class.prepend(ExporterGuard)
@@ -379,10 +379,6 @@ module Buildkite::TestCollector
         return if api_token.nil? || api_token == @api_token
 
         @api_token = api_token
-        # Standard OTLP configuration remains authoritative across warm-worker
-        # reconfiguration, even when the collector receives a refreshed token.
-        return if @authorization_from_environment
-
         value = authorization_header(api_token)
         refreshed = Array(@exporters).count do |exporter|
           headers = exporter.instance_variable_get(:@headers)
@@ -681,35 +677,10 @@ module Buildkite::TestCollector
         []
       end
 
-      def request_headers(run_env, api_token, environment_headers = otlp_headers_from_environment)
+      def request_headers(run_env, api_token)
         headers = { "Buildkite-Tests-Run-Key" => run_env["key"] }
         headers["Authorization"] = authorization_header(api_token) if api_token
-        environment_headers.each do |key, value|
-          # This header and the spans must name the same run.
-          next if key.casecmp?("Buildkite-Tests-Run-Key")
-
-          headers.delete_if { |existing, _| existing.casecmp?(key) }
-          headers[key] = value
-        end
         headers
-      end
-
-      def otlp_headers_from_environment
-        raw = HEADER_ENVIRONMENT_VARIABLES.map { |name| ENV[name] }.find { |value| !value.to_s.empty? }
-        return {} unless raw
-
-        entries = raw.split(",")
-        raise ArgumentError, "invalid OTLP exporter headers" if entries.empty?
-
-        entries.each_with_object({}) do |entry, headers|
-          key, value = entry.split("=", 2).map { |part| URI.decode_uri_component(part) }
-          key = key.to_s.strip
-          value = value.to_s.strip
-          raise ArgumentError, "invalid OTLP exporter headers" if key.empty? || value.empty?
-
-          headers.delete_if { |existing, _| existing.casecmp?(key) }
-          headers[key] = value
-        end
       end
 
       def authorization_header(api_token)

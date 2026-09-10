@@ -24,10 +24,11 @@ OpenTelemetry submission is off by default:
 Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
 ```
 
-Export requires Ruby 3.3 or newer and the `opentelemetry-sdk` and
-`opentelemetry-exporter-otlp` gems. These optional dependencies are not installed
-with `buildkite-test_collector`; add them to your bundle as shown in
-[Choosing instrumentation](#choosing-instrumentation).
+Export requires Ruby 3.3 or newer, the `opentelemetry-sdk` gem, and
+`opentelemetry-exporter-otlp` 0.29 or newer (the collector pins the exporter's
+TLS options, which older versions do not accept). These optional dependencies
+are not installed with `buildkite-test_collector`; add them to your bundle as
+shown in [Choosing instrumentation](#choosing-instrumentation).
 
 ## What a trace looks like
 
@@ -265,24 +266,34 @@ overhead.
 
 ## What gets sent
 
-The collector merges standard `OTEL_EXPORTER_OTLP_TRACES_HEADERS` (or, when it
-is absent, `OTEL_EXPORTER_OTLP_HEADERS`) over its own OTLP headers. Header names
-are matched case-insensitively, so a standard `authorization` entry takes
-precedence over the credential sourced from `BUILDKITE_ANALYTICS_TOKEN`. Empty
-header environment variables are treated as unset.
-The `Buildkite-Tests-Run-Key` header cannot be overridden by OTLP headers; it
-always uses the validated run key carried by the test spans.
+The collector exports to `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` (default
+`https://tests-otlp.buildkite.com/v1/traces`) and authenticates with
+`BUILDKITE_TESTS_OTLP_TOKEN` or, when that is unset, `BUILDKITE_ANALYTICS_TOKEN`:
+either the suite API token or an agent OIDC token with the `write_uploads`
+scope. bktec's OTLP relay sets both `BUILDKITE_*` variables to its loopback
+listener and local credential, then forwards spans to Buildkite with its OIDC
+credential. `Buildkite-Tests-Run-Key` always carries the run key from the test
+spans.
 
-bktec's OTLP relay uses the trace-specific header variable to provide its local
-credential and forwards spans to Buildkite with its OIDC credential. Without an
-OTLP Authorization header, spans go directly to Buildkite using
-`BUILDKITE_ANALYTICS_TOKEN`: either the suite API token or an agent OIDC token
-with the `write_uploads` scope.
+The standard `OTEL_EXPORTER_OTLP_*` endpoint and header variables are never
+read, so credentials the process configures for another OpenTelemetry
+destination are not sent to Buildkite, and that destination's settings do not
+redirect test results.
 
-With neither a token nor OTLP header variables set, nothing is exported and
-`otel_enabled` is left off for the run, so a suite that hard-codes
-`otel_enabled: true` stays quiet on a developer machine. This matches the JSON
-path, which does not upload without a token.
+Without either token, nothing is exported and `otel_enabled` is left off for the
+run, so a suite that hard-codes `otel_enabled: true` stays quiet on a developer
+machine. This matches the JSON path, which does not upload without a token.
+
+The collector pins compression to gzip and ignores the standard
+`OTEL_EXPORTER_OTLP_*_COMPRESSION`, `*_CERTIFICATE`, `*_CLIENT_CERTIFICATE`, and
+`*_CLIENT_KEY` settings. Buildkite export therefore uses the system certificate
+store and no client certificate, even when the process configures compression,
+a custom CA, or mTLS for another OpenTelemetry destination. HTTPS peer
+verification is always enabled: `OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_NONE`
+cannot disable it, and `OTEL_RUBY_EXPORTER_OTLP_SSL_VERIFY_PEER` is not consulted.
+Behind a TLS-inspecting proxy that re-signs traffic with a private CA, add that
+CA to the system store by exporting `SSL_CERT_FILE` or `SSL_CERT_DIR` before
+the Ruby process starts; Ruby's default `OpenSSL::X509::Store` honours both.
 
 OpenTelemetry's SDK owns batching, retries, and transport. `test.execution`
 spans have a reserved, faster-draining queue and exporter. Forwarded children
@@ -320,8 +331,8 @@ loss. Process-control exceptions (`SystemExit`, `SignalException`, including `In
 If test span setup fails (for example on Ruby older than 3.3, or without the
 OpenTelemetry gems), the collector warns and uploads the run's results as JSON
 instead, exactly as it does with `otel_enabled` off.
-That JSON upload needs `BUILDKITE_ANALYTICS_TOKEN`; when the credential came
-only from OTLP header variables (as with bktec's relay), the warning says that
+That JSON upload needs `BUILDKITE_ANALYTICS_TOKEN`; when the only credential was
+`BUILDKITE_TESTS_OTLP_TOKEN` (as with bktec's relay), the warning says that
 results will not be uploaded. If optional child setup or attachment fails, the collector warns, cleans up that
 path, and continues exporting test spans. The suite-end flush and the
 process-exit shutdown each give the OpenTelemetry SDK a 30-second budget to
