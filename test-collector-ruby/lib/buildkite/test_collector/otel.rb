@@ -119,10 +119,8 @@ module Buildkite::TestCollector
 
       def configure!(endpoint: DEFAULT_ENDPOINT, api_token: nil, run_env: {}, span_filter: nil, tags: {})
         run_key = run_env["key"]
-        # Only first-time setup validates the key: the receiver rejects every
-        # batch sent with an invalid run key, so check it before building
-        # anything that would need shutting down. An already-enabled process
-        # validated its key when it was first configured.
+        # The receiver rejects every batch sent with an invalid run key, so
+        # fail before loading anything; an enabled process already passed this.
         if !enabled? && !valid_run_key?(run_key)
           warn_invalid_run_key(run_key)
           return
@@ -297,10 +295,9 @@ module Buildkite::TestCollector
       private
 
       def valid_run_key?(run_key)
-        run_key.is_a?(String) && run_key.valid_encoding? && run_key.ascii_only? && RUN_KEY_FORMAT.match?(run_key)
+        run_key.is_a?(String) && run_key.valid_encoding? && RUN_KEY_FORMAT.match?(run_key)
       end
 
-      # start_otel reports the fallback outcome, as for every other failure.
       def warn_invalid_run_key(run_key)
         warn "[buildkite-test_collector] OpenTelemetry span export disabled: run key #{run_key.inspect} is invalid. " \
           "Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); " \
@@ -688,8 +685,7 @@ module Buildkite::TestCollector
         headers = { "Buildkite-Tests-Run-Key" => run_env["key"] }
         headers["Authorization"] = authorization_header(api_token) if api_token
         environment_headers.each do |key, value|
-          # The receiver header must carry the same validated identity as the
-          # test spans, even when a relay supplies other request headers.
+          # This header and the spans must name the same run.
           next if key.casecmp?("Buildkite-Tests-Run-Key")
 
           headers.delete_if { |existing, _| existing.casecmp?(key) }

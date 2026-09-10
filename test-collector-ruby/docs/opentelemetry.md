@@ -299,19 +299,17 @@ run. Reporting a new run requires a new process.
 
 ## When something goes wrong
 
-The run key must be 1–255 printable ASCII characters without spaces. The
-collector validates it and, if it is invalid, warns and falls back to the JSON
-path before creating any OTel providers or shutdown hooks. JSON uploading still
-requires `BUILDKITE_ANALYTICS_TOKEN`; a header-only setup instead warns that no
-results will be uploaded. Set `BUILDKITE_ANALYTICS_KEY` to a valid key or fix
-the CI variable from which it was generated.
+The run key must be 1–255 printable ASCII characters without spaces. An invalid
+key disables OpenTelemetry export with a warning and the collector falls back to
+the JSON upload, which still requires `BUILDKITE_ANALYTICS_TOKEN`; a header-only
+setup instead warns that no results will be uploaded. Set
+`BUILDKITE_ANALYTICS_KEY` to a valid key or fix the CI variable from which it
+was generated.
 
-Empty `BUILDKITE_ANALYTICS_KEY`, `BUILDKITE_ANALYTICS_URL`,
-`BUILDKITE_ANALYTICS_BRANCH`, `BUILDKITE_ANALYTICS_SHA`,
-`BUILDKITE_ANALYTICS_NUMBER`, `BUILDKITE_ANALYTICS_JOB_ID`, and
-`BUILDKITE_ANALYTICS_MESSAGE` overrides preserve detected CI metadata, including
-on the legacy JSON path. Empty execution-name affixes are omitted. Explicit
-`env:` values retain their precedence, including empty values.
+An empty `BUILDKITE_ANALYTICS_*` metadata override (key, URL, branch, SHA,
+number, job ID, message) is ignored, so detected CI metadata is kept on both
+the OpenTelemetry and JSON paths. Explicit `env:` values still take precedence,
+including empty ones.
 
 Non-fatal export errors, including WebMock network blocks, do not fail a test
 or stop the batch workers from exporting later spans. A blocked batch is still
