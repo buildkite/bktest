@@ -75,7 +75,7 @@ module Buildkite::TestCollector::RSpecPlugin
     # site instead, the same way file_name does.
     def source_line_number
       source = shared_example? ? shared_example_call_location : example.location
-      source[/:(\d+)\z/, 1]&.to_i
+      source[/:(\d+)(?=:|\z)/, 1]&.to_i
     end
 
     def scope

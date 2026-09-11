@@ -126,13 +126,15 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
     end
 
     context "when the example comes from a shared example group" do
+      let(:inclusion_location) { "./spec/consumer_spec.rb:17:in 'block in <top (required)>'" }
+
       let(:example) do
         fake_example(
           id: "./spec/consumer_spec.rb[1:1]",
           location: "./spec/support/shared_examples.rb:8",
           metadata: {
             shared_group_inclusion_backtrace: [
-              OpenStruct.new(inclusion_location: "./spec/consumer_spec.rb:17"),
+              OpenStruct.new(inclusion_location: inclusion_location),
             ],
           },
         )
@@ -143,6 +145,17 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::Trace do
           "code.file.path" => "./spec/consumer_spec.rb",
           "code.line.number" => 17,
         )
+      end
+
+      context "when the inclusion location has no frame label" do
+        let(:inclusion_location) { "./spec/consumer_spec.rb:23" }
+
+        it "uses the shared example call site" do
+          expect(trace.otel_attributes).to include(
+            "code.file.path" => "./spec/consumer_spec.rb",
+            "code.line.number" => 23,
+          )
+        end
       end
     end
   end

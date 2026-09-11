@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* Report `code.line.number` for shared examples (`it_behaves_like`,
+  `include_examples`) in OpenTelemetry test spans; the line was previously
+  omitted because RSpec's inclusion location includes the frame label.
 * Prevent OpenTelemetry export failures outside `StandardError`, including
   WebMock network-blocking errors, from failing the test suite.
 * Add the OTLP endpoint host to WebMock's allow list when WebMock is loaded.
