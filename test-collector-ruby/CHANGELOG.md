@@ -23,6 +23,11 @@
   `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` and
   `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE`; invalid values warn and use
   the defaults.
+* Override the OpenTelemetry child span batch and queue sizes with
+  `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` and
+  `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE`, and warn when child spans are
+  dropped instead of discarding them silently. `test.execution` results are
+  unaffected by child span drops.
 * Set every OpenTelemetry batch processor option explicitly, including the export
   timeout and starting the export thread on boot, so `OTEL_BSP_*` and
   `OTEL_RUBY_BSP_START_THREAD_ON_BOOT` no longer affect Buildkite export.

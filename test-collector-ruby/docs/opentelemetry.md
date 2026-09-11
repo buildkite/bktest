@@ -335,6 +335,15 @@ which the oldest spans are dropped with a warning; raise
 `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` in that case. Exporting via
 the `bktec` relay is unaffected because it acknowledges each batch locally.
 
+Child spans (see [Choosing instrumentation](#choosing-instrumentation)) use their
+own processor: batches of up to 512, a queue of 2,048 spans, a 5,000 ms schedule
+delay, and the same 30-second export timeout. Override them with
+`BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` and
+`BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE`, validated the same way. Raise
+`BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` if heavily instrumented tests fill
+the queue faster than the child processor exports; dropped child spans are
+reported as described in [When something goes wrong](#when-something-goes-wrong).
+
 New OpenTelemetry settings use the `BUILDKITE_TESTS_OTEL_` prefix, alongside
 the `BUILDKITE_TESTS_OTLP_*` variables `bktec` exports.
 `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` keeps its name because `bktec` sets it.
@@ -410,5 +419,7 @@ dropped since the last report, so a persistent failure is not mistaken for a
 one-off. The suite-end flush stops at the first rejected batch and leaves the
 rest queued, so when many test spans are buffered the balance drains, and is
 counted, at process exit. Each suite run in a warm worker gets its own warning
-and totals. Normal child-span queue overflow is not logged by the OpenTelemetry
-SDK.
+and totals. Child spans get the same first-drop warning and totals, whether the
+child queue overflowed, an export failed, or the shutdown budget ran out with
+child spans still queued (reason `terminating`). Child spans are best-effort, so
+the warning says `test.execution` results are unaffected.
