@@ -5,7 +5,7 @@ Versions prior to 2.1.x are unsupported and will not work after mid-2023. Please
 
 Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) collectors for Ruby test frameworks ✨
 
-⚒ **Supported test frameworks:** RSpec, Minitest, Cucumber, and [more coming soon](https://github.com/buildkite/test-collector-ruby/issues?q=is%3Aissue+is%3Aopen+label%3A%22test+frameworks%22).
+⚒ **Supported test frameworks:** RSpec, Minitest, Cucumber, and [more coming soon](https://github.com/buildkite/bktest/issues).
 
 📦 **Supported CI systems:** Buildkite, GitHub Actions, CircleCI, Codeship, and others via the `BUILDKITE_ANALYTICS_*` environment variables.
 
@@ -137,7 +137,7 @@ See [DESIGN.md](DESIGN.md) for an overview of the design of this gem.
 
 ## 👩‍💻 Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/buildkite/test-collector-ruby
+Bug reports and pull requests are welcome on GitHub at https://github.com/buildkite/bktest
 
 ## 🚀 Releasing
 
