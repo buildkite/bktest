@@ -420,5 +420,6 @@ dropped since the last report, so a persistent failure is not mistaken for a
 one-off. The suite-end flush stops at the first rejected batch and leaves the
 rest queued, so when many test spans are buffered the balance drains, and is
 counted, at process exit. Each suite run in a warm worker gets its own warning
-and totals. Normal child-span queue overflow is not logged by the OpenTelemetry
-SDK.
+and totals. Child spans get the same first-drop warning and totals, whether the
+child queue overflowed or an export failed, worded as best-effort: the warning
+says `test.execution` results are unaffected.
