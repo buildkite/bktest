@@ -5,7 +5,8 @@ module Buildkite
     module OTel
       # Warns about dropped spans and correlates processor drops with exporter
       # failures. Counts reset when reported at suite end or shutdown.
-      # Subclasses word the warnings for the kind of span they watch.
+      # Subclasses word the warnings for the kind of span they watch by
+      # defining dropped_message(count, detail) and dropped_total_message(total).
       class SpanMetricsReporter
         def initialize
           @mutex = Mutex.new
@@ -60,14 +61,6 @@ module Buildkite
           detail = [reason, cause && "last OTLP failure: #{cause}"].compact.join(", ")
 
           warn dropped_message(count, detail)
-        end
-
-        def dropped_message(count, detail)
-          raise NotImplementedError
-        end
-
-        def dropped_total_message(total)
-          raise NotImplementedError
         end
       end
       private_constant :SpanMetricsReporter
