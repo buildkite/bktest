@@ -863,6 +863,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
     environment_variables = %w[
       BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE
       BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE
+      BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE
+      BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE
       OTEL_BSP_EXPORT_TIMEOUT
       OTEL_BSP_MAX_EXPORT_BATCH_SIZE
       OTEL_BSP_MAX_QUEUE_SIZE
@@ -1015,6 +1017,51 @@ RSpec.describe Buildkite::TestCollector::OTel do
         worker_started: true,
       )
     end
+
+    describe "child span overrides" do
+      let(:child_processor) { described_class.instance_variable_get(:@child_span_processor) }
+
+      it "overrides the child span sizes without affecting test span sizes" do
+        ENV["BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE"] = "64"
+        ENV["BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE"] = "4096"
+
+        expect { provider }.not_to output.to_stderr
+        expect(processor_settings(child_processor)).to include(batch_size: 64, max_queue_size: 4_096)
+        expect(processor_settings(processor)).to include(batch_size: 120, max_queue_size: 8_192)
+      end
+
+      it "leaves child span sizes at their defaults when only test span sizes are overridden" do
+        ENV["BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE"] = "10"
+        ENV["BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE"] = "20"
+
+        expect { provider }.not_to output.to_stderr
+        expect(processor_settings(processor)).to include(batch_size: 10, max_queue_size: 20)
+        expect(processor_settings(child_processor)).to include(batch_size: 512, max_queue_size: 2_048)
+      end
+
+      { "BATCH" => 512, "QUEUE" => 2_048 }.each do |setting, default|
+        it "warns once and uses the child default for an invalid #{setting} size" do
+          name = "BUILDKITE_TESTS_OTEL_CHILD_SPAN_#{setting}_SIZE"
+          ENV[name] = "0"
+
+          expect { provider }.to output(
+            "[buildkite-test_collector] #{name} must be a positive integer up to 2147483647, using default #{default}\n"
+          ).to_stderr
+          expect(processor_settings(child_processor)).to include(batch_size: 512, max_queue_size: 2_048)
+        end
+      end
+
+      it "warns once and resets both child defaults when the resolved batch exceeds the queue" do
+        ENV["BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE"] = "2049"
+        ENV["BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE"] = "2048"
+
+        expect { provider }.to output(
+          "[buildkite-test_collector] BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE must be <= " \
+            "BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE; using defaults (batch 512, queue 2048)\n"
+        ).to_stderr
+        expect(processor_settings(child_processor)).to include(batch_size: 512, max_queue_size: 2_048)
+      end
+    end
   end
 
   it "exports test spans privately and only forwards their children" do
@@ -1039,6 +1086,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       .to receive(:new)
       .and_return(root_exporter, child_exporter)
     test_span_reporter = described_class.const_get(:TestSpanMetricsReporter, false)
+    child_span_reporter = described_class.const_get(:ChildSpanMetricsReporter, false)
     expect(OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor)
       .to receive(:new)
       .with(
@@ -1052,7 +1100,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
       )
       .ordered
       .and_call_original
-    # Children keep the SDK's no-op metrics reporter.
     expect(OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor)
       .to receive(:new)
       .with(
@@ -1062,7 +1109,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
         max_queue_size: described_class::CHILD_SPAN_MAX_QUEUE_SIZE,
         max_export_batch_size: described_class::CHILD_SPAN_MAX_EXPORT_BATCH_SIZE,
         schedule_delay: described_class::CHILD_SPAN_SCHEDULE_DELAY_MILLISECONDS,
-        metrics_reporter: nil,
+        metrics_reporter: an_instance_of(child_span_reporter),
       )
       .ordered
       .and_call_original
@@ -1122,8 +1169,9 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider&.shutdown
   end
 
-  it "shares one metrics reporter between the test span exporter and its processor" do
+  it "shares one metrics reporter between each exporter and its processor" do
     test_span_reporter = described_class.const_get(:TestSpanMetricsReporter, false)
+    child_span_reporter = described_class.const_get(:ChildSpanMetricsReporter, false)
     exporter_reporters = []
     allow(OpenTelemetry::Exporter::OTLP::Exporter).to receive(:new) do |**options|
       exporter_reporters << options[:metrics_reporter]
@@ -1138,10 +1186,10 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     configure_otel(endpoint: "https://example.invalid/v1/traces")
 
-    # Test spans are built first; children keep the SDK's default (no-op) reporter.
-    expect(exporter_reporters.first).to be_a(test_span_reporter)
-    expect(processor_reporters.first).to equal(exporter_reporters.first)
-    expect(exporter_reporters.drop(1)).to all(be_nil)
+    # Test spans are built first, then children; each pair has its own reporter.
+    expect(exporter_reporters.map(&:class)).to eq([test_span_reporter, child_span_reporter])
+    # Reporters have no value equality, so this checks identity pairwise.
+    expect(processor_reporters).to eq(exporter_reporters)
   ensure
     described_class.shutdown
   end
@@ -1180,6 +1228,49 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect { described_class.shutdown }.not_to output.to_stderr
   ensure
     described_class.shutdown
+  end
+
+  it "warns about dropped child spans as best-effort, not as missing test results" do
+    provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)
+    root_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    failing_child_exporter = Class.new do
+      def export(_spans, timeout: nil) = OpenTelemetry::SDK::Trace::Export::FAILURE
+      def force_flush(timeout: nil) = OpenTelemetry::SDK::Trace::Export::SUCCESS
+      def shutdown(timeout: nil) = OpenTelemetry::SDK::Trace::Export::SUCCESS
+    end.new
+    allow(OpenTelemetry::Exporter::OTLP::Exporter)
+      .to receive(:new)
+      .and_return(root_exporter, failing_child_exporter)
+    allow(OpenTelemetry).to receive(:handle_error)
+    configure_otel(endpoint: "https://example.invalid/v1/traces")
+    tracer = provider.tracer("suite")
+
+    record_execution_with_children = lambda do |child_count|
+      test = execution_test
+      execution_span = described_class.start_test_span(test: test)
+      described_class.with_test_span(execution_span) do
+        child_count.times { |i| tracer.in_span("child-#{i}") { nil } }
+      end
+      described_class.finish_test_span(execution_span, test: test)
+    end
+
+    record_execution_with_children.call(2)
+    expect { described_class.instance_variable_get(:@child_span_processor).force_flush }.to output(
+      "[buildkite-test_collector] OpenTelemetry dropped 2 child span(s) (export-failure); " \
+        "test.execution results are unaffected.\n"
+    ).to_stderr
+    record_execution_with_children.call(3)
+    # Exact output: the suite-end flush reports child drops only, with no
+    # TEST RESULTS MISSING line, because every test span was exported.
+    expect { described_class.force_flush }.to output(
+      "[buildkite-test_collector] OpenTelemetry dropped 5 child span(s) so far this run; " \
+        "test.execution results are unaffected.\n"
+    ).to_stderr
+    expect(root_exporter.finished_spans.map(&:name)).to eq(["test.execution", "test.execution"])
+  ensure
+    described_class.shutdown
+    provider&.shutdown
   end
 
   it "filters child spans without filtering test spans" do
