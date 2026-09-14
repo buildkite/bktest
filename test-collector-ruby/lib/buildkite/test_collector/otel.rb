@@ -104,7 +104,9 @@ module Buildkite::TestCollector
     end
     private_constant :ExporterGuard
 
+    require_relative "otel/span_metrics_reporter"
     require_relative "otel/test_span_metrics_reporter"
+    require_relative "otel/child_span_metrics_reporter"
     require_relative "otel/span_filter"
     require_relative "otel/child_span_forwarder"
 
@@ -282,7 +284,7 @@ module Buildkite::TestCollector
         # Report what this suite run has dropped so far. The SDK's flush stops
         # at the first rejected batch and re-queues the rest, so a persistent
         # failure leaves a balance that drains, and is reported, at shutdown.
-        @test_span_metrics_reporter&.warn_dropped_total
+        warn_dropped_totals
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not flush OpenTelemetry spans: #{e.class}: #{e.message}"
@@ -297,7 +299,7 @@ module Buildkite::TestCollector
         if error
           warn "[buildkite-test_collector] Could not shut down OpenTelemetry span export: #{error.class}: #{error.message}"
         end
-        @test_span_metrics_reporter&.warn_dropped_total
+        warn_dropped_totals
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not shut down OpenTelemetry span export: #{e.class}: #{e.message}"
@@ -308,6 +310,7 @@ module Buildkite::TestCollector
         @exporters = nil
         ExporterGuard.reset
         @test_span_metrics_reporter = nil
+        @child_span_metrics_reporter = nil
         @api_token = nil
         @run_attributes = nil
         @run_key = nil
@@ -340,24 +343,17 @@ module Buildkite::TestCollector
       end
 
       def build_test_span_provider(endpoint, headers, resource)
-        max_queue_size = span_processor_config_value("BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE", default: TEST_SPAN_MAX_QUEUE_SIZE)
-        max_export_batch_size = span_processor_config_value("BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE", default: TEST_SPAN_MAX_EXPORT_BATCH_SIZE)
-        if max_export_batch_size > max_queue_size
-          warn "[buildkite-test_collector] BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE must be <= " \
-            "BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults " \
-            "(batch #{TEST_SPAN_MAX_EXPORT_BATCH_SIZE}, queue #{TEST_SPAN_MAX_QUEUE_SIZE})"
-          max_queue_size = TEST_SPAN_MAX_QUEUE_SIZE
-          max_export_batch_size = TEST_SPAN_MAX_EXPORT_BATCH_SIZE
-        end
-
         @test_span_metrics_reporter = TestSpanMetricsReporter.new
         test_span_processor = batch_processor(
           endpoint,
           headers,
-          max_queue_size: max_queue_size,
-          max_export_batch_size: max_export_batch_size,
           schedule_delay: TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS,
           metrics_reporter: @test_span_metrics_reporter,
+          **span_processor_sizes(
+            "BUILDKITE_TESTS_OTEL_TEST_SPAN",
+            default_queue_size: TEST_SPAN_MAX_QUEUE_SIZE,
+            default_batch_size: TEST_SPAN_MAX_EXPORT_BATCH_SIZE,
+          ),
         )
         test_span_provider = OpenTelemetry::SDK::Trace::TracerProvider.new(
           sampler: OpenTelemetry::SDK::Trace::Samplers::ALWAYS_ON,
@@ -378,6 +374,23 @@ module Buildkite::TestCollector
         ExceptionHandling.reraise_fatal(e)
         stop_processor(test_span_processor)
         raise
+      end
+
+      # Queue and batch sizes from "#{prefix}_QUEUE_SIZE" and
+      # "#{prefix}_BATCH_SIZE", as batch processor options.
+      def span_processor_sizes(prefix, default_queue_size:, default_batch_size:)
+        queue_name = "#{prefix}_QUEUE_SIZE"
+        batch_name = "#{prefix}_BATCH_SIZE"
+        max_queue_size = span_processor_config_value(queue_name, default: default_queue_size)
+        max_export_batch_size = span_processor_config_value(batch_name, default: default_batch_size)
+        if max_export_batch_size > max_queue_size
+          warn "[buildkite-test_collector] #{batch_name} must be <= #{queue_name}; using defaults " \
+            "(batch #{default_batch_size}, queue #{default_queue_size})"
+          max_queue_size = default_queue_size
+          max_export_batch_size = default_batch_size
+        end
+
+        { max_queue_size: max_queue_size, max_export_batch_size: max_export_batch_size }
       end
 
       def span_processor_config_value(name, default:)
@@ -503,12 +516,17 @@ module Buildkite::TestCollector
           raise "existing OpenTelemetry tracer provider does not support adding a span processor"
         end
 
+        child_metrics_reporter = ChildSpanMetricsReporter.new
         child_processor = batch_processor(
           endpoint,
           headers,
-          max_queue_size: CHILD_SPAN_MAX_QUEUE_SIZE,
-          max_export_batch_size: CHILD_SPAN_MAX_EXPORT_BATCH_SIZE,
           schedule_delay: CHILD_SPAN_SCHEDULE_DELAY_MILLISECONDS,
+          metrics_reporter: child_metrics_reporter,
+          **span_processor_sizes(
+            "BUILDKITE_TESTS_OTEL_CHILD_SPAN",
+            default_queue_size: CHILD_SPAN_MAX_QUEUE_SIZE,
+            default_batch_size: CHILD_SPAN_MAX_EXPORT_BATCH_SIZE,
+          ),
         )
         child_forwarder = ChildSpanForwarder.new(
           child_processor,
@@ -533,6 +551,7 @@ module Buildkite::TestCollector
 
         @child_span_processor = child_processor
         @child_span_forwarder = child_forwarder
+        @child_span_metrics_reporter = child_metrics_reporter
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
         deactivate_child_span_forwarder(child_forwarder)
@@ -642,6 +661,11 @@ module Buildkite::TestCollector
         end
 
         error
+      end
+
+      def warn_dropped_totals
+        @test_span_metrics_reporter&.warn_dropped_total
+        @child_span_metrics_reporter&.warn_dropped_total
       end
 
       def deactivate_child_span_forwarder(forwarder)

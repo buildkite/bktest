@@ -2,6 +2,10 @@
 
 ## v2.16.0
 
+* Report `code.line.number` for shared example inclusions (`it_behaves_like`,
+  `include_examples`, `include_context`) in OpenTelemetry test spans; the line
+  was previously omitted because RSpec's inclusion location includes the frame
+  label.
 * Prevent OpenTelemetry export failures outside `StandardError`, including
   WebMock network-blocking errors, from failing the test suite.
 * Add the OTLP endpoint host to WebMock's allow list when WebMock is loaded.
@@ -23,6 +27,11 @@
   `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` and
   `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE`; invalid values warn and use
   the defaults.
+* Override the OpenTelemetry child span batch and queue sizes with
+  `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` and
+  `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE`, and warn when child spans are
+  dropped instead of discarding them silently. `test.execution` results are
+  unaffected by child span drops.
 * Set every OpenTelemetry batch processor option explicitly, including the export
   timeout and starting the export thread on boot, so `OTEL_BSP_*` and
   `OTEL_RUBY_BSP_START_THREAD_ON_BOOT` no longer affect Buildkite export.
