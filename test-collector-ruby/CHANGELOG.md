@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## Unreleased
+## v2.16.0
 
 * Report `code.line.number` for shared example inclusions (`it_behaves_like`,
   `include_examples`, `include_context`) in OpenTelemetry test spans; the line

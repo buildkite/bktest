@@ -76,7 +76,6 @@ pipeline: the tag does not exactly match `<collector-directory>/vX.Y.Z`.
 In the release pull request:
 
 - update `lib/buildkite/test_collector/version.rb`;
-- run `bundle` so `Gemfile.lock` remains current; and
 - move the relevant entries from `Unreleased` into a versioned section in
   `CHANGELOG.md`.
 
