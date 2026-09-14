@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## Unreleased
+## v2.16.0
 
 * Prevent OpenTelemetry export failures outside `StandardError`, including
   WebMock network-blocking errors, from failing the test suite.
