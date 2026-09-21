@@ -707,16 +707,17 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.shutdown
   end
 
-  it "sends the run key and token as request headers" do
-    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
+  it "sends the run key, stream, and token as request headers" do
+    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token", stream: "test")
 
     expect(headers).to eq(
       "Buildkite-Tests-Run-Key" => "test-run-id",
+      "Buildkite-Tests-Span-Stream" => "test",
       "Authorization" => %(Token token="suite-token"),
     )
   end
 
-  it "takes the relay endpoint and credential from BUILDKITE_* variables" do
+  it "takes the relay endpoint and credential from BUILDKITE_* variables and labels each export stream" do
     allow(ENV).to receive(:[]).and_call_original
     allow(ENV).to receive(:[]).with("BUILDKITE_ANALYTICS_OTLP_ENDPOINT").and_return("http://127.0.0.1:4318/v1/traces")
     allow(ENV).to receive(:[]).with("BUILDKITE_TESTS_OTLP_TOKEN").and_return("relay-token")
@@ -724,10 +725,11 @@ RSpec.describe Buildkite::TestCollector::OTel do
     configure_otel
     exporters = described_class.instance_variable_get(:@exporters)
     expect(exporters.length).to eq(2)
-    exporters.each do |exporter|
+    exporters.zip(%w[test child]).each do |exporter, stream|
       expect(exporter.instance_variable_get(:@uri).to_s).to eq("http://127.0.0.1:4318/v1/traces")
       expect(exporter.instance_variable_get(:@headers)).to include(
         "Buildkite-Tests-Run-Key" => "run-key",
+        "Buildkite-Tests-Span-Stream" => stream,
         "Authorization" => %(Token token="relay-token"),
       )
     end

@@ -9,6 +9,8 @@
   so examples with no instrumented work add no child spans.
   `Buildkite::TestCollector.annotate` records on the `test.execution` span
   rather than the current span, and does nothing outside an example.
+* Add the `Buildkite-Tests-Span-Stream` HTTP header to OpenTelemetry exports:
+  `test` for the test span exporter and `child` for the child span exporter.
 
 ## v2.16.0
 

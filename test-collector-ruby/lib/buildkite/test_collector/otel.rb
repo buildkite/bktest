@@ -188,7 +188,6 @@ module Buildkite::TestCollector
 
         @api_token = api_token
         @run_key = run_env["key"]
-        headers = request_headers(run_env, api_token)
 
         # Resources identify the entities that produced the telemetry. Details
         # about the Test Engine run and test framework describe each execution
@@ -196,9 +195,9 @@ module Buildkite::TestCollector
         resource = producer_resource(run_env)
         @run_attributes = run_attributes(run_env, tags)
 
-        @test_span_provider = build_test_span_provider(endpoint, headers, resource)
+        @test_span_provider = build_test_span_provider(endpoint, request_headers(run_env, api_token, stream: "test"), resource)
         @tracer = @test_span_provider.tracer(TRACER_NAME, Buildkite::TestCollector::VERSION)
-        configure_child_export(endpoint, headers, resource, span_filter: span_filter)
+        configure_child_export(endpoint, request_headers(run_env, api_token, stream: "child"), resource, span_filter: span_filter)
         register_shutdown_at_exit
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
@@ -858,8 +857,11 @@ module Buildkite::TestCollector
         []
       end
 
-      def request_headers(run_env, api_token)
-        headers = { "Buildkite-Tests-Run-Key" => run_env["key"] }
+      def request_headers(run_env, api_token, stream:)
+        headers = {
+          "Buildkite-Tests-Run-Key" => run_env["key"],
+          "Buildkite-Tests-Span-Stream" => stream,
+        }
         headers["Authorization"] = authorization_header(api_token) if api_token
         headers
       end
