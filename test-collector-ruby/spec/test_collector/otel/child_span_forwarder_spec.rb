@@ -15,7 +15,7 @@ RSpec.describe forwarder_class do
   let(:context_key) { OpenTelemetry::Context.create_key("execution") }
   let(:test_span_trace_id) { "\1" * 16 }
   let(:execution_context) { OpenTelemetry::Context.empty.set_value(context_key, test_span_trace_id) }
-  let(:span) { double("span", context: double("span context", trace_id: test_span_trace_id)) }
+  let(:span) { double("span", name: "GET", context: double("span context", trace_id: test_span_trace_id)) }
 
   it "forwards only spans from the execution trace" do
     unrelated_span = double("unrelated span")
@@ -48,6 +48,7 @@ RSpec.describe forwarder_class do
   it "forwards only spans accepted by the configured filter" do
     rejected_span = double(
       "rejected span",
+      name: "SELECT",
       context: double("rejected span context", trace_id: test_span_trace_id),
     )
     span_filter = ->(candidate) { candidate.equal?(span) }
@@ -65,6 +66,29 @@ RSpec.describe forwarder_class do
     expect(processor).to have_received(:on_finish).with(span).once
     expect(processor).not_to have_received(:on_finish).with(rejected_span)
     expect(filtered_forwarder.instance_variable_get(:@spans)).to be_empty
+  end
+
+  it "forwards the collector's phase spans without consulting the filter" do
+    phase_span = double(
+      "phase span",
+      name: "test.body",
+      context: double("phase span context", trace_id: test_span_trace_id),
+    )
+    filter_calls = []
+    filtered_forwarder = described_class.new(
+      processor,
+      context_key: context_key,
+      span_filter: ->(candidate) { filter_calls << candidate; false },
+    )
+
+    filtered_forwarder.on_start(phase_span, execution_context)
+    filtered_forwarder.on_start(span, execution_context)
+    filtered_forwarder.on_finish(phase_span)
+    filtered_forwarder.on_finish(span)
+
+    expect(processor).to have_received(:on_finish).with(phase_span).once
+    expect(processor).not_to have_received(:on_finish).with(span)
+    expect(filter_calls).to eq([span])
   end
 
   it "runs the filter without holding the lock" do
@@ -110,6 +134,7 @@ RSpec.describe forwarder_class do
     it "retains spans the filter itself finishes #{how} instead of re-entering the filter" do
       nested_span = double(
         "nested span",
+        name: "GET",
         context: double("nested span context", trace_id: test_span_trace_id),
       )
       filter_calls = 0
