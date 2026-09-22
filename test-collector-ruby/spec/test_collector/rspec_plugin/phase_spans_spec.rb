@@ -119,6 +119,17 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
     expect(span_named("test.teardown").status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
   end
 
+  it "does not fail the setup span when a before hook skips the example" do
+    example = run_sandboxed_example(body: proc { raise "body must not run" }) do |config|
+      config.before(:each) { skip "not today" }
+    end
+
+    expect(example.execution_result.status).to eq(:pending)
+    expect(phase_spans.map(&:name)).to contain_exactly("test.setup", "test.teardown")
+    expect(span_named("test.setup").status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+    expect(span_named("test.setup").events).to be_nil
+  end
+
   it "fails only the body span when the example raises" do
     run_sandboxed_example(body: proc { raise "body boom" }) do |config|
       config.after(:each) { nil }

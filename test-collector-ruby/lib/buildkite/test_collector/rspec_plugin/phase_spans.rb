@@ -29,7 +29,9 @@ module Buildkite::TestCollector::RSpecPlugin
         begin
           super
         rescue Exception => e # rubocop:disable Lint/RescueException
-          failure = e
+          # `skip` in a before hook raises to end the example early; RSpec
+          # reports that as pending, not as a failure.
+          failure = e unless RSpec::Core::Pending::SkipDeclaredInExample === e
           raise
         ensure
           Buildkite::TestCollector::OTel.detach_span(token)
