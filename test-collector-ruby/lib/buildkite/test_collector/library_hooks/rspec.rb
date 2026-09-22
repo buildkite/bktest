@@ -5,6 +5,7 @@ require "rspec/expectations"
 
 require_relative "../rspec_plugin/reporter"
 require_relative "../rspec_plugin/trace"
+require_relative "../rspec_plugin/phase_spans"
 
 Buildkite::TestCollector.uploader = Buildkite::TestCollector::Uploader
 

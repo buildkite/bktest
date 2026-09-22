@@ -87,8 +87,10 @@ Add the `BUILDKITE_ANALYTICS_TOKEN` secret to your CI, push your changes to a br
 
 RSpec suites can submit each test execution as an OpenTelemetry trace. Each
 trace is rooted in a `test.execution` span carrying the test's name, location,
-result, and failure detail. Instrumented child spans show what the test did and
-where it spent its time.
+result, and failure detail. Three phase spans underneath it, `test.setup`,
+`test.body`, and `test.teardown`, group the instrumented child spans by whether
+they ran in before hooks, the example itself, or after hooks, and each records
+the failure raised in its phase.
 
 This feature is still under development and may change. OpenTelemetry is off by
 default. Enable it when you configure the collector:
