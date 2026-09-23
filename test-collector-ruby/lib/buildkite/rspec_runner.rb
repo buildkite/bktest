@@ -280,7 +280,8 @@ module Buildkite
       RSpec.clear_examples
       RSpec.world.wants_to_quit = !!@stopping
       RSpec.world.non_example_failure = false
-      RSpec.world.rspec_is_quitting = false
+      # RSpec 3.10 has no separate rspec_is_quitting flag.
+      RSpec.world.rspec_is_quitting = false if RSpec.world.respond_to?(:rspec_is_quitting=)
     end
 
     def flush_collector

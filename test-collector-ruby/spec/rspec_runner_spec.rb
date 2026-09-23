@@ -134,6 +134,28 @@ RSpec.describe "buildkite-rspec" do
     expect(executions.map { |e| e.fetch("result") }).to eq(%w[failed passed passed passed passed passed])
   end
 
+  it "runs batches when RSpec has no rspec_is_quitting flag, as in 3.10" do
+    File.open("#{@dir}/spec/rails_helper.rb", "a") do |file|
+      file.write(<<~RUBY)
+        if RSpec.world.respond_to?(:rspec_is_quitting=)
+          RSpec.world.singleton_class.undef_method(:rspec_is_quitting=)
+        end
+      RUBY
+    end
+    results = []
+    status = with_runner do
+      handshake
+      2.times do |index|
+        dispatch("batch-#{index}", [{ format: "example", identifier: "spec/sample_spec.rb[1:2]" }])
+        results << request
+      end
+      request({ type: "done", reason: "plan_completed" })
+    end
+    expect(status.exitstatus).to eq(0), @output
+    expect(results.map { |r| r.fetch("report").fetch("summary").fetch("example_count") }).to eq([1, 1])
+    expect(File.readlines("#{@dir}/executions").size).to eq(2)
+  end
+
   it "replays identical result bytes after a lost acknowledgment without re-executing" do
     original = nil
     status = with_runner do
