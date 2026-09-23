@@ -23,6 +23,8 @@ Gem::Specification.new do |spec|
     `git ls-files -z`.split("\x0").reject { |f| f.match(%r{\A(?:test|spec|features)/}) }
   end
   spec.require_paths = ["lib"]
+  spec.bindir = "exe"
+  spec.executables = ["buildkite-rspec"]
 
   spec.required_ruby_version = Gem::Requirement.new(">= 3.0.0")
 
