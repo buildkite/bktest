@@ -125,11 +125,10 @@ module Buildkite
     private
 
     def boot_application
-      # Load support files and boot once, before asking for work.
+      # Load the project's configured RSpec requires before asking for work.
       $LOAD_PATH.unshift(File.expand_path("spec")) unless $LOAD_PATH.include?(File.expand_path("spec"))
       @options.fetch(:libs, []).reverse_each { |dir| $LOAD_PATH.unshift(File.expand_path(dir)) }
       @options.fetch(:requires, []).each { |file| require file }
-      require "rails_helper"
 
       # Preserve application collector settings, or install the default RSpec hooks.
       Buildkite::TestCollector.configure(hook: :rspec) unless Buildkite::TestCollector.test_runner
