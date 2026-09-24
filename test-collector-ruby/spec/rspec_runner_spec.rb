@@ -31,6 +31,7 @@ RSpec.describe "buildkite-rspec" do
           end
         end
       RUBY
+      File.write("#{dir}/.rspec", "--require rails_helper\n")
       File.write("#{dir}/spec/sample_spec.rb", <<~RUBY)
         RSpec.describe "sample" do
           it("flaky") do
@@ -132,6 +133,34 @@ RSpec.describe "buildkite-rspec" do
     expect(executions.size).to eq(6)
     expect(executions.map { |e| e.fetch("external_id") }.uniq.size).to eq(6)
     expect(executions.map { |e| e.fetch("result") }).to eq(%w[failed passed passed passed passed passed])
+  end
+
+  it "boots a non-Rails helper configured in .rspec" do
+    File.rename("#{@dir}/spec/rails_helper.rb", "#{@dir}/spec/spec_helper.rb")
+    File.write("#{@dir}/.rspec", "--require spec_helper\n")
+
+    result = nil
+    status = with_runner do
+      handshake
+      dispatch("non-rails", [{ format: "example", identifier: "spec/sample_spec.rb[1:2]" }])
+      result = request
+      request({ type: "done", reason: "plan_completed" })
+    end
+    expect(status.exitstatus).to eq(0), @output
+    expect(result.fetch("report").fetch("summary").fetch("example_count")).to eq(1)
+    expect(File.readlines("#{@dir}/boots").size).to eq(1)
+  end
+
+  it "boots the helper supplied by --require rather than requiring rails_helper" do
+    File.rename("#{@dir}/spec/rails_helper.rb", "#{@dir}/spec/project_setup.rb")
+    File.write("#{@dir}/.rspec", "")
+
+    status = with_runner("--require", "project_setup") do
+      handshake
+      request({ type: "done", reason: "plan_completed" })
+    end
+    expect(status.exitstatus).to eq(0), @output
+    expect(File.readlines("#{@dir}/boots").size).to eq(1)
   end
 
   it "runs batches when RSpec has no rspec_is_quitting flag, as in 3.10" do
@@ -265,7 +294,7 @@ RSpec.describe "buildkite-rspec" do
   [".rspec", ".rspec.ci"].each do |options_file|
     it "loads requires and formatters from #{options_file} without replacing the native report" do
       File.write("#{@dir}/support.rb", 'File.write("required", "yes")')
-      File.write("#{@dir}/#{options_file}", "--require ./support.rb\n--format documentation\n")
+      File.write("#{@dir}/#{options_file}", "--require ./support.rb\n--require rails_helper\n--format documentation\n")
       args = options_file == ".rspec" ? [] : ["--options", options_file]
       # A custom options file must replace the default, not merely add to it.
       File.write("#{@dir}/.rspec", "--dry-run\n") unless args.empty?
