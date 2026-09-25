@@ -241,6 +241,9 @@ module Buildkite
       args = build_rspec_selectors(batch)
 
       reset_batch
+      puts "[buildkite-rspec] Running batch #{id}:"
+      args.each { |selector| puts "[buildkite-rspec]   #{selector}" }
+      $stdout.flush
 
       Tempfile.create(["bktec-rspec-", ".json"]) do |report|
         # Runner.run installs its own INT trap. Use a subclass solely to retain
