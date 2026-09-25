@@ -133,6 +133,28 @@ RSpec.describe "buildkite-rspec" do
     expect(executions.size).to eq(6)
     expect(executions.map { |e| e.fetch("external_id") }.uniq.size).to eq(6)
     expect(executions.map { |e| e.fetch("result") }).to eq(%w[failed passed passed passed passed passed])
+    expect(@output.scan("[buildkite-rspec] Booting RSpec application...").size).to eq(1)
+  end
+
+  it "prints each assigned RSpec selector before running a batch" do
+    result = nil
+    status = with_runner do
+      handshake
+      dispatch("two-tests", [
+        { format: "example", identifier: "spec/sample_spec.rb[1:1]" },
+        { format: "example", identifier: "spec/sample_spec.rb[1:2]" },
+      ])
+      result = request
+      request({ type: "done", reason: "plan_completed" })
+    end
+    expect(status.exitstatus).to eq(0), @output
+    expect(result.fetch("report").fetch("summary").fetch("example_count")).to eq(2)
+    expect(@output.lines.grep(/^\[buildkite-rspec\]/)).to eq([
+      "[buildkite-rspec] Booting RSpec application...\n",
+      "[buildkite-rspec] Running batch two-tests:\n",
+      "[buildkite-rspec]   spec/sample_spec.rb[1:1]\n",
+      "[buildkite-rspec]   spec/sample_spec.rb[1:2]\n",
+    ])
   end
 
   it "boots a non-Rails helper configured in .rspec" do
