@@ -133,6 +133,7 @@ RSpec.describe "buildkite-rspec" do
     expect(executions.size).to eq(6)
     expect(executions.map { |e| e.fetch("external_id") }.uniq.size).to eq(6)
     expect(executions.map { |e| e.fetch("result") }).to eq(%w[failed passed passed passed passed passed])
+    expect(@output.scan("[buildkite-rspec] Booting RSpec application...").size).to eq(1)
   end
 
   it "boots a non-Rails helper configured in .rspec" do

@@ -75,6 +75,8 @@ module Buildkite
       @client = Client.new(path)
       install_signals
 
+      puts "[buildkite-rspec] Booting RSpec application..."
+      $stdout.flush
       boot_application
       return 1 if @stopping
 
