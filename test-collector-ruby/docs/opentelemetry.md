@@ -32,8 +32,8 @@ shown in [Choosing instrumentation](#choosing-instrumentation).
 
 ## What a trace looks like
 
-Each example gets a `test.execution` span of its own. Under it are three phase
-spans, and the instrumented work nests under the phase it ran in:
+Each example gets a `test.execution` span of its own. Under it are up to three
+phase spans, and the instrumented work nests under the phase it ran in:
 
 ```text
 test.execution  "Buildkite::Pipeline creates a build"   12.4ms
@@ -52,9 +52,12 @@ whose failure fails the example gets an error status and an `exception` event
 per failure, so a trace shows which phase failed even before you read the
 test's own error. A before hook that raises leaves no `test.body` span, because
 RSpec never runs the example. `around` hooks wrap all three phases, so spans
-they open stay direct children of the test span, alongside the phases. Phase
-spans are exported like any other child span, except that `otel_span_filter`
-never sees them.
+they open stay direct children of the test span, alongside the phases.
+
+A phase is exported only when it grouped at least one span or failed; a phase
+with nothing in it says nothing the test span does not. An example with no
+instrumented work therefore adds no child spans at all, and `otel_span_filter`
+never sees phase spans.
 
 One example is one trace. Child spans share the root's trace ID, and the root is
 never nested under anything else, so a trace always belongs to exactly one test.
@@ -221,8 +224,8 @@ Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
 Child spans from a suite-owned provider keep that provider's resource rather
 than the collector's (see [OTLP execution attributes](#otlp-execution-attributes)).
 The collector also creates the phase spans on that provider, so any exporter of
-your own attached to it receives three `test.setup`, `test.body`, and
-`test.teardown` spans per example, without their `test.execution` parent.
+your own attached to it receives `test.setup`, `test.body`, and `test.teardown`
+spans for every example, empty or not, without their `test.execution` parent.
 The collector does not inspect instrumentation patches, so compatibility
 between the instrumentation you install and other APM or test-library patches
 remains your responsibility.

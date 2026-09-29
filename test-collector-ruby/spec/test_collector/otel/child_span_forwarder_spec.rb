@@ -68,12 +68,21 @@ RSpec.describe forwarder_class do
     expect(filtered_forwarder.instance_variable_get(:@spans)).to be_empty
   end
 
-  it "forwards the collector's phase spans without consulting the filter" do
-    phase_span = double(
+  def phase_span(status: OpenTelemetry::Trace::Status.unset)
+    double(
       "phase span",
       name: "test.body",
+      status: status,
       context: double("phase span context", trace_id: test_span_trace_id),
     )
+  end
+
+  def context_under(parent_span)
+    OpenTelemetry::Trace.context_with_span(parent_span, parent_context: execution_context)
+  end
+
+  it "forwards a phase span with children without consulting the filter" do
+    populated_phase = phase_span
     filter_calls = []
     filtered_forwarder = described_class.new(
       processor,
@@ -81,14 +90,44 @@ RSpec.describe forwarder_class do
       span_filter: ->(candidate) { filter_calls << candidate; false },
     )
 
-    filtered_forwarder.on_start(phase_span, execution_context)
-    filtered_forwarder.on_start(span, execution_context)
-    filtered_forwarder.on_finish(phase_span)
+    filtered_forwarder.on_start(populated_phase, execution_context)
+    filtered_forwarder.on_start(span, context_under(populated_phase))
     filtered_forwarder.on_finish(span)
+    filtered_forwarder.on_finish(populated_phase)
 
-    expect(processor).to have_received(:on_finish).with(phase_span).once
+    expect(processor).to have_received(:on_finish).with(populated_phase).once
     expect(processor).not_to have_received(:on_finish).with(span)
     expect(filter_calls).to eq([span])
+  end
+
+  it "drops a phase span that grouped nothing and did not fail" do
+    empty_phase = phase_span
+
+    forwarder.on_start(empty_phase, execution_context)
+    forwarder.on_finish(empty_phase)
+
+    expect(processor).not_to have_received(:on_finish)
+    expect(forwarder.instance_variable_get(:@spans)).to be_empty
+  end
+
+  it "forwards a phase span that failed even when it grouped nothing" do
+    failed_phase = phase_span(status: OpenTelemetry::Trace::Status.error("boom"))
+
+    forwarder.on_start(failed_phase, execution_context)
+    forwarder.on_finish(failed_phase)
+
+    expect(processor).to have_received(:on_finish).with(failed_phase).once
+  end
+
+  it "forgets a phase span's children once it finishes" do
+    populated_phase = phase_span
+
+    forwarder.on_start(populated_phase, execution_context)
+    forwarder.on_start(span, context_under(populated_phase))
+    forwarder.on_finish(span)
+    forwarder.on_finish(populated_phase)
+
+    expect(forwarder.instance_variable_get(:@populated_phases)).to be_empty
   end
 
   it "runs the filter without holding the lock" do

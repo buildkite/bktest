@@ -9,6 +9,7 @@ module Buildkite
           @context_key = context_key
           @span_filter = span_filter && SpanFilter.new(span_filter)
           @spans = {}
+          @populated_phases = {}
           @mutex = Mutex.new
           @active = true
         end
@@ -18,8 +19,12 @@ module Buildkite
           return unless test_span_trace_id
           return unless test_span_trace_id == span.context.trace_id
 
+          parent = OpenTelemetry::Trace.current_span(parent_context)
           @mutex.synchronize do
-            @spans[span] = true if @active
+            next unless @active
+
+            @spans[span] = true
+            @populated_phases[parent] = true if phase_span?(parent)
           end
         rescue Exception => e # rubocop:disable Lint/RescueException
           ExceptionHandling.reraise_fatal(e)
@@ -34,14 +39,14 @@ module Buildkite
         def on_finish(span)
           unless @span_filter
             @mutex.synchronize do
-              @processor.on_finish(span) if @active && @spans.delete(span)
+              @processor.on_finish(span) if @active && accept(span)
             end
             return
           end
 
-          return unless @mutex.synchronize { @active && @spans.delete(span) }
+          return unless @mutex.synchronize { @active && accept(span) }
           # Phase spans are structure the UI relies on; the filter never sees them.
-          return unless PHASE_SPAN_NAMES.value?(span.name) || @span_filter.retain?(span)
+          return unless phase_span?(span) || @span_filter.retain?(span)
 
           @mutex.synchronize do
             @processor.on_finish(span) if @active
@@ -66,11 +71,26 @@ module Buildkite
           @mutex.synchronize do
             @active = false
             @spans.clear
+            @populated_phases.clear
           end
           success
         end
 
         private
+
+        # Called under @mutex. A phase span that grouped nothing and did not
+        # fail says nothing the test span does not, so an uninstrumented
+        # suite exports no child spans at all.
+        def accept(span)
+          return false unless @spans.delete(span)
+          return true unless phase_span?(span)
+
+          @populated_phases.delete(span) || span.status.code != OpenTelemetry::Trace::Status::UNSET
+        end
+
+        def phase_span?(span)
+          span.respond_to?(:name) && PHASE_SPAN_NAMES.value?(span.name)
+        end
 
         def success
           OpenTelemetry::SDK::Trace::Export::SUCCESS

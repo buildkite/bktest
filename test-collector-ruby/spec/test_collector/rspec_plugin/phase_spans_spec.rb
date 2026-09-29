@@ -265,28 +265,59 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
     expect(body_statuses).to eq([OpenTelemetry::Trace::Status::ERROR, OpenTelemetry::Trace::Status::UNSET])
   end
 
-  it "reaches the child span exporter through the forwarder, past a filter that drops everything" do
-    child_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
-    forwarder = Buildkite::TestCollector::OTel.const_get(:ChildSpanForwarder).new(
-      OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(child_exporter),
-      context_key: Buildkite::TestCollector::OTel.send(:test_span_context_key),
-      span_filter: ->(_span) { false },
-    )
-    child_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
-    child_provider.add_span_processor(forwarder)
-    OpenTelemetry.tracer_provider = child_provider
+  # The forwarder sends Buildkite only phases that grouped a child span or
+  # failed, so an uninstrumented, passing example adds no child spans.
+  describe "through the child span forwarder" do
+    def run_through_forwarder(span_filter: nil, **example_options, &configure)
+      child_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+      forwarder = Buildkite::TestCollector::OTel.const_get(:ChildSpanForwarder).new(
+        OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(child_exporter),
+        context_key: Buildkite::TestCollector::OTel.send(:test_span_context_key),
+        span_filter: span_filter,
+      )
+      child_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+      child_provider.add_span_processor(forwarder)
+      OpenTelemetry.tracer_provider = child_provider
 
-    begin
-      run_sandboxed_example(body: proc { PhaseSpanSpecInstrumentation.span("in body") }) do |config|
-        config.before(:each) { nil }
+      begin
+        run_sandboxed_example(**example_options, &configure)
+        PhaseSpanSpecInstrumentation.span("outside any example")
+      ensure
+        child_provider.shutdown
       end
-      PhaseSpanSpecInstrumentation.span("outside any example")
-    ensure
-      child_provider.shutdown
+      child_exporter.finished_spans
     end
 
-    expect(child_exporter.finished_spans.map(&:name)).to contain_exactly("test.setup", "test.body", "test.teardown")
-    expect(child_exporter.finished_spans.map(&:parent_span_id)).to all(eq(span_named("test.execution").span_id))
+    it "exports nothing for a passing example with no instrumentation" do
+      exported = run_through_forwarder do |config|
+        config.before(:each) { nil }
+        config.after(:each) { nil }
+      end
+
+      expect(exported).to be_empty
+      expect(span_named("test.execution")).not_to be_nil
+    end
+
+    it "exports only the phases that grouped a span, past a filter that drops everything" do
+      exported = run_through_forwarder(
+        span_filter: ->(_span) { false },
+        body: proc { PhaseSpanSpecInstrumentation.span("in body") },
+      ) do |config|
+        config.before(:each) { nil }
+      end
+
+      expect(exported.map(&:name)).to eq(["test.body"])
+      expect(exported.map(&:parent_span_id)).to all(eq(span_named("test.execution").span_id))
+    end
+
+    it "exports a phase that failed without grouping anything" do
+      exported = run_through_forwarder do |config|
+        config.after(:each) { raise "after boom" }
+      end
+
+      expect(exported.map(&:name)).to eq(["test.teardown"])
+      expect(exported.first.status.description).to eq("after boom")
+    end
   end
 
   it "adds no phase spans when OpenTelemetry is disabled" do
