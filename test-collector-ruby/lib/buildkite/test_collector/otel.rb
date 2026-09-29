@@ -242,11 +242,7 @@ module Buildkite::TestCollector
       def with_test_span(span)
         return yield unless span
 
-        values = {
-          test_span_context_key => span.context.trace_id,
-          test_span_key => span,
-        }
-        OpenTelemetry::Context.with_values(values) do
+        OpenTelemetry::Context.with_values(test_span_context_key => span.context.trace_id, test_span_key => span) do
           OpenTelemetry::Trace.with_span(span) { yield }
         end
       end

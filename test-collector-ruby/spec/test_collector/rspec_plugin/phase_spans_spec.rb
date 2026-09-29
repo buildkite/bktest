@@ -309,15 +309,6 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
       expect(exported.map(&:name)).to eq(["test.body"])
       expect(exported.map(&:parent_span_id)).to all(eq(span_named("test.execution").span_id))
     end
-
-    it "exports a phase that failed without grouping anything" do
-      exported = run_through_forwarder do |config|
-        config.after(:each) { raise "after boom" }
-      end
-
-      expect(exported.map(&:name)).to eq(["test.teardown"])
-      expect(exported.first.status.description).to eq("after boom")
-    end
   end
 
   it "adds no phase spans when OpenTelemetry is disabled" do

@@ -26,7 +26,7 @@ module Buildkite
             @spans[span] = true
             # A child that starts after its phase finished (async work from a
             # hook) must not re-add the phase, or it would live until shutdown.
-            @populated_phases[parent] = true if phase_span?(parent) && @spans.key?(parent)
+            @populated_phases[parent] = true if @spans.key?(parent) && phase_span?(parent)
           end
         rescue Exception => e # rubocop:disable Lint/RescueException
           ExceptionHandling.reraise_fatal(e)
@@ -90,8 +90,9 @@ module Buildkite
           @populated_phases.delete(span) || span.status.code != OpenTelemetry::Trace::Status::UNSET
         end
 
+        # Only called with tracked spans, which have a name.
         def phase_span?(span)
-          span.respond_to?(:name) && PHASE_SPAN_NAMES.value?(span.name)
+          PHASE_SPAN_NAMES.value?(span.name)
         end
 
         def success
