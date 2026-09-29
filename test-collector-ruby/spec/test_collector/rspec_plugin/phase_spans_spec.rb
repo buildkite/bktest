@@ -64,7 +64,7 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
   end
 
   def phase_spans
-    finished_spans.select { |span| span.name.start_with?("test.") && span.name != "test.execution" }
+    finished_spans.select { |span| Buildkite::TestCollector::OTel::PHASE_SPAN_NAMES.value?(span.name) }
   end
 
   it "adds setup, body, and teardown spans as direct children of the test span, in order" do

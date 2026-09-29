@@ -50,11 +50,10 @@ test.execution  "Buildkite::Pipeline creates a build"   12.4ms
 block, and `test.teardown` `after(:each)` hooks and mock verification. A phase
 whose failure fails the example gets an error status and an `exception` event
 per failure, so a trace shows which phase failed even before you read the
-test's own error.
-A before hook that raises leaves no `test.body` span, because RSpec never runs
-the example. `around` hooks wrap all three phases, so spans they open stay
-direct children of the test span, alongside the phases. Phase spans are
-always exported; `otel_span_filter` never sees them.
+test's own error. A before hook that raises leaves no `test.body` span, because
+RSpec never runs the example. `around` hooks wrap all three phases, so spans
+they open stay direct children of the test span, alongside the phases. Phase
+spans are always exported; `otel_span_filter` never sees them.
 
 One example is one trace. Child spans share the root's trace ID, and the root is
 never nested under anything else, so a trace always belongs to exactly one test.
@@ -264,9 +263,9 @@ Buildkite::TestCollector.configure(
 
 The filter only sees child spans that belong to a test span; `test.execution`
 spans and the `test.setup`, `test.body`, and `test.teardown` phase spans are
-never filtered. A broken filter never costs you spans: if
-it raises or cannot be called with a span, the collector retains that span and
-warns on the first failure.
+never filtered. A broken filter never costs you spans: if it raises or cannot be
+called with a span, the collector retains that span and warns on the first
+failure.
 
 The filter runs on whichever thread finishes each span, so it can be called
 concurrently and should not depend on shared mutable state. Spans that finish
