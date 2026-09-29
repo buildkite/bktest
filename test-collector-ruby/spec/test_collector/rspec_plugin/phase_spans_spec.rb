@@ -160,12 +160,28 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
       config.after(:each) { raise "second after boom" }
     end
 
+    body_messages = span_named("test.body").events.map { |event| event.attributes["exception.message"] }
+    expect(body_messages).to eq(["body boom"])
     expect(span_named("test.body").status.description).to eq("body boom")
     expect(span_named("test.teardown").status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
     # After hooks run in reverse declaration order.
     expect(span_named("test.teardown").status.description).to eq("first after boom")
-    exception_messages = span_named("test.teardown").events.map { |event| event.attributes["exception.message"] }
-    expect(exception_messages).to eq(["first after boom"])
+    teardown_messages = span_named("test.teardown").events.map { |event| event.attributes["exception.message"] }
+    expect(teardown_messages).to eq(["second after boom", "first after boom"])
+  end
+
+  # aggregate_failures raises one MultipleExpectationsNotMetError, which
+  # RSpec later wraps rather than flattens, so the body keeps a single event
+  # and the teardown must not inherit it.
+  it "does not attribute an aggregated body failure to the teardown phase" do
+    run_sandboxed_example(body: proc { aggregate_failures { expect(1).to eq(2); expect(3).to eq(4) } }) do |config|
+      config.after(:each) { raise "after boom" }
+    end
+
+    expect(span_named("test.body").events.size).to eq(1)
+    expect(span_named("test.body").status.description).to start_with("Got 2 failures")
+    teardown_messages = span_named("test.teardown").events.map { |event| event.attributes["exception.message"] }
+    expect(teardown_messages).to eq(["after boom"])
   end
 
   it "keeps annotations made during the example on the test span" do

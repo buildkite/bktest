@@ -304,14 +304,15 @@ module Buildkite::TestCollector
         warn "[buildkite-test_collector] Could not restore the OpenTelemetry context: #{e.class}: #{e.message}"
       end
 
-      # A failure raised in the phase becomes the span's status and an
-      # exception event, so the trace shows which phase failed and why.
-      def finish_phase_span(span, failure = nil)
+      # Each failure raised in the phase becomes an exception event, and the
+      # last one the span's status, so the trace shows which phase failed and
+      # why. Several after hooks can fail in one teardown phase.
+      def finish_phase_span(span, failures = [])
         return unless span
 
-        if failure
-          span.record_exception(failure)
-          span.status = OpenTelemetry::Trace::Status.error(failure.message.to_s[0, FAILURE_REASON_MAX_LENGTH])
+        failures.each { |failure| span.record_exception(failure) }
+        if (last = failures.last)
+          span.status = OpenTelemetry::Trace::Status.error(last.message.to_s[0, FAILURE_REASON_MAX_LENGTH])
         end
         span.finish
       rescue Exception => e # rubocop:disable Lint/RescueException

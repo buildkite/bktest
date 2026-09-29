@@ -48,8 +48,9 @@ test.execution  "Buildkite::Pipeline creates a build"   12.4ms
 
 `test.setup` covers `before(:each)` hooks and `let!`, `test.body` the example
 block, and `test.teardown` `after(:each)` hooks and mock verification. A phase
-that raises gets an error status and an `exception` event naming the failure,
-so a trace shows which phase failed even before you read the test's own error.
+whose failure fails the example gets an error status and an `exception` event
+per failure, so a trace shows which phase failed even before you read the
+test's own error.
 A before hook that raises leaves no `test.body` span, because RSpec never runs
 the example. `around` hooks wrap all three phases, so spans they open stay
 direct children of the test span, alongside the phases. Phase spans are

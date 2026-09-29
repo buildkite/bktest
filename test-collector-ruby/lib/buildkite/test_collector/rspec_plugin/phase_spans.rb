@@ -25,17 +25,17 @@ module Buildkite::TestCollector::RSpecPlugin
 
         setup_span = Buildkite::TestCollector::OTel.start_phase_span(:setup, test_span)
         token = Buildkite::TestCollector::OTel.attach_span(setup_span)
-        failure = nil
+        failures = []
         begin
           super
         rescue Exception => e # rubocop:disable Lint/RescueException
           # `skip` in a before hook raises to end the example early; RSpec
           # reports that as pending, not as a failure.
-          failure = e unless RSpec::Core::Pending::SkipDeclaredInExample === e
+          failures = [e] unless RSpec::Core::Pending::SkipDeclaredInExample === e
           raise
         ensure
           Buildkite::TestCollector::OTel.detach_span(token)
-          Buildkite::TestCollector::OTel.finish_phase_span(setup_span, failure)
+          Buildkite::TestCollector::OTel.finish_phase_span(setup_span, failures)
         end
 
         # Left current until run_after_example, which runs even when the
@@ -51,18 +51,17 @@ module Buildkite::TestCollector::RSpecPlugin
 
         teardown_span = Buildkite::TestCollector::OTel.start_phase_span(:teardown, test_span)
         token = Buildkite::TestCollector::OTel.attach_span(teardown_span)
-        failure_before = exception
-        failure_count_before = buildkite_failure_count(failure_before)
-        failure = nil
+        failures_before = buildkite_failures
+        failures = []
         begin
           super
-          failure = buildkite_teardown_failure(failure_before, failure_count_before)
+          failures = buildkite_failures - failures_before
         rescue Exception => e # rubocop:disable Lint/RescueException
-          failure = e
+          failures = [e]
           raise
         ensure
           Buildkite::TestCollector::OTel.detach_span(token)
-          Buildkite::TestCollector::OTel.finish_phase_span(teardown_span, failure)
+          Buildkite::TestCollector::OTel.finish_phase_span(teardown_span, failures)
         end
       end
 
@@ -70,30 +69,25 @@ module Buildkite::TestCollector::RSpecPlugin
       # the time after hooks run; a setup failure leaves no body span.
       def buildkite_finish_body_span
         Buildkite::TestCollector::OTel.detach_span(@buildkite_body_token)
-        Buildkite::TestCollector::OTel.finish_phase_span(@buildkite_body_span, exception)
+        Buildkite::TestCollector::OTel.finish_phase_span(@buildkite_body_span, buildkite_failures)
       ensure
         @buildkite_body_span = nil
         @buildkite_body_token = nil
       end
 
-      # After hooks rescue their own failures and add them to the example
-      # (RSpec::Core::Hooks::AfterHook#run), so a teardown failure shows up
-      # as a new or grown example exception rather than a raise. The first
-      # failure replaces nil; a second wraps both in a MultipleExceptionError;
-      # later ones are added to that same object, so the count is taken
-      # before the hooks run.
-      def buildkite_teardown_failure(failure_before, failure_count_before)
-        failure_after = exception
-        return if failure_after.nil?
-        return if failure_after.equal?(failure_before) && buildkite_failure_count(failure_after) == failure_count_before
-
-        failure_after.respond_to?(:all_exceptions) ? failure_after.all_exceptions.last : failure_after
-      end
-
-      def buildkite_failure_count(failure)
-        return 0 if failure.nil?
-
-        failure.respond_to?(:all_exceptions) ? failure.all_exceptions.size : 1
+      # The example's failures so far, as a flat list. After hooks and mock
+      # verification rescue their own failures and add them to the example
+      # (RSpec::Core::Hooks::AfterHook#run, Example#verify_mocks) rather than
+      # raising: the first replaces nil, a second wraps both in a
+      # MultipleExceptionError, and later ones are added to that same object.
+      # Snapshotting before and after the hooks and taking the difference
+      # yields exactly the failures the teardown phase added.
+      def buildkite_failures
+        case exception
+        when nil then []
+        when RSpec::Core::MultipleExceptionError then exception.all_exceptions.dup
+        else [exception]
+        end
       end
     end
   end
