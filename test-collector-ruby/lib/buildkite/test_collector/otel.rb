@@ -28,10 +28,9 @@ module Buildkite::TestCollector
 
     TEST_SPAN_NAME = "test.execution"
 
-    # Direct children of the test span that group the example's instrumented
-    # child spans by when they happened: before hooks (including let!), the
-    # example block, and after hooks. Fixed names so every collector can emit
-    # the same three and the UI can expand one level and stop.
+    # Direct children of the test span that group instrumented child spans by
+    # when they happened. Fixed names so every collector can emit the same
+    # three and the UI can expand one level and stop.
     PHASE_SPAN_NAMES = {
       setup: "test.setup",
       body: "test.body",
@@ -283,8 +282,7 @@ module Buildkite::TestCollector
         nil
       end
 
-      # Makes the span current until detach_span is called with the returned
-      # token, so instrumentation that runs in between nests under it.
+      # Makes the span current until detach_span is called with the returned token.
       def attach_span(span)
         return unless span
 
@@ -304,10 +302,9 @@ module Buildkite::TestCollector
         warn "[buildkite-test_collector] Could not restore the OpenTelemetry context: #{e.class}: #{e.message}"
       end
 
-      # Each failure raised in the phase becomes an exception event, and the
-      # last one the span's status, so the trace shows which phase failed and
-      # why. Several after hooks can fail in one teardown phase.
-      def finish_phase_span(span, failures = [])
+      # Each failure becomes an exception event, and the last one the span's
+      # status; several after hooks can fail in one teardown phase.
+      def finish_phase_span(span, failures)
         return unless span
 
         failures.each { |failure| span.record_exception(failure) }
@@ -341,13 +338,10 @@ module Buildkite::TestCollector
 
       # Records a point-in-time annotation as an event on the test span, not
       # the current span, which during the example is the test.body phase.
-      # Safe to call when export is off or nothing is recording: it just
-      # does nothing.
+      # Does nothing outside an example or when export is off.
       def annotate(content)
-        return unless enabled?
-
-        span = current_test_span || OpenTelemetry::Trace.current_span
-        return unless span.recording?
+        span = current_test_span
+        return unless span
 
         span.add_event("test.annotation", attributes: { "buildkite.annotation" => content.to_s })
       rescue Exception => e # rubocop:disable Lint/RescueException

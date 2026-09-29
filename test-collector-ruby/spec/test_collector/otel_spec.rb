@@ -1799,7 +1799,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
   end
 
   describe ".annotate" do
-    it "adds an annotation event to the current span" do
+    it "adds an annotation event to the test span, not the current span" do
       exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
       provider = OpenTelemetry::SDK::Trace::TracerProvider.new
       provider.add_span_processor(
@@ -1808,12 +1808,16 @@ RSpec.describe Buildkite::TestCollector::OTel do
       tracer = provider.tracer("annotate-test")
       described_class.instance_variable_set(:@tracer, tracer)
 
-      tracer.in_span("test.execution") do
-        described_class.annotate("something happened")
+      test_span = tracer.start_span("test.execution")
+      described_class.with_test_span(test_span) do
+        tracer.in_span("inner") { described_class.annotate("something happened") }
       end
+      test_span.finish
       provider.force_flush
 
-      event = exporter.finished_spans.fetch(0).events.fetch(0)
+      inner, execution = exporter.finished_spans
+      expect(inner.events).to be_nil
+      event = execution.events.fetch(0)
       expect(event.name).to eq("test.annotation")
       expect(event.attributes).to eq("buildkite.annotation" => "something happened")
     ensure
@@ -1821,7 +1825,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       provider&.shutdown
     end
 
-    it "does nothing when export is off or no span is recording" do
+    it "does nothing when export is off or outside a test span" do
       expect { described_class.annotate("ignored") }.not_to raise_error
 
       described_class.instance_variable_set(:@tracer, double("tracer"))

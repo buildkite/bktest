@@ -40,8 +40,7 @@ module Buildkite
           end
 
           return unless @mutex.synchronize { @active && @spans.delete(span) }
-          # The collector's own phase spans are structure, not noise, and the
-          # UI relies on them; a filter written for instrumentation never sees them.
+          # Phase spans are structure the UI relies on; the filter never sees them.
           return unless PHASE_SPAN_NAMES.value?(span.name) || @span_filter.retain?(span)
 
           @mutex.synchronize do

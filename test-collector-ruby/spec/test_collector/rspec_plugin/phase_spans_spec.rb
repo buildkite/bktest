@@ -223,7 +223,7 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
   it "wraps the rspec-core methods it expects" do
     %i[run_before_example run_after_example].each do |name|
       method = RSpec::Core::Example.instance_method(name)
-      expect(method.owner).to eq(described_class::ExampleHooks)
+      expect(method.owner).to eq(described_class)
       expect(method.super_method.owner).to eq(RSpec::Core::Example)
     end
   end
