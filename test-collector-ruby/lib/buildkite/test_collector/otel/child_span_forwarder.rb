@@ -24,7 +24,9 @@ module Buildkite
             next unless @active
 
             @spans[span] = true
-            @populated_phases[parent] = true if phase_span?(parent)
+            # A child that starts after its phase finished (async work from a
+            # hook) must not re-add the phase, or it would live until shutdown.
+            @populated_phases[parent] = true if phase_span?(parent) && @spans.key?(parent)
           end
         rescue Exception => e # rubocop:disable Lint/RescueException
           ExceptionHandling.reraise_fatal(e)

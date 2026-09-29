@@ -130,6 +130,18 @@ RSpec.describe forwarder_class do
     expect(forwarder.instance_variable_get(:@populated_phases)).to be_empty
   end
 
+  it "does not retain a finished phase span when a child starts under it late" do
+    finished_phase = phase_span
+
+    forwarder.on_start(finished_phase, execution_context)
+    forwarder.on_finish(finished_phase)
+    forwarder.on_start(span, context_under(finished_phase))
+    forwarder.on_finish(span)
+
+    expect(processor).to have_received(:on_finish).with(span).once
+    expect(forwarder.instance_variable_get(:@populated_phases)).to be_empty
+  end
+
   it "runs the filter without holding the lock" do
     mutex_owned = nil
     filtered_forwarder = described_class.new(
