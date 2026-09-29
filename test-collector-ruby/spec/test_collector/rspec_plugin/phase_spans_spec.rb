@@ -205,6 +205,52 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
     expect(OpenTelemetry::Trace.current_span).to eq(OpenTelemetry::Trace::Span::INVALID)
   end
 
+  # rspec-retry re-runs the example inside its around hook, so one Example
+  # object sees run_before_example and run_after_example more than once.
+  it "starts a fresh setup, body, and teardown for each run of the same example" do
+    runs = 0
+    run_sandboxed_example(body: proc { runs += 1; raise "flaky" if runs == 1 }) do |config|
+      config.around(:each) do |example|
+        example.run
+        next unless example.example.exception
+
+        example.example.instance_variable_set(:@exception, nil)
+        example.example.metadata[:execution_result] = RSpec::Core::Example::ExecutionResult.new
+        example.run
+      end
+    end
+
+    expect(runs).to eq(2)
+    expect(phase_spans.map(&:name)).to eq(%w[test.setup test.body test.teardown] * 2)
+    expect(phase_spans.map(&:parent_span_id).uniq).to eq([span_named("test.execution").span_id])
+    body_statuses = phase_spans.select { |span| span.name == "test.body" }.map { |span| span.status.code }
+    expect(body_statuses).to eq([OpenTelemetry::Trace::Status::ERROR, OpenTelemetry::Trace::Status::UNSET])
+  end
+
+  it "reaches the child span exporter through the forwarder, past a filter that drops everything" do
+    child_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    forwarder = Buildkite::TestCollector::OTel.const_get(:ChildSpanForwarder).new(
+      OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(child_exporter),
+      context_key: Buildkite::TestCollector::OTel.send(:test_span_context_key),
+      span_filter: ->(_span) { false },
+    )
+    child_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    child_provider.add_span_processor(forwarder)
+    OpenTelemetry.tracer_provider = child_provider
+
+    begin
+      run_sandboxed_example(body: proc { PhaseSpanSpecInstrumentation.span("in body") }) do |config|
+        config.before(:each) { nil }
+      end
+      PhaseSpanSpecInstrumentation.span("outside any example")
+    ensure
+      child_provider.shutdown
+    end
+
+    expect(child_exporter.finished_spans.map(&:name)).to contain_exactly("test.setup", "test.body", "test.teardown")
+    expect(child_exporter.finished_spans.map(&:parent_span_id)).to all(eq(span_named("test.execution").span_id))
+  end
+
   it "adds no phase spans when OpenTelemetry is disabled" do
     Buildkite::TestCollector.otel_enabled = false
     Buildkite::TestCollector::OTel.instance_variable_set(:@tracer, nil)

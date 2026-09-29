@@ -5,8 +5,9 @@
 * Add `test.setup`, `test.body`, and `test.teardown` phase spans under each
   OpenTelemetry `test.execution` span. Instrumented child spans nest under the
   phase they ran in, each phase records its failures, and phase spans bypass
-  `otel_span_filter`. Annotations made during an example stay on the
-  `test.execution` span.
+  `otel_span_filter`. `Buildkite::TestCollector.annotate` records on the
+  `test.execution` span rather than the current span, and does nothing outside
+  an example.
 
 ## v2.16.0
 

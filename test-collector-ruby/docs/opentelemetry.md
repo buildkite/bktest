@@ -53,7 +53,8 @@ per failure, so a trace shows which phase failed even before you read the
 test's own error. A before hook that raises leaves no `test.body` span, because
 RSpec never runs the example. `around` hooks wrap all three phases, so spans
 they open stay direct children of the test span, alongside the phases. Phase
-spans are always exported; `otel_span_filter` never sees them.
+spans are exported like any other child span, except that `otel_span_filter`
+never sees them.
 
 One example is one trace. Child spans share the root's trace ID, and the root is
 never nested under anything else, so a trace always belongs to exactly one test.
@@ -199,9 +200,10 @@ configure instrumentation there as you normally would. This is also the way to
 keep a bundle full of instrumentation gems (such as
 `opentelemetry-instrumentation-all`, loaded for production) unpatched under
 test: configure the SDK yourself, before the suite starts, without `use` or
-`use_all`, and the collector forwards only `test.execution` spans and any spans
-your suite creates by hand. Set `OTEL_TRACES_EXPORTER=none` as well, or the
-SDK adds its own default OTLP exporter aimed at `localhost:4318`:
+`use_all`, and the collector forwards only `test.execution` spans, the phase
+spans, and any spans your suite creates by hand. Set `OTEL_TRACES_EXPORTER=none`
+as well, or the SDK adds its own default OTLP exporter aimed at
+`localhost:4318`:
 
 ```ruby
 # spec/spec_helper.rb
@@ -218,6 +220,9 @@ Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
 
 Child spans from a suite-owned provider keep that provider's resource rather
 than the collector's (see [OTLP execution attributes](#otlp-execution-attributes)).
+The collector also creates the phase spans on that provider, so any exporter of
+your own attached to it receives three `test.setup`, `test.body`, and
+`test.teardown` spans per example, without their `test.execution` parent.
 The collector does not inspect instrumentation patches, so compatibility
 between the instrumentation you install and other APM or test-library patches
 remains your responsibility.
