@@ -50,8 +50,14 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
   ensure
     Buildkite::TestCollector.otel_enabled = original_otel_enabled
     Buildkite::TestCollector::OTel.instance_variable_set(:@tracer, nil)
-    OpenTelemetry.tracer_provider = original_provider
     @provider&.shutdown
+    # Assigning over the default ProxyTracerProvider upgrades it in place to
+    # delegate to @provider, so put back a fresh proxy rather than that one.
+    OpenTelemetry.tracer_provider = if original_provider.instance_of?(OpenTelemetry::Internal::ProxyTracerProvider)
+      OpenTelemetry::Internal::ProxyTracerProvider.new
+    else
+      original_provider
+    end
   end
 
   def finished_spans
