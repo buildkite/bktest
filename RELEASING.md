@@ -69,7 +69,7 @@ with a publish confirmation step. An authorized Buildkite maintainer then:
 
 Untagged builds are safe rehearsals. If the publish confirmation step is
 absent from a tag build, stop rather than trying to publish around the
-pipeline: the tag does not exactly match `<collector-directory>/vX.Y.Z`.
+pipeline: the tag does not exactly match a supported collector release tag.
 
 ### Ruby (RubyGems)
 
@@ -79,7 +79,9 @@ In the release pull request:
 - move the relevant entries from `Unreleased` into a versioned section in
   `CHANGELOG.md`.
 
-Use a `test-collector-ruby/vX.Y.Z` tag and the automated process above.
+Use a `test-collector-ruby/vX.Y.Z` tag for a stable release or
+`test-collector-ruby/vX.Y.Z.pre` for a prerelease, and follow the automated
+process above.
 
 ### Python (PyPI)
 

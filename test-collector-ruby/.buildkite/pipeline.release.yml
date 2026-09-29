@@ -2,7 +2,7 @@
 # release dispatcher (.buildkite/pipeline.release.yml) running on the
 # separate bktest-release Buildkite pipeline — never by CI: as a rehearsal
 # when this project changes (no tag), and for real on a
-# test-collector-ruby/vX.Y.Z tag. Injected by `ctg gather` from the ctg
+# test-collector-ruby/vX.Y.Z[.pre] tag. Injected by `ctg gather` from the ctg
 # repo's overlay/ directory during the dry-run era; post-cutover this file
 # is maintained here, in the monorepo. It replaces the source repo's
 # .buildkite/pipeline.release.yml, which assumed the repo root was the
@@ -17,7 +17,7 @@
 #   - The publish steps mint a push token via the rubygems.org OIDC API key
 #     role, whose access policy trusts this pipeline (see the credential
 #     cut-over section of ctg docs/publishing.md).
-#   - The publish step exists only on an exact test-collector-ruby/vX.Y.Z
+#   - The publish step exists only on an exact test-collector-ruby/vX.Y.Z[.pre]
 #     tag, behind a block step; it sets RELEASE_PUBLISH=true in its own
 #     environment, and the release script independently re-checks the tag
 #     and RELEASE_PUBLISH before `gem push`.
@@ -37,10 +37,10 @@ steps:
 
   - block: ":rocket: Publish test-collector-ruby to RubyGems?"
     key: ruby-confirm
-    if: build.tag =~ /^test-collector-ruby\/v[0-9]+\.[0-9]+\.[0-9]+$/
+    if: build.tag =~ /^test-collector-ruby\/v[0-9]+\.[0-9]+\.[0-9]+(\.pre)?$/
 
   - label: ":rubygems: test-collector-ruby: publish to RubyGems"
-    if: build.tag =~ /^test-collector-ruby\/v[0-9]+\.[0-9]+\.[0-9]+$/
+    if: build.tag =~ /^test-collector-ruby\/v[0-9]+\.[0-9]+\.[0-9]+(\.pre)?$/
     depends_on:
       - ruby-build
       - ruby-confirm

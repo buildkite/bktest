@@ -16,12 +16,12 @@ cd "$(dirname "$0")/../.." # this project's root, wherever the checkout cwd is
 
 PROJECT="test-collector-ruby"
 GEM_NAME="buildkite-test_collector"
-TAG_PATTERN="^${PROJECT}/v([0-9]+\.[0-9]+\.[0-9]+)$"
+TAG_PATTERN="^${PROJECT}/v([0-9]+\.[0-9]+\.[0-9]+(\.pre)?)$"
 
 echo "--- Determining version"
 if [ -n "${BUILDKITE_TAG:-}" ]; then
   if [[ ! "${BUILDKITE_TAG}" =~ ${TAG_PATTERN} ]]; then
-    echo "BUILDKITE_TAG '${BUILDKITE_TAG}' does not match ${PROJECT}/vX.Y.Z; refusing" >&2
+    echo "BUILDKITE_TAG '${BUILDKITE_TAG}' does not match ${PROJECT}/vX.Y.Z[.pre]; refusing" >&2
     exit 1
   fi
   VERSION="${BASH_REMATCH[1]}"
@@ -60,7 +60,7 @@ fi
 
 echo "--- Publishing ${GEM_FILENAME} to RubyGems"
 if [ -z "${BUILDKITE_TAG:-}" ]; then
-  echo "RELEASE_PUBLISH=true without a ${PROJECT}/vX.Y.Z tag; refusing" >&2
+  echo "RELEASE_PUBLISH=true without a ${PROJECT}/vX.Y.Z[.pre] tag; refusing" >&2
   exit 1
 fi
 if [ "${ALREADY_PUBLISHED}" = "true" ]; then

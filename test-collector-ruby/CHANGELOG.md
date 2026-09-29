@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## v2.17.0.pre
+
+* Add `buildkite-rspec`, a persistent RSpec runner for bktec that boots the
+  suite once, runs assigned selector batches, and logs selectors before each
+  batch.
+
 ## v2.16.0
 
 * Report `code.line.number` for shared example inclusions (`it_behaves_like`,
