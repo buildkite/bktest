@@ -269,8 +269,10 @@ module Buildkite::TestCollector
       # spans they group, so they reach the child span exporter (or a
       # suite-owned provider's). The parent is the test span itself, not the
       # current span: an around hook's open span must not capture a phase.
+      # VERSION resolves lexically, so a suite that stub_consts
+      # Buildkite::TestCollector during an example does not break it.
       def start_phase_span(phase, test_span)
-        tracer = OpenTelemetry.tracer_provider.tracer(TRACER_NAME, Buildkite::TestCollector::VERSION)
+        tracer = OpenTelemetry.tracer_provider.tracer(TRACER_NAME, VERSION)
         tracer.start_span(
           PHASE_SPAN_NAMES.fetch(phase),
           with_parent: OpenTelemetry::Trace.context_with_span(test_span),

@@ -12,23 +12,29 @@ module Buildkite::TestCollector::RSpecPlugin
   # hooks run outside all three, so their own spans stay direct children of
   # the test span alongside the phases.
   module PhaseSpans
+    # Bound at load so a suite that stub_consts Buildkite::TestCollector in a
+    # before hook still reaches the real module from run_after_example. Every
+    # OTel method called here rescues its own errors, so nothing in this
+    # module can raise ahead of RSpec's teardown.
+    OTel = Buildkite::TestCollector::OTel
+
     private
 
     def run_before_example
-      test_span = Buildkite::TestCollector::OTel.current_test_span
+      test_span = OTel.current_test_span
       return super unless test_span
 
       buildkite_phase(:setup, test_span) { super() }
 
       # Left current until run_after_example, which runs even when the
       # example block raises.
-      @buildkite_body_span = Buildkite::TestCollector::OTel.start_phase_span(:body, test_span)
-      @buildkite_body_token = Buildkite::TestCollector::OTel.attach_span(@buildkite_body_span)
+      @buildkite_body_span = OTel.start_phase_span(:body, test_span)
+      @buildkite_body_token = OTel.attach_span(@buildkite_body_span)
     end
 
     def run_after_example
       buildkite_finish_body_span
-      test_span = Buildkite::TestCollector::OTel.current_test_span
+      test_span = OTel.current_test_span
       return super unless test_span
 
       buildkite_phase(:teardown, test_span) do |failures|
@@ -42,8 +48,8 @@ module Buildkite::TestCollector::RSpecPlugin
     # failures without raising appends them to the yielded list.
     def buildkite_phase(phase, test_span)
       failures = []
-      span = Buildkite::TestCollector::OTel.start_phase_span(phase, test_span)
-      token = Buildkite::TestCollector::OTel.attach_span(span)
+      span = OTel.start_phase_span(phase, test_span)
+      token = OTel.attach_span(span)
       yield failures
     rescue Exception => e # rubocop:disable Lint/RescueException
       # `skip` in a before hook ends the example early; RSpec reports that as
@@ -51,13 +57,13 @@ module Buildkite::TestCollector::RSpecPlugin
       failures << e unless e.is_a?(RSpec::Core::Pending::SkipDeclaredInExample)
       raise
     ensure
-      Buildkite::TestCollector::OTel.detach_span(token)
-      Buildkite::TestCollector::OTel.finish_phase_span(span, failures)
+      OTel.detach_span(token)
+      OTel.finish_phase_span(span, failures)
     end
 
     def buildkite_finish_body_span
-      Buildkite::TestCollector::OTel.detach_span(@buildkite_body_token)
-      Buildkite::TestCollector::OTel.finish_phase_span(@buildkite_body_span, buildkite_failures)
+      OTel.detach_span(@buildkite_body_token)
+      OTel.finish_phase_span(@buildkite_body_span, buildkite_failures)
     ensure
       @buildkite_body_span = nil
       @buildkite_body_token = nil

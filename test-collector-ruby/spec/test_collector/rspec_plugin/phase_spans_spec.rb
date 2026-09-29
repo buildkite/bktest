@@ -211,6 +211,38 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
     expect(OpenTelemetry::Trace.current_span).to eq(OpenTelemetry::Trace::Span::INVALID)
   end
 
+  # A before hook that stub_consts Buildkite::TestCollector replaces the
+  # constant for the rest of the example; rspec-mocks restores it in RSpec's
+  # own teardown, which must therefore still run.
+  it "survives an example that stubs the Buildkite::TestCollector constant" do
+    real_collector = Buildkite::TestCollector
+    examples = RSpec::Core::Sandbox.sandboxed do |config|
+      config.output_stream = StringIO.new
+      load "buildkite/test_collector/library_hooks/rspec.rb"
+      config.add_formatter Buildkite::TestCollector::RSpecPlugin::Reporter
+      config.after(:each) { PhaseSpanSpecInstrumentation.span("in after") }
+
+      group = RSpec.describe("stubbing group") do
+        it "stubs the collector" do
+          stub_const("Buildkite::TestCollector", Class.new)
+          expect(Buildkite::TestCollector).not_to equal(real_collector)
+        end
+        it "runs afterwards" do
+          expect(Buildkite::TestCollector).to equal(real_collector)
+        end
+      end
+      group.run(RSpec.configuration.reporter)
+      group.examples
+    end
+
+    expect(examples.map { |example| example.execution_result.status }).to eq(%i[passed passed])
+    expect(Buildkite::TestCollector).to equal(real_collector)
+    expect(OpenTelemetry::Trace.current_span).to eq(OpenTelemetry::Trace::Span::INVALID)
+    expect(phase_spans.map(&:name)).to eq(%w[test.setup test.body test.teardown] * 2)
+    expect(finished_spans.select { |span| span.name == "in after" }.map(&:parent_span_id))
+      .to eq(phase_spans.select { |span| span.name == "test.teardown" }.map(&:span_id))
+  end
+
   # rspec-retry re-runs the example inside its around hook, so one Example
   # object sees run_before_example and run_after_example more than once.
   it "starts a fresh setup, body, and teardown for each run of the same example" do
