@@ -1,0 +1,336 @@
+# frozen_string_literal: true
+
+require "opentelemetry/sdk"
+require "rspec/core/sandbox"
+require "buildkite/test_collector/rspec_plugin/reporter"
+
+# Stands in for auto-instrumentation: a span from the global provider. A
+# module method because sandboxed hooks and examples run with their own self.
+module PhaseSpanSpecInstrumentation
+  def self.span(name, &block)
+    OpenTelemetry.tracer_provider.tracer("app").in_span(name, &(block || proc { nil }))
+  end
+end
+
+RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
+  # Sandboxed so the collector's hooks don't disturb this suite. The block
+  # configures the sandboxed RSpec before the example group is defined.
+  def run_sandboxed_example(body: proc { nil }, &configure)
+    RSpec::Core::Sandbox.sandboxed do |config|
+      config.output_stream = StringIO.new
+      load "buildkite/test_collector/library_hooks/rspec.rb"
+      config.add_formatter Buildkite::TestCollector::RSpecPlugin::Reporter
+      configure&.call(config)
+
+      group = RSpec.describe("phase group") do
+        it("does something", &body)
+      end
+      group.run(RSpec.configuration.reporter)
+      group.examples.first
+    end
+  end
+
+  around do |test|
+    original_otel_enabled = Buildkite::TestCollector.otel_enabled
+    original_provider = OpenTelemetry.tracer_provider
+    Buildkite::TestCollector.otel_enabled = true
+
+    @exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+    @provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+    @provider.add_span_processor(
+      OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(@exporter)
+    )
+    Buildkite::TestCollector::OTel.instance_variable_set(
+      :@tracer, @provider.tracer("phase-spans-test")
+    )
+    # Phase spans and instrumentation come from the global provider.
+    OpenTelemetry.tracer_provider = @provider
+
+    test.run
+  ensure
+    Buildkite::TestCollector.otel_enabled = original_otel_enabled
+    Buildkite::TestCollector::OTel.instance_variable_set(:@tracer, nil)
+    @provider&.shutdown
+    # Assigning over the default ProxyTracerProvider upgrades it in place to
+    # delegate to @provider, so put back a fresh proxy rather than that one.
+    OpenTelemetry.tracer_provider = if original_provider.instance_of?(OpenTelemetry::Internal::ProxyTracerProvider)
+      OpenTelemetry::Internal::ProxyTracerProvider.new
+    else
+      original_provider
+    end
+  end
+
+  def finished_spans
+    @provider.force_flush
+    @exporter.finished_spans
+  end
+
+  def span_named(name)
+    finished_spans.find { |span| span.name == name }
+  end
+
+  def phase_spans
+    finished_spans.select { |span| Buildkite::TestCollector::OTel::PHASE_SPAN_NAMES.value?(span.name) }
+  end
+
+  it "adds setup, body, and teardown spans as direct children of the test span, in order" do
+    run_sandboxed_example do |config|
+      config.before(:each) { nil }
+      config.after(:each) { nil }
+    end
+    test_span = span_named("test.execution")
+
+    expect(phase_spans.map(&:name)).to contain_exactly("test.setup", "test.body", "test.teardown")
+    expect(phase_spans.map(&:parent_span_id)).to all(eq(test_span.span_id))
+    expect(phase_spans.map(&:trace_id)).to all(eq(test_span.trace_id))
+    expect(phase_spans.map(&:status).map(&:code)).to all(eq(OpenTelemetry::Trace::Status::UNSET))
+
+    setup, body, teardown = %w[test.setup test.body test.teardown].map { |name| span_named(name) }
+    expect(setup.end_timestamp).to be <= body.start_timestamp
+    expect(body.end_timestamp).to be <= teardown.start_timestamp
+    expect(test_span.start_timestamp).to be <= setup.start_timestamp
+  end
+
+  it "nests instrumentation under the phase it ran in, and around hooks under the test span" do
+    run_sandboxed_example(body: proc { PhaseSpanSpecInstrumentation.span("in body") }) do |config|
+      config.before(:each) { PhaseSpanSpecInstrumentation.span("in before") }
+      config.after(:each) { PhaseSpanSpecInstrumentation.span("in after") }
+      config.around(:each) do |example|
+        PhaseSpanSpecInstrumentation.span("in around") { example.run }
+      end
+    end
+
+    expect(span_named("in before").parent_span_id).to eq(span_named("test.setup").span_id)
+    expect(span_named("in body").parent_span_id).to eq(span_named("test.body").span_id)
+    expect(span_named("in after").parent_span_id).to eq(span_named("test.teardown").span_id)
+    expect(span_named("in around").parent_span_id).to eq(span_named("test.execution").span_id)
+    # The around hook's span is current when the phases start, but must not
+    # capture them.
+    expect(phase_spans.map(&:parent_span_id)).to all(eq(span_named("test.execution").span_id))
+  end
+
+  it "fails the setup span and skips the body span when a before hook raises" do
+    example = run_sandboxed_example(body: proc { raise "body must not run" }) do |config|
+      config.before(:each) { raise "before boom" }
+    end
+    setup = span_named("test.setup")
+
+    expect(example.execution_result.status).to eq(:failed)
+    expect(phase_spans.map(&:name)).to contain_exactly("test.setup", "test.teardown")
+    expect(setup.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+    expect(setup.status.description).to eq("before boom")
+    expect(setup.events.find { |event| event.name == "exception" }.attributes).to include(
+      "exception.message" => "before boom"
+    )
+    expect(span_named("test.teardown").status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+  end
+
+  it "does not fail the setup span when a before hook skips the example" do
+    example = run_sandboxed_example(body: proc { raise "body must not run" }) do |config|
+      config.before(:each) { skip "not today" }
+    end
+
+    expect(example.execution_result.status).to eq(:pending)
+    expect(phase_spans.map(&:name)).to contain_exactly("test.setup", "test.teardown")
+    expect(span_named("test.setup").status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+    expect(span_named("test.setup").events).to be_nil
+  end
+
+  it "fails only the body span when the example raises" do
+    run_sandboxed_example(body: proc { raise "body boom" }) do |config|
+      config.after(:each) { nil }
+    end
+
+    expect(span_named("test.setup").status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+    expect(span_named("test.body").status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+    expect(span_named("test.body").status.description).to eq("body boom")
+    expect(span_named("test.teardown").status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+  end
+
+  it "fails only the teardown span when an after hook raises" do
+    example = run_sandboxed_example do |config|
+      config.after(:each) { raise "after boom" }
+    end
+
+    expect(example.execution_result.status).to eq(:failed)
+    expect(span_named("test.body").status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+    expect(span_named("test.teardown").status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+    expect(span_named("test.teardown").status.description).to eq("after boom")
+  end
+
+  # RSpec folds a second failure into a MultipleExceptionError wrapping the
+  # first, and a third into that same object.
+  it "attributes each failure to its own phase when the body and two after hooks all raise" do
+    run_sandboxed_example(body: proc { raise "body boom" }) do |config|
+      config.after(:each) { raise "first after boom" }
+      config.after(:each) { raise "second after boom" }
+    end
+
+    body_messages = span_named("test.body").events.map { |event| event.attributes["exception.message"] }
+    expect(body_messages).to eq(["body boom"])
+    expect(span_named("test.body").status.description).to eq("body boom")
+    expect(span_named("test.teardown").status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+    # After hooks run in reverse declaration order.
+    expect(span_named("test.teardown").status.description).to eq("first after boom")
+    teardown_messages = span_named("test.teardown").events.map { |event| event.attributes["exception.message"] }
+    expect(teardown_messages).to eq(["second after boom", "first after boom"])
+  end
+
+  # aggregate_failures raises one MultipleExpectationsNotMetError, which
+  # RSpec later wraps rather than flattens, so the body keeps a single event
+  # and the teardown must not inherit it.
+  it "does not attribute an aggregated body failure to the teardown phase" do
+    run_sandboxed_example(body: proc { aggregate_failures { expect(1).to eq(2); expect(3).to eq(4) } }) do |config|
+      config.after(:each) { raise "after boom" }
+    end
+
+    expect(span_named("test.body").events.size).to eq(1)
+    expect(span_named("test.body").status.description).to start_with("Got 2 failures")
+    teardown_messages = span_named("test.teardown").events.map { |event| event.attributes["exception.message"] }
+    expect(teardown_messages).to eq(["after boom"])
+  end
+
+  it "keeps annotations made during the example on the test span" do
+    run_sandboxed_example(body: proc { Buildkite::TestCollector.annotate("checkpoint") })
+
+    annotation = span_named("test.execution").events.find { |event| event.name == "test.annotation" }
+    expect(annotation.attributes).to eq("buildkite.annotation" => "checkpoint")
+    expect(span_named("test.body").events).to be_nil
+  end
+
+  it "leaves the context as it found it" do
+    current_after = nil
+    run_sandboxed_example do |config|
+      config.around(:each) do |example|
+        example.run
+        current_after = OpenTelemetry::Trace.current_span
+      end
+    end
+
+    expect(current_after.context.span_id).to eq(span_named("test.execution").span_id)
+    expect(OpenTelemetry::Trace.current_span).to eq(OpenTelemetry::Trace::Span::INVALID)
+  end
+
+  # A before hook that stub_consts Buildkite::TestCollector replaces the
+  # constant for the rest of the example; rspec-mocks restores it in RSpec's
+  # own teardown, which must therefore still run.
+  it "survives an example that stubs the Buildkite::TestCollector constant" do
+    real_collector = Buildkite::TestCollector
+    examples = RSpec::Core::Sandbox.sandboxed do |config|
+      config.output_stream = StringIO.new
+      load "buildkite/test_collector/library_hooks/rspec.rb"
+      config.add_formatter Buildkite::TestCollector::RSpecPlugin::Reporter
+      config.after(:each) { PhaseSpanSpecInstrumentation.span("in after") }
+
+      group = RSpec.describe("stubbing group") do
+        it "stubs the collector" do
+          stub_const("Buildkite::TestCollector", Class.new)
+          expect(Buildkite::TestCollector).not_to equal(real_collector)
+        end
+        it "runs afterwards" do
+          expect(Buildkite::TestCollector).to equal(real_collector)
+        end
+      end
+      group.run(RSpec.configuration.reporter)
+      group.examples
+    end
+
+    expect(examples.map { |example| example.execution_result.status }).to eq(%i[passed passed])
+    expect(Buildkite::TestCollector).to equal(real_collector)
+    expect(OpenTelemetry::Trace.current_span).to eq(OpenTelemetry::Trace::Span::INVALID)
+    expect(phase_spans.map(&:name)).to eq(%w[test.setup test.body test.teardown] * 2)
+    expect(finished_spans.select { |span| span.name == "in after" }.map(&:parent_span_id))
+      .to eq(phase_spans.select { |span| span.name == "test.teardown" }.map(&:span_id))
+  end
+
+  # rspec-retry re-runs the example inside its around hook, so one Example
+  # object sees run_before_example and run_after_example more than once.
+  it "starts a fresh setup, body, and teardown for each run of the same example" do
+    runs = 0
+    run_sandboxed_example(body: proc { runs += 1; raise "flaky" if runs == 1 }) do |config|
+      config.around(:each) do |example|
+        example.run
+        next unless example.example.exception
+
+        example.example.instance_variable_set(:@exception, nil)
+        example.example.metadata[:execution_result] = RSpec::Core::Example::ExecutionResult.new
+        example.run
+      end
+    end
+
+    expect(runs).to eq(2)
+    expect(phase_spans.map(&:name)).to eq(%w[test.setup test.body test.teardown] * 2)
+    expect(phase_spans.map(&:parent_span_id).uniq).to eq([span_named("test.execution").span_id])
+    body_statuses = phase_spans.select { |span| span.name == "test.body" }.map { |span| span.status.code }
+    expect(body_statuses).to eq([OpenTelemetry::Trace::Status::ERROR, OpenTelemetry::Trace::Status::UNSET])
+  end
+
+  # The forwarder sends Buildkite only phases that grouped a child span or
+  # failed, so an uninstrumented, passing example adds no child spans.
+  describe "through the child span forwarder" do
+    def run_through_forwarder(span_filter: nil, **example_options, &configure)
+      child_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+      forwarder = Buildkite::TestCollector::OTel.const_get(:ChildSpanForwarder).new(
+        OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(child_exporter),
+        context_key: Buildkite::TestCollector::OTel.send(:test_span_context_key),
+        span_filter: span_filter,
+      )
+      child_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+      child_provider.add_span_processor(forwarder)
+      OpenTelemetry.tracer_provider = child_provider
+
+      begin
+        run_sandboxed_example(**example_options, &configure)
+        PhaseSpanSpecInstrumentation.span("outside any example")
+      ensure
+        child_provider.shutdown
+      end
+      child_exporter.finished_spans
+    end
+
+    it "exports nothing for a passing example with no instrumentation" do
+      exported = run_through_forwarder do |config|
+        config.before(:each) { nil }
+        config.after(:each) { nil }
+      end
+
+      expect(exported).to be_empty
+      expect(span_named("test.execution")).not_to be_nil
+    end
+
+    it "exports only the phases that grouped a span, past a filter that drops everything" do
+      exported = run_through_forwarder(
+        span_filter: ->(_span) { false },
+        body: proc { PhaseSpanSpecInstrumentation.span("in body") },
+      ) do |config|
+        config.before(:each) { nil }
+      end
+
+      expect(exported.map(&:name)).to eq(["test.body"])
+      expect(exported.map(&:parent_span_id)).to all(eq(span_named("test.execution").span_id))
+    end
+  end
+
+  it "adds no phase spans when OpenTelemetry is disabled" do
+    Buildkite::TestCollector.otel_enabled = false
+    Buildkite::TestCollector::OTel.instance_variable_set(:@tracer, nil)
+
+    example = run_sandboxed_example(body: proc { PhaseSpanSpecInstrumentation.span("in body") }) do |config|
+      config.before(:each) { nil }
+    end
+
+    expect(example.execution_result.status).to eq(:passed)
+    expect(phase_spans).to be_empty
+    expect(span_named("in body")).not_to be_nil
+  end
+
+  # The hooks wrap private rspec-core methods; a rename upstream would
+  # silently turn the phases off.
+  it "wraps the rspec-core methods it expects" do
+    %i[run_before_example run_after_example].each do |name|
+      method = RSpec::Core::Example.instance_method(name)
+      expect(method.owner).to eq(described_class)
+      expect(method.super_method.owner).to eq(RSpec::Core::Example)
+    end
+  end
+end

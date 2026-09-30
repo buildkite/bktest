@@ -32,14 +32,32 @@ shown in [Choosing instrumentation](#choosing-instrumentation).
 
 ## What a trace looks like
 
-Each example gets a `test.execution` span of its own, with the instrumented work
-it did underneath:
+Each example gets a `test.execution` span of its own. Under it are up to three
+phase spans, and the instrumented work nests under the phase it ran in:
 
 ```text
 test.execution  "Buildkite::Pipeline creates a build"   12.4ms
-├── GET         api.example.com                          8.1ms
-└── SELECT      pipelines                                1.2ms
+├── test.setup                                            2.0ms
+│   └── INSERT  pipelines                                 1.2ms
+├── test.body                                             9.9ms
+│   ├── GET     api.example.com                           8.1ms
+│   └── SELECT  builds                                    0.9ms
+└── test.teardown                                         0.5ms
+    └── DELETE  pipelines                                 0.4ms
 ```
+
+`test.setup` covers `before(:each)` hooks and `let!`, `test.body` the example
+block, and `test.teardown` `after(:each)` hooks and mock verification. A phase
+whose failure fails the example gets an error status and an `exception` event
+per failure, so a trace shows which phase failed even before you read the
+test's own error. A before hook that raises leaves no `test.body` span, because
+RSpec never runs the example. `around` hooks wrap all three phases, so spans
+they open stay direct children of the test span, alongside the phases.
+
+A phase is exported only when it grouped at least one span or failed; a phase
+with nothing in it says nothing the test span does not. An example with no
+instrumented work therefore adds no child spans at all, and `otel_span_filter`
+never sees phase spans.
 
 One example is one trace. Child spans share the root's trace ID, and the root is
 never nested under anything else, so a trace always belongs to exactly one test.
@@ -185,9 +203,10 @@ configure instrumentation there as you normally would. This is also the way to
 keep a bundle full of instrumentation gems (such as
 `opentelemetry-instrumentation-all`, loaded for production) unpatched under
 test: configure the SDK yourself, before the suite starts, without `use` or
-`use_all`, and the collector forwards only `test.execution` spans and any spans
-your suite creates by hand. Set `OTEL_TRACES_EXPORTER=none` as well, or the
-SDK adds its own default OTLP exporter aimed at `localhost:4318`:
+`use_all`, and the collector forwards only `test.execution` spans, the phase
+spans, and any spans your suite creates by hand. Set `OTEL_TRACES_EXPORTER=none`
+as well, or the SDK adds its own default OTLP exporter aimed at
+`localhost:4318`:
 
 ```ruby
 # spec/spec_helper.rb
@@ -204,6 +223,9 @@ Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)
 
 Child spans from a suite-owned provider keep that provider's resource rather
 than the collector's (see [OTLP execution attributes](#otlp-execution-attributes)).
+The collector also creates the phase spans on that provider, so any exporter of
+your own attached to it receives `test.setup`, `test.body`, and `test.teardown`
+spans for every example, empty or not, without their `test.execution` parent.
 The collector does not inspect instrumentation patches, so compatibility
 between the instrumentation you install and other APM or test-library patches
 remains your responsibility.
@@ -248,9 +270,10 @@ Buildkite::TestCollector.configure(
 ```
 
 The filter only sees child spans that belong to a test span; `test.execution`
-spans themselves are never filtered. A broken filter never costs you spans: if
-it raises or cannot be called with a span, the collector retains that span and
-warns on the first failure.
+spans and the `test.setup`, `test.body`, and `test.teardown` phase spans are
+never filtered. A broken filter never costs you spans: if it raises or cannot be
+called with a span, the collector retains that span and warns on the first
+failure.
 
 The filter runs on whichever thread finishes each span, so it can be called
 concurrently and should not depend on shared mutable state. Spans that finish

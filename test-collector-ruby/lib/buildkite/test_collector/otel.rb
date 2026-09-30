@@ -28,6 +28,15 @@ module Buildkite::TestCollector
 
     TEST_SPAN_NAME = "test.execution"
 
+    # Direct children of the test span that group instrumented child spans by
+    # when they happened. Fixed names so every collector can emit the same
+    # three and the UI can expand one level and stop.
+    PHASE_SPAN_NAMES = {
+      setup: "test.setup",
+      body: "test.body",
+      teardown: "test.teardown",
+    }.freeze
+
     # Passed explicitly to both batch processors so the process-wide OTEL_BSP_*
     # settings do not affect Buildkite export. SDK defaults unless noted.
     EXPORT_TIMEOUT_MILLISECONDS = 30_000
@@ -233,9 +242,77 @@ module Buildkite::TestCollector
       def with_test_span(span)
         return yield unless span
 
-        OpenTelemetry::Context.with_value(test_span_context_key, span.context.trace_id) do
+        OpenTelemetry::Context.with_values(test_span_context_key => span.context.trace_id, test_span_key => span) do
           OpenTelemetry::Trace.with_span(span) { yield }
         end
+      end
+
+      # The test span of the example running in this fiber, or nil outside
+      # one. Read from context rather than the current span, because an
+      # around hook's instrumentation may have made its own span current.
+      def current_test_span
+        return unless enabled?
+
+        span = OpenTelemetry::Context.current.value(test_span_key)
+        span if span&.recording?
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        warn "[buildkite-test_collector] Could not read the current OpenTelemetry test span: #{e.class}: #{e.message}"
+        nil
+      end
+
+      # Phase spans come from the global provider, like the instrumentation
+      # spans they group, so they reach the child span exporter (or a
+      # suite-owned provider's). The parent is the test span itself, not the
+      # current span: an around hook's open span must not capture a phase.
+      # VERSION resolves lexically, so a suite that stub_consts
+      # Buildkite::TestCollector during an example does not break it.
+      def start_phase_span(phase, test_span)
+        tracer = OpenTelemetry.tracer_provider.tracer(TRACER_NAME, VERSION)
+        tracer.start_span(
+          PHASE_SPAN_NAMES.fetch(phase),
+          with_parent: OpenTelemetry::Trace.context_with_span(test_span),
+          kind: :internal,
+        )
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        warn "[buildkite-test_collector] Could not start OpenTelemetry #{phase} span: #{e.class}: #{e.message}"
+        nil
+      end
+
+      # Makes the span current until detach_span is called with the returned token.
+      def attach_span(span)
+        return unless span
+
+        OpenTelemetry::Context.attach(OpenTelemetry::Trace.context_with_span(span))
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        warn "[buildkite-test_collector] Could not make OpenTelemetry span current: #{e.class}: #{e.message}"
+        nil
+      end
+
+      def detach_span(token)
+        return unless token
+
+        OpenTelemetry::Context.detach(token)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        warn "[buildkite-test_collector] Could not restore the OpenTelemetry context: #{e.class}: #{e.message}"
+      end
+
+      # Each failure becomes an exception event, and the last one the span's
+      # status; several after hooks can fail in one teardown phase.
+      def finish_phase_span(span, failures)
+        return unless span
+
+        failures.each { |failure| span.record_exception(failure) }
+        if (last = failures.last)
+          span.status = OpenTelemetry::Trace::Status.error(last.message.to_s[0, FAILURE_REASON_MAX_LENGTH])
+        end
+        span.finish
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        warn "[buildkite-test_collector] Could not finish OpenTelemetry phase span: #{e.class}: #{e.message}"
       end
 
       # "Now" as the SDK would stamp it: the realtime clock, in seconds.
@@ -257,14 +334,12 @@ module Buildkite::TestCollector
         warn "[buildkite-test_collector] Could not finish OpenTelemetry test span: #{e.class}: #{e.message}"
       end
 
-      # Records a point-in-time annotation as an event on whichever span is
-      # current, which during a test is the test's own trace. Safe to call
-      # when export is off or nothing is recording: it just does nothing.
+      # Records a point-in-time annotation as an event on the test span, not
+      # the current span, which during the example is the test.body phase.
+      # Does nothing outside an example or when export is off.
       def annotate(content)
-        return unless enabled?
-
-        span = OpenTelemetry::Trace.current_span
-        return unless span.recording?
+        span = current_test_span
+        return unless span
 
         span.add_event("test.annotation", attributes: { "buildkite.annotation" => content.to_s })
       rescue Exception => e # rubocop:disable Lint/RescueException
@@ -561,6 +636,10 @@ module Buildkite::TestCollector
 
       def test_span_context_key
         @test_span_context_key ||= OpenTelemetry::Context.create_key("buildkite.test.execution")
+      end
+
+      def test_span_key
+        @test_span_key ||= OpenTelemetry::Context.create_key("buildkite.test.execution.span")
       end
 
       # User tags travel under the buildkite.tag. prefix, which the server
