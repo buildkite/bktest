@@ -9,6 +9,7 @@ module Buildkite::TestCollector
 
     # Accepted by the Buildkite OTLP traces receiver for its run-key header
     # (Analytics::API::TracesController::RUN_KEY_FORMAT); keep them in sync.
+    RUN_KEY_HEADER = "Buildkite-Tests-Run-Key"
     RUN_KEY_FORMAT = /\A[!-~]{1,255}\z/
 
     EXECUTION_VIA_ATTRIBUTE = "buildkite.execution.via"
@@ -29,8 +30,9 @@ module Buildkite::TestCollector
     TEST_SPAN_NAME = "test.execution"
 
     # Names each OTLP request's stream so the receiver can refuse child spans
-    # without decoding the body. Keep the values in sync with the traces
-    # receiver, which treats a request without the header as "test".
+    # without decoding the body. The collector defines these values; a
+    # receiver should treat a request without the header as "test", because
+    # older collectors send none.
     SPAN_STREAM_HEADER = "Buildkite-Tests-Span-Stream"
     TEST_SPAN_STREAM = "test"
     CHILD_SPAN_STREAM = "child"
@@ -868,7 +870,7 @@ module Buildkite::TestCollector
 
       def request_headers(run_env, api_token, stream:)
         headers = {
-          "Buildkite-Tests-Run-Key" => run_env["key"],
+          RUN_KEY_HEADER => run_env["key"],
           SPAN_STREAM_HEADER => stream,
         }
         headers["Authorization"] = authorization_header(api_token) if api_token
