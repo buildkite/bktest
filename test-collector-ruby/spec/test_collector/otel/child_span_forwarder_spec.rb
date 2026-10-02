@@ -471,16 +471,17 @@ RSpec.describe forwarder_class do
       bsp&.shutdown
     end
 
-    # rspec-retry runs the collector's around hook once per attempt, but only
-    # the last attempt is reported, so earlier attempts never finish.
+    # An around hook that runs the example more than once (as rspec-retry
+    # can) starts a test per attempt, but only the last attempt is reported.
     it "exports an unfinished test's children unstamped when the next test starts" do
+      next_attempt_trace_id = OpenTelemetry::Trace.generate_trace_id
       stamping_forwarder.test_started(test_span.context.trace_id)
       in_test { tracer.in_span("first attempt") { nil } }
 
-      stamping_forwarder.test_started("\3" * 16)
+      stamping_forwarder.test_started(next_attempt_trace_id)
 
       expect(stamps).to eq("first attempt" => nil)
-      expect(stamping_forwarder.instance_variable_get(:@tests).keys).to eq(["\3" * 16])
+      expect(stamping_forwarder.instance_variable_get(:@tests).keys).to eq([next_attempt_trace_id])
       expect(stamping_forwarder.instance_variable_get(:@held_count)).to eq(0)
     end
 

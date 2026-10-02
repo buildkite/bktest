@@ -420,7 +420,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
       stub_request(:post, endpoint).to_return(status: 200, body: partial_success_body(rejected_spans: 3))
 
       expect { build_exporter.export([]) }
-        .to output(/Buildkite rejected 3 OpenTelemetry span\(s\) from a request\. Further warnings/).to_stderr
+        .to output(/Buildkite did not store 3 OpenTelemetry span\(s\) from one export request\. Further warnings/).to_stderr
     end
 
     it "says nothing about a full success or a body that is not an OTLP response" do
@@ -1105,7 +1105,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
         described_class.shutdown
         ENV["BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE"] = "4096"
         ENV["BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE"] = "4096"
-        configure_otel(endpoint: "https://example.invalid/v1/traces")
+        expect { configure_otel(endpoint: "https://example.invalid/v1/traces") }
+          .to output(/leaving no room to hold child spans .* exported without buildkite\.test\.result\n\z/).to_stderr
         expect(forwarder.call.instance_variable_get(:@max_held_spans)).to eq(0)
       end
 
