@@ -368,6 +368,71 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.shutdown
   end
 
+  describe "partial success" do
+    let(:endpoint) { "https://example.invalid/v1/traces" }
+
+    def partial_success_body(rejected_spans: 0, error_message: "")
+      Opentelemetry::Proto::Collector::Trace::V1::ExportTraceServiceResponse.encode(
+        Opentelemetry::Proto::Collector::Trace::V1::ExportTraceServiceResponse.new(
+          partial_success: Opentelemetry::Proto::Collector::Trace::V1::ExportTracePartialSuccess.new(
+            rejected_spans: rejected_spans, error_message: error_message,
+          ),
+        )
+      )
+    end
+
+    # An exporter as configure! builds one for each span stream.
+    def build_exporter
+      @processors << described_class.send(:batch_processor, endpoint, {})
+      described_class.instance_variable_get(:@exporters).last
+    end
+
+    before { @processors = [] }
+
+    after do
+      @processors.each { |processor| processor.shutdown(timeout: 0) }
+      described_class.shutdown
+    end
+
+    it "warns once per run, however many batches and exporters the server warns about" do
+      stub_request(:post, endpoint).to_return(
+        status: 200,
+        body: partial_success_body(error_message: "Organization is over its span allowance; child spans are not being stored."),
+        headers: { "Content-Type" => "application/x-protobuf" },
+      )
+      test_exporter = build_exporter
+      child_exporter = build_exporter
+
+      results = nil
+      expect { results = [test_exporter, child_exporter, child_exporter].map { |exporter| exporter.export([]) } }
+        .to output(
+          "[buildkite-test_collector] Buildkite accepted OpenTelemetry spans with a warning: " \
+          "Organization is over its span allowance; child spans are not being stored. " \
+          "Further warnings like this will not be reported.\n"
+        ).to_stderr
+      expect(results).to all(eq(OpenTelemetry::SDK::Trace::Export::SUCCESS))
+
+      described_class.shutdown
+      expect { build_exporter.export([]) }.to output(/over its span allowance/).to_stderr
+    end
+
+    it "counts rejected spans when the server reports them" do
+      stub_request(:post, endpoint).to_return(status: 200, body: partial_success_body(rejected_spans: 3))
+
+      expect { build_exporter.export([]) }
+        .to output(/Buildkite rejected 3 OpenTelemetry span\(s\) from a request\. Further warnings/).to_stderr
+    end
+
+    it "says nothing about a full success or a body that is not an OTLP response" do
+      ["", partial_success_body, "<html>not protobuf</html>"].each do |body|
+        stub_request(:post, endpoint).to_return(status: 200, body: body)
+
+        expect { expect(build_exporter.export([])).to eq(OpenTelemetry::SDK::Trace::Export::SUCCESS) }
+          .not_to output.to_stderr
+      end
+    end
+  end
+
   it "recovers both batch workers after a WebMock policy reset and tolerates blocked exports at exit" do
     script = <<~'RUBY'
       require "buildkite/test_collector"
