@@ -368,6 +368,71 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.shutdown
   end
 
+  describe "partial success" do
+    let(:endpoint) { "https://example.invalid/v1/traces" }
+
+    def partial_success_body(rejected_spans: 0, error_message: "")
+      Opentelemetry::Proto::Collector::Trace::V1::ExportTraceServiceResponse.encode(
+        Opentelemetry::Proto::Collector::Trace::V1::ExportTraceServiceResponse.new(
+          partial_success: Opentelemetry::Proto::Collector::Trace::V1::ExportTracePartialSuccess.new(
+            rejected_spans: rejected_spans, error_message: error_message,
+          ),
+        )
+      )
+    end
+
+    # An exporter as configure! builds one for each span stream.
+    def build_exporter
+      @processors << described_class.send(:batch_processor, endpoint, {})
+      described_class.instance_variable_get(:@exporters).last
+    end
+
+    before { @processors = [] }
+
+    after do
+      @processors.each { |processor| processor.shutdown(timeout: 0) }
+      described_class.shutdown
+    end
+
+    it "warns once per run, however many batches and exporters the server warns about" do
+      stub_request(:post, endpoint).to_return(
+        status: 200,
+        body: partial_success_body(error_message: "Organization is over its span allowance; child spans are not being stored."),
+        headers: { "Content-Type" => "application/x-protobuf" },
+      )
+      test_exporter = build_exporter
+      child_exporter = build_exporter
+
+      results = nil
+      expect { results = [test_exporter, child_exporter, child_exporter].map { |exporter| exporter.export([]) } }
+        .to output(
+          "[buildkite-test_collector] Buildkite accepted OpenTelemetry spans with a warning: " \
+          "Organization is over its span allowance; child spans are not being stored. " \
+          "Further warnings like this will not be reported.\n"
+        ).to_stderr
+      expect(results).to all(eq(OpenTelemetry::SDK::Trace::Export::SUCCESS))
+
+      described_class.shutdown
+      expect { build_exporter.export([]) }.to output(/over its span allowance/).to_stderr
+    end
+
+    it "counts rejected spans when the server reports them" do
+      stub_request(:post, endpoint).to_return(status: 200, body: partial_success_body(rejected_spans: 3))
+
+      expect { build_exporter.export([]) }
+        .to output(/Buildkite did not store 3 OpenTelemetry span\(s\) from one export request\. Further warnings/).to_stderr
+    end
+
+    it "says nothing about a full success or a body that is not an OTLP response" do
+      ["", partial_success_body, "<html>not protobuf</html>"].each do |body|
+        stub_request(:post, endpoint).to_return(status: 200, body: body)
+
+        expect { expect(build_exporter.export([])).to eq(OpenTelemetry::SDK::Trace::Export::SUCCESS) }
+          .not_to output.to_stderr
+      end
+    end
+  end
+
   it "recovers both batch workers after a WebMock policy reset and tolerates blocked exports at exit" do
     script = <<~'RUBY'
       require "buildkite/test_collector"
@@ -1028,6 +1093,21 @@ RSpec.describe Buildkite::TestCollector::OTel do
         expect { provider }.not_to output.to_stderr
         expect(processor_settings(child_processor)).to include(batch_size: 64, max_queue_size: 4_096)
         expect(processor_settings(processor)).to include(batch_size: 120, max_queue_size: 8_192)
+      end
+
+      # A test's held children reach the queue in one burst when it finishes,
+      # on top of up to a batch that is still waiting for the schedule delay.
+      it "holds at most the child queue size less a batch of children for their test's result" do
+        forwarder = -> { described_class.instance_variable_get(:@child_span_forwarder) }
+        provider
+        expect(forwarder.call.instance_variable_get(:@max_held_spans)).to eq(1_536)
+
+        described_class.shutdown
+        ENV["BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE"] = "4096"
+        ENV["BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE"] = "4096"
+        expect { configure_otel(endpoint: "https://example.invalid/v1/traces") }
+          .to output(/leaving no room to hold child spans .* exported without buildkite\.test\.result\n\z/).to_stderr
+        expect(forwarder.call.instance_variable_get(:@max_held_spans)).to eq(0)
       end
 
       it "leaves child span sizes at their defaults when only test span sizes are overridden" do

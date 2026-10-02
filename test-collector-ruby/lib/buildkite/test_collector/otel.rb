@@ -15,6 +15,11 @@ module Buildkite::TestCollector
     RESULT_ATTRIBUTE = "test.case.result.status"
     TAG_ATTRIBUTE_PREFIX = "buildkite.tag."
 
+    # Stamped on each child span with its test's result, so the server can
+    # sample passing tests' children and keep every failing test's.
+    CHILD_RESULT_ATTRIBUTE = "buildkite.test.result"
+    STAMPED_RESULTS = %w[pass fail].freeze
+
     # OpenTelemetry has no standard value for skipped tests.
     RESULT_STATUSES = {
       "passed" => "pass",
@@ -112,6 +117,66 @@ module Buildkite::TestCollector
       end
     end
     private_constant :ExporterGuard
+
+    # The server accepts a request it will only partly keep (for example when
+    # the organization is over its span allowance) with a 200 whose
+    # ExportTraceServiceResponse carries a partial_success. The OTLP exporter
+    # reads and discards 2xx bodies, so this reads the response as it passes
+    # through measure_request_duration, the private method wrapping the HTTP
+    # call in every supported exporter version (0.29+). Should a later
+    # version stop calling it, the warning is lost but export is unaffected.
+    module PartialSuccessWarning
+      @mutex = Mutex.new
+      @warned = false
+
+      private
+
+      def measure_request_duration
+        response = super
+        PartialSuccessWarning.check(response)
+        response
+      end
+
+      class << self
+        # Warns once per run, however many batches the server warns about.
+        def check(response)
+          return unless response.is_a?(Net::HTTPSuccess)
+
+          body = response.body
+          return if body.nil? || body.empty?
+
+          # protoc names the generated namespace Opentelemetry, not OpenTelemetry.
+          partial_success = Opentelemetry::Proto::Collector::Trace::V1::ExportTraceServiceResponse
+            .decode(body).partial_success
+          return if partial_success.nil?
+          return if partial_success.rejected_spans.zero? && partial_success.error_message.empty?
+          first_warning = @mutex.synchronize do
+            first = !@warned
+            @warned = true
+            first
+          end
+          return unless first_warning
+
+          rejected = partial_success.rejected_spans
+          summary = if rejected.positive?
+            "Buildkite did not store #{rejected} OpenTelemetry span(s) from one export request"
+          else
+            "Buildkite accepted OpenTelemetry spans with a warning"
+          end
+          message = partial_success.error_message.strip.chomp(".")
+          summary += ": #{message}" unless message.empty?
+          warn "[buildkite-test_collector] #{summary}. Further warnings like this will not be reported."
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          # A body that is not an OTLP response says nothing to warn about.
+          ExceptionHandling.reraise_fatal(e)
+        end
+
+        def reset
+          @mutex.synchronize { @warned = false }
+        end
+      end
+    end
+    private_constant :PartialSuccessWarning
 
     require_relative "otel/span_metrics_reporter"
     require_relative "otel/test_span_metrics_reporter"
@@ -224,13 +289,15 @@ module Buildkite::TestCollector
           attributes[key] = value
         end
 
-        @tracer.start_span(
+        span = @tracer.start_span(
           TEST_SPAN_NAME,
           with_parent: OpenTelemetry::Context.empty,
           attributes: attributes,
           links: job_span_links,
           kind: :internal,
         )
+        @child_span_forwarder&.test_started(span.context.trace_id)
+        span
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
         # The example still runs, but with no span it reaches neither upload
@@ -329,6 +396,9 @@ module Buildkite::TestCollector
         record_result(span, test)
         describe_test(span, test)
         finish_span(span, end_timestamp)
+        # The forwarder held the test's child spans until now and exports them
+        # stamped with the result; it rescues its own errors.
+        @child_span_forwarder&.test_finished(span.context.trace_id, RESULT_STATUSES[test.otel_result])
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not finish OpenTelemetry test span: #{e.class}: #{e.message}"
@@ -384,6 +454,7 @@ module Buildkite::TestCollector
         @child_span_forwarder = nil
         @exporters = nil
         ExporterGuard.reset
+        PartialSuccessWarning.reset
         @test_span_metrics_reporter = nil
         @child_span_metrics_reporter = nil
         @api_token = nil
@@ -494,7 +565,7 @@ module Buildkite::TestCollector
           ssl_verify_mode: OpenSSL::SSL::VERIFY_PEER,
           metrics_reporter: metrics_reporter,
         )
-        exporter.singleton_class.prepend(ExporterGuard)
+        exporter.singleton_class.prepend(ExporterGuard, PartialSuccessWarning)
         # Retained so refresh_authorization can reach the headers each
         # exporter snapshotted at construction.
         (@exporters ||= []) << exporter
@@ -592,21 +663,33 @@ module Buildkite::TestCollector
         end
 
         child_metrics_reporter = ChildSpanMetricsReporter.new
+        child_sizes = span_processor_sizes(
+          "BUILDKITE_TESTS_OTEL_CHILD_SPAN",
+          default_queue_size: CHILD_SPAN_MAX_QUEUE_SIZE,
+          default_batch_size: CHILD_SPAN_MAX_EXPORT_BATCH_SIZE,
+        )
         child_processor = batch_processor(
           endpoint,
           headers,
           schedule_delay: CHILD_SPAN_SCHEDULE_DELAY_MILLISECONDS,
           metrics_reporter: child_metrics_reporter,
-          **span_processor_sizes(
-            "BUILDKITE_TESTS_OTEL_CHILD_SPAN",
-            default_queue_size: CHILD_SPAN_MAX_QUEUE_SIZE,
-            default_batch_size: CHILD_SPAN_MAX_EXPORT_BATCH_SIZE,
-          ),
+          **child_sizes,
         )
+        # A test's held children reach the queue in one burst, and up to a
+        # batch can already be queued, waiting out the schedule delay.
+        # Bounding the hold by what is left keeps the burst from evicting
+        # spans already queued, such as the previous test's.
+        max_held_spans = child_sizes.fetch(:max_queue_size) - child_sizes.fetch(:max_export_batch_size)
+        if max_held_spans.zero?
+          warn "[buildkite-test_collector] BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE equals " \
+            "BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE, leaving no room to hold child spans until their " \
+            "test's result is known; they will be exported without buildkite.test.result"
+        end
         child_forwarder = ChildSpanForwarder.new(
           child_processor,
           context_key: test_span_context_key,
           span_filter: span_filter,
+          max_held_spans: max_held_spans,
         )
 
         if collector_managed

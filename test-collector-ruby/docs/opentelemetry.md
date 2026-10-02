@@ -287,6 +287,40 @@ Filtering happens after instrumentation has created and finished the span, so
 it reduces queueing, export, and ingestion volume rather than instrumentation
 overhead.
 
+## Child span results
+
+Every forwarded child span, phase spans included, carries
+`buildkite.test.result`: `pass` or `fail`, the result of the test it belongs
+to. That lets Buildkite tell a failing test's child spans from a passing
+test's. Child spans of a `pending` example that failed as expected carry no
+result.
+
+A finished span cannot be changed, and the result is final only once RSpec
+reports the example, after every `around` hook has unwound. So the collector
+holds each test's finished child spans in memory until then, and queues them,
+stamped, as the example is reported. A child span that started during the
+example but finishes after it (asynchronous work) is queued, stamped, as soon
+as it finishes; one that starts after its example was reported is queued
+unstamped.
+
+The hold is bounded across all tests by the child queue size less one batch
+(1,536 by default; see [Test span sizes and
+batching](#test-span-sizes-and-batching)). Up to a batch of earlier child spans
+can still be queued, waiting out the schedule delay, so a released hold fits in
+the rest of the queue without displacing them. Setting the batch size equal to
+the queue size leaves no room, so the collector warns and exports child spans
+without a result. Past the bound, further child spans are queued at once without
+a stamp rather than waiting or being dropped.
+
+If an `around` hook runs an example more than once (as `rspec-retry` does), only
+the last attempt is reported, so earlier attempts' child spans are queued
+unstamped when the next attempt starts. Spans still held at shutdown, for
+example when the process is interrupted mid-example, are queued unstamped.
+Flushing the tracer provider mid-example does not release them either; they wait
+for the result. A hard exit loses the held spans of the example that was
+running, which the collector might otherwise already have exported. A forked
+process leaves the spans it inherited to its parent.
+
 ## What gets sent
 
 The collector exports to `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` (default
@@ -429,6 +463,11 @@ path, and continues exporting test spans. The suite-end flush and the
 process-exit shutdown each give the OpenTelemetry SDK a 30-second budget to
 export buffered spans; the SDK's own retry backoff can run past it when the
 endpoint keeps failing.
+
+Buildkite can accept a request but report that it kept only part of it, as an
+OTLP partial success (for example, when the organization is over its span
+allowance). The collector prints the server's message the first time this
+happens in a run and stays quiet about later ones.
 
 Export failures are reported through OpenTelemetry's own logger. Because
 `test.execution` spans are the submission, the collector also warns prominently

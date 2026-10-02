@@ -1,7 +1,15 @@
 # CHANGELOG
 
-## Unreleased
+## v2.17.0
 
+* Stamp each OpenTelemetry child span, phase spans included, with
+  `buildkite.test.result` (`pass` or `fail`) so Buildkite can tell a failing
+  test's child spans apart. The collector holds each test's finished child
+  spans in memory until RSpec reports the example, up to the child queue size
+  less one batch (1,536 by default) across all tests; past that, child spans
+  are queued at once without a stamp instead of waiting or being dropped.
+* Print one warning per run when Buildkite accepts an OpenTelemetry request but
+  reports a partial success, such as an organization over its span allowance.
 * Add `test.setup`, `test.body`, and `test.teardown` phase spans under each
   OpenTelemetry `test.execution` span. Instrumented child spans nest under the
   phase they ran in, each phase records its failures, and phase spans bypass
