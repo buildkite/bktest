@@ -242,13 +242,13 @@ RSpec.describe "buildkite-rspec" do
     File.open("#{@dir}/spec/rails_helper.rb", "a") do |file|
       file.write(<<~RUBY)
         module RemoveReport
-          def run(args, *rest)
+          def run(*)
             result = super
-            File.unlink(args[args.index("--out") + 1])
+            File.unlink(@options.options[:formatters].last.last)
             result
           end
         end
-        RSpec::Core::Runner.singleton_class.prepend(RemoveReport)
+        RSpec::Core::Runner.prepend(RemoveReport)
       RUBY
     end
     result = nil
@@ -293,9 +293,9 @@ RSpec.describe "buildkite-rspec" do
     end
   end
 
-  it "keeps CLI formatters separate from native JSON reports across batches" do
+  it "writes CLI formatter files per batch, separate from native JSON reports" do
     reports = []
-    status = with_runner("--format", "documentation", "--format", "progress", "--out", "progress.txt",
+    status = with_runner("--format", "documentation", "--format", "progress", "--out", "out/progress.txt",
                          "--format", "json", "--out", "caller.json") do
       handshake
       2.times do |index|
@@ -307,16 +307,54 @@ RSpec.describe "buildkite-rspec" do
     expect(status.exitstatus).to eq(0), @output
     expect(@output.scan("1 example, 0 failures").size).to eq(2)
     expect(@output.scan(/^  passing$/).size).to eq(2)
-    expect(File.read("#{@dir}/progress.txt")).to include("1 example, 0 failures")
-    expect(JSON.parse(File.read("#{@dir}/caller.json"))).to eq(reports.last.fetch("report"))
+    expect(Dir.children("#{@dir}/out").sort).to eq(%w[batch-0-progress.txt batch-1-progress.txt])
+    expect(File.read("#{@dir}/out/batch-0-progress.txt")).to include("1 example, 0 failures")
+    expect(File.exist?("#{@dir}/caller.json")).to be(false)
+    expect(JSON.parse(File.read("#{@dir}/batch-0-caller.json"))).to eq(reports.first.fetch("report"))
+    expect(JSON.parse(File.read("#{@dir}/batch-1-caller.json"))).to eq(reports.last.fetch("report"))
     expect(reports.map { |r| r.fetch("report").fetch("examples").size }).to eq([1, 1])
     expect(File.readlines("#{@dir}/executions").size).to eq(2)
+  end
+
+  it "expands the batch placeholder in formatter output paths with a file-safe batch ID" do
+    reports = []
+    status = with_runner("--format", "json", "--out", "tmp/rspec-job-%{batch}.json") do
+      handshake
+      ["a/b", "../c"].each do |id|
+        dispatch(id, [{ format: "example", identifier: "spec/sample_spec.rb[1:2]" }])
+        reports << request
+      end
+      request({ type: "done", reason: "plan_completed" })
+    end
+    expect(status.exitstatus).to eq(0), @output
+    expect(Dir.children("#{@dir}/tmp").sort).to eq(%w[rspec-job-%2E%2E%2Fc.json rspec-job-a%2Fb.json])
+    expect(JSON.parse(File.read("#{@dir}/tmp/rspec-job-a%2Fb.json"))).to eq(reports.first.fetch("report"))
+    expect(JSON.parse(File.read("#{@dir}/tmp/rspec-job-%2E%2E%2Fc.json"))).to eq(reports.last.fetch("report"))
+  end
+
+  it "expands the batch placeholder after ERB in an options file" do
+    File.write("#{@dir}/.rspec.ci", "--require rails_helper\n" \
+                                    "--format json --out tmp/rspec-<%= ENV[\"JOB\"] %>-%{batch}.json\n")
+    reports = []
+    status = with_runner("--options", ".rspec.ci", env: { "JOB" => "job-1" }) do
+      handshake
+      2.times do |index|
+        dispatch("batch-#{index}", [{ format: "example", identifier: "spec/sample_spec.rb[1:2]" }])
+        reports << request
+      end
+      request({ type: "done", reason: "plan_completed" })
+    end
+    expect(status.exitstatus).to eq(0), @output
+    expect(Dir.children("#{@dir}/tmp").sort).to eq(%w[rspec-job-1-batch-0.json rspec-job-1-batch-1.json])
+    expect(JSON.parse(File.read("#{@dir}/tmp/rspec-job-1-batch-0.json"))).to eq(reports.first.fetch("report"))
+    expect(JSON.parse(File.read("#{@dir}/tmp/rspec-job-1-batch-1.json"))).to eq(reports.last.fetch("report"))
   end
 
   [".rspec", ".rspec.ci"].each do |options_file|
     it "loads requires and formatters from #{options_file} without replacing the native report" do
       File.write("#{@dir}/support.rb", 'File.write("required", "yes")')
-      File.write("#{@dir}/#{options_file}", "--require ./support.rb\n--require rails_helper\n--format documentation\n")
+      File.write("#{@dir}/#{options_file}", "--require ./support.rb\n--require rails_helper\n--format documentation\n" \
+                                            "--format json\n--out file.json\n")
       args = options_file == ".rspec" ? [] : ["--options", options_file]
       # A custom options file must replace the default, not merely add to it.
       File.write("#{@dir}/.rspec", "--dry-run\n") unless args.empty?
@@ -331,6 +369,7 @@ RSpec.describe "buildkite-rspec" do
       expect(status.exitstatus).to eq(0), @output
       expect(@output).to include("passing", "1 example, 0 failures")
       expect(result.fetch("report").fetch("examples").size).to eq(1)
+      expect(JSON.parse(File.read("#{@dir}/formatted-file.json"))).to eq(result.fetch("report"))
       expect(File.readlines("#{@dir}/executions").size).to eq(1)
     end
   end

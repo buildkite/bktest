@@ -13,6 +13,7 @@ module Buildkite
 
     DONE_REASONS = %w[plan_completed pool_consumed pool_errored terminating error].freeze
     SOCKET_ENV = "BUILDKITE_TEST_ENGINE_RUNNER_SOCKET"
+    BATCH_PLACEHOLDER = "%{batch}"
 
     class Client
       attr_accessor :session_id, :read_timeout
@@ -175,15 +176,6 @@ module Buildkite
               :backtrace, :custom_options_file, :formatters, :files_or_directories_to_run]
       invalid = @options.keys - safe
       raise Error, "incompatible persistent RSpec options: #{invalid.join(', ')}" unless invalid.empty?
-
-      # CLI formatters replace options-file formatters in RSpec. Preserve the
-      # resolved file formatters before appending our private CLI JSON formatter.
-      unless RSpec::Core::Parser.parse(args).key?(:formatters)
-        @options.fetch(:formatters, []).each do |formatter, output|
-          @rspec_args.concat(["--format", formatter])
-          @rspec_args.concat(["--out", output]) if output
-        end
-      end
     end
 
     def validate_configuration!
@@ -246,14 +238,16 @@ module Buildkite
       $stdout.flush
 
       Tempfile.create(["bktec-rspec-", ".json"]) do |report|
-        # Runner.run installs its own INT trap. Use a subclass solely to retain
-        # our cooperative signal handler, including on repeated INTs.
-        runner = Class.new(RSpec::Core::Runner) do
-          def self.trap_interrupt; end
-        end
+        options = RSpec::Core::ConfigurationOptions.new(@rspec_args + args)
+        # RSpec truncates formatter files when it opens them, so give each batch
+        # its own files, then add the private native report.
+        options.options[:formatters] = options.options.fetch(:formatters, []).map do |formatter, output|
+          output ? [formatter, batch_output_path(output, id)] : [formatter]
+        end + [["json", report.path]]
 
         begin
-          runner.run(@rspec_args + args + ["--format", "json", "--out", report.path])
+          # Runner.run would install its own INT trap; ours stops cooperatively.
+          RSpec::Core::Runner.new(options).run($stderr, $stdout)
           return if @stopping # Partial reports must not acknowledge outstanding work.
 
           native_report = JSON.parse(File.read(report.path))
@@ -272,6 +266,16 @@ module Buildkite
         flush_collector
         @client.request("POST", path, { status: "completed", report_format: "rspec-json", report: native_report })
       end
+    end
+
+    # Replaces BATCH_PLACEHOLDER in a formatter output path with the batch ID,
+    # or prefixes the file name with it when the path has no placeholder.
+    def batch_output_path(path, id)
+      # Batch IDs are opaque; percent-encode anything unsafe in a file name.
+      name = id.gsub(/[^A-Za-z0-9_-]/) { |char| char.bytes.map { |byte| format("%%%02X", byte) }.join }
+      return path.gsub(BATCH_PLACEHOLDER, name) if path.include?(BATCH_PLACEHOLDER)
+
+      path.sub(%r{[^/]*\z}) { |file| "#{name}-#{file}" }
     end
 
     def reset_batch
