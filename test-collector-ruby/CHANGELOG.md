@@ -1,13 +1,21 @@
 # CHANGELOG
 
-## Unreleased
+## v2.17.0
 
 * `buildkite-rspec` writes formatter `--out` files per batch instead of
   overwriting them, so earlier batches' output is no longer lost. A `%{batch}`
   placeholder in the path is replaced with the batch ID; otherwise the file name
   is prefixed with it (`--out tmp/rspec.json` writes `tmp/<batch>-rspec.json`).
   This applies to command-line and options-file formatters.
-
+* Stamp each OpenTelemetry child span, phase spans included, with
+  `buildkite.test.result` (`pass` or `fail`) so Buildkite can tell a failing
+  test's child spans apart. The collector holds each test's finished child
+  spans in memory until RSpec reports the example, up to the child queue size
+  (2,048 by default, `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE`) across all
+  tests; past that, child spans are queued at once without a stamp instead of
+  waiting or being dropped.
+* Print one warning per run when Buildkite accepts an OpenTelemetry request but
+  reports a partial success, such as an organization over its span allowance.
 * Add `test.setup`, `test.body`, and `test.teardown` phase spans under each
   OpenTelemetry `test.execution` span. Instrumented child spans nest under the
   phase they ran in, each phase records its failures, and phase spans bypass
