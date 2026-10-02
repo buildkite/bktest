@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* `buildkite-rspec` writes formatter `--out` files per batch instead of
+  overwriting them, so earlier batches' output is no longer lost. A `%{batch}`
+  placeholder in the path is replaced with the batch ID; otherwise the file name
+  is prefixed with it (`--out tmp/rspec.json` writes `tmp/<batch>-rspec.json`).
+  This applies to command-line and options-file formatters.
+
 * Add `test.setup`, `test.body`, and `test.teardown` phase spans under each
   OpenTelemetry `test.execution` span. Instrumented child spans nest under the
   phase they ran in, each phase records its failures, and phase spans bypass
