@@ -435,6 +435,78 @@ RSpec.describe forwarder_class do
       expect(filtered.instance_variable_get(:@tests)).to be_empty
     end
 
+    # The worker exports only once the queue passes a batch, so up to a batch
+    # can sit queued when a test's hold is released; with the hold bounded by
+    # the rest of the queue, that burst cannot evict them.
+    it "releases a full hold into a batch processor without evicting a batch already queued" do
+      bsp_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
+      metrics_reporter = spy("metrics reporter")
+      bsp = OpenTelemetry::SDK::Trace::Export::BatchSpanProcessor.new(
+        bsp_exporter,
+        max_queue_size: 4,
+        max_export_batch_size: 2,
+        start_thread_on_boot: false,
+        metrics_reporter: metrics_reporter,
+      )
+      # As configure! bounds it: the queue size less a batch.
+      bsp_forwarder = described_class.new(bsp, context_key: context_key, max_held_spans: 4 - 2)
+      provider.add_span_processor(bsp_forwarder)
+      stamping_forwarder.shutdown
+
+      %w[first second].each do |prefix|
+        span = OpenTelemetry::SDK::Trace::TracerProvider.new.tracer("root")
+          .start_span("test.execution", with_parent: OpenTelemetry::Context.empty)
+        bsp_forwarder.test_started(span.context.trace_id)
+        OpenTelemetry::Context.with_value(context_key, span.context.trace_id) do
+          OpenTelemetry::Trace.with_span(span) { 2.times { |index| tracer.in_span("#{prefix}-#{index}") { nil } } }
+        end
+        bsp_forwarder.test_finished(span.context.trace_id, "fail")
+      end
+      bsp.force_flush
+
+      expect(metrics_reporter).not_to have_received(:add_to_counter).with("otel.bsp.dropped_spans", any_args)
+      expect(bsp_exporter.finished_spans.map(&:name)).to eq(%w[first-0 first-1 second-0 second-1])
+      expect(bsp_exporter.finished_spans.map { |span| span.attributes["buildkite.test.result"] }).to all(eq("fail"))
+    ensure
+      bsp&.shutdown
+    end
+
+    # rspec-retry runs the collector's around hook once per attempt, but only
+    # the last attempt is reported, so earlier attempts never finish.
+    it "exports an unfinished test's children unstamped when the next test starts" do
+      stamping_forwarder.test_started(test_span.context.trace_id)
+      in_test { tracer.in_span("first attempt") { nil } }
+
+      stamping_forwarder.test_started("\3" * 16)
+
+      expect(stamps).to eq("first attempt" => nil)
+      expect(stamping_forwarder.instance_variable_get(:@tests).keys).to eq(["\3" * 16])
+      expect(stamping_forwarder.instance_variable_get(:@held_count)).to eq(0)
+    end
+
+    # The forked process runs the inherited at_exit shutdown; the parent
+    # exports its own held children, so the child must not export them too.
+    it "leaves a forked process's inherited held children to the parent, exporting only its own" do
+      stamping_forwarder.test_started(test_span.context.trace_id)
+      in_test { tracer.in_span("parent child") { nil } }
+
+      reader, writer = IO.pipe
+      pid = fork do
+        reader.close
+        in_test { tracer.in_span("forked child") { nil } }
+        stamping_forwarder.shutdown
+        writer.write(Marshal.dump(stamps))
+        exit!(0)
+      end
+      writer.close
+      forked_stamps = Marshal.load(reader.read)
+      Process.wait(pid)
+
+      expect(forked_stamps).to eq("forked child" => nil)
+      stamping_forwarder.test_finished(test_span.context.trace_id, "fail")
+      expect(stamps).to eq("parent child" => "fail")
+    end
+
     it "exports held children unstamped at shutdown rather than losing them" do
       stamping_forwarder.test_started(test_span.context.trace_id)
       in_test { tracer.in_span("child") { nil } }

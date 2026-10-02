@@ -42,7 +42,12 @@ module Buildkite
         end
         private_constant :StampedSpan
 
-        def initialize(processor, context_key:, span_filter: nil, max_held_spans: CHILD_SPAN_MAX_QUEUE_SIZE)
+        def initialize(
+          processor,
+          context_key:,
+          span_filter: nil,
+          max_held_spans: CHILD_SPAN_MAX_QUEUE_SIZE - CHILD_SPAN_MAX_EXPORT_BATCH_SIZE
+        )
           @processor = processor
           @context_key = context_key
           @span_filter = span_filter && SpanFilter.new(span_filter)
@@ -52,13 +57,27 @@ module Buildkite
           @tests = {}
           @held_count = 0
           @mutex = Mutex.new
+          @pid = Process.pid
           @active = true
         end
 
         # Starts holding the children of the test span with this trace ID.
+        #
+        # Examples run one at a time, each finished before the next starts, so
+        # a test still running here never will be: an around hook ran the
+        # example more than once (as rspec-retry does) and only the last
+        # attempt is reported. Its result is not coming, so its children are
+        # exported unstamped rather than held until shutdown.
         def test_started(trace_id)
-          @mutex.synchronize do
-            @tests[trace_id] = Test.new(true, [], nil) if @active
+          locked do
+            next unless @active
+
+            @tests.each_value do |orphan|
+              orphan.running = false
+              release(orphan)
+            end
+            @tests.clear
+            @tests[trace_id] = Test.new(true, [], nil)
           end
         rescue Exception => e # rubocop:disable Lint/RescueException
           ExceptionHandling.reraise_fatal(e)
@@ -70,7 +89,7 @@ module Buildkite
         # still in flight as they finish.
         def test_finished(trace_id, result)
           result = nil unless STAMPED_RESULTS.include?(result)
-          @mutex.synchronize do
+          locked do
             test = @tests.delete(trace_id)
             next unless @active && test
 
@@ -89,7 +108,7 @@ module Buildkite
           return unless test_span_trace_id == span.context.trace_id
 
           parent = OpenTelemetry::Trace.current_span(parent_context)
-          @mutex.synchronize do
+          locked do
             next unless @active
 
             @spans[span] = @tests.fetch(test_span_trace_id, UNHELD)
@@ -110,7 +129,7 @@ module Buildkite
         # dropped.
         def on_finish(span)
           unless @span_filter
-            @mutex.synchronize do
+            locked do
               next unless @active && (test = @spans.delete(span))
 
               forward(span, test) unless empty_phase?(span)
@@ -118,7 +137,7 @@ module Buildkite
             return
           end
 
-          test = @mutex.synchronize do
+          test = locked do
             next unless @active && (test = @spans.delete(span))
             next test unless phase_span?(span)
 
@@ -129,7 +148,7 @@ module Buildkite
           return unless test
 
           retained = @span_filter.retain?(span)
-          @mutex.synchronize do
+          locked do
             forward(span, test) if @active && retained
           end
         rescue Exception => e # rubocop:disable Lint/RescueException
@@ -140,7 +159,7 @@ module Buildkite
         # Held children are not flushed: they wait for their test's result,
         # which arrives when the example finishes.
         def force_flush(timeout: nil)
-          active = @mutex.synchronize { @active }
+          active = locked { @active }
           return success unless active
 
           @processor.force_flush(timeout: timeout)
@@ -154,7 +173,7 @@ module Buildkite
         # unstamped rather than lost. The processor itself is left running:
         # the collector shuts it down after this, flushing them.
         def shutdown(timeout: nil)
-          @mutex.synchronize do
+          locked do
             @active = false
             @tests.each_value { |test| release(test) }
           ensure
@@ -167,6 +186,26 @@ module Buildkite
         end
 
         private
+
+        def locked
+          @mutex.synchronize do
+            reset_on_fork
+            yield
+          end
+        end
+
+        # Called under @mutex. A forked process inherits the parent's held
+        # and in-flight children, which the parent exports itself; mirrors
+        # BatchSpanProcessor#reset_on_fork, which drops its inherited queue.
+        def reset_on_fork
+          return if @pid == Process.pid
+
+          @pid = Process.pid
+          @spans.clear
+          @populated_phases.clear
+          @tests.clear
+          @held_count = 0
+        end
 
         # Called under @mutex with a finished child to export: holds it while
         # its test runs and the hold has room, otherwise queues it, stamped if
