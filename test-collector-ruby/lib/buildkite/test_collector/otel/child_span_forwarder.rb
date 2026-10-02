@@ -3,15 +3,84 @@
 module Buildkite
   module TestCollector
     module OTel
+      # Forwards the finished child spans of test spans to the child span
+      # processor. While a test runs, its children are held back so they can
+      # be stamped with the test's result once RSpec settles it; the server
+      # can then sample passing tests' children and keep every failing one.
+      # The hold is bounded across all tests: past the bound, children are
+      # forwarded at once without a stamp, so the buffer never blocks a test
+      # or costs a span.
       class ChildSpanForwarder
-        def initialize(processor, context_key:, span_filter: nil)
+        # The held children of a running test, and its result once released.
+        # Children still in flight keep a released test alive, so those that
+        # finish after it are stamped too.
+        Test = Struct.new(:running, :held, :result)
+        private_constant :Test
+
+        # For children of a test that is not held: one forgotten after it
+        # finished (async work outliving its example) or never started.
+        UNHELD = Test.new(false, [].freeze, nil).freeze
+        private_constant :UNHELD
+
+        # Stamps the result on the exported copy of a finished span, which
+        # the SDK no longer lets us change. The batch processor needs only
+        # these two methods, and calls to_span_data on its export thread.
+        StampedSpan = Struct.new(:span, :result) do
+          def context
+            span.context
+          end
+
+          def to_span_data
+            data = span.to_span_data
+            attributes = data.attributes || {}
+            # The exporter derives dropped_attributes_count from this total,
+            # which must not fall below the number of attributes sent.
+            data.total_recorded_attributes += 1 unless attributes.key?(CHILD_RESULT_ATTRIBUTE)
+            data.attributes = attributes.merge(CHILD_RESULT_ATTRIBUTE => result).freeze
+            data
+          end
+        end
+        private_constant :StampedSpan
+
+        def initialize(processor, context_key:, span_filter: nil, max_held_spans: CHILD_SPAN_MAX_QUEUE_SIZE)
           @processor = processor
           @context_key = context_key
           @span_filter = span_filter && SpanFilter.new(span_filter)
+          @max_held_spans = max_held_spans
           @spans = {}
           @populated_phases = {}
+          @tests = {}
+          @held_count = 0
           @mutex = Mutex.new
           @active = true
+        end
+
+        # Starts holding the children of the test span with this trace ID.
+        def test_started(trace_id)
+          @mutex.synchronize do
+            @tests[trace_id] = Test.new(true, [], nil) if @active
+          end
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          ExceptionHandling.reraise_fatal(e)
+          warn "[buildkite-test_collector] Could not hold OpenTelemetry child spans: #{e.class}: #{e.message}"
+        end
+
+        # Forwards the test's held children stamped with its result ("pass"
+        # or "fail"; any other result is forwarded unstamped), along with any
+        # still in flight as they finish.
+        def test_finished(trace_id, result)
+          result = nil unless STAMPED_RESULTS.include?(result)
+          @mutex.synchronize do
+            test = @tests.delete(trace_id)
+            next unless @active && test
+
+            test.running = false
+            test.result = result
+            release(test)
+          end
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          ExceptionHandling.reraise_fatal(e)
+          warn "[buildkite-test_collector] Could not export OpenTelemetry child spans: #{e.class}: #{e.message}"
         end
 
         def on_start(span, parent_context)
@@ -23,7 +92,7 @@ module Buildkite
           @mutex.synchronize do
             next unless @active
 
-            @spans[span] = true
+            @spans[span] = @tests.fetch(test_span_trace_id, UNHELD)
             # A child that starts after its phase finished (async work from a
             # hook) must not re-add the phase, or it would live until shutdown.
             @populated_phases[parent] = true if @spans.key?(parent) && phase_span?(parent)
@@ -33,31 +102,43 @@ module Buildkite
           warn "[buildkite-test_collector] Could not track OpenTelemetry child span: #{e.class}: #{e.message}"
         end
 
-        # Without a filter, a span is accepted and queued under one lock, so
-        # shutdown cannot deactivate the forwarder in between and lose it.
-        # A filter is caller code and runs outside the lock, so a slow filter
-        # cannot stall other spans and one that finishes a span cannot
-        # deadlock; a span still in its filter when shutdown runs is dropped.
+        # Without a filter, a span is accepted and held or queued under one
+        # lock, so shutdown cannot deactivate the forwarder in between and
+        # lose it. A filter is caller code and runs outside the lock, so a
+        # slow filter cannot stall other spans and one that finishes a span
+        # cannot deadlock; a span still in its filter when shutdown runs is
+        # dropped.
         def on_finish(span)
           unless @span_filter
             @mutex.synchronize do
-              @processor.on_finish(span) if @active && accept(span)
+              next unless @active && (test = @spans.delete(span))
+
+              forward(span, test) unless empty_phase?(span)
             end
             return
           end
 
-          return unless @mutex.synchronize { @active && accept(span) }
-          # Phase spans are structure the UI relies on; the filter never sees them.
-          return unless phase_span?(span) || @span_filter.retain?(span)
+          test = @mutex.synchronize do
+            next unless @active && (test = @spans.delete(span))
+            next test unless phase_span?(span)
 
+            # Phase spans are structure the UI relies on; the filter never sees them.
+            forward(span, test) unless empty_phase?(span)
+            nil
+          end
+          return unless test
+
+          retained = @span_filter.retain?(span)
           @mutex.synchronize do
-            @processor.on_finish(span) if @active
+            forward(span, test) if @active && retained
           end
         rescue Exception => e # rubocop:disable Lint/RescueException
           ExceptionHandling.reraise_fatal(e)
           warn "[buildkite-test_collector] Could not export OpenTelemetry child span: #{e.class}: #{e.message}"
         end
 
+        # Held children are not flushed: they wait for their test's result,
+        # which arrives when the example finishes.
         def force_flush(timeout: nil)
           active = @mutex.synchronize { @active }
           return success unless active
@@ -69,25 +150,55 @@ module Buildkite
           OpenTelemetry::SDK::Trace::Export::FAILURE
         end
 
+        # Children still held have no result coming, so they are forwarded
+        # unstamped rather than lost. The processor itself is left running:
+        # the collector shuts it down after this, flushing them.
         def shutdown(timeout: nil)
           @mutex.synchronize do
             @active = false
+            @tests.each_value { |test| release(test) }
+          ensure
             @spans.clear
             @populated_phases.clear
+            @tests.clear
+            @held_count = 0
           end
           success
         end
 
         private
 
+        # Called under @mutex with a finished child to export: holds it while
+        # its test runs and the hold has room, otherwise queues it, stamped if
+        # its test's result is known.
+        def forward(span, test)
+          if test.running && @held_count < @max_held_spans
+            test.held << span
+            @held_count += 1
+          else
+            @processor.on_finish(stamp(span, test.result))
+          end
+        end
+
+        # Called under @mutex.
+        def release(test)
+          held = test.held
+          test.held = []
+          @held_count -= held.size
+          held.each { |span| @processor.on_finish(stamp(span, test.result)) }
+        end
+
+        def stamp(span, result)
+          result ? StampedSpan.new(span, result) : span
+        end
+
         # Called under @mutex. A phase span that grouped nothing and did not
         # fail says nothing the test span does not, so an uninstrumented
         # suite exports no child spans at all.
-        def accept(span)
-          return false unless @spans.delete(span)
-          return true unless phase_span?(span)
+        def empty_phase?(span)
+          return false unless phase_span?(span)
 
-          @populated_phases.delete(span) || span.status.code != OpenTelemetry::Trace::Status::UNSET
+          !@populated_phases.delete(span) && span.status.code == OpenTelemetry::Trace::Status::UNSET
         end
 
         # Only called with tracked spans, which have a name.

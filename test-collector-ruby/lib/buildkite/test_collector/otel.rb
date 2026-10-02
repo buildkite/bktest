@@ -15,6 +15,11 @@ module Buildkite::TestCollector
     RESULT_ATTRIBUTE = "test.case.result.status"
     TAG_ATTRIBUTE_PREFIX = "buildkite.tag."
 
+    # Stamped on each child span with its test's result, so the server can
+    # sample passing tests' children and keep every failing test's.
+    CHILD_RESULT_ATTRIBUTE = "buildkite.test.result"
+    STAMPED_RESULTS = %w[pass fail].freeze
+
     # OpenTelemetry has no standard value for skipped tests.
     RESULT_STATUSES = {
       "passed" => "pass",
@@ -224,13 +229,15 @@ module Buildkite::TestCollector
           attributes[key] = value
         end
 
-        @tracer.start_span(
+        span = @tracer.start_span(
           TEST_SPAN_NAME,
           with_parent: OpenTelemetry::Context.empty,
           attributes: attributes,
           links: job_span_links,
           kind: :internal,
         )
+        @child_span_forwarder&.test_started(span.context.trace_id)
+        span
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
         # The example still runs, but with no span it reaches neither upload
@@ -329,6 +336,7 @@ module Buildkite::TestCollector
         record_result(span, test)
         describe_test(span, test)
         finish_span(span, end_timestamp)
+        release_child_spans(span, test)
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not finish OpenTelemetry test span: #{e.class}: #{e.message}"
@@ -592,21 +600,25 @@ module Buildkite::TestCollector
         end
 
         child_metrics_reporter = ChildSpanMetricsReporter.new
+        child_sizes = span_processor_sizes(
+          "BUILDKITE_TESTS_OTEL_CHILD_SPAN",
+          default_queue_size: CHILD_SPAN_MAX_QUEUE_SIZE,
+          default_batch_size: CHILD_SPAN_MAX_EXPORT_BATCH_SIZE,
+        )
         child_processor = batch_processor(
           endpoint,
           headers,
           schedule_delay: CHILD_SPAN_SCHEDULE_DELAY_MILLISECONDS,
           metrics_reporter: child_metrics_reporter,
-          **span_processor_sizes(
-            "BUILDKITE_TESTS_OTEL_CHILD_SPAN",
-            default_queue_size: CHILD_SPAN_MAX_QUEUE_SIZE,
-            default_batch_size: CHILD_SPAN_MAX_EXPORT_BATCH_SIZE,
-          ),
+          **child_sizes,
         )
         child_forwarder = ChildSpanForwarder.new(
           child_processor,
           context_key: test_span_context_key,
           span_filter: span_filter,
+          # A test's held children are released at once, so the hold never
+          # exceeds what the child queue can take in one go.
+          max_held_spans: child_sizes.fetch(:max_queue_size),
         )
 
         if collector_managed
@@ -815,6 +827,15 @@ module Buildkite::TestCollector
         test_attributes.reject(&tag)
           .merge(run_attributes.reject(&tag))
           .merge(run_attributes.merge(test_attributes).select(&tag))
+      end
+
+      # The forwarder held the test's child spans until now; it exports them
+      # stamped with the result.
+      def release_child_spans(span, test)
+        @child_span_forwarder&.test_finished(span.context.trace_id, RESULT_STATUSES[test.otel_result])
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        warn "[buildkite-test_collector] Could not release OpenTelemetry child spans: #{e.class}: #{e.message}"
       end
 
       def finish_span(span, end_timestamp)
