@@ -271,11 +271,9 @@ module Buildkite
     # Replaces BATCH_PLACEHOLDER in a formatter output path with the batch ID,
     # or prefixes the file name with it when the path has no placeholder.
     def batch_output_path(path, id)
-      # Batch IDs are opaque; percent-encode anything unsafe in a file name.
-      name = id.gsub(/[^A-Za-z0-9_-]/) { |char| char.bytes.map { |byte| format("%%%02X", byte) }.join }
-      return path.gsub(BATCH_PLACEHOLDER, name) if path.include?(BATCH_PLACEHOLDER)
+      return path.gsub(BATCH_PLACEHOLDER, id) if path.include?(BATCH_PLACEHOLDER)
 
-      path.sub(%r{[^/]*\z}) { |file| "#{name}-#{file}" }
+      path.sub(%r{[^/]*\z}) { |file| "#{id}-#{file}" }
     end
 
     def reset_batch
