@@ -332,6 +332,17 @@ RSpec.describe "buildkite-rspec" do
     expect(JSON.parse(File.read("#{@dir}/tmp/rspec-job-batch-1.json"))).to eq(reports.last.fetch("report"))
   end
 
+  it "leaves stream formatter outputs such as /dev/stdout unchanged" do
+    status = with_runner("--format", "json", "--out", "/dev/stdout") do
+      handshake
+      dispatch("batch-0", [{ format: "example", identifier: "spec/sample_spec.rb[1:2]" }])
+      request
+      request({ type: "done", reason: "plan_completed" })
+    end
+    expect(status.exitstatus).to eq(0), @output
+    expect(@output).to include('"summary_line":"1 example, 0 failures"')
+  end
+
   it "expands the batch placeholder after ERB in an options file" do
     File.write("#{@dir}/.rspec.ci", "--require rails_helper\n" \
                                     "--format json --out tmp/rspec-<%= ENV[\"JOB\"] %>-%{batch}.json\n")
