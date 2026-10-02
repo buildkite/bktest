@@ -454,6 +454,11 @@ process-exit shutdown each give the OpenTelemetry SDK a 30-second budget to
 export buffered spans; the SDK's own retry backoff can run past it when the
 endpoint keeps failing.
 
+Buildkite can accept a request but report that it kept only part of it, as an
+OTLP partial success (for example, when the organization is over its span
+allowance). The collector prints the server's message the first time this
+happens in a run and stays quiet about later ones.
+
 Export failures are reported through OpenTelemetry's own logger. Because
 `test.execution` spans are the submission, the collector also warns prominently
 the first time its reserved test span queue drops any of them, usually naming
