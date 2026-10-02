@@ -1095,16 +1095,18 @@ RSpec.describe Buildkite::TestCollector::OTel do
         expect(processor_settings(processor)).to include(batch_size: 120, max_queue_size: 8_192)
       end
 
-      # A test's held children reach the queue in one burst when it finishes.
-      it "holds at most a child queue's worth of children for their test's result" do
+      # A test's held children reach the queue in one burst when it finishes,
+      # on top of up to a batch that is still waiting for the schedule delay.
+      it "holds at most the child queue size less a batch of children for their test's result" do
         forwarder = -> { described_class.instance_variable_get(:@child_span_forwarder) }
         provider
-        expect(forwarder.call.instance_variable_get(:@max_held_spans)).to eq(2_048)
+        expect(forwarder.call.instance_variable_get(:@max_held_spans)).to eq(1_536)
 
         described_class.shutdown
         ENV["BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE"] = "4096"
+        ENV["BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE"] = "4096"
         configure_otel(endpoint: "https://example.invalid/v1/traces")
-        expect(forwarder.call.instance_variable_get(:@max_held_spans)).to eq(4_096)
+        expect(forwarder.call.instance_variable_get(:@max_held_spans)).to eq(0)
       end
 
       it "leaves child span sizes at their defaults when only test span sizes are overridden" do

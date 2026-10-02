@@ -303,13 +303,18 @@ example but finishes after it (asynchronous work) is queued, stamped, as soon
 as it finishes; one that starts after its example was reported is queued
 unstamped.
 
-The hold is bounded across all tests by the child queue size (2,048 by default;
-see [Test span sizes and batching](#test-span-sizes-and-batching)), so a full
-hold always fits an empty queue. Past the bound, further child spans are queued
-at once without a stamp rather than waiting or being dropped. Spans still held
-at shutdown, for example when the process is interrupted mid-example, are
-queued unstamped. A hard exit loses the held spans of the example that was
-running, which the collector might otherwise already have exported.
+The hold is bounded across all tests by the child queue size less one batch
+(1,536 by default; see [Test span sizes and batching](#test-span-sizes-and-batching)).
+Up to a batch of earlier child spans can still be queued, waiting out the
+schedule delay, so a released hold fits in the rest of the queue without
+displacing them. Past the bound, further child spans are queued at once without
+a stamp rather than waiting or being dropped. If an `around` hook runs an
+example more than once (as `rspec-retry` does), only the last attempt is
+reported, so earlier attempts' child spans are queued unstamped when the next
+attempt starts. Spans still held at shutdown, for example when the process is
+interrupted mid-example, are queued unstamped. A hard exit loses the held spans
+of the example that was running, which the collector might otherwise already
+have exported. A forked process leaves the spans it inherited to its parent.
 
 ## What gets sent
 

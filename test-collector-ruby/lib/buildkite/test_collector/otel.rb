@@ -672,9 +672,11 @@ module Buildkite::TestCollector
           child_processor,
           context_key: test_span_context_key,
           span_filter: span_filter,
-          # A test's held children are released at once, so the hold never
-          # exceeds what the child queue can take in one go.
-          max_held_spans: child_sizes.fetch(:max_queue_size),
+          # A test's held children reach the queue in one burst, and up to a
+          # batch can already be queued, waiting out the schedule delay.
+          # Bounding the hold by what is left keeps the burst from evicting
+          # spans already queued, such as the previous test's.
+          max_held_spans: child_sizes.fetch(:max_queue_size) - child_sizes.fetch(:max_export_batch_size),
         )
 
         if collector_managed
