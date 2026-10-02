@@ -299,10 +299,13 @@ credential. `Buildkite-Tests-Run-Key` always carries the run key from the test
 spans.
 
 Every request also carries `Buildkite-Tests-Span-Stream`: `test` for batches of
-`test.execution` spans from the collector's own provider, and `child` for
-batches forwarded from the application's tracer. The two streams use separate
-providers and queues, so a request never mixes them; Buildkite uses the header
-to route and account for the two kinds of span independently.
+`test.execution` spans, and `child` for batches of child spans, including the
+`test.setup`, `test.body`, and `test.teardown` phase spans. The two streams use
+separate providers, queues, and exporters, so a request never mixes them. The
+header lets Buildkite tell the streams apart without decoding the request, for
+example to refuse child spans while still processing results. It is set by the
+client, so classification and billing use the spans themselves, never the
+header.
 
 The standard `OTEL_EXPORTER_OTLP_*` endpoint and header variables are never
 read, so credentials the process configures for another OpenTelemetry
