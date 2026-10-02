@@ -298,6 +298,13 @@ listener and local credential, then forwards spans to Buildkite with its OIDC
 credential. `Buildkite-Tests-Run-Key` always carries the run key from the test
 spans.
 
+Every request also carries `Buildkite-Tests-Span-Stream`: `test` for batches of
+`test.execution` spans and `child` for batches of child spans, including the
+`test.setup`, `test.body`, and `test.teardown` phase spans. A request never
+mixes the two. If you relay collector traffic through your own OTLP proxy
+before it reaches Buildkite, forward this header along with
+`Buildkite-Tests-Run-Key`.
+
 The standard `OTEL_EXPORTER_OTLP_*` endpoint and header variables are never
 read, so credentials the process configures for another OpenTelemetry
 destination are not sent to Buildkite, and that destination's settings do not

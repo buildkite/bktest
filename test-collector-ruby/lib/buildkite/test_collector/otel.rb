@@ -9,6 +9,7 @@ module Buildkite::TestCollector
 
     # Accepted by the Buildkite OTLP traces receiver for its run-key header
     # (Analytics::API::TracesController::RUN_KEY_FORMAT); keep them in sync.
+    RUN_KEY_HEADER = "Buildkite-Tests-Run-Key"
     RUN_KEY_FORMAT = /\A[!-~]{1,255}\z/
 
     EXECUTION_VIA_ATTRIBUTE = "buildkite.execution.via"
@@ -27,6 +28,14 @@ module Buildkite::TestCollector
     TRACER_NAME = "buildkite-test-collector"
 
     TEST_SPAN_NAME = "test.execution"
+
+    # Names each OTLP request's stream so the receiver can refuse child spans
+    # without decoding the body. The collector defines these values; a
+    # receiver should treat a request without the header as "test", because
+    # older collectors send none.
+    SPAN_STREAM_HEADER = "Buildkite-Tests-Span-Stream"
+    TEST_SPAN_STREAM = "test"
+    CHILD_SPAN_STREAM = "child"
 
     # Direct children of the test span that group instrumented child spans by
     # when they happened. Fixed names so every collector can emit the same
@@ -188,7 +197,6 @@ module Buildkite::TestCollector
 
         @api_token = api_token
         @run_key = run_env["key"]
-        headers = request_headers(run_env, api_token)
 
         # Resources identify the entities that produced the telemetry. Details
         # about the Test Engine run and test framework describe each execution
@@ -196,9 +204,11 @@ module Buildkite::TestCollector
         resource = producer_resource(run_env)
         @run_attributes = run_attributes(run_env, tags)
 
-        @test_span_provider = build_test_span_provider(endpoint, headers, resource)
+        test_headers = request_headers(run_env, api_token, stream: TEST_SPAN_STREAM)
+        child_headers = request_headers(run_env, api_token, stream: CHILD_SPAN_STREAM)
+        @test_span_provider = build_test_span_provider(endpoint, test_headers, resource)
         @tracer = @test_span_provider.tracer(TRACER_NAME, Buildkite::TestCollector::VERSION)
-        configure_child_export(endpoint, headers, resource, span_filter: span_filter)
+        configure_child_export(endpoint, child_headers, resource, span_filter: span_filter)
         register_shutdown_at_exit
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
@@ -858,8 +868,11 @@ module Buildkite::TestCollector
         []
       end
 
-      def request_headers(run_env, api_token)
-        headers = { "Buildkite-Tests-Run-Key" => run_env["key"] }
+      def request_headers(run_env, api_token, stream:)
+        headers = {
+          RUN_KEY_HEADER => run_env["key"],
+          SPAN_STREAM_HEADER => stream,
+        }
         headers["Authorization"] = authorization_header(api_token) if api_token
         headers
       end
