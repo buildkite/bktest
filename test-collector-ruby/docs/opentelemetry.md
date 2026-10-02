@@ -287,6 +287,30 @@ Filtering happens after instrumentation has created and finished the span, so
 it reduces queueing, export, and ingestion volume rather than instrumentation
 overhead.
 
+## Child span results
+
+Every forwarded child span, phase spans included, carries
+`buildkite.test.result`: `pass` or `fail`, the result of the test it belongs
+to. That lets Buildkite tell a failing test's child spans from a passing
+test's. Child spans of a `pending` example that failed as expected carry no
+result.
+
+A finished span cannot be changed, and the result is final only once RSpec
+reports the example, after every `around` hook has unwound. So the collector
+holds each test's finished child spans in memory until then, and queues them,
+stamped, as the example is reported. A child span that started during the
+example but finishes after it (asynchronous work) is queued, stamped, as soon
+as it finishes; one that starts after its example was reported is queued
+unstamped.
+
+The hold is bounded across all tests by the child queue size (2,048 by default;
+see [Test span sizes and batching](#test-span-sizes-and-batching)), so a full
+hold always fits an empty queue. Past the bound, further child spans are queued
+at once without a stamp rather than waiting or being dropped. Spans still held
+at shutdown, for example when the process is interrupted mid-example, are
+queued unstamped. A hard exit loses the held spans of the example that was
+running, which the collector might otherwise already have exported.
+
 ## What gets sent
 
 The collector exports to `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` (default

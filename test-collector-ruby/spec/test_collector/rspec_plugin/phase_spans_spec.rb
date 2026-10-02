@@ -278,14 +278,20 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
       child_provider = OpenTelemetry::SDK::Trace::TracerProvider.new
       child_provider.add_span_processor(forwarder)
       OpenTelemetry.tracer_provider = child_provider
+      Buildkite::TestCollector::OTel.instance_variable_set(:@child_span_forwarder, forwarder)
 
       begin
         run_sandboxed_example(**example_options, &configure)
         PhaseSpanSpecInstrumentation.span("outside any example")
       ensure
+        Buildkite::TestCollector::OTel.instance_variable_set(:@child_span_forwarder, nil)
         child_provider.shutdown
       end
       child_exporter.finished_spans
+    end
+
+    def stamps(exported)
+      exported.to_h { |span| [span.name, span.attributes["buildkite.test.result"]] }
     end
 
     it "exports nothing for a passing example with no instrumentation" do
@@ -308,6 +314,30 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
 
       expect(exported.map(&:name)).to eq(["test.body"])
       expect(exported.map(&:parent_span_id)).to all(eq(span_named("test.execution").span_id))
+    end
+
+    it "stamps a passing example's phase and instrumentation spans pass" do
+      exported = run_through_forwarder(body: proc { PhaseSpanSpecInstrumentation.span("in body") }) do |config|
+        config.before(:each) { PhaseSpanSpecInstrumentation.span("in before") }
+      end
+
+      expect(stamps(exported)).to eq(
+        "in before" => "pass", "test.setup" => "pass", "in body" => "pass", "test.body" => "pass",
+      )
+    end
+
+    # The body passed, so only RSpec's final verdict, read once every around
+    # hook has unwound, can say the example failed.
+    it "stamps children fail when an around hook fails the example after its body passed" do
+      exported = run_through_forwarder(body: proc { PhaseSpanSpecInstrumentation.span("in body") }) do |config|
+        config.around(:each) do |example|
+          example.run
+          raise "around boom"
+        end
+      end
+
+      expect(span_named("test.execution").attributes["test.case.result.status"]).to eq("fail")
+      expect(stamps(exported)).to eq("in body" => "fail", "test.body" => "fail")
     end
   end
 

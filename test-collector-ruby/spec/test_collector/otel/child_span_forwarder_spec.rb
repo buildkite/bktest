@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "opentelemetry/sdk"
+require "opentelemetry/exporter/otlp"
 require "timeout"
 
 forwarder_class = Buildkite::TestCollector::OTel.const_get(:ChildSpanForwarder, false)
@@ -286,6 +287,163 @@ RSpec.describe forwarder_class do
       .to output(/Could not export OpenTelemetry child span: RuntimeError: queue failed/).to_stderr
     expect { expect(forwarder.force_flush).to eq(OpenTelemetry::SDK::Trace::Export::FAILURE) }
       .to output(/Could not flush OpenTelemetry child spans: RuntimeError: flush failed/).to_stderr
+  end
+
+  describe "result stamp" do
+    let(:exporter) { OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new }
+    let(:max_held_spans) { 3 }
+    let(:stamping_forwarder) do
+      described_class.new(
+        OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter),
+        context_key: context_key,
+        max_held_spans: max_held_spans,
+      )
+    end
+    let(:provider) do
+      OpenTelemetry::SDK::Trace::TracerProvider.new.tap { |p| p.add_span_processor(stamping_forwarder) }
+    end
+    let(:tracer) { provider.tracer("app") }
+    # From its own provider, as the collector's private test span provider is.
+    let(:test_span) do
+      OpenTelemetry::SDK::Trace::TracerProvider.new.tracer("root")
+        .start_span("test.execution", with_parent: OpenTelemetry::Context.empty)
+    end
+
+    after { provider.shutdown }
+
+    def in_test(&block)
+      OpenTelemetry::Context.with_value(context_key, test_span.context.trace_id) do
+        OpenTelemetry::Trace.with_span(test_span, &block)
+      end
+    end
+
+    def stamps
+      exporter.finished_spans.to_h { |span| [span.name, span.attributes&.[]("buildkite.test.result")] }
+    end
+
+    def forgets_everything
+      expect(stamping_forwarder.instance_variable_get(:@tests)).to be_empty
+      expect(stamping_forwarder.instance_variable_get(:@spans)).to be_empty
+      expect(stamping_forwarder.instance_variable_get(:@held_count)).to eq(0)
+    end
+
+    it "holds a passing test's children, phase spans included, until its result and stamps them pass" do
+      stamping_forwarder.test_started(test_span.context.trace_id)
+      in_test do
+        tracer.in_span("test.body") { tracer.in_span("SELECT") { nil } }
+      end
+
+      expect(exporter.finished_spans).to be_empty
+
+      stamping_forwarder.test_finished(test_span.context.trace_id, "pass")
+
+      expect(stamps).to eq("SELECT" => "pass", "test.body" => "pass")
+      # The stamp is counted as a recorded attribute, so the exporter reports
+      # no dropped attributes rather than failing to encode a negative count.
+      request = Opentelemetry::Proto::Collector::Trace::V1::ExportTraceServiceRequest.decode(
+        OpenTelemetry::Exporter::OTLP::Common.as_encoded_etsr(exporter.finished_spans)
+      )
+      encoded = request.resource_spans.flat_map(&:scope_spans).flat_map(&:spans)
+      expect(encoded.map(&:dropped_attributes_count)).to all(eq(0))
+      forgets_everything
+    end
+
+    # The hold is bounded so thousands of children cannot pile up in memory;
+    # past the bound a failing test's children must still all arrive.
+    it "exports a failing test's children past the cap at once and unstamped, never dropping them" do
+      stamping_forwarder.test_started(test_span.context.trace_id)
+      in_test do
+        5.times { |index| tracer.in_span("child-#{index}") { nil } }
+      end
+
+      expect(stamps).to eq("child-3" => nil, "child-4" => nil)
+
+      stamping_forwarder.test_finished(test_span.context.trace_id, "fail")
+
+      expect(stamps).to eq(
+        "child-0" => "fail", "child-1" => "fail", "child-2" => "fail", "child-3" => nil, "child-4" => nil,
+      )
+      forgets_everything
+    end
+
+    it "frees the hold for the next test once a full one is released" do
+      [["first", "pass"], ["second", "fail"]].each do |prefix, result|
+        span = OpenTelemetry::SDK::Trace::TracerProvider.new.tracer("root")
+          .start_span("test.execution", with_parent: OpenTelemetry::Context.empty)
+        stamping_forwarder.test_started(span.context.trace_id)
+        OpenTelemetry::Context.with_value(context_key, span.context.trace_id) do
+          OpenTelemetry::Trace.with_span(span) do
+            max_held_spans.times { |index| tracer.in_span("#{prefix}-#{index}") { nil } }
+          end
+        end
+        stamping_forwarder.test_finished(span.context.trace_id, result)
+      end
+
+      expect(stamps.values).to eq(%w[pass] * max_held_spans + %w[fail] * max_held_spans)
+    end
+
+    it "stamps children that finish after their test ends, then forgets the test" do
+      stamping_forwarder.test_started(test_span.context.trace_id)
+      late = in_test { tracer.start_span("late") }
+
+      stamping_forwarder.test_finished(test_span.context.trace_id, "fail")
+      expect(exporter.finished_spans).to be_empty
+      late.finish
+
+      expect(stamps).to eq("late" => "fail")
+      forgets_everything
+    end
+
+    it "exports a child that starts after its test was forgotten at once, unstamped" do
+      stamping_forwarder.test_started(test_span.context.trace_id)
+      stamping_forwarder.test_finished(test_span.context.trace_id, "pass")
+
+      in_test { tracer.in_span("after the test") { nil } }
+
+      expect(stamps).to eq("after the test" => nil)
+      forgets_everything
+    end
+
+    it "leaves the children of a skipped test unstamped" do
+      stamping_forwarder.test_started(test_span.context.trace_id)
+      in_test { tracer.in_span("child") { nil } }
+
+      stamping_forwarder.test_finished(test_span.context.trace_id, "skipped")
+
+      expect(stamps).to eq("child" => nil)
+    end
+
+    it "holds and stamps children that the filter retains" do
+      filtered = described_class.new(
+        OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter),
+        context_key: context_key,
+        span_filter: ->(span) { span.name != "dropped" },
+      )
+      provider.add_span_processor(filtered)
+      stamping_forwarder.shutdown
+      filtered.test_started(test_span.context.trace_id)
+      in_test do
+        tracer.in_span("kept") { nil }
+        tracer.in_span("dropped") { nil }
+      end
+
+      expect(exporter.finished_spans).to be_empty
+
+      filtered.test_finished(test_span.context.trace_id, "fail")
+
+      expect(stamps).to eq("kept" => "fail")
+      expect(filtered.instance_variable_get(:@tests)).to be_empty
+    end
+
+    it "exports held children unstamped at shutdown rather than losing them" do
+      stamping_forwarder.test_started(test_span.context.trace_id)
+      in_test { tracer.in_span("child") { nil } }
+
+      stamping_forwarder.shutdown
+
+      expect(stamps).to eq("child" => nil)
+      forgets_everything
+    end
   end
 
   it "keeps the test span when the child queue overflows" do
