@@ -731,7 +731,8 @@ RSpec.describe Buildkite::TestCollector::OTel do
       include WebMock::API
 
       WebMock.enable!
-      # Keep the exporter's retry loop but not its backoff.
+      # Keep the exporter's retry loop but not its backoff. If the exporter
+      # stops calling bare sleep, this spec only slows down (up to ~16 s).
       OpenTelemetry::Exporter::OTLP::Exporter.prepend(Module.new { private def sleep(_) = nil })
 
       endpoint = "https://example.invalid/v1/traces"

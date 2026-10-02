@@ -306,7 +306,8 @@ exporters, so a request never mixes them. The header lets Buildkite tell the
 streams apart without decoding the request, for example to refuse child spans
 while still processing results. It is set by the client, so classification and
 billing use the spans themselves, never the header. A relay must forward the
-header for Buildkite to see it; bktec's OTLP relay does not yet.
+header for Buildkite to see it. bktec's OTLP relay currently drops it, so
+Buildkite receives spans relayed by bktec without a stream.
 
 The standard `OTEL_EXPORTER_OTLP_*` endpoint and header variables are never
 read, so credentials the process configures for another OpenTelemetry

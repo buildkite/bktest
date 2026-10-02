@@ -28,6 +28,13 @@ module Buildkite::TestCollector
 
     TEST_SPAN_NAME = "test.execution"
 
+    # Names each OTLP request's stream so the receiver can refuse child spans
+    # without decoding the body. Keep the values in sync with the traces
+    # receiver, which treats a request without the header as "test".
+    SPAN_STREAM_HEADER = "Buildkite-Tests-Span-Stream"
+    TEST_SPAN_STREAM = "test"
+    CHILD_SPAN_STREAM = "child"
+
     # Direct children of the test span that group instrumented child spans by
     # when they happened. Fixed names so every collector can emit the same
     # three and the UI can expand one level and stop.
@@ -195,9 +202,11 @@ module Buildkite::TestCollector
         resource = producer_resource(run_env)
         @run_attributes = run_attributes(run_env, tags)
 
-        @test_span_provider = build_test_span_provider(endpoint, request_headers(run_env, api_token, stream: "test"), resource)
+        test_headers = request_headers(run_env, api_token, stream: TEST_SPAN_STREAM)
+        child_headers = request_headers(run_env, api_token, stream: CHILD_SPAN_STREAM)
+        @test_span_provider = build_test_span_provider(endpoint, test_headers, resource)
         @tracer = @test_span_provider.tracer(TRACER_NAME, Buildkite::TestCollector::VERSION)
-        configure_child_export(endpoint, request_headers(run_env, api_token, stream: "child"), resource, span_filter: span_filter)
+        configure_child_export(endpoint, child_headers, resource, span_filter: span_filter)
         register_shutdown_at_exit
       rescue Exception => e # rubocop:disable Lint/RescueException
         ExceptionHandling.reraise_fatal(e)
@@ -860,7 +869,7 @@ module Buildkite::TestCollector
       def request_headers(run_env, api_token, stream:)
         headers = {
           "Buildkite-Tests-Run-Key" => run_env["key"],
-          "Buildkite-Tests-Span-Stream" => stream,
+          SPAN_STREAM_HEADER => stream,
         }
         headers["Authorization"] = authorization_header(api_token) if api_token
         headers
