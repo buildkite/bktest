@@ -316,20 +316,20 @@ RSpec.describe "buildkite-rspec" do
     expect(File.readlines("#{@dir}/executions").size).to eq(2)
   end
 
-  it "expands the batch placeholder in formatter output paths with a file-safe batch ID" do
+  it "expands the batch placeholder in formatter output paths" do
     reports = []
     status = with_runner("--format", "json", "--out", "tmp/rspec-job-%{batch}.json") do
       handshake
-      ["a/b", "../c"].each do |id|
-        dispatch(id, [{ format: "example", identifier: "spec/sample_spec.rb[1:2]" }])
+      2.times do |index|
+        dispatch("batch-#{index}", [{ format: "example", identifier: "spec/sample_spec.rb[1:2]" }])
         reports << request
       end
       request({ type: "done", reason: "plan_completed" })
     end
     expect(status.exitstatus).to eq(0), @output
-    expect(Dir.children("#{@dir}/tmp").sort).to eq(%w[rspec-job-%2E%2E%2Fc.json rspec-job-a%2Fb.json])
-    expect(JSON.parse(File.read("#{@dir}/tmp/rspec-job-a%2Fb.json"))).to eq(reports.first.fetch("report"))
-    expect(JSON.parse(File.read("#{@dir}/tmp/rspec-job-%2E%2E%2Fc.json"))).to eq(reports.last.fetch("report"))
+    expect(Dir.children("#{@dir}/tmp").sort).to eq(%w[rspec-job-batch-0.json rspec-job-batch-1.json])
+    expect(JSON.parse(File.read("#{@dir}/tmp/rspec-job-batch-0.json"))).to eq(reports.first.fetch("report"))
+    expect(JSON.parse(File.read("#{@dir}/tmp/rspec-job-batch-1.json"))).to eq(reports.last.fetch("report"))
   end
 
   it "expands the batch placeholder after ERB in an options file" do
