@@ -12,8 +12,8 @@ module Buildkite
       # or costs a span.
       class ChildSpanForwarder
         # The held children of a running test, and its result once released.
-        # Children still in flight keep a released test alive, so those that
-        # finish after it are stamped too.
+        # A child still in flight references its test through @spans, so it
+        # is stamped when it finishes even after the test was released.
         Test = Struct.new(:running, :held, :result)
         private_constant :Test
 
