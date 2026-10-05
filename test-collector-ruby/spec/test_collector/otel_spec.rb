@@ -707,13 +707,88 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.shutdown
   end
 
-  it "sends the run key and token as request headers" do
-    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token")
+  it "sends the run key, stream, and token as request headers" do
+    headers = described_class.send(:request_headers, { "key" => "test-run-id" }, "suite-token", stream: "test")
 
     expect(headers).to eq(
       "Buildkite-Tests-Run-Key" => "test-run-id",
+      "Buildkite-Tests-Span-Stream" => "test",
       "Authorization" => %(Token token="suite-token"),
     )
+  end
+
+  # Streams are identified from each request's spans, not exporter order, and
+  # every request is answered 503, then a read timeout, then 200, so each
+  # retry must still carry its stream. The second configure! refreshes the
+  # token, which must not disturb the stream header.
+  it "labels every OTLP request, including retries, with the stream of its spans" do
+    script = <<~'RUBY'
+      require "json"
+      require "buildkite/test_collector"
+      require "opentelemetry/sdk"
+      require "opentelemetry/exporter/otlp"
+      require "webmock"
+      include WebMock::API
+
+      WebMock.enable!
+      # Keep the exporter's retry loop but not its backoff. If the exporter
+      # stops calling bare sleep, this spec only slows down (up to ~16 s).
+      OpenTelemetry::Exporter::OTLP::Exporter.prepend(Module.new { def sleep(_); end; private :sleep })
+
+      endpoint = "https://example.invalid/v1/traces"
+      requests = []
+      attempts = Hash.new(0)
+      mutex = Mutex.new
+      stub_request(:post, endpoint).to_return do |request|
+        payload = Opentelemetry::Proto::Collector::Trace::V1::ExportTraceServiceRequest
+          .decode(Zlib.gunzip(request.body))
+        names = payload.resource_spans.flat_map(&:scope_spans).flat_map(&:spans).map(&:name)
+        attempt = mutex.synchronize do
+          requests << [request.headers, names]
+          attempts[request.body] += 1
+        end
+        raise Net::ReadTimeout if attempt == 2
+
+        { status: attempt == 1 ? 503 : 200 }
+      end
+
+      otel = Buildkite::TestCollector::OTel
+      test = Struct.new(:otel_attributes, :otel_result).new({}, "passed")
+      %w[before-refresh after-refresh].each do |token|
+        otel.configure!(endpoint: endpoint, api_token: token, run_env: { "key" => "run-key" })
+        root = otel.start_test_span(test: test)
+        otel.with_test_span(root) do
+          phase = otel.start_phase_span(:body, root)
+          OpenTelemetry::Trace.with_span(phase) do
+            OpenTelemetry.tracer_provider.tracer("suite").in_span("work") {}
+          end
+          otel.finish_phase_span(phase, [])
+        end
+        otel.finish_test_span(root, test: test)
+        otel.force_flush
+      end
+      otel.shutdown
+      puts JSON.generate(requests)
+    RUBY
+
+    stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-Ilib", "-e", script)
+    expect(status).to be_success, stderr
+    requests = JSON.parse(stdout.lines.last)
+
+    stream_by_name = { "test.execution" => "test", "test.body" => "child", "work" => "child" }
+    %w[before-refresh after-refresh].each do |token|
+      authorization = %(Token token="#{token}")
+      matching = requests.select { |headers, _| headers["Authorization"] == authorization }
+      # Each span went out three times: the 503, the timeout, and the 200.
+      expect(matching.flat_map(&:last)).to match_array(stream_by_name.keys * 3)
+      matching.each do |headers, names|
+        expect(headers).to include(
+          "Buildkite-Tests-Run-Key" => "run-key",
+          "Buildkite-Tests-Span-Stream" => stream_by_name.fetch(names.first),
+        )
+        expect(names.map { |name| stream_by_name.fetch(name) }.uniq.length).to eq(1)
+      end
+    end
   end
 
   it "takes the relay endpoint and credential from BUILDKITE_* variables" do
