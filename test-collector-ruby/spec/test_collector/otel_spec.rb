@@ -948,6 +948,9 @@ RSpec.describe Buildkite::TestCollector::OTel do
       OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT
       OTEL_EVENT_ATTRIBUTE_VALUE_LENGTH_LIMIT
       OTEL_SPAN_EVENT_COUNT_LIMIT
+      OTEL_ATTRIBUTE_COUNT_LIMIT
+      OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT
+      OTEL_EVENT_ATTRIBUTE_COUNT_LIMIT
     ].freeze
 
     let(:exporter) { OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new }
@@ -1057,9 +1060,34 @@ RSpec.describe Buildkite::TestCollector::OTel do
       )
     end
 
+    %w[OTEL_ATTRIBUTE_COUNT_LIMIT OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT].each do |setting|
+      it "preserves execution identity and result despite #{setting}" do
+        ENV[setting] = "1"
+        provider
+        test = double("test", otel_attributes: {
+          "buildkite.test.name" => "adds up",
+          "buildkite.test.scope" => "Calculator",
+          "code.file.path" => "spec/calculator_spec.rb",
+        }, otel_result: "passed")
+        span = described_class.start_test_span(test: test)
+        described_class.finish_test_span(span, test: test)
+        provider.force_flush
+
+        expect(exporter.finished_spans.fetch(0).attributes).to include(
+          "buildkite.execution.via" => "otlp",
+          "buildkite.run_key" => "run-key",
+          "test.case.result.status" => "pass",
+          "buildkite.test.name" => "adds up",
+          "buildkite.test.scope" => "Calculator",
+          "code.file.path" => "spec/calculator_spec.rb",
+        )
+      end
+    end
+
     it "truncates exception attributes in characters and retains the newest 100 events" do
       ENV["OTEL_SPAN_EVENT_COUNT_LIMIT"] = "1"
       ENV["OTEL_EVENT_ATTRIBUTE_VALUE_LENGTH_LIMIT"] = "1"
+      ENV["OTEL_EVENT_ATTRIBUTE_COUNT_LIMIT"] = "1"
       span = provider.tracer("limits-test").start_span("test.execution")
       101.times { |i| span.add_event("annotation-#{i}") }
       span.add_event("exception", attributes: {

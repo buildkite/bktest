@@ -445,10 +445,13 @@ module Buildkite::TestCollector
           id_generator: SecureRandomIdGenerator,
           resource: resource,
           # Lengths are characters, not bytes. Explicit so the process-wide
-          # OTEL_SPAN_*/OTEL_EVENT_* length and event count limits do not apply
-          # to test spans; the other count limits keep SDK defaults.
+          # OTEL_SPAN_*/OTEL_EVENT_* limits cannot strip execution identity,
+          # results, or failure details. Attribute counts use the SDK's
+          # default budget rather than the process-wide overrides.
           span_limits: OpenTelemetry::SDK::Trace::SpanLimits.new(
+            attribute_count_limit: 128,
             attribute_length_limit: TEST_SPAN_ATTRIBUTE_LENGTH_LIMIT,
+            event_attribute_count_limit: 128,
             event_attribute_length_limit: TEST_SPAN_EVENT_ATTRIBUTE_LENGTH_LIMIT,
             event_count_limit: TEST_SPAN_EVENT_COUNT_LIMIT,
           ),

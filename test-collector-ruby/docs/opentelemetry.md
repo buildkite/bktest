@@ -394,8 +394,12 @@ identity and history as the JSON upload. The collector also caps the failure
 reason in the span status at 1,024 characters and each exception message at
 10,243 characters, the server's failure summary and message quotas; stack traces
 keep the 16,384-character event limit because the server keeps up to 100 KiB of
-stack trace per execution. These limits ignore the process-wide `OTEL_SPAN_*`
-and `OTEL_EVENT_*` settings; attribute and link count limits keep SDK defaults.
+stack trace per execution. Test spans and their events each retain up to 128
+attributes, independently of `OTEL_ATTRIBUTE_COUNT_LIMIT`,
+`OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`, and `OTEL_EVENT_ATTRIBUTE_COUNT_LIMIT`, so
+application limits cannot strip execution identity, results, or failure detail.
+These length, attribute count, and event count limits ignore process-wide
+settings; link limits still use the SDK defaults and environment settings.
 
 These settings do not guarantee that requests fit the server limits. Request
 bodies over 900 KiB are rejected with HTTP 413 and logged by the exporter.
