@@ -24,9 +24,13 @@ module Buildkite
             next unless @active
 
             @spans[span] = true
+            @populated_phases[[test_span_trace_id, span.context.span_id]] = false if phase_span?(span)
             # A child that starts after its phase finished (async work from a
             # hook) must not re-add the phase, or it would live until shutdown.
-            @populated_phases[parent] = true if @spans.key?(parent) && phase_span?(parent)
+            # Compare IDs: a Rack request's remote parent is a different Ruby
+            # object from the local phase span that propagated it.
+            parent_id = [test_span_trace_id, parent.context.span_id]
+            @populated_phases[parent_id] = true if @populated_phases.key?(parent_id)
           end
         rescue Exception => e # rubocop:disable Lint/RescueException
           ExceptionHandling.reraise_fatal(e)
@@ -87,7 +91,8 @@ module Buildkite
           return false unless @spans.delete(span)
           return true unless phase_span?(span)
 
-          @populated_phases.delete(span) || span.status.code != OpenTelemetry::Trace::Status::UNSET
+          @populated_phases.delete([span.context.trace_id, span.context.span_id]) ||
+            span.status.code != OpenTelemetry::Trace::Status::UNSET
         end
 
         # Only called with tracked spans, which have a name.

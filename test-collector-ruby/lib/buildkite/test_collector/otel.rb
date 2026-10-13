@@ -127,6 +127,11 @@ module Buildkite::TestCollector
     require_relative "otel/child_span_metrics_reporter"
     require_relative "otel/span_filter"
     require_relative "otel/child_span_forwarder"
+    require_relative "otel/rack_middleware"
+
+    @active_test_spans = {}
+    @active_test_spans_mutex = Mutex.new
+    @active_test_spans_pid = Process.pid
 
     # Avoid duplicate IDs when test suites seed Ruby's global PRNG.
     module SecureRandomIdGenerator
@@ -252,9 +257,43 @@ module Buildkite::TestCollector
       def with_test_span(span)
         return yield unless span
 
-        OpenTelemetry::Context.with_values(test_span_context_key => span.context.trace_id, test_span_key => span) do
-          OpenTelemetry::Trace.with_span(span) { yield }
+        trace_id = span.context.trace_id
+        with_active_test_spans { |spans| spans[trace_id] = span }
+        begin
+          OpenTelemetry::Context.with_values(test_span_context_key => trace_id, test_span_key => span) do
+            OpenTelemetry::Trace.with_span(span) { yield }
+          end
+        ensure
+          with_active_test_spans { |spans| spans.delete(trace_id) }
         end
+      end
+
+      # Used by the opt-in Rack middleware. A propagated parent identifies the
+      # request, never whichever example happens to be running on another
+      # thread. Keep that parent, adding only the collector's ownership keys.
+      def rack_context(env)
+        return unless enabled?
+
+        extracted = OpenTelemetry::Trace::Propagation::TraceContext.text_map_propagator.extract(
+          env,
+          getter: OpenTelemetry::Common::Propagation.rack_env_getter,
+          context: OpenTelemetry::Context.empty,
+        )
+        parent = OpenTelemetry::Trace.current_span(extracted)
+        return unless parent.context.valid?
+
+        span = with_active_test_spans { |spans| spans[parent.context.trace_id] }
+        return unless span&.recording?
+
+        context = OpenTelemetry::Context.current.set_values(
+          test_span_context_key => span.context.trace_id,
+          test_span_key => span,
+        )
+        OpenTelemetry::Trace.context_with_span(parent, parent_context: context)
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        ExceptionHandling.reraise_fatal(e)
+        warn "[buildkite-test_collector] Could not associate OpenTelemetry Rack request: #{e.class}: #{e.message}"
+        nil
       end
 
       # The test span of the example running in this fiber, or nil outside
@@ -389,6 +428,7 @@ module Buildkite::TestCollector
         ExceptionHandling.reraise_fatal(e)
         warn "[buildkite-test_collector] Could not shut down OpenTelemetry span export: #{e.class}: #{e.message}"
       ensure
+        with_active_test_spans(&:clear)
         @test_span_provider = nil
         @child_span_processor = nil
         @child_span_forwarder = nil
@@ -403,6 +443,16 @@ module Buildkite::TestCollector
       end
 
       private
+
+      def with_active_test_spans
+        @active_test_spans_mutex.synchronize do
+          if @active_test_spans_pid != Process.pid
+            @active_test_spans.clear
+            @active_test_spans_pid = Process.pid
+          end
+          yield @active_test_spans
+        end
+      end
 
       def valid_run_key?(run_key)
         run_key.is_a?(String) && run_key.valid_encoding? && RUN_KEY_FORMAT.match?(run_key)

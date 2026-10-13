@@ -73,7 +73,7 @@ RSpec.describe forwarder_class do
       "phase span",
       name: "test.body",
       status: status,
-      context: double("phase span context", trace_id: test_span_trace_id),
+      context: OpenTelemetry::Trace::SpanContext.new(trace_id: test_span_trace_id, span_id: "\3" * 8),
     )
   end
 

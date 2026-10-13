@@ -12,4 +12,9 @@ gem "rspec", "~> 3.0"
 if Gem.ruby_version >= Gem::Version.new("3.3")
   gem "opentelemetry-exporter-otlp", "~> 0.34"
   gem "opentelemetry-sdk", "~> 1.13"
+  gem "opentelemetry-instrumentation-rack", "~> 0.31"
+  gem "opentelemetry-instrumentation-net_http", "~> 0.29"
+  gem "capybara", "~> 3.40"
+  gem "rackup", "~> 2.2"
+  gem "webrick", "~> 1.9"
 end
