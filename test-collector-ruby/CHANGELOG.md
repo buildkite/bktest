@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* Export an OpenTelemetry `test.execution` span for examples that RSpec fails
+  without running them, such as every example under a failing
+  `before(:context)` hook. These spans carry the failure but time only its
+  reporting and have no phase spans.
 * `buildkite-rspec` writes formatter `--out` files per batch instead of
   overwriting them, so earlier batches' output is no longer lost. A `%{batch}`
   placeholder in the path is replaced with the batch ID; otherwise the file name

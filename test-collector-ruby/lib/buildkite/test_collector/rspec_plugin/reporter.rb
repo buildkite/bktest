@@ -14,11 +14,11 @@ module Buildkite::TestCollector::RSpecPlugin
     def handle_example(notification)
       example = notification.example
       trace = Buildkite::TestCollector.uploader.traces[example.id]
-      # RSpec can fail an example without entering around(:each), such as a
-      # before(:context) failure or an outer around hook that raises first.
-      # In OTLP-only mode that failure still needs a submission. There is no
-      # example duration to recover, so time only the reporting here.
-      if !trace && Buildkite::TestCollector.otel_enabled? && example.execution_result.status == :failed
+      # A failing before(:context) or an outer around hook that raises first
+      # fails the example without entering our around(:each). The span is the
+      # submission in OTLP mode, so start one now; it times the reporting
+      # only, since the example never ran.
+      if trace.nil? && Buildkite::TestCollector.otel_enabled? && example.execution_result.status == :failed
         trace = Buildkite::TestCollector::RSpecPlugin::Trace.new(
           example,
           history: {},
