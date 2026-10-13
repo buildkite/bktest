@@ -72,7 +72,11 @@ headers = {}
 late_request = nil
 test_thread = Thread.current.object_id
 RSpec.describe "in-process Rack requests" do
-  it "sends traced HTTP and leaves one request in flight" do
+  after do |example|
+    raise "intentional failure after the request started" if example.metadata[:fail_after]
+  end
+
+  it "sends traced HTTP and leaves one request in flight", :fail_after do
     response = Net::HTTP.start(uri.host, uri.port) { |http| http.get("/traced") }
     expect(response.body).to eq("ok")
     OpenTelemetry.propagation.inject(headers)

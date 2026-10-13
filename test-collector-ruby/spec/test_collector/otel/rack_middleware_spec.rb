@@ -8,7 +8,8 @@ require "opentelemetry/trace/propagation/trace_context"
 RSpec.describe Buildkite::TestCollector::OTel::RackMiddleware do
   it "forwards real Capybara server requests only to their owning example, preserving HTTP parentage" do
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-Ilib", "spec/fixtures/rack_context.rb")
-    expect(status).to be_success, stderr
+    # The first example deliberately fails in teardown, after /late started.
+    expect(status.exitstatus).to eq(1), stderr
     result = JSON.parse(stdout.lines.last)
     spans = result.fetch("exported")
     work = spans.select { |span| span["name"].start_with?("work ") }
@@ -19,6 +20,9 @@ RSpec.describe Buildkite::TestCollector::OTel::RackMiddleware do
     first = roots.find { |span| span["attributes"]["test.case.name"].include?("sends traced") }
     second = roots.find { |span| span["attributes"]["test.case.name"].include?("does not claim") }
     third = roots.find { |span| span["attributes"]["test.case.name"].include?("propagates a phase") }
+    expect(first["attributes"]["test.case.result.status"]).to eq("fail")
+    expect(second["attributes"]["test.case.result.status"]).to eq("pass")
+    expect(third["attributes"]["test.case.result.status"]).to eq("pass")
     work.each do |span|
       root = { "work /second" => second, "work /direct" => third }.fetch(span["name"], first)
       expect(span["trace"]).to eq(root["trace"])
