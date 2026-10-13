@@ -306,10 +306,11 @@ keep that association when they finish later, but a new request with the old
 header does not. Shutdown clears the registry and forked children discard
 inherited registrations.
 
-This bridge covers synchronous `app.call` work in the same process. It does not
-reach a separate server process, background jobs, or deferred response-body
-work; forward context explicitly for asynchronous work and await it within the
-example. Use the wrapper only for a test server, not production traffic.
+Ownership lasts from `app.call` until the response body closes, matching the
+Rack instrumentation's own server span context. It does not reach a separate
+server process, background jobs, or a body read on another fiber; forward
+context explicitly for asynchronous work and await it within the example. Use
+the wrapper only for a test server, not production traffic.
 
 ### VCR and WebMock
 

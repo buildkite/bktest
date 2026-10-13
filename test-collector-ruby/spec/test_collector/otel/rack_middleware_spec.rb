@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "open3"
+require "rack"
 require "json"
 require "opentelemetry/sdk"
 require "opentelemetry/trace/propagation/trace_context"
@@ -10,6 +11,8 @@ RSpec.describe Buildkite::TestCollector::OTel::RackMiddleware do
     stdout, stderr, status = Open3.capture3(RbConfig.ruby, "-Ilib", "spec/fixtures/rack_context.rb")
     # The first example deliberately fails in teardown, after /late started.
     expect(status.exitstatus).to eq(1), stderr
+    # The SDK logs context attach/detach mismatches here, as "OpenTelemetry error".
+    expect(stdout).not_to include("OpenTelemetry error")
     result = JSON.parse(stdout.lines.last)
     spans = result.fetch("exported")
     work = spans.select { |span| span["name"].start_with?("work ") }
@@ -29,6 +32,10 @@ RSpec.describe Buildkite::TestCollector::OTel::RackMiddleware do
       server = spans.find { |candidate| candidate["id"] == span["parent"] }
       expect(server).not_to be_nil
       expect(server["kind"]).to eq("SPAN_KIND_SERVER")
+      # Spans opened while the body is read still belong to the server span.
+      body = spans.find { |candidate| candidate["name"] == span["name"].sub("work", "body") }
+      expect(body).not_to be_nil
+      expect(body["parent"]).to eq(server["id"])
       parent = spans.find { |candidate| candidate["id"] == server["parent"] }
       expect(parent).not_to be_nil
       # A normal HTTP request nests under its client span, not directly under
@@ -58,7 +65,12 @@ RSpec.describe Buildkite::TestCollector::OTel::RackMiddleware do
     otel.with_test_span(root) do
       Thread.new do
         ambient = OpenTelemetry::Context.current
-        expect(app.call(env).first).to equal(root)
+        test, _, body = app.call(env)
+        expect(test).to equal(root)
+        # Ownership lasts until the body closes, like the Rack server span.
+        expect(otel.current_test_span).to equal(root)
+        body.close
+        expect(OpenTelemetry::Context.current).to equal(ambient)
         raising = described_class.new(->(_) { raise "app error" })
         expect { raising.call(env) }.to raise_error("app error")
         expect(OpenTelemetry::Context.current).to equal(ambient)

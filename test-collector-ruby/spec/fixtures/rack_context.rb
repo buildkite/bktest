@@ -39,6 +39,13 @@ tracer = provider.tracer("rack-fixture")
 started = Queue.new
 finish = Queue.new
 server_threads = []
+# The body is read after the app returns, while Rack::Events still has the
+# server span's context attached, like a streamed or lazily rendered response.
+LazyBody = Struct.new(:tracer, :path) do
+  def each
+    tracer.in_span("body #{path}") { yield "ok" }
+  end
+end
 app = lambda do |env|
   server_threads << Thread.current.object_id
   tracer.in_span("work #{env['PATH_INFO']}") do
@@ -46,7 +53,7 @@ app = lambda do |env|
       started << true
       Timeout.timeout(10) { finish.pop }
     end
-    [200, { "content-type" => "text/plain" }, ["ok"]]
+    [200, { "content-type" => "text/plain" }, LazyBody.new(tracer, env["PATH_INFO"])]
   end
 end
 middleware, *args = OpenTelemetry::Instrumentation::Rack::Instrumentation.instance.middleware_args
