@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* Keep OpenTelemetry test span and event attributes (execution identity, result,
+  and failure detail) when the process sets `OTEL_ATTRIBUTE_COUNT_LIMIT`,
+  `OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`, or `OTEL_EVENT_ATTRIBUTE_COUNT_LIMIT`
+  below the collector's needs.
 * `buildkite-rspec` writes formatter `--out` files per batch instead of
   overwriting them, so earlier batches' output is no longer lost. A `%{batch}`
   placeholder in the path is replaced with the batch ID; otherwise the file name

@@ -69,6 +69,9 @@ module Buildkite::TestCollector
     TEST_SPAN_ATTRIBUTE_LENGTH_LIMIT = 10_243
     TEST_SPAN_EVENT_ATTRIBUTE_LENGTH_LIMIT = 16_384
     TEST_SPAN_EVENT_COUNT_LIMIT = 100
+    # The SDK default, pinned so OTEL_*_ATTRIBUTE_COUNT_LIMIT cannot strip
+    # execution identity, results, or failure details from test spans.
+    TEST_SPAN_ATTRIBUTE_COUNT_LIMIT = 128
     # Mirrors TestResult.FAILURE_REASON_MAX_LENGTH in ta-ingestion.
     FAILURE_REASON_MAX_LENGTH = 1_024
     # Keep in sync with TestResult.FAILURE_EXPANDED_MAX_LENGTH (10,240) in
@@ -445,13 +448,12 @@ module Buildkite::TestCollector
           id_generator: SecureRandomIdGenerator,
           resource: resource,
           # Lengths are characters, not bytes. Explicit so the process-wide
-          # OTEL_SPAN_*/OTEL_EVENT_* limits cannot strip execution identity,
-          # results, or failure details. Attribute counts use the SDK's
-          # default budget rather than the process-wide overrides.
+          # OTEL_SPAN_*/OTEL_EVENT_* settings do not apply to test spans; link
+          # limits keep SDK defaults.
           span_limits: OpenTelemetry::SDK::Trace::SpanLimits.new(
-            attribute_count_limit: 128,
+            attribute_count_limit: TEST_SPAN_ATTRIBUTE_COUNT_LIMIT,
             attribute_length_limit: TEST_SPAN_ATTRIBUTE_LENGTH_LIMIT,
-            event_attribute_count_limit: 128,
+            event_attribute_count_limit: TEST_SPAN_ATTRIBUTE_COUNT_LIMIT,
             event_attribute_length_limit: TEST_SPAN_EVENT_ATTRIBUTE_LENGTH_LIMIT,
             event_count_limit: TEST_SPAN_EVENT_COUNT_LIMIT,
           ),
