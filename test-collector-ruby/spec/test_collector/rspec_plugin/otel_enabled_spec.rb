@@ -209,6 +209,65 @@ RSpec.describe "RSpec OTLP-only submission" do
     expect(span.attributes).to include("test.case.result.status" => "pass")
   end
 
+  it "exports every failure from a before(:context) hook without duplicating normal results" do
+    examples = RSpec::Core::Sandbox.sandboxed do |config|
+      config.output_stream = StringIO.new
+      load "buildkite/test_collector/library_hooks/rspec.rb"
+      config.add_formatter Buildkite::TestCollector::RSpecPlugin::Reporter
+
+      group = RSpec.describe("context failure") do
+        context "broken setup" do
+          before(:context) { raise "database unavailable" }
+          it("first affected") { raise "body must not run" }
+          it("second affected") { raise "body must not run" }
+        end
+        it("healthy") {}
+        it("omitted", skip: true) {}
+      end
+      group.run(RSpec.configuration.reporter)
+      group.descendants.flat_map(&:examples)
+    end
+    @provider.force_flush
+    spans = @exporter.finished_spans.select { |span| span.name == "test.execution" }
+
+    expect(examples.map { |example| example.execution_result.status }).to contain_exactly(:failed, :failed, :passed, :pending)
+    expect(spans.map { |span| span.attributes.fetch("buildkite.test.name") })
+      .to contain_exactly("first affected", "second affected", "healthy")
+    failures = spans.select { |span| span.attributes["test.case.result.status"] == "fail" }
+    expect(failures.length).to eq(2)
+    expect(failures.map(&:trace_id).uniq.length).to eq(2)
+    failures.each do |span|
+      expect(span.attributes).to include("buildkite.execution.via" => "otlp")
+      expect(span.attributes.fetch("buildkite.test.execution.external_id")).not_to be_empty
+      expect(span.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+      expect(span.status.description).to include("database unavailable")
+      expect(span.events.find { |event| event.name == "exception" }.attributes.fetch("exception.message"))
+        .to include("database unavailable")
+    end
+    expect(Buildkite::TestCollector.uploader.traces.keys & examples.map(&:id)).to be_empty
+  end
+
+  it "exports a failure from an outer around hook that never runs the example" do
+    example = RSpec::Core::Sandbox.sandboxed do |config|
+      config.output_stream = StringIO.new
+      config.around(:each) { |_inner| raise "outer setup failed" }
+      load "buildkite/test_collector/library_hooks/rspec.rb"
+      config.add_formatter Buildkite::TestCollector::RSpecPlugin::Reporter
+
+      group = RSpec.describe("outer setup failure") do
+        it("never reached") { raise "body must not run" }
+      end
+      group.run(RSpec.configuration.reporter)
+      group.examples.first
+    end
+    span = finished_test_span
+
+    expect(example.execution_result.status).to eq(:failed)
+    expect(span).not_to be_nil
+    expect(span.attributes).to include("test.case.result.status" => "fail")
+    expect(span.status.description).to include("outer setup failed")
+  end
+
   it "uses only the legacy JSON path when OpenTelemetry is disabled" do
     original_session = Buildkite::TestCollector.session
     session = spy("legacy session")
