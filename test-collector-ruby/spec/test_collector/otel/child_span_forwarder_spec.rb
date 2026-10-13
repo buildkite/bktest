@@ -119,6 +119,22 @@ RSpec.describe forwarder_class do
     expect(processor).to have_received(:on_finish).with(failed_phase).once
   end
 
+  # A request propagated over HTTP arrives with a remote copy of the phase's
+  # span context, not the local phase span object.
+  it "forwards a phase span whose only child started under its propagated context" do
+    populated_phase = phase_span
+    remote_parent = OpenTelemetry::Trace.non_recording_span(
+      OpenTelemetry::Trace::SpanContext.new(trace_id: test_span_trace_id, span_id: "\3" * 8, remote: true),
+    )
+
+    forwarder.on_start(populated_phase, execution_context)
+    forwarder.on_start(span, context_under(remote_parent))
+    forwarder.on_finish(span)
+    forwarder.on_finish(populated_phase)
+
+    expect(processor).to have_received(:on_finish).with(populated_phase).once
+  end
+
   it "forgets a phase span's children once it finishes" do
     populated_phase = phase_span
 

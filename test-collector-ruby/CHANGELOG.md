@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+* Add `Buildkite::TestCollector::OTel::RackMiddleware`, an opt-in wrapper for an
+  in-process test server (such as `Capybara.app`) that exports the server's
+  spans under the running example when the request carries that example's
+  `traceparent`. Requests without a running example's trace context, including
+  ordinary Selenium browser navigation, are left alone. Phase spans are now
+  matched to their children by span ID, so a phase whose only child arrived over
+  HTTP is still exported.
 * `buildkite-rspec` writes formatter `--out` files per batch instead of
   overwriting them, so earlier batches' output is no longer lost. A `%{batch}`
   placeholder in the path is replaced with the batch ID; otherwise the file name

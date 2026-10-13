@@ -232,14 +232,14 @@ remains your responsibility.
 
 ### Rails: initialize instrumentation before the middleware stack freezes
 
-Do not defer Rails/Action Pack instrumentation to RSpec's `before(:suite)`.
-By then `rails_helper` normally loaded `config/environment.rb` and Rails has
-built its middleware stack. Installing `action_pack` at that point can fail
-with `FrozenError` when it tries to insert the Rack tracing middleware.
+Do not leave Rails/Action Pack instrumentation to RSpec's `before(:suite)`. By
+then `rails_helper` has loaded `config/environment.rb` and Rails has built its
+middleware stack, so installing `action_pack` fails with `FrozenError` when it
+tries to insert the Rack tracing middleware.
 
 Add `opentelemetry-instrumentation-action_pack` and any other instrumentation
-you need to your test bundle, with `require: false`, alongside the SDK and
-OTLP exporter above. Configure them during Rails initialization instead:
+you need to your test bundle with `require: false`, alongside the SDK and OTLP
+exporter above, and configure them in a Rails initializer:
 
 ```ruby
 # config/initializers/opentelemetry.rb
@@ -259,21 +259,21 @@ if Rails.env.test?
 end
 ```
 
-Action Pack installs the Rack instrumentation it depends on. Keep the
-collector's `Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)`
-in your spec helper. Its `before(:suite)` hook attaches the child-span forwarder
-to the existing SDK provider; it does not replace the provider, its resource,
-sampling, propagators, instrumentation, or customer-owned exporters. If your
-application already configures the SDK early, extend that configuration rather
-than configuring it twice. The collector still creates its own private provider
-for `test.execution` spans.
+Action Pack installs the Rack instrumentation it depends on. Keep
+`Buildkite::TestCollector.configure(hook: :rspec, otel_enabled: true)` in your
+spec helper: its `before(:suite)` hook attaches the child-span forwarder to the
+existing provider without replacing its resource, sampling, propagators,
+instrumentation, or exporters, and still creates the collector's own private
+provider for `test.execution` spans. If your application already configures the
+SDK early, extend that configuration rather than configuring it twice.
 
 ### In-process Rack servers: opt in to request correlation
 
-Capybara's app server runs on another thread. Even when an instrumented HTTP
-client propagates `traceparent`, the server lacks the collector's process-local
-test ownership context. Opt in by wrapping the instrumented application, outside
-OpenTelemetry's Rack middleware, before Capybara boots its server:
+Capybara's app server runs on another thread, so even when an instrumented HTTP
+client propagates `traceparent`, the server's spans lack the collector's
+process-local test ownership and are not exported to Buildkite. Opt in by
+wrapping the instrumented application, outside OpenTelemetry's Rack middleware,
+before Capybara boots its server:
 
 ```ruby
 # spec/rails_helper.rb, after loading Rails and capybara/rspec
@@ -282,37 +282,34 @@ require "buildkite/test_collector"
 Capybara.app = Buildkite::TestCollector::OTel::RackMiddleware.new(Capybara.app)
 ```
 
-The client must send W3C `traceparent` for the current example (and `tracestate`
-when present). Instrumented Ruby `Net::HTTP` does this automatically. A custom
-client can call `OpenTelemetry.propagation.inject(headers)` inside the example
-and send those headers with its request. The middleware adds test ownership only
-if the incoming trace ID matches an example still running in this process. It
-keeps the propagated parent, so server spans remain children of the HTTP client
-span, or of the phase span when propagated directly. It creates no spans itself;
-install Rack and application instrumentation separately.
+The request must carry W3C `traceparent` (and `tracestate`, when present) for
+the current example. Instrumented Ruby `Net::HTTP` sends it automatically; a
+custom client can call `OpenTelemetry.propagation.inject(headers)` inside the
+example. The middleware adds test ownership only when the trace ID matches an
+example still running in this process, keeps the propagated parent (so server
+spans stay children of the HTTP client span, or of the phase span when
+propagated directly), and creates no spans itself; install Rack and application
+instrumentation separately.
 
 **Wrapping `Capybara.app` alone does not correlate ordinary Selenium/browser
-navigation.** Ruby's Net::HTTP instrumentation instruments WebDriver commands,
-not the browser's HTTP requests to your app. Those requests need a separate
-per-request propagation mechanism. The collector never falls back to whichever
-example happens to be active: a delayed request from the previous example would
-otherwise be attributed to the next one. Browser propagation remains a separate
-limitation; this middleware is not a complete Selenium integration.
+navigation.** Ruby's Net::HTTP instrumentation traces WebDriver commands, not
+the browser's requests to your app, which need their own per-request
+propagation. The collector deliberately never falls back to whichever example
+is currently running, because a delayed request from the previous example would
+then be attributed to the next one.
 
-Missing, malformed, unknown, and completed-example trace IDs leave the app's
-behavior and customer telemetry unchanged and do not gain Buildkite ownership.
-Registration ends when the example's around-hook scope unwinds, before RSpec
-reports its final result. Spans already started under a matched request retain
-their original test association if they finish later; a new request with the old
-header does not. Context is restored even if the app raises. Shutdown clears the
-registry, and forked children discard inherited registrations.
+Requests with a missing, malformed, unknown, or completed example's trace ID
+gain no Buildkite ownership and are otherwise unchanged, including for your own
+exporters. An example's registration ends when its around-hook scope unwinds,
+before RSpec reports its result: spans already started under a matched request
+keep that association when they finish later, but a new request with the old
+header does not. Shutdown clears the registry and forked children discard
+inherited registrations.
 
-This opt-in bridge covers synchronous `app.call` work in the same process.
-It does not propagate ownership to a separate server process, background jobs,
-or deferred response-body work that starts after `app.call` returns. Forward
-context explicitly for asynchronous work and await it within the example when
-you need it included in that test's trace. Only use this wrapper for a test
-server, not production traffic.
+This bridge covers synchronous `app.call` work in the same process. It does not
+reach a separate server process, background jobs, or deferred response-body
+work; forward context explicitly for asynchronous work and await it within the
+example. Use the wrapper only for a test server, not production traffic.
 
 ### VCR and WebMock
 
