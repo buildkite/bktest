@@ -39,8 +39,7 @@ tracer = provider.tracer("rack-fixture")
 started = Queue.new
 finish = Queue.new
 server_threads = []
-# The body is read after the app returns, while Rack::Events still has the
-# server span's context attached, like a streamed or lazily rendered response.
+# Read after the app returns, while Rack::Events still holds the server context.
 LazyBody = Struct.new(:tracer, :path) do
   def each
     tracer.in_span("body #{path}") { yield "ok" }

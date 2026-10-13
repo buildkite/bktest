@@ -6,12 +6,8 @@ module Buildkite
       # Wrap the instrumented app, outside OpenTelemetry's Rack middleware.
       # Only requests carrying a current local test's W3C trace context are
       # associated; headerless browser traffic must never guess an owner.
-      #
-      # The Rack instrumentation's default Rack::Events handler keeps the
-      # server span's context attached until the response body closes, so the
-      # collector's context must live exactly as long: detaching when `call`
-      # returns would pop the server span's context instead, misparenting
-      # spans opened while the body is read.
+      # Ownership is detached when the body closes, not when `call` returns:
+      # Rack::Events keeps the server span's context attached until body.close.
       class RackMiddleware
         def initialize(app)
           @app = app
@@ -34,8 +30,7 @@ module Buildkite
 
         private
 
-        # Like the instrumentation, never pop another fiber's context stack
-        # when a body is closed elsewhere.
+        # Never pop another fiber's context stack.
         def detach(token, fiber)
           OpenTelemetry::Context.detach(token) if Fiber.current.equal?(fiber)
         end
