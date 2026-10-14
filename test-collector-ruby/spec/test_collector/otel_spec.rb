@@ -397,7 +397,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     it "warns once per run, however many batches and exporters the server warns about" do
       stub_request(:post, endpoint).to_return(
         status: 200,
-        body: partial_success_body(error_message: "Child spans were sampled."),
+        body: partial_success_body(error_message: "Example endpoint warning."),
         headers: { "Content-Type" => "application/x-protobuf" },
       )
       test_exporter = build_exporter
@@ -407,13 +407,13 @@ RSpec.describe Buildkite::TestCollector::OTel do
       expect { results = [test_exporter, child_exporter, child_exporter].map { |exporter| exporter.export([]) } }
         .to output(
           "[buildkite-test_collector] Buildkite accepted OpenTelemetry spans with a warning: " \
-          "Child spans were sampled. " \
+          "Example endpoint warning. " \
           "Further warnings like this will not be reported.\n"
         ).to_stderr
       expect(results).to all(eq(OpenTelemetry::SDK::Trace::Export::SUCCESS))
 
       described_class.shutdown
-      expect { build_exporter.export([]) }.to output(/Child spans were sampled/).to_stderr
+      expect { build_exporter.export([]) }.to output(/Example endpoint warning/).to_stderr
     end
 
     it "counts rejected spans when the server reports them" do
@@ -1392,8 +1392,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     original_logger = OpenTelemetry.logger
     OpenTelemetry.logger = Logger.new(log)
     endpoint = "https://example.invalid/v1/traces"
-    # Match the receiver's google.rpc.Status error envelope. The cap's final
-    # message is server-owned; unlike partial success, this is a refusal.
+    # Match the receiver's google.rpc.Status envelope; the message is illustrative.
     child_request = stub_request(:post, endpoint)
       .with(headers: { "Buildkite-Tests-Span-Stream" => "child" })
       .to_return(status: 403, headers: { "Content-Type" => "application/x-protobuf" },

@@ -471,9 +471,6 @@ process-exit shutdown each give the OpenTelemetry SDK a 30-second budget to
 export buffered spans; the SDK's own retry backoff can run past it when the
 endpoint keeps failing.
 
-An accepted request can include a `partial_success` warning, such as a sampling
-notice. The collector prints the server's message once per run.
-
 Usage caps reject `child` exports with `403`; `test` exports bypass the cap.
 The exporter logs the server's error message and drops the rejected batch
 without retrying it. Later batches are still attempted. A `403` can also mean

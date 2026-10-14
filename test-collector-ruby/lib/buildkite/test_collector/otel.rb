@@ -127,9 +127,8 @@ module Buildkite::TestCollector
     end
     private_constant :ExporterGuard
 
-    # An accepted request may carry a sampling notice or rejected-span count
-    # in ExportTraceServiceResponse.partial_success. Hard-cap refusals use
-    # 403 and the exporter's existing google.rpc.Status error logging instead.
+    # Handles the OTLP protocol's optional partial_success response field.
+    # Buildkite does not return this field; hard-cap refusals use 403.
     # The OTLP exporter reads and discards 2xx bodies, so read them as they pass
     # through measure_request_duration, the private method wrapping the HTTP
     # call in every supported exporter version (0.29+). Should a later

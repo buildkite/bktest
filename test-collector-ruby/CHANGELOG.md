@@ -13,9 +13,6 @@
   spans in memory until RSpec reports the example, up to the child queue size
   less one batch (1,536 by default) across all tests; past that, child spans
   are queued at once without a stamp instead of waiting or being dropped.
-* Print one warning per run when Buildkite accepts an OpenTelemetry request but
-  reports a partial success, such as a sampling notice. Hard-cap `403` refusals
-  are logged separately and are not retried.
 * Add `test.setup`, `test.body`, and `test.teardown` phase spans under each
   OpenTelemetry `test.execution` span. Instrumented child spans nest under the
   phase they ran in, each phase records its failures, and phase spans bypass
