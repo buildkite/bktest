@@ -127,65 +127,6 @@ module Buildkite::TestCollector
     end
     private_constant :ExporterGuard
 
-    # Handles the OTLP protocol's optional partial_success response field.
-    # Buildkite does not return this field; hard-cap refusals use 403.
-    # The OTLP exporter reads and discards 2xx bodies, so read them as they pass
-    # through measure_request_duration, the private method wrapping the HTTP
-    # call in every supported exporter version (0.29+). Should a later
-    # version stop calling it, the warning is lost but export is unaffected.
-    module PartialSuccessWarning
-      @mutex = Mutex.new
-      @warned = false
-
-      private
-
-      def measure_request_duration
-        response = super
-        PartialSuccessWarning.check(response)
-        response
-      end
-
-      class << self
-        # Warns once per run, however many batches the server warns about.
-        def check(response)
-          return unless response.is_a?(Net::HTTPSuccess)
-
-          body = response.body
-          return if body.nil? || body.empty?
-
-          # protoc names the generated namespace Opentelemetry, not OpenTelemetry.
-          partial_success = Opentelemetry::Proto::Collector::Trace::V1::ExportTraceServiceResponse
-            .decode(body).partial_success
-          return if partial_success.nil?
-          return if partial_success.rejected_spans.zero? && partial_success.error_message.empty?
-          first_warning = @mutex.synchronize do
-            first = !@warned
-            @warned = true
-            first
-          end
-          return unless first_warning
-
-          rejected = partial_success.rejected_spans
-          summary = if rejected.positive?
-            "Buildkite did not store #{rejected} OpenTelemetry span(s) from one export request"
-          else
-            "Buildkite accepted OpenTelemetry spans with a warning"
-          end
-          message = partial_success.error_message.strip.chomp(".")
-          summary += ": #{message}" unless message.empty?
-          warn "[buildkite-test_collector] #{summary}. Further warnings like this will not be reported."
-        rescue Exception => e # rubocop:disable Lint/RescueException
-          # A body that is not an OTLP response says nothing to warn about.
-          ExceptionHandling.reraise_fatal(e)
-        end
-
-        def reset
-          @mutex.synchronize { @warned = false }
-        end
-      end
-    end
-    private_constant :PartialSuccessWarning
-
     require_relative "otel/span_metrics_reporter"
     require_relative "otel/test_span_metrics_reporter"
     require_relative "otel/child_span_metrics_reporter"
@@ -463,7 +404,6 @@ module Buildkite::TestCollector
         @child_span_forwarder = nil
         @exporters = nil
         ExporterGuard.reset
-        PartialSuccessWarning.reset
         @test_span_metrics_reporter = nil
         @child_span_metrics_reporter = nil
         @api_token = nil
@@ -574,7 +514,7 @@ module Buildkite::TestCollector
           ssl_verify_mode: OpenSSL::SSL::VERIFY_PEER,
           metrics_reporter: metrics_reporter,
         )
-        exporter.singleton_class.prepend(ExporterGuard, PartialSuccessWarning)
+        exporter.singleton_class.prepend(ExporterGuard)
         # Retained so refresh_authorization can reach the headers each
         # exporter snapshotted at construction.
         (@exporters ||= []) << exporter
