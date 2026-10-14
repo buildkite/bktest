@@ -2,6 +2,11 @@
 
 ## v2.17.0
 
+* `buildkite-rspec` writes formatter `--out` files per batch instead of
+  overwriting them, so earlier batches' output is no longer lost. A `%{batch}`
+  placeholder in the path is replaced with the batch ID; otherwise the file name
+  is prefixed with it (`--out tmp/rspec.json` writes `tmp/<batch>-rspec.json`).
+  This applies to command-line and options-file formatters.
 * Stamp each OpenTelemetry child span, phase spans included, with
   `buildkite.test.result` (`pass` or `fail`) so Buildkite can tell a failing
   test's child spans apart. The collector holds each test's finished child
@@ -9,15 +14,8 @@
   less one batch (1,536 by default) across all tests; past that, child spans
   are queued at once without a stamp instead of waiting or being dropped.
 * Print one warning per run when Buildkite accepts an OpenTelemetry request but
-  reports a partial success, such as a sampling notice. Hard-cap refusals are
-  separate: a `403` is not retried, its protobuf error message is logged by the
-  OpenTelemetry exporter, and the collector reports dropped child spans without
-  treating them as missing test results.
-* `buildkite-rspec` writes formatter `--out` files per batch instead of
-  overwriting them, so earlier batches' output is no longer lost. A `%{batch}`
-  placeholder in the path is replaced with the batch ID; otherwise the file name
-  is prefixed with it (`--out tmp/rspec.json` writes `tmp/<batch>-rspec.json`).
-  This applies to command-line and options-file formatters.
+  reports a partial success, such as a sampling notice. Hard-cap `403` refusals
+  are logged separately and are not retried.
 * Add `test.setup`, `test.body`, and `test.teardown` phase spans under each
   OpenTelemetry `test.execution` span. Instrumented child spans nest under the
   phase they ran in, each phase records its failures, and phase spans bypass

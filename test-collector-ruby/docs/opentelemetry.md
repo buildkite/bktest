@@ -471,24 +471,17 @@ process-exit shutdown each give the OpenTelemetry SDK a 30-second budget to
 export buffered spans; the SDK's own retry backoff can run past it when the
 endpoint keeps failing.
 
-An accepted request can carry an OTLP `partial_success`, including a sampling
-notice with no rejected spans. The collector prints the server's message the
-first time this happens in a run and stays quiet about later partial successes.
+An accepted request can include a `partial_success` warning, such as a sampling
+notice. The collector prints the server's message once per run.
 
-A hard cap is a refusal, not a partial success: an organization over its cap
-has `child` exports answered with `403` while `test` exports are still
-accepted. The exporter does not retry a `403`; it logs the server's protobuf
-`google.rpc.Status` message through OpenTelemetry's logger, and the collector's
-dropped-span warning names `last OTLP failure: 403` and says that
-`test.execution` results are unaffected. Check the logged message, because
-missing ingest permissions also produce a `403`. A proxy that replaces the
-body, or a suite that silences OpenTelemetry's error handler, hides the server's
-explanation but not the collector's warning. Later batches are still attempted,
-so a raised limit takes effect mid-run.
+Usage caps reject `child` exports with `403`; `test` exports bypass the cap.
+The exporter logs the server's error message and drops the rejected batch
+without retrying it. Later batches are still attempted. A `403` can also mean
+missing permissions, so check the error message.
 
-A `429` is a transient rate limit, not a cap. The exporter honors `Retry-After`
-for `429` and `503` with bounded retries and reports exhausted retries as export
-failures.
+Rate limits apply to both streams, including test results, and return `429`
+with `Retry-After`. The exporter honors `Retry-After` for `429` and `503`, but
+retries are bounded: exhausting them can lose child spans or test results.
 
 Export failures are reported through OpenTelemetry's own logger. Because
 `test.execution` spans are the submission, the collector also warns prominently
