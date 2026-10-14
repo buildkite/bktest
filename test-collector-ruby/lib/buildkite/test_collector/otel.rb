@@ -127,10 +127,10 @@ module Buildkite::TestCollector
     end
     private_constant :ExporterGuard
 
-    # The server accepts a request it will only partly keep (for example when
-    # the organization is over its span allowance) with a 200 whose
-    # ExportTraceServiceResponse carries a partial_success. The OTLP exporter
-    # reads and discards 2xx bodies, so this reads the response as it passes
+    # An accepted request may carry a sampling notice or rejected-span count
+    # in ExportTraceServiceResponse.partial_success. Hard-cap refusals use
+    # 403 and the exporter's existing google.rpc.Status error logging instead.
+    # The OTLP exporter reads and discards 2xx bodies, so read them as they pass
     # through measure_request_duration, the private method wrapping the HTTP
     # call in every supported exporter version (0.29+). Should a later
     # version stop calling it, the warning is lost but export is unaffected.

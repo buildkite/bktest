@@ -397,7 +397,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
     it "warns once per run, however many batches and exporters the server warns about" do
       stub_request(:post, endpoint).to_return(
         status: 200,
-        body: partial_success_body(error_message: "Organization is over its span allowance; child spans are not being stored."),
+        body: partial_success_body(error_message: "Child spans were sampled."),
         headers: { "Content-Type" => "application/x-protobuf" },
       )
       test_exporter = build_exporter
@@ -407,13 +407,13 @@ RSpec.describe Buildkite::TestCollector::OTel do
       expect { results = [test_exporter, child_exporter, child_exporter].map { |exporter| exporter.export([]) } }
         .to output(
           "[buildkite-test_collector] Buildkite accepted OpenTelemetry spans with a warning: " \
-          "Organization is over its span allowance; child spans are not being stored. " \
+          "Child spans were sampled. " \
           "Further warnings like this will not be reported.\n"
         ).to_stderr
       expect(results).to all(eq(OpenTelemetry::SDK::Trace::Export::SUCCESS))
 
       described_class.shutdown
-      expect { build_exporter.export([]) }.to output(/over its span allowance/).to_stderr
+      expect { build_exporter.export([]) }.to output(/Child spans were sampled/).to_stderr
     end
 
     it "counts rejected spans when the server reports them" do
@@ -1385,20 +1385,29 @@ RSpec.describe Buildkite::TestCollector::OTel do
     described_class.shutdown
   end
 
-  it "warns about dropped child spans as best-effort, not as missing test results" do
+  it "reports a protobuf child refusal without retrying it or losing test results" do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
     allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)
-    root_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
-    failing_child_exporter = Class.new do
-      def export(_spans, timeout: nil) = OpenTelemetry::SDK::Trace::Export::FAILURE
-      def force_flush(timeout: nil) = OpenTelemetry::SDK::Trace::Export::SUCCESS
-      def shutdown(timeout: nil) = OpenTelemetry::SDK::Trace::Export::SUCCESS
-    end.new
-    allow(OpenTelemetry::Exporter::OTLP::Exporter)
-      .to receive(:new)
-      .and_return(root_exporter, failing_child_exporter)
-    allow(OpenTelemetry).to receive(:handle_error)
-    configure_otel(endpoint: "https://example.invalid/v1/traces")
+    log = StringIO.new
+    original_logger = OpenTelemetry.logger
+    OpenTelemetry.logger = Logger.new(log)
+    endpoint = "https://example.invalid/v1/traces"
+    # Match the receiver's google.rpc.Status error envelope. The cap's final
+    # message is server-owned; unlike partial success, this is a refusal.
+    child_request = stub_request(:post, endpoint)
+      .with(headers: { "Buildkite-Tests-Span-Stream" => "child" })
+      .to_return(status: 403, headers: { "Content-Type" => "application/x-protobuf" },
+        body: Google::Rpc::Status.encode(Google::Rpc::Status.new(code: 7, message: "Organization span limit reached")))
+    submitted_results = []
+    test_request = stub_request(:post, endpoint)
+      .with(headers: { "Buildkite-Tests-Span-Stream" => "test" })
+      .to_return do |request|
+        body = Zlib::GzipReader.new(StringIO.new(request.body)).read
+        decoded = Opentelemetry::Proto::Collector::Trace::V1::ExportTraceServiceRequest.decode(body)
+        submitted_results.concat(decoded.resource_spans.flat_map { |r| r.scope_spans.flat_map(&:spans) })
+        { status: 200, body: "" }
+      end
+    configure_otel(endpoint: endpoint)
     tracer = provider.tracer("suite")
 
     record_execution_with_children = lambda do |child_count|
@@ -1412,7 +1421,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
 
     record_execution_with_children.call(2)
     expect { described_class.instance_variable_get(:@child_span_processor).force_flush }.to output(
-      "[buildkite-test_collector] OpenTelemetry dropped 2 child span(s) (export-failure); " \
+      "[buildkite-test_collector] OpenTelemetry dropped 2 child span(s) (export-failure, last OTLP failure: 403); " \
         "test.execution results are unaffected.\n"
     ).to_stderr
     record_execution_with_children.call(3)
@@ -1422,10 +1431,50 @@ RSpec.describe Buildkite::TestCollector::OTel do
       "[buildkite-test_collector] OpenTelemetry dropped 5 child span(s) so far this run; " \
         "test.execution results are unaffected.\n"
     ).to_stderr
-    expect(root_exporter.finished_spans.map(&:name)).to eq(["test.execution", "test.execution"])
+    expect(log.string).to include("Organization span limit reached")
+    expect(child_request).to have_been_requested.twice
+    expect(test_request).to have_been_requested.at_least_once
+    expect(submitted_results.map(&:name)).to eq(["test.execution", "test.execution"])
+    expect(submitted_results.map(&:span_id).uniq.size).to eq(2)
   ensure
     described_class.shutdown
     provider&.shutdown
+    OpenTelemetry.logger = original_logger if original_logger
+  end
+
+  [429, 503].each do |status|
+    it "retries HTTP #{status} with Retry-After and exports the child batch without a drop warning" do
+      provider = OpenTelemetry::SDK::Trace::TracerProvider.new
+      allow(OpenTelemetry).to receive(:tracer_provider).and_return(provider)
+      endpoint = "https://example.invalid/v1/traces"
+      attempts = []
+      child_request = stub_request(:post, endpoint)
+        .with(headers: { "Buildkite-Tests-Span-Stream" => "child" })
+        .to_return do |request|
+          attempts << [Process.clock_gettime(Process::CLOCK_MONOTONIC), request.body]
+          attempts.size == 1 ? { status: status, headers: { "Retry-After" => "1" } } : { status: 200 }
+        end
+      test_request = stub_request(:post, endpoint)
+        .with(headers: { "Buildkite-Tests-Span-Stream" => "test" }).to_return(status: 200)
+      configure_otel(endpoint: endpoint)
+      test = execution_test
+      root = described_class.start_test_span(test: test)
+      described_class.with_test_span(root) { provider.tracer("suite").in_span("child") {} }
+      described_class.finish_test_span(root, test: test)
+
+      expect { described_class.force_flush }.not_to output.to_stderr
+
+      expect(test_request).to have_been_requested.once
+      expect(child_request).to have_been_requested.twice
+      expect(attempts.last.first - attempts.first.first).to be >= 1
+      expect(attempts.last.last).to eq(attempts.first.last)
+      body = Zlib::GzipReader.new(StringIO.new(attempts.last.last)).read
+      decoded = Opentelemetry::Proto::Collector::Trace::V1::ExportTraceServiceRequest.decode(body)
+      expect(decoded.resource_spans.flat_map { |r| r.scope_spans.flat_map(&:spans) }.map(&:name)).to eq(["child"])
+    ensure
+      described_class.shutdown
+      provider&.shutdown
+    end
   end
 
   it "filters child spans without filtering test spans" do
