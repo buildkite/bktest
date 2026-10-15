@@ -471,10 +471,14 @@ process-exit shutdown each give the OpenTelemetry SDK a 30-second budget to
 export buffered spans; the SDK's own retry backoff can run past it when the
 endpoint keeps failing.
 
-Buildkite can accept a request but report that it kept only part of it, as an
-OTLP partial success (for example, when the organization is over its span
-allowance). The collector prints the server's message the first time this
-happens in a run and stays quiet about later ones.
+Usage caps reject `child` exports with `403`; `test` exports bypass the cap.
+The exporter logs the server's error message and drops the rejected batch
+without retrying it. Later batches are still attempted. A `403` can also mean
+missing permissions, so check the error message.
+
+Rate limits apply to both streams, including test results, and return `429`
+with `Retry-After`. The exporter honors `Retry-After` for `429` and `503`, but
+retries are bounded: exhausting them can lose child spans or test results.
 
 Export failures are reported through OpenTelemetry's own logger. Because
 `test.execution` spans are the submission, the collector also warns prominently
