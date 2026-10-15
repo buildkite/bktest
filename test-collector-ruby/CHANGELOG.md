@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+* Export an OpenTelemetry `test.execution` span for examples that RSpec fails
+  without running them, such as every example under a failing
+  `before(:context)` hook. These spans carry the failure but time only its
+  reporting and have no phase spans.
 * Keep OpenTelemetry test span and event attributes (execution identity, result,
   and failure detail) when the process sets `OTEL_ATTRIBUTE_COUNT_LIMIT`,
   `OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`, or `OTEL_EVENT_ATTRIBUTE_COUNT_LIMIT`

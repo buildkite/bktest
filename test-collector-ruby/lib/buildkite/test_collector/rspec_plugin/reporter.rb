@@ -14,6 +14,19 @@ module Buildkite::TestCollector::RSpecPlugin
     def handle_example(notification)
       example = notification.example
       trace = Buildkite::TestCollector.uploader.traces[example.id]
+      # A failing before(:context) or an outer around hook that raises first
+      # fails the example without entering our around(:each). The span is the
+      # submission in OTLP mode, so start one now; it times the reporting
+      # only, since the example never ran.
+      if trace.nil? && Buildkite::TestCollector.otel_enabled? && example.execution_result.status == :failed
+        trace = Buildkite::TestCollector::RSpecPlugin::Trace.new(
+          example,
+          history: {},
+          location_prefix: Buildkite::TestCollector.location_prefix,
+          external_id: Buildkite::TestCollector::UUID.v7,
+        )
+        trace.otel_span = Buildkite::TestCollector::OTel.start_test_span(test: trace)
+      end
       return unless trace
 
       trace.example = example

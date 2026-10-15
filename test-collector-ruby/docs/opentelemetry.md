@@ -77,6 +77,14 @@ Three things worth knowing:
   failure, and an example a hook marks `pending` before deliberately raising
   stays skipped.
 
+Failures that bypass the collector's per-example hook still get a result span.
+For example, a failing `before(:context)` produces one failed execution for each
+affected example, and an outer `around` hook can fail before calling `example.run`.
+Those spans are created when RSpec reports the failure: they retain test identity
+and failure details, but time only result reporting, not the failed hook, and
+have no phase spans. Suite-level failures without an example result (such as
+`before(:suite)` failures or spec load errors) do not produce test executions.
+
 ## OTLP execution attributes
 
 The `buildkite.execution.via=otlp` marker opts every exported test span
