@@ -356,15 +356,23 @@ class PytestRunner:
         items = [item for item, path, names in self.tests
                  if any(_matches(selector, path, names) for selector in selectors)]
         for index, item in enumerate(items):
+            # Don't start another test after a signal, such as one received during collection.
+            if self.stopping:
+                raise _Stop()
+            # pytest gives each class test its own instance, and a test can change it,
+            # so a retry needs a new one.
+            if isinstance(item, pytest.Function) and isinstance(item.parent, pytest.Class):
+                item._obj = None  # pylint: disable=protected-access
+                item.__dict__.pop("_instance", None)
             # Tear down everything but the session after the batch, so session
             # fixtures stay set up for the next batch.
             nextitem = items[index + 1] if index + 1 < len(items) else session
             item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
-            if self.stopping:
-                # Partial reports must not acknowledge outstanding work.
-                raise _Stop()
             if session.shouldfail or session.shouldstop:
                 raise RunnerError(f"pytest stopped: {session.shouldfail or session.shouldstop}")
+        if self.stopping:
+            # Partial reports must not acknowledge outstanding work.
+            raise _Stop()
 
     def _flush(self, collector: Any) -> None:
         """Upload and discard the collector's test executions"""

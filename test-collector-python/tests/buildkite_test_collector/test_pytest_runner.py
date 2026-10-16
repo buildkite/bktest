@@ -65,6 +65,20 @@ def test_b():
     pass
 """,
     "test_broken.py": "import does_not_exist\n",
+    "test_class.py": """
+import os
+
+class TestCounter:
+    count = 0
+
+    def test_count(self):
+        self.count += 1
+        # Fails on its first run only, after changing the instance.
+        first = not os.path.exists("class.ran")
+        open("class.ran", "w").close()
+        assert not first
+        assert self.count == 1
+""",
     "test_slow.py": """
 import time
 from conftest import record
@@ -276,6 +290,20 @@ def test_runs_every_batch_in_one_pytest_session(harness):
         ("upload", ["test_broken.py"]),
         ("host", "POST", "/v1/batches/b_3/results"),
     ]
+
+
+def test_retries_a_class_test_with_a_new_instance(harness):
+    start, _, _, _ = harness
+    host, process = start([
+        batch("b_1", {"format": "file", "path": "test_class.py"}),
+        batch("b_2", {"format": "example", "identifier": "test_class.py::TestCounter::test_count"}),
+        {"type": "done", "reason": "plan_completed"},
+    ])
+    output, _ = process.communicate(timeout=60)
+
+    assert process.returncode == 0, output
+    assert results(host) == {"b_1": {"test_class.py::TestCounter::test_count": "failed"},
+                             "b_2": {"test_class.py::TestCounter::test_count": "passed"}}
 
 
 def wait_for(condition):
