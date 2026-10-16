@@ -1,8 +1,9 @@
 """Persistent pytest runner for `bktec pool exec`.
 
-The runner collects the test suite once, then pulls batches from bktec over the
-runner protocol and runs each batch in the same pytest session, so collection
-and session-scoped fixtures are set up once per job. bktec owns work selection,
+The runner starts pytest once, then pulls batches from bktec over the runner
+protocol and runs each batch in the same pytest session. Each test file is
+collected the first time a batch needs it, and session-scoped fixtures are set
+up once per job. bktec owns work selection,
 retries, muting and the job outcome.
 """
 
@@ -164,6 +165,8 @@ def _matches(selector: Selector, path: Path, names: List[str]) -> bool:
 class PytestRunner:
     """pytest plugin that runs batches from bktec in one pytest session"""
 
+    # pylint: disable=too-many-instance-attributes
+
     def __init__(self) -> None:
         self.client: Optional[Client] = None
         self.done = False
@@ -172,6 +175,7 @@ class PytestRunner:
         self.api = API(os.environ)
         self.collection_errors: List[TestData] = []
         self.tests: List[Tuple[pytest.Item, Path, List[str]]] = []
+        self.collected: List[Path] = []
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_configure(self, config: pytest.Config) -> None:
@@ -188,6 +192,11 @@ class PytestRunner:
                 f"and retries tests: {', '.join(invalid)}")
 
     @pytest.hookimpl(tryfirst=True)
+    def pytest_collection(self, session: pytest.Session) -> bool:  # pylint: disable=unused-argument
+        """pytest_collection hook callback to collect each batch's files when it runs instead"""
+        return True
+
+    @pytest.hookimpl(tryfirst=True)
     def pytest_runtestloop(self, session: pytest.Session) -> bool:
         """pytest_runtestloop hook callback to run batches from bktec instead of all tests"""
         collector = getattr(session.config, "_buildkite", None)
@@ -200,7 +209,8 @@ class PytestRunner:
         previous = {sig: signal.signal(sig, self._handle_signal)
                     for sig in (signal.SIGINT, signal.SIGTERM)}
         try:
-            self._prepare(session, collector)
+            if not self.api.token:
+                logger.warning("No %s environment variable present", API.ENV_TOKEN)
             self._start_session()
             while not self.done:
                 self._pull(session, collector)
@@ -223,15 +233,26 @@ class PytestRunner:
         if self.waiting:
             raise _Stop()
 
-    def _prepare(self, session: pytest.Session, collector: Any) -> None:
-        """Index collected tests and set aside collection errors for the batches that run them"""
-        self.tests = [(item, Path(str(item.path)), item.nodeid.split("::")[1:])
-                      for item in session.items]
-        # Collection errors are the only executions recorded before the first batch.
-        self.collection_errors = list(collector.payload.data)
+    def _collect(self, session: pytest.Session, collector: Any, selectors: List[Selector]) -> None:
+        """Collect the selected files that no earlier batch collected"""
+        paths: List[Path] = []
+        for path, _ in selectors:
+            # Missing files leave their tests unreported, which bktec treats as errored.
+            if path.exists() and path not in paths and not any(
+                    path == done or done in path.parents for done in self.collected):
+                paths.append(path)
+        if not paths:
+            return
+
+        known = {item.nodeid for item, _, _ in self.tests}
+        items = session.perform_collect([str(path) for path in paths])
+        self.collected.extend(paths)
+        self.tests.extend((item, Path(str(item.path)), item.nodeid.split("::")[1:])
+                          for item in items if item.nodeid not in known)
+        session.testscollected = len(self.tests)
+        # Set aside collection errors, which are reported to every batch that selects their file.
+        self.collection_errors.extend(collector.payload.data)
         collector.payload = replace(collector.payload, data=())
-        if not self.api.token:
-            logger.warning("No %s environment variable present", API.ENV_TOKEN)
 
     def _request(self, method: str, path: str, payload: JsonDict, expected: int = 200) -> JsonDict:
         assert self.client
@@ -304,6 +325,7 @@ class PytestRunner:
         # Batch IDs are opaque path segments, not URL paths.
         results_path = f"/batches/{quote(batch_id, safe='')}/results"
         try:
+            self._collect(session, collector, selectors)
             self._run_tests(session, selectors)
         except _Stop:
             raise
@@ -317,8 +339,7 @@ class PytestRunner:
             })
             raise RunnerError(message) from error
 
-        # pytest runs no tests from a file that failed to collect, so report its
-        # collection error to every batch that selects it.
+        # pytest runs no tests from a file that failed to collect.
         for error in self.collection_errors:
             path = Path(os.path.abspath(error.file_name or ""))
             if any(path == selected or path in selected.parents or selected in path.parents

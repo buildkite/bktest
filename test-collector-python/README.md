@@ -78,9 +78,10 @@ pytest --tag-filters "color:blue"
 
 The package includes `buildkite-pytest`, a persistent runner for
 [`bktec pool exec`](https://github.com/buildkite/test-engine-client). It
-collects your tests once, then runs every batch bktec assigns in the same
-pytest process, so collection and session-scoped fixtures are set up once per
-job. Module- and class-scoped fixtures are torn down after each batch.
+starts pytest once and runs every batch bktec assigns in the same pytest
+process. Each test file is imported and collected the first time a batch needs
+it, and session-scoped fixtures are set up once per job. Module- and
+class-scoped fixtures are torn down after each batch.
 
 ```sh
 BUILDKITE_TEST_ENGINE_TEST_RUNNER=pytest bktec pool exec -- buildkite-pytest [pytest options]
@@ -89,10 +90,9 @@ BUILDKITE_TEST_ENGINE_TEST_RUNNER=pytest bktec pool exec -- buildkite-pytest [py
 bktec chooses which tests run and retries failures, so `buildkite-pytest`
 rejects test arguments and options that select, retry or stop tests, such as
 `-k`, `-m`, `-x`, `--maxfail`, `--lf`, `--sw`, `-n` (pytest-xdist),
-`--reruns` (pytest-rerunfailures), `--json` and `--tag-filters`. Configure
-which tests pytest collects with `testpaths` instead, and run it from pytest's
-rootdir. Each batch's test executions are uploaded to Test Engine using
-`BUILDKITE_ANALYTICS_TOKEN`.
+`--reruns` (pytest-rerunfailures), `--json` and `--tag-filters`. Run it from
+pytest's rootdir. Each batch's test executions are uploaded to Test Engine
+using `BUILDKITE_ANALYTICS_TOKEN`.
 
 ## 🎢 Tracing
 

@@ -39,6 +39,8 @@ import os
 import pytest
 from conftest import record
 
+record("import_a")
+
 @pytest.fixture(scope="module", autouse=True)
 def module_fixture():
     record("module_setup")
@@ -65,6 +67,9 @@ def test_b():
     "test_broken.py": "import does_not_exist\n",
     "test_slow.py": """
 import time
+from conftest import record
+
+record("import_slow")
 
 def test_slow():
     open("slow.started", "w").close()
@@ -245,9 +250,10 @@ def test_runs_every_batch_in_one_pytest_session(harness):
     broken = [test for test in uploads.uploads if test["name"] == "test_broken.py"]
     assert broken[0]["tags"] == {"test.pytest_collection_error": "true"}
 
-    # One session for the job; module fixtures are torn down after every batch.
+    # Test files are imported when a batch first needs them, and once. There is
+    # one session for the job; module fixtures are torn down after every batch.
     log = (project / "events.log").read_text().split()
-    assert log[0::2] == ["session_setup",
+    assert log[0::2] == ["import_a", "session_setup",
                          "module_setup", "module_teardown",
                          "module_setup", "module_teardown",
                          "session_teardown"]
