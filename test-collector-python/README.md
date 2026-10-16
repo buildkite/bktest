@@ -74,6 +74,26 @@ pytest --tag-filters "color:blue"
 
 **Note:** The `--tag-filters` option performs exact key:value matching. Only tests with the specified tag will be selected.
 
+## 🔁 Running batches with `bktec pool exec`
+
+The package includes `buildkite-pytest`, a persistent runner for
+[`bktec pool exec`](https://github.com/buildkite/test-engine-client). It
+starts pytest once and runs every batch bktec assigns in the same pytest
+process. Each test file is imported and collected the first time a batch needs
+it, and session-scoped fixtures are set up once per job. Module- and
+class-scoped fixtures are torn down after each batch.
+
+```sh
+BUILDKITE_TEST_ENGINE_TEST_RUNNER=pytest bktec pool exec -- buildkite-pytest [pytest options]
+```
+
+bktec chooses which tests run and retries failures, so `buildkite-pytest`
+rejects test arguments and options that select, retry or stop tests, such as
+`-k`, `-m`, `-x`, `--maxfail`, `--lf`, `--sw`, `-n` (pytest-xdist),
+`--reruns` (pytest-rerunfailures), `--json` and `--tag-filters`. Run it from
+pytest's rootdir. Each batch's test executions are uploaded to Test Engine
+using `BUILDKITE_ANALYTICS_TOKEN`.
+
 ## 🎢 Tracing
 
 Buildkite Test Engine has support for tracing potentially slow operations within your tests, and can collect span data of [four types](https://buildkite.com/docs/test-engine/importing-json#json-test-results-data-reference-span-objects): http, sql, sleep and annotations. This is documented as part of our public JSON API so anyone can instrument any code to send this data.
