@@ -19,6 +19,9 @@ dev = ["mock>=4", "check-manifest", "twine", "responses", "pylint", "pytest-fork
 [project.urls]
 Homepage = "https://github.com/buildkite/test-collector-python"
 
+[project.scripts]
+buildkite-pytest = "buildkite_test_collector.pytest_runner:main"
+
 [project.entry-points.pytest11]
 buildkite-test-collector = "buildkite_test_collector.pytest_plugin"
 
