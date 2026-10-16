@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.17.0
+
 * Export an OpenTelemetry `test.execution` span for examples that RSpec fails
   without running them, such as every example under a failing
   `before(:context)` hook. These spans carry the failure but time only its
