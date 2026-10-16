@@ -62,6 +62,12 @@ func (c Client) FetchCommitList(ctx context.Context, suiteSlug string, days int)
 		return nil, nil
 	}
 
-	commits := strings.Split(text, "\n")
+	// Backfill passes these IDs to Git, so only accept hexadecimal entries.
+	var commits []string
+	for line := range strings.SplitSeq(text, "\n") {
+		if line != "" && strings.Trim(line, "0123456789abcdefABCDEF") == "" {
+			commits = append(commits, line)
+		}
+	}
 	return commits, nil
 }

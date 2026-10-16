@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +59,62 @@ func TestNewClient(t *testing.T) {
 	// Check if the client has an HTTP client.
 	if c.httpClient == nil {
 		t.Errorf("NewClient() = nil, want not nil")
+	}
+}
+
+func TestAPIClientRedirects(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("followed redirect to a different origin")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/local":
+			http.Redirect(w, r, "/success", http.StatusFound)
+		case "/external":
+			http.Redirect(w, r, target.URL, http.StatusFound)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	c := NewClient(ClientConfig{ServerBaseURL: server.URL, AccessToken: "test-token"})
+	for _, tc := range []struct {
+		path string
+		want int
+	}{
+		{"/local", http.StatusNoContent},
+		{"/external", http.StatusFound},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			resp, err := c.httpClient.Get(server.URL + tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				t.Errorf("status = %d, want %d", resp.StatusCode, tc.want)
+			}
+		})
+	}
+}
+
+func TestFetchCommitListSkipsInvalidEntries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "abcd1234\nnot-a-commit\n\nFf012345\n")
+	}))
+	defer server.Close()
+
+	c := NewClient(ClientConfig{ServerBaseURL: server.URL, OrganizationSlug: "my-org"})
+	got, err := c.FetchCommitList(t.Context(), "my-suite", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"abcd1234", "Ff012345"}; !slices.Equal(got, want) {
+		t.Errorf("commits = %q, want %q", got, want)
 	}
 }
 

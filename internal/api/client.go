@@ -76,6 +76,17 @@ func NewClient(cfg ClientConfig) *Client {
 			accessToken:   cfg.AccessToken,
 			tokenProvider: cfg.TokenProvider,
 		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Don't apply API client credentials outside the original origin.
+			origin := via[0].URL
+			if req.URL.Scheme != origin.Scheme || req.URL.Host != origin.Host {
+				return http.ErrUseLastResponse
+			}
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		},
 	}
 
 	return &Client{
