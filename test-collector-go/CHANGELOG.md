@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.1.0 (2026-10-20)
+
 * Initial release: `bktest.Main` and `bktest.Start` report `go test` results
   to Buildkite Test Engine as OpenTelemetry `test.execution` spans over OTLP,
   with `test.body` phase spans and forwarded child spans on a separate
