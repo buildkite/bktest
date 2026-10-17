@@ -105,6 +105,29 @@ describe('createSession', () => {
     expect(warnings).toEqual([])
   })
 
+  it('exports optional columns as integers and lets stringified per-test tags override run tags', async () => {
+    const { spans } = await runSession({ tests: [
+      { start: record(), line: 3, column: 7, finish: record({ tags: { hello: 'test', 'ci.worker.id': 'test-worker', count: 42, enabled: false } }) },
+      { start: record(), line: 3 },
+    ] })
+
+    expect(spans).toHaveLength(2)
+    expect(spans[0].attributes).toMatchObject({
+      'code.line.number': '3',
+      'code.column.number': '7',
+      'buildkite.tag.hello': 'test',
+      'buildkite.tag.ci.worker.id': 'test-worker',
+      'buildkite.tag.count': '42',
+      'buildkite.tag.enabled': 'false',
+    })
+    expect(spans[0].attributeTypes['code.column.number']).toBe('int')
+    expect(spans[0].attributeTypes['buildkite.tag.count']).toBe('string')
+    expect(spans[1].attributes).not.toHaveProperty('code.column.number')
+    expect(spans[1].attributes['buildkite.tag.hello']).toBe('world')
+    expect(spans[1].attributes['buildkite.tag.ci.worker.id']).toBe('agent-1')
+    expect(spans[1].attributes).not.toHaveProperty('buildkite.tag.count')
+  })
+
   it('records a failure as an ERROR status with the reason and exception events', async () => {
     const { spans } = await runSession({ tests: [{ start: record(), finish: failing, line: 3 }] })
 
