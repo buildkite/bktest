@@ -182,6 +182,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ],
     ```
 
+    For experimental OpenTelemetry submission, pass `{ otelEnabled: true }` to the reporter. See [OpenTelemetry submission](docs/opentelemetry.md#playwright) for dependencies and behavior.
+
     If you would like to pass in the API token using a custom environment variable, you can do so using the report options.
 
     ```js

@@ -119,9 +119,9 @@ const createSession = (settings) => {
   const tracer = provider.getTracer(TRACER_NAME, version)
   const run = runAttributes(settings)
 
-  const startTestSpan = (record, { line, startTime } = {}) => {
+  const startTestSpan = (record, { line, column, startTime } = {}) => {
     try {
-      const { attributes } = describeTest(record, { line })
+      const { attributes } = describeTest(record, { line, column })
       const span = tracer.startSpan(TEST_SPAN_NAME, {
         root: true,
         kind: api.SpanKind.INTERNAL,
@@ -153,12 +153,12 @@ const createSession = (settings) => {
     }
   }
 
-  const finishTestSpan = (handle, record, { line, endTime } = {}) => {
+  const finishTestSpan = (handle, record, { line, column, endTime } = {}) => {
     if (!handle) return
     const { span } = handle
     let description
     try {
-      description = describeTest(record, { line })
+      description = describeTest(record, { line, column })
       recordResult(span, description)
     } catch (error) {
       warn(`Could not record the OpenTelemetry test result: ${describeError(error)}`)
@@ -167,6 +167,9 @@ const createSession = (settings) => {
       if (description) {
         for (const [key, value] of Object.entries({ ...description.attributes, ...run })) {
           span.setAttribute(key, value)
+        }
+        for (const [key, value] of Object.entries(record.tags || {})) {
+          if (value !== undefined && value !== null) span.setAttribute(`buildkite.tag.${key}`, String(value))
         }
       }
     } catch (error) {
