@@ -327,6 +327,90 @@ final class TelemetryClientTests: XCTestCase {
     )
   }
 
+  func testLabelsEachSpanStreamOnTheWire() throws {
+    let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
+      environment: self.configuredEnvironment,
+      logger: nil
+    ))
+
+    XCTAssertEqual(configuration.headers(for: .test).map { "\($0.0): \($0.1)" }, [
+      "Buildkite-Tests-Run-Key: run-key",
+      #"Authorization: Token token="SECRET""#,
+      "Buildkite-Tests-Span-Stream: test",
+    ])
+    XCTAssertEqual(configuration.headers(for: .child).map { "\($0.0): \($0.1)" }, [
+      "Buildkite-Tests-Run-Key: run-key",
+      #"Authorization: Token token="SECRET""#,
+      "Buildkite-Tests-Span-Stream: child",
+    ])
+  }
+
+  func testDisablesExportForInvalidRunKey() throws {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
+    func configure(key: String) -> CollectorOTLPConfiguration? {
+      CollectorOTLPConfiguration(
+        environment: EnvironmentValues(
+          values: [
+            "BUILDKITE_ANALYTICS_TOKEN": "collector-token",
+            "BUILDKITE_ANALYTICS_ENVIRONMENT": #"{"key":"\#(key)"}"#,
+          ],
+          getFromEnvironment: { _ in nil },
+          getFromInfoDictionary: { _ in nil }
+        ),
+        logger: logger
+      )
+    }
+
+    XCTAssertEqual(
+      configure(key: String(repeating: "k", count: 255))?.header(named: "Buildkite-Tests-Run-Key"),
+      String(repeating: "k", count: 255)
+    )
+    XCTAssertNil(configure(key: String(repeating: "k", count: 256)))
+    XCTAssertNil(configure(key: ""))
+    XCTAssertNil(configure(key: "run key"))
+    XCTAssertNil(configure(key: "run-kéy"))
+    logger.waitForLogs()
+
+    XCTAssertTrue(messages.withValue { messages in
+      messages.contains(
+        #"[BuildkiteTestCollector] warning: OpenTelemetry span export disabled: run key "run key" is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); it must be 1-255 printable ASCII characters without spaces."#
+      )
+    })
+  }
+
+  func testCapsFailureReasonAndExceptionMessage() throws {
+    let rootExporter = InMemoryExporter()
+    let client = try XCTUnwrap(TelemetryClient.live(
+      environment: self.configuredEnvironment,
+      uploadTags: [:],
+      logger: nil,
+      rootExporter: rootExporter,
+      childExporter: InMemoryExporter()
+    ))
+    var test = TestState(id: UUID(), className: "LongTests", testName: "testLongFailure")
+    test.result = .failed
+    test.issues = [
+      TestIssue(
+        compactDescription: String(repeating: "r", count: 1_025),
+        description: String(repeating: "m", count: 10_241),
+        sourceCodeContext: SourceCodeContext()
+      ),
+    ]
+
+    let executionID = client.startExecution(test)
+    client.finishExecution(executionID, test: test, tags: nil)
+
+    let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
+    XCTAssertEqual(span.status, .error(description: String(repeating: "r", count: 1_024)))
+    XCTAssertEqual(
+      span.events.only?.attributes["exception.message"],
+      .string(String(repeating: "m", count: 10_240) + "...")
+    )
+  }
+
   func testAppliesExecutionNameAffixesAndCustomRunEnvironmentOverrides() throws {
     let rootExporter = InMemoryExporter()
     let client = try XCTUnwrap(TelemetryClient.live(

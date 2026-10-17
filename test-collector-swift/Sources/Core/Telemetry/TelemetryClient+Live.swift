@@ -33,6 +33,11 @@ enum BuildkiteTelemetryAttribute {
   static let testName = "buildkite.test.name"
 }
 
+private enum TelemetryLimit {
+  static let exceptionMessageLength = 10_240
+  static let failureReasonLength = 1_024
+}
+
 private enum TelemetryValue {
   static let executionVia = "otlp"
   static let frameworkName = "xctest"
@@ -41,10 +46,21 @@ private enum TelemetryValue {
   static let unsetResult = "unset"
 }
 
+/// The two Test Engine span streams. Each exporter labels its requests with
+/// one stream so the receiver can tell execution roots from child spans.
+enum SpanStream: String {
+  case test
+  case child
+}
+
 struct CollectorOTLPConfiguration {
   let endpoint: URL
   let headers: [(String, String)]
   let runEnvironment: RunEnvironment
+
+  func headers(for stream: SpanStream) -> [(String, String)] {
+    self.headers + [("Buildkite-Tests-Span-Stream", stream.rawValue)]
+  }
 
   init?(
     environment: EnvironmentValues,
@@ -101,6 +117,14 @@ struct CollectorOTLPConfiguration {
 
     var headers = [(String, String)]()
     if usesBuildkiteCredentials {
+      // The receiver rejects the whole request with 400 for an invalid run
+      // key, so disable export up front rather than fail every export.
+      guard Self.isValidRunKey(runEnvironment.key) else {
+        logger?.warning(
+          "OpenTelemetry span export disabled: run key \(runEnvironment.key.debugDescription) is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); it must be 1-255 printable ASCII characters without spaces."
+        )
+        return nil
+      }
       headers.append(("Buildkite-Tests-Run-Key", runEnvironment.key))
       if let token = environment.analyticsToken {
         headers.append(("Authorization", "Token token=\"\(token)\""))
@@ -121,6 +145,12 @@ struct CollectorOTLPConfiguration {
     self.endpoint = endpoint
     self.headers = headers
     self.runEnvironment = runEnvironment
+  }
+
+  // The receiver accepts `/\A[!-~]{1,255}\z/`.
+  private static func isValidRunKey(_ key: String) -> Bool {
+    (1...255).contains(key.count)
+      && key.unicodeScalars.allSatisfy { (33...126).contains($0.value) }
   }
 
   private static func absoluteURL(_ value: String) -> URL? {
@@ -150,7 +180,7 @@ struct CollectorOTLPConfiguration {
   }
 }
 
-private final class SynchronousOtlpTraceExporter: SpanExporter, @unchecked Sendable {
+private final class SynchronousOtlpTraceExporter: FailureReportingSpanExporter, @unchecked Sendable {
   private let exporter: OtlpHttpTraceExporter
   private let httpClient: SynchronousHTTPClient
 
@@ -163,6 +193,10 @@ private final class SynchronousOtlpTraceExporter: SpanExporter, @unchecked Senda
       httpClient: httpClient,
       envVarHeaders: nil
     )
+  }
+
+  var lastFailure: SpanExportFailure? {
+    self.httpClient.lastFailure
   }
 
   func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
@@ -181,9 +215,13 @@ private final class SynchronousOtlpTraceExporter: SpanExporter, @unchecked Senda
 }
 
 private final class SynchronousHTTPClient: HTTPClient {
+  // Matches the reference exporter: transient statuses are retried, every
+  // other non-2xx status (400 run key, 401/403 auth, 413, 415, 500, …) is not.
+  private static let retryableStatusCodes: Set<Int> = [408, 429, 502, 503, 504]
+
   private let lock = NSLock()
   private let session: URLSession
-  private var wasAccepted: Bool?
+  private var outcome: Result<Void, SpanExportFailure>?
 
   init(timeout: TimeInterval) {
     let configuration = URLSessionConfiguration.ephemeral
@@ -195,14 +233,22 @@ private final class SynchronousHTTPClient: HTTPClient {
 
   func prepare() {
     self.lock.lock()
-    self.wasAccepted = nil
+    self.outcome = nil
     self.lock.unlock()
   }
 
   var result: SpanExporterResultCode {
     self.lock.lock()
     defer { self.lock.unlock() }
-    return self.wasAccepted == true ? .success : .failure
+    if case .success = self.outcome { return .success }
+    return .failure
+  }
+
+  var lastFailure: SpanExportFailure? {
+    self.lock.lock()
+    defer { self.lock.unlock() }
+    if case let .failure(failure) = self.outcome { return failure }
+    return nil
   }
 
   func send(
@@ -212,11 +258,10 @@ private final class SynchronousHTTPClient: HTTPClient {
     let semaphore = DispatchSemaphore(value: 0)
     let task = self.session.dataTask(with: request) { [weak self] _, response, error in
       let httpResponse = response as? HTTPURLResponse
-      let accepted = error == nil
-        && httpResponse.map { (200..<300).contains($0.statusCode) } == true
+      let outcome = Self.outcome(response: httpResponse, error: error)
 
       self?.lock.lock()
-      self?.wasAccepted = accepted
+      self?.outcome = outcome
       self?.lock.unlock()
 
       // The collector owns failed-span requeueing. Always report transport
@@ -231,6 +276,29 @@ private final class SynchronousHTTPClient: HTTPClient {
     }
     task.resume()
     semaphore.wait()
+  }
+
+  private static func outcome(
+    response: HTTPURLResponse?,
+    error: Error?
+  ) -> Result<Void, SpanExportFailure> {
+    if let error {
+      let isTimeout = (error as? URLError)?.code == .timedOut
+      return .failure(SpanExportFailure(
+        reason: isTimeout ? "timeout" : "socket_error",
+        isRetryable: true
+      ))
+    }
+    guard let status = response?.statusCode else {
+      return .failure(SpanExportFailure(reason: "socket_error", isRetryable: true))
+    }
+    if (200..<300).contains(status) {
+      return .success(())
+    }
+    return .failure(SpanExportFailure(
+      reason: String(status),
+      isRetryable: Self.retryableStatusCodes.contains(status)
+    ))
   }
 }
 
@@ -248,25 +316,24 @@ extension TelemetryClient {
       logger: logger
     ) else { return nil }
 
-    let exporterConfiguration = OtlpConfiguration(
-      timeout: 10,
-      compression: .gzip,
-      headers: configuration.headers,
-      exportAsJson: false
-    )
-    let makeExporter = {
+    func makeExporter(for stream: SpanStream) -> any SpanExporter {
       SynchronousOtlpTraceExporter(
         endpoint: configuration.endpoint,
-        configuration: exporterConfiguration
-      ) as any SpanExporter
+        configuration: OtlpConfiguration(
+          timeout: 10,
+          compression: .gzip,
+          headers: configuration.headers(for: stream),
+          exportAsJson: false
+        )
+      )
     }
     let live = LiveTelemetryClient(
       configuration: configuration,
       environment: environment,
       uploadTags: uploadTags,
       logger: logger,
-      rootExporter: rootExporter ?? makeExporter(),
-      childExporter: childExporter ?? makeExporter(),
+      rootExporter: rootExporter ?? makeExporter(for: .test),
+      childExporter: childExporter ?? makeExporter(for: .child),
       rootSpanLimits: rootSpanLimits
     )
 
@@ -437,11 +504,12 @@ private final class LiveTelemetryClient {
     }
 
     if result == .failed {
-      let reason = Self.failureReason(test.issues)
-      span.status = .error(description: reason)
+      span.status = .error(description: Self.failureReason(test.issues))
       for issue in test.issues {
         var attributes: [String: AttributeValue] = [
-          SemanticConventions.Exception.message.rawValue: .string(issue.description),
+          SemanticConventions.Exception.message.rawValue: .string(
+            Self.exceptionMessage(issue.description)
+          ),
         ]
         let backtrace = issue.sourceCodeContext.callStack.enumerated()
           .map { "\($0.offset) \($0.element)" }
@@ -514,11 +582,23 @@ private final class LiveTelemetryClient {
     }
   }
 
+  // The server truncates the failure reason to 1,024 code points; cut it here
+  // so one huge assertion message cannot bloat the span.
   private static func failureReason(_ issues: [TestIssue]) -> String {
+    let reason: String
     if issues.count > 1 {
-      return "\(issues.count) failures: \(issues.map(\.compactDescription).joined(separator: ", "))"
+      reason = "\(issues.count) failures: \(issues.map(\.compactDescription).joined(separator: ", "))"
+    } else {
+      reason = issues.first?.compactDescription ?? "Test failed"
     }
-    return issues.first?.compactDescription ?? "Test failed"
+    return String(reason.prefix(TelemetryLimit.failureReasonLength))
+  }
+
+  // Exception messages share a 10,240-character budget per execution on the
+  // server; the truncation marker shows the message was cut by the collector.
+  private static func exceptionMessage(_ description: String) -> String {
+    guard description.count > TelemetryLimit.exceptionMessageLength else { return description }
+    return description.prefix(TelemetryLimit.exceptionMessageLength) + "..."
   }
 
   private static func makeProvider(
