@@ -3,6 +3,7 @@
 
 const FAILURE_REASON_MAX_LENGTH = 1024
 const EXCEPTION_MESSAGE_MAX_LENGTH = 10243
+const EXCEPTION_STACKTRACE_MAX_LENGTH = 16384
 
 // A result not listed here leaves the span's 'unset' placeholder, which the
 // server skips.
@@ -38,10 +39,14 @@ const exceptionEvents = (record) => {
   const events = []
   for (const failure of record.failure_expanded || []) {
     const message = (failure.expanded || []).join('\n')
-    if (message === '') continue
+    const stacktrace = (failure.backtrace || []).join('\n')
+    if (message === '' && stacktrace === '') continue
+    const attributes = {}
+    if (message !== '') attributes['exception.message'] = truncate(message, EXCEPTION_MESSAGE_MAX_LENGTH)
+    if (stacktrace !== '') attributes['exception.stacktrace'] = truncate(stacktrace, EXCEPTION_STACKTRACE_MAX_LENGTH)
     events.push({
       name: 'exception',
-      attributes: { 'exception.message': truncate(message, EXCEPTION_MESSAGE_MAX_LENGTH) },
+      attributes,
     })
   }
   return events

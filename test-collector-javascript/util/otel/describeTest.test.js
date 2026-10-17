@@ -62,6 +62,26 @@ describe('describeTest', () => {
     ])
   })
 
+  it('includes optional backtrace lines, capped without splitting a surrogate pair', () => {
+    const described = describeTest(record({
+      result: 'failed',
+      failure_expanded: [
+        { expanded: ['failure'], backtrace: ['at first', 'at second'] },
+        { backtrace: ['s'.repeat(20000)] },
+        { backtrace: [`${'s'.repeat(16380)}😀${'s'.repeat(100)}`] },
+        { expanded: ['Jest message'], backtrace: [] },
+        { backtrace: [] },
+      ],
+    }))
+
+    expect(described.exceptionEvents).toEqual([
+      { name: 'exception', attributes: { 'exception.message': 'failure', 'exception.stacktrace': 'at first\nat second' } },
+      { name: 'exception', attributes: { 'exception.stacktrace': `${'s'.repeat(16381)}...` } },
+      { name: 'exception', attributes: { 'exception.stacktrace': `${'s'.repeat(16380)}...` } },
+      { name: 'exception', attributes: { 'exception.message': 'Jest message' } },
+    ])
+  })
+
   it('truncates the reason to 1024 and the exception message to 10243 characters', () => {
     const described = describeTest(record({
       result: 'failed',
