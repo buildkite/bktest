@@ -366,20 +366,17 @@ final class TelemetryClientTests: XCTestCase {
     let logger = Logger(printer: { message in
       messages.withValue { $0.append(message) }
     })
-    func configure(key: String, relay: Bool = false) -> CollectorOTLPConfiguration? {
-      self.configuration(runKey: key, relay: relay, logger: logger)
-    }
-
     XCTAssertEqual(
-      configure(key: String(repeating: "k", count: 255))?.header(named: "Buildkite-Tests-Run-Key"),
+      self.configuration(runKey: String(repeating: "k", count: 255), logger: logger)?
+        .header(named: "Buildkite-Tests-Run-Key"),
       String(repeating: "k", count: 255)
     )
-    XCTAssertNil(configure(key: String(repeating: "k", count: 256)))
-    XCTAssertNil(configure(key: ""))
-    XCTAssertNil(configure(key: "run key"))
-    XCTAssertNil(configure(key: "run-kéy"))
-    XCTAssertNotNil(configure(key: "run-key", relay: true))
-    XCTAssertNil(configure(key: "run key", relay: true))
+    XCTAssertNil(self.configuration(runKey: String(repeating: "k", count: 256), logger: logger))
+    XCTAssertNil(self.configuration(runKey: "", logger: logger))
+    XCTAssertNil(self.configuration(runKey: "run key", logger: logger))
+    XCTAssertNil(self.configuration(runKey: "run-kéy", logger: logger))
+    XCTAssertNotNil(self.configuration(runKey: "run-key", relay: true, logger: logger))
+    XCTAssertNil(self.configuration(runKey: "run key", relay: true, logger: logger))
     logger.waitForLogs()
 
     XCTAssertTrue(messages.withValue { messages in
@@ -609,7 +606,7 @@ final class TelemetryClientTests: XCTestCase {
 
   private func configuration(
     runKey: String,
-    relay: Bool,
+    relay: Bool = false,
     logger: Core.Logger?
   ) -> CollectorOTLPConfiguration? {
     var values = ["BUILDKITE_ANALYTICS_ENVIRONMENT": #"{"key":"\#(runKey)"}"#]

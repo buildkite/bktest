@@ -2,12 +2,10 @@
 
 ## 2.0.0-beta.2
 
-- Send `Buildkite-Tests-Span-Stream: test` on execution root requests and `child` on child span requests so Test Engine can tell the two streams apart
+- Label execution root requests `Buildkite-Tests-Span-Stream: test` and child span requests `child`
 - Disable export with a warning when the run key is not 1-255 printable ASCII characters without spaces, instead of sending requests the receiver rejects
-- Stop retrying root-span exports after an HTTP status the receiver will keep returning (such as 401, 403, 413 or 500); keep retrying only transient failures (network errors, timeouts, 408, 429, 502, 503, 504)
-- Warn `TEST RESULTS MISSING` with the count and cause when execution roots are dropped, and report the run total at the bundle-end flush
-- Cap the failure reason at 1,024 characters, each exception message at 10,240 characters, annotations and stack traces at 16,384 characters, and execution root attribute values at 10,243 characters before export, so one oversized value cannot push a request over the receiver's size limit
-- Add `docs/otel-spec-conformance.md`, the clause-by-clause audit against the portable OTel collector specification
+- Drop queued executions instead of retrying when the receiver returns a non-transient HTTP status (such as 401, 403, 413 or 500); only network errors, timeouts and 408/429/502/503/504 are retried. Drops are reported as `TEST RESULTS MISSING` with the cause, and the run total is reported at the bundle-end flush
+- Truncate oversized failure reasons, exception messages, stack traces, annotations and attribute values before export, so one huge value cannot get the request rejected
 
 ## 2.0.0-beta.1
 

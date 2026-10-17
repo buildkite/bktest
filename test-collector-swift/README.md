@@ -239,9 +239,10 @@ from an XCTest runner restart.
 
 This is not disk-backed delivery. A hard exit before a test finishes, a process
 exit while the endpoint remains unavailable, or a machine restart can still
-lose spans; the bundle-end flush reports how many executions were dropped this
-run. An ambiguous network timeout may also result in a retry after the server
-accepted the first request.
+lose spans. Drops the collector sees before the bundle-end flush are reported
+there as a `TEST RESULTS MISSING` total; losses from a hard exit or restart are
+not reported. An ambiguous network timeout may also result in a retry after the
+server accepted the first request.
 
 ## 🔍 Debugging
 

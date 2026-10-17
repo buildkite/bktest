@@ -33,8 +33,12 @@ enum BuildkiteTelemetryAttribute {
   static let testName = "buildkite.test.name"
 }
 
-/// Length limits in Unicode scalars, matching the receiver's code-point
-/// budgets so one oversized value cannot push a request past its size limit.
+/// Per-value length caps applied before export so one oversized value cannot
+/// push a request past the receiver's size limit. The failure reason and each
+/// exception message follow the receiver's code-point budgets (the message
+/// marker `...` shows the collector cut it); the span and event attribute caps
+/// follow the SDK limits in the collector specification, where 10,243 keeps
+/// long test names within the receiver's 10,240-code-point identity limit.
 enum TelemetryLimit {
   static let attributeValueLength = 10_243
   static let eventAttributeValueLength = 16_384
@@ -53,8 +57,8 @@ private enum TelemetryValue {
   static let unsetResult = "unset"
 }
 
-/// The two Test Engine span streams. Each exporter labels its requests with
-/// one stream so the receiver can tell execution roots from child spans.
+/// `Buildkite-Tests-Span-Stream` values. Each exporter sends exactly one, so
+/// execution roots never share a request with child spans.
 enum SpanStream: String {
   case test
   case child
@@ -502,11 +506,14 @@ private final class LiveTelemetryClient {
     }
 
     if result == .failed {
-      span.status = .error(description: Self.failureReason(test.issues))
+      span.status = .error(
+        description: Self.failureReason(test.issues)
+          .truncated(toUnicodeScalars: TelemetryLimit.failureReasonLength)
+      )
       for issue in test.issues {
         var attributes: [String: AttributeValue] = [
           SemanticConventions.Exception.message.rawValue: .string(
-            Self.exceptionMessage(issue.description)
+            issue.description.truncated(toUnicodeScalars: TelemetryLimit.exceptionMessageLength, marker: "...")
           ),
         ]
         let backtrace = issue.sourceCodeContext.callStack.enumerated()
@@ -582,22 +589,11 @@ private final class LiveTelemetryClient {
     }
   }
 
-  // The server truncates the failure reason to 1,024 code points; cut it here
-  // so one huge assertion message cannot bloat the span.
   private static func failureReason(_ issues: [TestIssue]) -> String {
-    let reason: String
     if issues.count > 1 {
-      reason = "\(issues.count) failures: \(issues.map(\.compactDescription).joined(separator: ", "))"
-    } else {
-      reason = issues.first?.compactDescription ?? "Test failed"
+      return "\(issues.count) failures: \(issues.map(\.compactDescription).joined(separator: ", "))"
     }
-    return reason.truncated(toUnicodeScalars: TelemetryLimit.failureReasonLength)
-  }
-
-  // Exception messages share a 10,240-character budget per execution on the
-  // server; the truncation marker shows the message was cut by the collector.
-  private static func exceptionMessage(_ description: String) -> String {
-    description.truncated(toUnicodeScalars: TelemetryLimit.exceptionMessageLength, marker: "...")
+    return issues.first?.compactDescription ?? "Test failed"
   }
 
   private static func makeProvider(

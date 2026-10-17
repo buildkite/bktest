@@ -9,8 +9,8 @@ enum SpanExportFailure: Error {
   case transportError
   case httpStatus(Int)
 
-  // Matches the reference exporter: transient statuses are retried, every
-  // other non-2xx status (400 run key, 401/403 auth, 413, 415, 500, …) is not.
+  // Only transient failures are retried; any other status (400 bad run key,
+  // 401/403 auth, 413, 415, 500, …) would recur.
   var isRetryable: Bool {
     switch self {
     case .timeout, .transportError:
@@ -53,12 +53,6 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
   private var droppedCount = 0
   private var reportedDroppedCount = 0
 
-  private enum ExportAttempt {
-    case exported
-    case queued(failure: SpanExportFailure?)
-    case dropped(count: Int, failure: SpanExportFailure?)
-  }
-
   init(
     exporter: any SpanExporter,
     logger: Logger?,
@@ -85,15 +79,18 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
       return
     }
 
-    switch self.exportPending() {
-    case .exported:
+    if self.exportPending() {
       self.logger?.debug("Exported OpenTelemetry test execution: \(name)")
-    case let .queued(failure):
+      return
+    }
+
+    let failure = self.failureReporter?.lastFailure
+    if failure?.isRetryable ?? true {
       self.logger?.error(
         "OpenTelemetry export failed for \(name)\(failure.map { " (\($0.reason))" } ?? ""); the execution remains queued in this process"
       )
-    case let .dropped(count, failure):
-      self.reportDropped(count: count, failure: failure)
+    } else {
+      self.reportDropped(count: self.dropPending(), failure: failure)
     }
   }
 
@@ -110,19 +107,11 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
     self.exporter.shutdown(explicitTimeout: explicitTimeout)
   }
 
-  /// Makes a final export attempt for queued executions. The test process
-  /// exits after the bundle flush, so anything still unsent is lost and is
-  /// reported as dropped.
+  // The process exits after the bundle flush, so anything still unsent here
+  // is lost; count it as dropped.
   private func flush(timeout: TimeInterval?) {
-    if !self.pending.isEmpty {
-      switch self.exportPending(timeout: timeout) {
-      case .exported:
-        break
-      case let .queued(failure):
-        self.reportDropped(count: self.dropPending(), failure: failure)
-      case let .dropped(count, failure):
-        self.reportDropped(count: count, failure: failure)
-      }
+    if !self.pending.isEmpty, !self.exportPending(timeout: timeout) {
+      self.reportDropped(count: self.dropPending(), failure: self.failureReporter?.lastFailure)
     }
     if self.droppedCount > self.reportedDroppedCount {
       self.logger?.warning(
@@ -137,23 +126,18 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
     }
   }
 
-  private func exportPending(timeout: TimeInterval? = nil) -> ExportAttempt {
+  private func exportPending(timeout: TimeInterval? = nil) -> Bool {
     switch self.exporter.export(spans: self.pending, explicitTimeout: timeout) {
     case .success:
       self.pending.removeAll()
       self.retryDelayIndex = 0
       self.retryNotBefore = nil
-      return .exported
+      return true
     case .failure:
       let delay = Self.retryDelays[self.retryDelayIndex]
       self.retryNotBefore = self.now() + delay
       self.retryDelayIndex = min(self.retryDelayIndex + 1, Self.retryDelays.count - 1)
-
-      let failure = self.failureReporter?.lastFailure
-      guard failure?.isRetryable ?? true else {
-        return .dropped(count: self.dropPending(), failure: failure)
-      }
-      return .queued(failure: failure)
+      return false
     }
   }
 
@@ -164,8 +148,8 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
     return count
   }
 
-  /// The first drop is reported immediately so the cause is visible next to
-  /// the test that triggered it; the run total is reported at flush.
+  // The first drop is reported immediately so the cause is visible next to
+  // the test that triggered it; the run total is reported at flush.
   private func reportDropped(count: Int, failure: SpanExportFailure?) {
     guard self.reportedDroppedCount == 0 else {
       self.logger?.debug("Dropped \(count) OpenTelemetry test execution(s)\(Self.detail(failure))")
