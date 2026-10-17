@@ -3,7 +3,7 @@
 
 const FAILURE_REASON_MAX_LENGTH = 1024
 const EXCEPTION_MESSAGE_MAX_LENGTH = 10243
-const EXCEPTION_STACKTRACE_MAX_LENGTH = 16384
+const EXCEPTION_STACKTRACE_MAX_LENGTH = 10243
 
 // A result not listed here leaves the span's 'unset' placeholder, which the
 // server skips.
