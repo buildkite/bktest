@@ -51,6 +51,8 @@ stack traces use the JSON failure detail in an `exception` event.
 The reporter runs in the main process, separate from the test workers. It
 does not export child spans, phase spans, browser instrumentation or in-test
 annotations, and does not install or change a global OpenTelemetry provider.
+`otelSpanFilter`, `annotate` and per-execution tagging helpers are unavailable;
+per-test tags come from Playwright's `@key:value` test tags.
 HTTP mocks inside workers do not affect its exporter; HTTP mocks in the main
 process must allow the OTLP endpoint.
 
