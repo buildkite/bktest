@@ -68,7 +68,7 @@ describe('describeTest', () => {
       failure_expanded: [
         { expanded: ['failure'], backtrace: ['at first', 'at second'] },
         { backtrace: ['s'.repeat(20000)] },
-        { backtrace: [`${'s'.repeat(16380)}😀${'s'.repeat(100)}`] },
+        { backtrace: [`${'s'.repeat(10239)}😀${'s'.repeat(100)}`] },
         { expanded: ['Jest message'], backtrace: [] },
         { backtrace: [] },
       ],
@@ -76,8 +76,8 @@ describe('describeTest', () => {
 
     expect(described.exceptionEvents).toEqual([
       { name: 'exception', attributes: { 'exception.message': 'failure', 'exception.stacktrace': 'at first\nat second' } },
-      { name: 'exception', attributes: { 'exception.stacktrace': `${'s'.repeat(16381)}...` } },
-      { name: 'exception', attributes: { 'exception.stacktrace': `${'s'.repeat(16380)}...` } },
+      { name: 'exception', attributes: { 'exception.stacktrace': `${'s'.repeat(10240)}...` } },
+      { name: 'exception', attributes: { 'exception.stacktrace': `${'s'.repeat(10239)}...` } },
       { name: 'exception', attributes: { 'exception.message': 'Jest message' } },
     ])
   })
