@@ -1,7 +1,11 @@
 const stripAnsi = require('strip-ansi');
+const { randomUUID } = require('crypto')
 const CI = require('../util/ci')
 const uploadTestResults = require('../util/uploadTestResults')
 const Paths = require('../util/paths')
+const { resolveSettings } = require('../util/otel/config')
+const { sessionFor } = require('../util/otel/session')
+const { warn, describeError } = require('../util/otel/warn')
 
 /**
  * JSDoc Imports
@@ -28,11 +32,29 @@ class PlaywrightBuildkiteTestEngineReporter {
     this._options = options;
     this._paths = new Paths({ cwd: process.cwd() }, this._testEnv.location_prefix);
     this._tagPattern = /^@[^:]+:[^:]+$/;
+    this._session = null;
   }
 
-  onBegin() { }
+  onBegin(config) {
+    if (!this._options?.otelEnabled) return;
 
-  onEnd() {
+    resolveSettings({
+      otelEnabled: true,
+      token: this._options.token,
+      testRunner: 'playwright',
+      frameworkVersion: config.version,
+      runEnv: this._testEnv,
+      tags: this._tags,
+      probe: settings => { this._session = sessionFor(settings); },
+    });
+  }
+
+  async onEnd() {
+    if (this._session) {
+      await this._session.forceFlush();
+      await this._session.shutdown();
+      return;
+    }
     return new Promise(resolve => {
       uploadTestResults(this._testEnv, this._tags, this._testResults, this._options, resolve);
     })
@@ -46,7 +68,24 @@ class PlaywrightBuildkiteTestEngineReporter {
    * @param {TestResult} testResult
    */
   onTestEnd(test, testResult) {
-    this._testResults.push(this.testEngineRecord(test, testResult));
+    if (!this._session) {
+      this._testResults.push(this.testEngineRecord(test, testResult));
+      return;
+    }
+
+    try {
+      const record = this.testEngineRecord(test, testResult);
+      record.id = randomUUID();
+      // JSON retains its historical 'unknown'; OTLP would discard that status.
+      if (testResult.status === 'interrupted') record.result = 'failed';
+      const { line, column } = test.location;
+      const startTime = testResult.startTime.getTime();
+      // Worker timings include hooks and exclude reporter/transport latency.
+      const handle = this._session.startTestSpan(record, { line, column, startTime });
+      this._session.finishTestSpan(handle, record, { line, column, endTime: startTime + testResult.duration });
+    } catch (error) {
+      warn(`TEST RESULTS MISSING: Could not report the Playwright test execution over OpenTelemetry: ${describeError(error)}`);
+    }
   }
 
   testEngineRecord(test, testResult) {
