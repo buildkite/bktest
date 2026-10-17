@@ -43,8 +43,8 @@ const main = async () => {
 
   for (const step of scenario.tests || []) {
     for (let i = 0; i < (step.repeat || 1); i++) {
-      const handle = session.startTestSpan(step.start, { line: step.line, startTime: step.startTime })
-      session.finishTestSpan(handle, 'finish' in step ? step.finish : step.start, { line: step.line, endTime: step.endTime })
+      const handle = session.startTestSpan(step.start, { line: step.line, column: step.column, startTime: step.startTime })
+      session.finishTestSpan(handle, 'finish' in step ? step.finish : step.start, { line: step.line, column: step.column, endTime: step.endTime })
     }
   }
   if (scenario.waitBeforeFlush) await new Promise((resolve) => setTimeout(resolve, scenario.waitBeforeFlush))
