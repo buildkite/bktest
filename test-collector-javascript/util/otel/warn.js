@@ -1,7 +1,12 @@
 const PREFIX = '[buildkite-test-collector]'
 
+let handler = (message) => console.warn(message)
+
+// Some runner hosts filter stderr; let their adapter choose a visible sink.
+const setWarningHandler = (output) => { handler = output }
+
 const warn = (message) => {
-  console.warn(`${PREFIX} ${message}`)
+  handler(`${PREFIX} ${message}`)
 }
 
 const describeError = (error) => {
@@ -9,4 +14,4 @@ const describeError = (error) => {
   return String(error)
 }
 
-module.exports = { warn, describeError, PREFIX }
+module.exports = { warn, describeError, setWarningHandler, PREFIX }
