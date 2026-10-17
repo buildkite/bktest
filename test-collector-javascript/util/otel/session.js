@@ -62,9 +62,9 @@ const createSession = (settings) => {
     propagators: [new sdk.core.W3CTraceContextPropagator(), new sdk.core.W3CBaggagePropagator()],
   })
 
-  const startTestSpan = (record, { line, startTime } = {}) => {
+  const startTestSpan = (record, { line, column, startTime } = {}) => {
     try {
-      const { attributes } = describeTest(record, { line })
+      const { attributes } = describeTest(record, { line, column })
       const span = tracer.startSpan('test.execution', {
         root: true, kind: api.SpanKind.INTERNAL, startTime, links: jobSpanLinks(sdk),
         attributes: limitAttributes({
@@ -79,17 +79,20 @@ const createSession = (settings) => {
     }
   }
 
-  const finishTestSpan = (handle, record, { line, endTime } = {}) => {
+  const finishTestSpan = (handle, record, { line, column, endTime } = {}) => {
     if (!handle) return
     const { span } = handle
     try {
-      const description = describeTest(record, { line })
+      const description = describeTest(record, { line, column })
       if (description.status) span.setAttribute('test.case.result.status', description.status)
       if (description.status === 'fail') {
         span.setStatus({ code: api.SpanStatusCode.ERROR, message: description.failureReason })
         for (const event of description.exceptionEvents) span.addEvent(event.name, event.attributes)
       }
       span.setAttributes(limitAttributes({ ...description.attributes, ...run }))
+      for (const [key, value] of Object.entries(record.tags || {})) {
+        if (value !== undefined && value !== null) span.setAttribute(`buildkite.tag.${key}`, String(value))
+      }
     } catch (error) {
       warn(`Could not describe OpenTelemetry test span: ${describeError(error)}`)
     }
