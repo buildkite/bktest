@@ -1,7 +1,7 @@
 """Test Engine run_env"""
 
 import platform
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Optional, Mapping
 from uuid import uuid4
 
@@ -29,16 +29,33 @@ class RunEnvBuilder:
         assert env.key == "test-build-123"
     """
 
+    # Non-empty values of these override the detected CI metadata.
+    OVERRIDES = {
+        "key": "BUILDKITE_ANALYTICS_KEY",
+        "url": "BUILDKITE_ANALYTICS_URL",
+        "branch": "BUILDKITE_ANALYTICS_BRANCH",
+        "commit_sha": "BUILDKITE_ANALYTICS_SHA",
+        "number": "BUILDKITE_ANALYTICS_NUMBER",
+        "job_id": "BUILDKITE_ANALYTICS_JOB_ID",
+        "message": "BUILDKITE_ANALYTICS_MESSAGE",
+    }
+
     def __init__(self, env: Mapping[str, Optional[str]]):
         self.env = env
 
     def build(self) -> 'RunEnv':
-        """Build a RunEnv by detecting the CI system"""
-        return \
+        """Build a RunEnv from the detected CI system and BUILDKITE_ANALYTICS_* overrides"""
+        detected = \
             self._buildkite_env() or \
             self._github_actions_env() or \
             self._circle_ci_env() or \
             self._generic_env()
+        overrides = {
+            field: self._get_env(name)
+            for field, name in self.OVERRIDES.items()
+            if self._get_env(name) is not None
+        }
+        return replace(detected, **overrides)
 
     def _get_env(self, name: str) -> Optional[str]:
         var = self.env.get(name)

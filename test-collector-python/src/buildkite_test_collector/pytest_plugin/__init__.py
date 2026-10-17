@@ -1,6 +1,8 @@
 """Buildkite test collector for Pytest."""
 
 import os
+from typing import Tuple
+
 import pytest
 
 from ..collector.payload import Payload
@@ -8,6 +10,10 @@ from ..collector.run_env import RunEnvBuilder
 from ..collector.api import API
 from .span_collector import SpanCollector
 from .buildkite_plugin import BuildkitePlugin
+from .otel import hookspec as otel_hookspec
+from .otel import plugin as otel_plugin
+
+OTEL_PLUGIN_NAME = "buildkite-test-collector-otel"
 
 
 @pytest.fixture
@@ -17,6 +23,11 @@ def spans(request):
     plugin = getattr(request.config, '_buildkite', None)
 
     return SpanCollector(plugin=plugin, nodeid=nodeid)
+
+
+def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
+    """pytest_addhooks hook callback to declare the OTel span filter hook"""
+    pluginmanager.add_hookspecs(otel_hookspec)
 
 
 @pytest.hookimpl(trylast=True)
@@ -30,10 +41,34 @@ def pytest_configure(config):
         "add tag to test execution for Buildkite Test Collector. "
         "Both key and value must be a string.")
 
-    payload = Payload.init(env, tags=env_builder.worker_id_tag())
+    tags = env_builder.worker_id_tag()
+    payload = Payload.init(env, tags=tags)
     plugin = BuildkitePlugin(payload, rootpath=config.rootpath)
     setattr(config, '_buildkite', plugin)
     config.pluginmanager.register(plugin)
+
+    # The xdist controller only replays its workers' reports; the workers
+    # upload (JSON or OTel) for themselves.
+    xdist_enabled, is_xdist_worker = _xdist_role(config)
+    if not xdist_enabled or is_xdist_worker:
+        otel = otel_plugin.build(os.environ, env, tags, plugin)
+        if otel is not None:
+            config.pluginmanager.register(otel, name=OTEL_PLUGIN_NAME)
+
+
+def _xdist_role(config: pytest.Config) -> Tuple[bool, bool]:
+    """Return ``(xdist_enabled, is_xdist_worker)`` for this process"""
+    xdist_plugin = config.pluginmanager.getplugin("xdist")
+    if xdist_plugin is not None:
+        numprocesses = config.getoption("numprocesses")
+    else:
+        numprocesses = None
+    xdist_enabled = (
+        xdist_plugin is not None
+        and numprocesses is not None
+        and numprocesses > 0
+    )
+    return xdist_enabled, hasattr(config, 'workerinput')
 
 
 @pytest.hookimpl
@@ -43,27 +78,20 @@ def pytest_unconfigure(config):
 
     if plugin:
         api = API(os.environ)
-        xdist_plugin = config.pluginmanager.getplugin("xdist")
-        if xdist_plugin is not None:
-            numprocesses = config.getoption("numprocesses")
-        else:
-            numprocesses = None
-        xdist_enabled = (
-            xdist_plugin is not None
-            and numprocesses is not None
-            and numprocesses > 0
-        )
-        is_xdist_worker = hasattr(config, 'workerinput')
+        xdist_enabled, is_xdist_worker = _xdist_role(config)
 
         is_controller = not xdist_enabled or (xdist_enabled and not is_xdist_worker)
 
-        # When xdist is not installed, or when it's installed and not enabled
-        if not xdist_enabled:
+        # In OTel mode the spans are the upload; the JSON path only writes --json.
+        upload_json = plugin.otel is None
+
+        # Without xdist, upload JSON unless OTel mode replaced it
+        if not xdist_enabled and upload_json:
             list(api.submit(plugin.payload))
 
         # When xdist is activated, we want to submit from worker thread only, because they have
         # access to tag data
-        if xdist_enabled and is_xdist_worker:
+        if xdist_enabled and is_xdist_worker and upload_json:
             list(api.submit(plugin.payload))
 
         # We only want a single thread to write to the json file.
@@ -76,6 +104,7 @@ def pytest_unconfigure(config):
 
         del config._buildkite
         config.pluginmanager.unregister(plugin)
+        config.pluginmanager.unregister(name=OTEL_PLUGIN_NAME)
 
 def pytest_addoption(parser):
     """add custom option to pytest"""

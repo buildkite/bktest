@@ -378,7 +378,7 @@ class PytestRunner:
         """Upload and discard the collector's test executions"""
         payload = collector.payload
         collector.payload = replace(payload, data=())
-        if payload.data and self.api.token:
+        if payload.data and self.api.token and collector.otel is None:
             list(self.api.submit(payload))
 
     def _finish(self, session: pytest.Session, collector: Any) -> None:
