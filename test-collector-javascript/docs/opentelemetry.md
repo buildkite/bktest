@@ -245,10 +245,19 @@ natural Node exit. Forced exits rely on the per-spec flush and report any
 remaining results as missing. Export failures do not change Cypress's exit
 code or fall back to JSON after tests have started.
 
+Without a configured run key or recognized CI environment, JSON generates a
+key per spec; OTel keeps the first generated key for the process. If a crash
+prevents `done` from running, tests without completion events cannot be
+recovered. Already-ended spans may have exported; exit warnings cover queued
+spans, not tests that never reached the reporter.
+
 Each `test:after:run` event produces a span, including every retry attempt and
 pending test. Tests Cypress abandons after a hook failure get skipped spans
 when the spec finishes. Passed → `pass`, failed → `fail`, pending and skipped
-→ `skipped`. The legacy JSON path is unchanged: it reports final attempts and
+→ `skipped`. Interrupted `processing`, `active` and missing states also become
+`skipped`; unknown states warn and are not exported. Grep filters that leave
+tests pending in the suite tree produce skipped spans too.
+The legacy JSON path is unchanged: it reports final attempts and
 omits pending and hook-aborted tests. Both paths use the same scope, name,
 prefixed file path and failure builder for the tests they share.
 
@@ -258,10 +267,14 @@ the browser does not change those timestamps. Tests without timing information
 get zero-duration spans at report time. The JSON identity uses file paths without
 line numbers, so `code.line.number` is omitted. Failures include the JSON
 record's expanded message and separate backtrace as exception event fields.
+The JS SDK applies the same value-length limit to span and event attributes,
+so backtraces are capped at 10,243 UTF-16 code units, with `...` and without
+splitting surrogate pairs (rather than the spec's 16,384-character cap).
 
 The reporter runs in Node while tests run in the browser. Child spans, phase
 spans and active test context are not exported; per-test annotations and tags
-are not available. `cy.intercept` does not intercept the Node exporter;
+are not available. `otelSpanFilter` and integration with an existing provider
+are not supported. `cy.intercept` does not intercept the Node exporter;
 Node-side HTTP stubs must allow the OTLP endpoint.
 
 ## What gets sent

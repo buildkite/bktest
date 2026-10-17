@@ -145,7 +145,7 @@ describe('examples/cypress in OTel mode', () => {
   const identity = (record) => JSON.stringify([record.scope, record.name, record.file_name])
   const records = (stdout) => {
     const uploads = [...stdout.matchAll(/Test Engine Sending: ({.*})/g)].map((m) => JSON.parse(m[1]).data.data)
-    return [...new Map(uploads.flat().map((record) => [identity(record), record])).values()]
+    return [...new Map(uploads.flat().map((record) => [record.id, record])).values()]
   }
   let server
   afterEach(async () => { if (server) await server.close() })
@@ -186,7 +186,7 @@ describe('examples/cypress in OTel mode', () => {
     expect(stdout).toContain(`SDK_ATTEMPTED=${enabled}`)
     expect(server.requests).toHaveLength(1)
     expect(server.requests[0].headers['content-type']).toBe('application/json')
-    if (enabled) expect(stdout + stderr).toContain('could not be configured')
+    if (enabled) expect(stdout).toContain('could not be configured')
     else expect(stdout + stderr).not.toContain('[buildkite-test-collector]')
   })
 
@@ -208,13 +208,27 @@ describe('examples/cypress in OTel mode', () => {
     expect(otel.code).toBe(3)
     expect(otel.stdout).not.toContain('Test Engine Sending:')
     expect(otel.stdout + otel.stderr).not.toContain('[buildkite-test-collector]')
-    const spans = server.spans()
+    // A retried export can arrive after a later attempt's successful batch.
+    const spans = server.spans().sort((a, b) => Number(a.startTimeUnixNano - b.startTimeUnixNano))
     // Eight tests, plus the first failed attempt of the retried test.
     expect(spans).toHaveLength(9)
     expect(new Set(spans.map((s) => s.attributes['buildkite.test.execution.external_id'])).size).toBe(9)
-    expect(spans.map((s) => s.attributes['test.case.result.status']).sort()).toEqual([
-      'fail', 'fail', 'fail', 'fail', 'pass', 'pass', 'pass', 'skipped', 'skipped',
-    ])
+    const resultsByName = {}
+    for (const span of spans) {
+      const name = span.attributes['buildkite.test.name']
+      resultsByName[name] ||= []
+      resultsByName[name].push(span.attributes['test.case.result.status'])
+    }
+    expect(resultsByName).toEqual({
+      'passes with a frozen browser clock': ['pass'],
+      fails: ['fail'],
+      'is skipped': ['skipped'],
+      'passes on retry': ['fail', 'pass'],
+      'cannot run': ['fail'],
+      'is skipped after the hook failure': ['skipped'],
+      'fails during teardown': ['fail'],
+      'also exports': ['pass'],
+    })
     for (const request of server.requests) {
       expect(request.decodeError).toBeNull()
       expect(request.headers).toMatchObject({
@@ -239,6 +253,7 @@ describe('examples/cypress in OTel mode', () => {
         'buildkite.tag.ci.worker.id': 'cypress-agent',
       })
       expect(span.attributes['buildkite.test.name']).toBeTruthy()
+      if (prefix) expect(span.attributes['code.file.path'].startsWith('monorepo/')).toBe(true)
       expect(span.attributes).not.toHaveProperty('code.line.number')
       expect(span.startTimeUnixNano > 0n).toBe(true)
       expect(span.endTimeUnixNano >= span.startTimeUnixNano).toBe(true)
@@ -271,6 +286,7 @@ describe('examples/cypress in OTel mode', () => {
         result: { passed: 'pass', failed: 'fail' }[record.result], failure_reason: record.failure_reason,
       })
       expect(record.location).toBe(record.file_name)
+      if (prefix) expect(record.file_name.startsWith('monorepo/')).toBe(true)
     }
   }, 60000)
 
@@ -291,7 +307,7 @@ describe('examples/cypress in OTel mode', () => {
       BUILDKITE_ANALYTICS_CYPRESS_TOKEN: 'config-token',
     })
     expect(result.code).toBe(3)
-    expect(result.stdout + result.stderr).toContain('uploading results as JSON instead')
+    expect(result.stdout).toContain('uploading results as JSON instead')
     expect(records(result.stdout)).toHaveLength(6)
     expect(server.requests.every((r) => r.headers['content-type'] === 'application/json')).toBe(true)
   }, 30000)
@@ -305,6 +321,6 @@ describe('examples/cypress in OTel mode', () => {
     }, '--spec otel/second.spec.js')
     expect(result.code).toBe(0)
     expect(result.stdout).not.toContain('Test Engine Sending:')
-    expect(result.stdout + result.stderr).toMatch(/TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span\(s\) \(export-failure, last OTLP failure: ECONNREFUSED\)/)
+    expect(result.stdout).toMatch(/TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span\(s\) \(export-failure, last OTLP failure: ECONNREFUSED\)/)
   }, 60000)
 })

@@ -49,12 +49,17 @@ class CypressBuildkiteTestEngineReporter extends MochaBuildkiteTestEngineReporte
   exportTest(test) {
     this._reported.add(test)
     try {
+      // Interrupted runs can leave tests active/processing, or without a state.
+      const result = test.state == null || ['processing', 'active'].includes(test.state) ? 'skipped' : test.state
+      if (!['passed', 'failed', 'pending', 'skipped'].includes(result)) {
+        warn(`TEST RESULTS MISSING: Unknown Cypress test state ${JSON.stringify(test.state)}; test execution was not exported.`)
+        return
+      }
       const record = this.testEngineRecord(test)
       record.id = randomUUID()
       // The inherited Mocha mapping drops Cypress's pending/skipped states.
-      // Pass the raw state so core can map both.
-      record.result = test.state
-      const startedAt = Date.parse(test.wallClockStartedAt)
+      record.result = result
+      const startedAt = new Date(test.wallClockStartedAt).getTime()
       const startTime = startedAt > 0 ? startedAt : Date.now()
       const duration = Number.isFinite(test.wallClockDuration) ? Math.max(0, test.wallClockDuration) : 0
       const handle = this._otel.startTestSpan(record, { startTime })
@@ -66,12 +71,17 @@ class CypressBuildkiteTestEngineReporter extends MochaBuildkiteTestEngineReporte
 
   async done(failures, exit) {
     if (!this._otel) return super.done(failures, exit)
-    // A failed before hook leaves later tests in the tree without events.
-    this._runner.suite.eachTest((test) => {
-      if (!this._reported.has(test)) this.exportTest(test)
-    })
-    await this._otel.forceFlush()
-    exit(failures)
+    try {
+      // A failed before hook leaves later tests in the tree without events.
+      this._runner.suite.eachTest((test) => {
+        if (!this._reported.has(test)) this.exportTest(test)
+      })
+      await this._otel.forceFlush()
+    } catch (error) {
+      warn(`TEST RESULTS MISSING: Could not finish Cypress OpenTelemetry reporting: ${describeError(error)}`)
+    } finally {
+      exit(failures)
+    }
   }
 
   testEngineRecord(test) {
