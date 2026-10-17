@@ -107,6 +107,17 @@ You may also need to manually capture the data you wish to trace for your use ca
 
 Note: the Ruby test collector is the only Test Engine collector that automatically captures and transmits span data. This Python collector can transmit information, but data capture must be done manually at this time.
 
+## 🔭 OpenTelemetry submission (experimental)
+
+The collector can send each test to Test Engine as an OpenTelemetry `test.execution` span over OTLP instead of the JSON upload, with your tests' own OpenTelemetry spans nested under it. Install the optional dependencies and switch it on:
+
+```sh
+pip install "buildkite-test-collector[otel]"
+BUILDKITE_ANALYTICS_OTEL_ENABLED=true pytest
+```
+
+See [docs/opentelemetry.md](docs/opentelemetry.md) for what is sent, how child spans and the span filter work, and what the warnings mean.
+
 ## 🔜 Roadmap
 
 See the [GitHub 'enhancement' issues](https://github.com/buildkite/test-collector-python/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) for planned features. Pull requests are always welcome, and we’ll give you feedback and guidance if you choose to contribute 💚

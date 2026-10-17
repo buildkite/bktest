@@ -14,7 +14,17 @@ classifiers = ["License :: OSI Approved :: MIT License", "Framework :: Pytest"]
 dependencies = ["requests>=2.31", "urllib3>=2.7.0", "pytest>=7", "filelock>=3"]
 
 [project.optional-dependencies]
-dev = ["mock>=4", "check-manifest", "twine", "responses", "pylint", "pytest-forked; sys_platform != 'win32'"]
+dev = [
+    "mock>=4",
+    "check-manifest",
+    "twine",
+    "responses",
+    "pylint",
+    "pytest-forked; sys_platform != 'win32'",
+    "opentelemetry-sdk>=1.45",
+    "opentelemetry-exporter-otlp-proto-http>=1.45",
+]
+otel = ["opentelemetry-sdk>=1.45", "opentelemetry-exporter-otlp-proto-http>=1.45"]
 
 [project.urls]
 Homepage = "https://github.com/buildkite/test-collector-python"

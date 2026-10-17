@@ -26,9 +26,15 @@ class SpanCollector:
         """
         Add a span to the current test.
         """
-        if self.plugin is not None:
-            test_data = self.plugin.in_flight[self.nodeid].push_span(span)
-            self.plugin.in_flight[self.nodeid] = test_data
+        if self.plugin is None:
+            return
+        if span.section == "annotation" and self.plugin.otel is not None:
+            # In OTel mode annotations become events on the test span; the
+            # other span sections have no OTel equivalent and are not uploaded.
+            self.plugin.otel.annotate((span.detail or {}).get("content", ""))
+            return
+        test_data = self.plugin.in_flight[self.nodeid].push_span(span)
+        self.plugin.in_flight[self.nodeid] = test_data
 
     @contextmanager
     def measure(self, section: Literal['http', 'sql', 'sleep', 'annotation'],
