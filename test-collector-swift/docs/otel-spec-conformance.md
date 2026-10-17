@@ -102,19 +102,21 @@ Build 878: https://buildkite.com/buildkite/test-engine-client-examples/builds/87
 
 ### Fixed — collector at this branch (2.0.0-beta.2)
 
-Build 883 (collector at `94a8ebb`, the last code change on this branch):
-https://buildkite.com/buildkite/test-engine-client-examples/builds/883
+Build 885 (collector at `960a5c9`, the branch head):
+https://buildkite.com/buildkite/test-engine-client-examples/builds/885
 
 - Test Engine run (conformance step):
-  https://buildkite.com/organizations/buildkite/analytics/suites/test-engine-client-examples/runs/cfa53dac-1d5b-8f19-9f5d-56fbad18bd2e
-- Five executions: 2 passed, 2 failed (`FlakyTests.testFlaky` happened to fail on this run),
-  1 skipped; matches XCTest's `Executed 5 tests, with 1 test skipped and 2 failures`. Same
-  test ids as the baseline (`testSubtractFails` = `48d9dcb9-20ea-8f7e-91b6-0c03af582935`).
-  The baseline step in the same build produced run
-  `d10494aa-aa54-8513-8117-d810209cfa5e` with the same five tests.
+  https://buildkite.com/organizations/buildkite/analytics/suites/test-engine-client-examples/runs/c8333096-0474-8dfa-a2c4-e80eea614863
+- Five executions: 3 passed, 1 failed, 1 skipped; matches XCTest's `Executed 5 tests, with 1
+  test skipped and 1 failure`. Same test ids as the baseline (`testSubtractFails` =
+  `48d9dcb9-20ea-8f7e-91b6-0c03af582935`). The baseline step in the same build produced run
+  `cb18cd07-ea16-8717-ba43-b73115fadd5c` with the same five tests.
 - Failed execution: `failure_reason` = `XCTAssertEqual failed: ("7") is not equal to ("999") - `,
-  `location` = `FailingTests.swift:7`, duration 0.1009 s, tags as in the baseline
-  (`collector.version` was still `2.0.0-beta.1` at this commit; it is bumped to `2.0.0-beta.2` in the following docs commit).
+  `location` = `FailingTests.swift:7`, tags as in the baseline except
+  `collector.version=2.0.0-beta.2`.
+- Build 883 (collector at `94a8ebb`, before the version bump) gave the same result: run
+  `cfa53dac-1d5b-8f19-9f5d-56fbad18bd2e`, five executions, `FlakyTests.testFlaky` also failed
+  on that run.
 - No token: unchanged `info:` line, five tests executed, exit 1 (XCTest's).
 - Unreachable endpoint: `error: OpenTelemetry export failed for testSubtractFails
   (socket_error); the execution remains queued in this process`, then at bundle end
