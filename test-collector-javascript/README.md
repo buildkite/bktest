@@ -226,6 +226,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
    }
    ```
 
+   To submit results as OpenTelemetry spans instead of JSON (experimental), set `reporterOptions.otelEnabled: true`. See [Cypress OpenTelemetry submission](docs/opentelemetry.md#cypress) for dependencies and behavior.
+
 4. Run your tests locally:<br>
 
     ```js
