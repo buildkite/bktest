@@ -17,13 +17,14 @@ const truncate = (text, max, omission = '...') => {
   return `${codePoints.slice(0, max - omission.length).join('')}${omission}`
 }
 
-const testAttributes = (record, line) => ({
+const testAttributes = (record, line, column) => ({
   'buildkite.test.scope': record.scope,
   'buildkite.test.name': record.name,
   'test.case.name': [record.scope, record.name].filter(Boolean).join(' '),
   'test.suite.name': record.scope,
   'code.file.path': record.file_name,
   'code.line.number': Number.isInteger(line) ? line : undefined,
+  'code.column.number': Number.isInteger(column) ? column : undefined,
   'buildkite.test.execution.external_id': record.id,
 })
 
@@ -40,14 +41,14 @@ const exceptionEvents = (record) => {
   return events
 }
 
-const describeTest = (record, { line } = {}) => {
+const describeTest = (record, { line, column } = {}) => {
   const status = STATUSES[record.result]
   const failed = status === 'fail'
   // Cut without a marker, as the server cuts the JSON upload's reason.
   const reason = failed && record.failure_reason ? truncate(record.failure_reason, FAILURE_REASON_MAX_LENGTH, '') : undefined
 
   return {
-    attributes: testAttributes(record, line),
+    attributes: testAttributes(record, line, column),
     status,
     failureReason: reason,
     exceptionEvents: failed ? exceptionEvents(record) : [],
