@@ -34,8 +34,9 @@ time and duration (including hooks), then flushes and shuts down in `onEnd`.
 Export failures do not change Playwright's exit code.
 
 Scope, name, file, line, column and `@key:value` tags use the same record as
-the JSON upload. Scope includes the project, file, describe titles and test
-title, including the leading space from Playwright's empty root suite.
+the JSON upload. Scope is `titlePath()` joined with spaces: root suite,
+project, file, describe titles and test title. Empty titles stay in, so the
+empty root adds a leading space and an unnamed project adds another.
 Per-test tags override reporter tags and the automatic `ci.worker.id` tag.
 Each attempt gets a fresh UUID; retries keep the same scope and name.
 
@@ -51,8 +52,14 @@ The reporter runs in the main process, separate from the test workers. It
 does not export child spans, phase spans, browser instrumentation or in-test
 annotations, and does not install or change a global OpenTelemetry provider.
 HTTP mocks inside workers do not affect its exporter; HTTP mocks in the main
-process must allow the OTLP endpoint. The credentials, fallback rules, batch
-settings and missing-results warnings below apply to Playwright too.
+process must allow the OTLP endpoint.
+
+The endpoint, token precedence, run-key validation, setup fallback, batch/queue
+limits and `TEST RESULTS MISSING: OpenTelemetry dropped N…` warning described
+below also apply to Playwright. Jest's worker-environment and end-of-file flush
+behaviour does not: Playwright exports from the reporter process and flushes
+in `onEnd`. Its `buildkite.test.framework.name` is `playwright` and
+`buildkite.test.framework.version` is Playwright's version.
 
 ## Jest
 
