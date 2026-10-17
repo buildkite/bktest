@@ -8,6 +8,7 @@ rust = "1.98.1"
 erlang = "27.3.4.17"
 elixir = "1.18.5-otp-27"
 dotnet = "9.0.317"
+go = "1.24.13"
 java = "temurin-17.0.20+101"
 swift = "6.0.3"
 

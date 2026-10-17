@@ -1,0 +1,405 @@
+package bktest
+
+import (
+	"context"
+	"errors"
+	"net"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+)
+
+func TestRequestsCarryHeadersPerStreamIncludingRetries(t *testing.T) {
+	r := newReceiver(t)
+	r.failNext.Store(1) // the first request is answered 503 and must be retried with the same headers
+	c := configured(t, r, nil)
+
+	runTest(c, "TestWithChild", func(ctx context.Context, ft *fakeT) {
+		_, child := otel.Tracer("suite").Start(ctx, "db.query")
+		child.End()
+	})
+	c.shutdown()
+
+	reqs := r.all()
+	if len(reqs) < 3 {
+		t.Fatalf("expected the retried test request, its retry, and a child request; got %d requests", len(reqs))
+	}
+	for i, req := range reqs {
+		for _, want := range []string{"authorization", "buildkite-tests-run-key", "buildkite-tests-span-stream"} {
+			if _, ok := req.Header[http.CanonicalHeaderKey(want)]; !ok {
+				t.Errorf("request %d lacks header %s: %v", i, want, req.Header)
+			}
+		}
+		if got := req.Header.Get("Authorization"); got != `Token token="secret-token"` {
+			t.Errorf("request %d Authorization = %q", i, got)
+		}
+		if got := req.Header.Get(runKeyHeader); got != c.env.key {
+			t.Errorf("request %d run key = %q, want %q", i, got, c.env.key)
+		}
+		if got := req.Header.Get("Content-Type"); got != "application/x-protobuf" {
+			t.Errorf("request %d Content-Type = %q", i, got)
+		}
+		if got := req.Header.Get("Content-Encoding"); got != "gzip" {
+			t.Errorf("request %d Content-Encoding = %q", i, got)
+		}
+		stream := req.Header.Get(spanStreamHeader)
+		for _, s := range req.spans() {
+			wantStream := streamChild
+			if s.Name == testSpanName {
+				wantStream = streamTest
+			}
+			if stream != wantStream {
+				t.Errorf("request %d labelled %q carries span %q", i, stream, s.Name)
+			}
+		}
+	}
+	if got := len(r.stream(streamTest)); got != 2 {
+		t.Fatalf("expected the test request and its retry, got %d test requests", got)
+	}
+	if len(r.testSpans()) != 2 {
+		t.Fatalf("expected the same test span in both attempts, got %d", len(r.testSpans()))
+	}
+	childSpans := r.spansOn(streamChild)
+	names := map[string]bool{}
+	for _, s := range childSpans {
+		names[s.Name] = true
+	}
+	if !names["db.query"] || !names[bodyPhaseName] || len(childSpans) != 2 {
+		t.Fatalf("child stream carried %v", names)
+	}
+}
+
+func TestIgnoresStandardOTelEnvironment(t *testing.T) {
+	r := newReceiver(t)
+	c := configured(t, r, map[string]string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT":            "http://127.0.0.1:1/wrong",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":     "http://127.0.0.1:1/wrong",
+		"OTEL_EXPORTER_OTLP_HEADERS":             "authorization=garbage,x-env-only=1",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS":      "authorization=garbage2,x-env-traces=1",
+		"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL":     "http/json",
+		"OTEL_EXPORTER_OTLP_PROTOCOL":            "http/json",
+		"OTEL_EXPORTER_OTLP_COMPRESSION":         "none",
+		"OTEL_EXPORTER_OTLP_CERTIFICATE":         "/nonexistent/ca.pem",
+		"OTEL_EXPORTER_OTLP_TIMEOUT":             "1",
+		"OTEL_TRACES_SAMPLER":                    "always_off",
+		"OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT":        "2",
+		"OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT": "3",
+		"OTEL_SPAN_EVENT_COUNT_LIMIT":            "0",
+		"OTEL_BSP_MAX_QUEUE_SIZE":                "1",
+		"OTEL_BSP_MAX_EXPORT_BATCH_SIZE":         "1",
+		"OTEL_BSP_SCHEDULE_DELAY":                "600000",
+	})
+
+	for _, name := range []string{"TestA", "TestB", "TestC"} {
+		runTest(c, name, func(ctx context.Context, ft *fakeT) {
+			ft.Fail()
+			ctx, child := otel.Tracer("suite").Start(ctx, "child")
+			child.End()
+			Annotate(ctx, "note")
+		})
+	}
+	c.shutdown()
+
+	spans := r.testSpans()
+	if len(spans) != 3 {
+		t.Fatalf("got %d test spans, want 3 (sampler/env must not apply)", len(spans))
+	}
+	for _, req := range r.all() {
+		for k := range req.Header {
+			if strings.HasPrefix(strings.ToLower(k), "x-env") {
+				t.Errorf("header %s leaked from OTEL_EXPORTER_OTLP_*HEADERS", k)
+			}
+		}
+		if req.Header.Get("Authorization") != `Token token="secret-token"` {
+			t.Errorf("Authorization = %q", req.Header.Get("Authorization"))
+		}
+		if got := req.Header.Get("Content-Encoding"); got != "gzip" {
+			t.Errorf("Content-Encoding = %q", got)
+		}
+	}
+	for _, s := range spans {
+		if len(s.Attributes) < 10 {
+			t.Errorf("span has only %d attributes; OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT leaked", len(s.Attributes))
+		}
+		if got := stringAttr(t, s.Attributes, attrTestScope); len(got) <= 3 {
+			t.Errorf("scope %q truncated; OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT leaked", got)
+		}
+		if len(s.Events) != 1 || s.Events[0].Name != annotationEventName {
+			t.Errorf("events = %v; OTEL_SPAN_EVENT_COUNT_LIMIT leaked", s.Events)
+		}
+	}
+}
+
+func TestEveryTestSpanIsExportedOrCountedAsDropped(t *testing.T) {
+	out := captureWarnings(t)
+	r := newReceiver(t)
+	release := make(chan struct{})
+	r.blockUntil = release
+	c := configured(t, r, map[string]string{
+		"BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE": "2",
+		"BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE": "2",
+	})
+
+	const total = 6
+	for i := 0; i < total; i++ {
+		runTest(c, "TestOverflow", nil)
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	c.shutdown()
+
+	exported := len(r.testSpans())
+	if exported >= total {
+		t.Fatalf("all %d spans were exported through a queue of 2; the overflow case was not exercised", total)
+	}
+	want := "TEST RESULTS MISSING: OpenTelemetry dropped"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("no drop warning in:\n%s", out.String())
+	}
+	report, _ := c.testStats.unreported(true)
+	dropped := report.dropped
+	if exported+dropped != total {
+		t.Fatalf("exported %d + dropped %d != %d\n%s", exported, dropped, total, out.String())
+	}
+	if !strings.Contains(out.String(), "(not-exported)") {
+		t.Fatalf("drop reason missing:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "OpenTelemetry is the only upload path") {
+		t.Fatalf("second warning line missing:\n%s", out.String())
+	}
+	if strings.Count(out.String(), "TEST RESULTS MISSING") != 1 {
+		t.Fatalf("expected one TEST RESULTS MISSING warning:\n%s", out.String())
+	}
+}
+
+func TestExportFailureIsReportedWithItsStatus(t *testing.T) {
+	out := captureWarnings(t)
+	r := newReceiver(t)
+	r.failWith.Store(http.StatusForbidden)
+	r.failNext.Store(10)
+	c := configured(t, r, nil)
+
+	runTest(c, "TestForbidden", nil)
+	c.shutdown()
+
+	if got := len(r.stream(streamTest)); got != 1 {
+		t.Fatalf("403 must not be retried; got %d requests", got)
+	}
+	want := "TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 403)."
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("warning = %q\nwant it to contain %q", out.String(), want)
+	}
+}
+
+func TestUnreachableEndpointWarnsAndStaysBounded(t *testing.T) {
+	out := captureWarnings(t)
+	r := newReceiver(t)
+	c := configured(t, r, map[string]string{"BUILDKITE_ANALYTICS_OTLP_ENDPOINT": closedPort(t) + "/v1/traces"})
+
+	runTest(c, "TestNowhere", nil)
+	started := time.Now()
+	c.shutdown()
+	if took := time.Since(started); took > processorTimeout {
+		t.Fatalf("shutdown took %s, over the %s budget", took, processorTimeout)
+	}
+	if !strings.Contains(out.String(), "TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: ") {
+		t.Fatalf("warning = %q", out.String())
+	}
+}
+
+func TestExporterPanicDoesNotKillTheWorker(t *testing.T) {
+	out := captureWarnings(t)
+	stats := &streamStats{}
+	processor := sdktrace.NewBatchSpanProcessor(countingExporter{SpanExporter: panickingExporter{}, stats: stats})
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(countingProcessor{SpanProcessor: processor, stats: stats}))
+	t.Cleanup(func() { tp.Shutdown(context.Background()) })
+	tracer := tp.Tracer("t")
+
+	for _, round := range []int{2, 1} {
+		for i := 0; i < round; i++ {
+			_, span := tracer.Start(context.Background(), "s")
+			span.End()
+		}
+		if err := tp.ForceFlush(context.Background()); err == nil || !strings.Contains(err.Error(), "exporter panicked") {
+			t.Fatalf("ForceFlush err = %v, want the recovered panic", err)
+		}
+	}
+	// The second round only reached the exporter because the worker survived
+	// the first panic.
+	if got, _ := stats.unreported(true); got.dropped != 3 || !strings.HasPrefix(got.reason, "export-failure, last OTLP failure: exporter panicked: boom") {
+		t.Fatalf("drops = %+v, want 3 failed spans", got)
+	}
+	if strings.Count(out.String(), "Could not export OpenTelemetry spans: boom. Further string export failures will not be reported.") != 1 {
+		t.Fatalf("warnings = %q", out.String())
+	}
+}
+
+type panickingExporter struct{}
+
+func (panickingExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error { panic("boom") }
+func (panickingExporter) Shutdown(context.Context) error                             { return nil }
+
+func TestExportDoesNotUseTheProcessDefaultTransport(t *testing.T) {
+	prev := http.DefaultTransport
+	http.DefaultTransport = roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("the suite replaced http.DefaultTransport")
+	})
+	t.Cleanup(func() { http.DefaultTransport = prev })
+
+	r := newReceiver(t)
+	c := configured(t, r, nil)
+	runTest(c, "TestOwnTransport", nil)
+	c.shutdown()
+	if n := len(r.testSpans()); n != 1 {
+		t.Fatalf("got %d test spans through the collector's own transport, want 1", n)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestDropAccountingSeparatesLostFromPending(t *testing.T) {
+	s := &streamStats{offered: 10, succeeded: 6, failed: 1, startFailed: 1, lastFailure: "503"}
+
+	drained, fresh := s.unreported(true)
+	if !fresh || drained.dropped != 5 || drained.pending != 0 || drained.reason != "export-failure, not-exported, last OTLP failure: 503" {
+		t.Fatalf("drained = %+v (%v); want 3 never exported + 1 failed + 1 start failure", drained, fresh)
+	}
+	if _, again := s.unreported(true); again {
+		t.Fatal("the same loss was reported twice")
+	}
+
+	// Past the deadline the three unresolved spans may still be in flight,
+	// so only the certain losses count as dropped.
+	late, _ := s.unreported(false)
+	if late.dropped != 2 || late.pending != 3 || late.reason != "export-failure, last OTLP failure: 503" {
+		t.Fatalf("not drained = %+v; want 1 failed + 1 start failure dropped and 3 pending", late)
+	}
+}
+
+func TestProducerResourceAndRunAttributes(t *testing.T) {
+	r := newReceiver(t)
+	c := configured(t, r, map[string]string{
+		"BUILDKITE_BUILD_ID":               "build-uuid",
+		"BUILDKITE_BUILD_URL":              "https://buildkite.com/o/p/builds/1",
+		"BUILDKITE_BRANCH":                 "main",
+		"BUILDKITE_COMMIT":                 "abc",
+		"BUILDKITE_BUILD_NUMBER":           "1",
+		"BUILDKITE_JOB_ID":                 "job-uuid",
+		"BUILDKITE_MESSAGE":                "msg",
+		"BUILDKITE_STEP_ID":                "step-uuid",
+		"BUILDKITE_AGENT_ID":               " agent-1 ",
+		"BUILDKITE_TEST_ENGINE_SUITE_SLUG": "suite",
+		"BUILDKITE_ORGANIZATION_SLUG":      "org",
+		"BUILDKITE_TAG":                    "v1",
+		"BUILDKITE_ANALYTICS_KEY":          "build-uuid-go",
+	}, WithLocationPrefix("services/api/"), WithTags(map[string]string{"team": "core"}))
+
+	runTest(c, "TestAttrs", nil)
+	c.shutdown()
+
+	req := r.stream(streamTest)[0]
+	res := req.Body.ResourceSpans[0].Resource.GetAttributes()
+	wantRes := map[string]string{
+		"service.name":               "suite",
+		"service.namespace":          "org",
+		"cicd.pipeline.run.id":       "build-uuid",
+		"cicd.pipeline.run.url.full": "https://buildkite.com/o/p/builds/1",
+		"cicd.worker.id":             " agent-1 ",
+		"vcs.ref.head.name":          "main",
+		"vcs.ref.head.revision":      "abc",
+		"vcs.ref.type":               "tag",
+	}
+	for k, v := range wantRes {
+		if got := stringAttr(t, res, k); got != v {
+			t.Errorf("resource %s = %q, want %q", k, got, v)
+		}
+	}
+	if _, ok := attr(res, attrRunKey); ok {
+		t.Error("run key must not be on the resource")
+	}
+	if got := stringAttr(t, res, "process.runtime.version"); !strings.HasPrefix(got, "go") {
+		t.Errorf("process.runtime.version = %q", got)
+	}
+
+	span := r.testSpans()[0]
+	wantSpan := map[string]string{
+		attrRunKey:                      "build-uuid-go",
+		"buildkite.build_number":        "1",
+		"buildkite.job_id":              "job-uuid",
+		"buildkite.message":             "msg",
+		"buildkite.step_id":             "step-uuid",
+		"buildkite.collector.name":      "go-buildkite-test-collector",
+		"buildkite.collector.version":   Version,
+		"buildkite.location_prefix":     "services/api/",
+		"buildkite.test.framework.name": "gotest",
+		"buildkite.tag.team":            "core",
+		"buildkite.tag.ci.worker.id":    " agent-1 ",
+	}
+	for k, v := range wantSpan {
+		if got := stringAttr(t, span.Attributes, k); got != v {
+			t.Errorf("span %s = %q, want %q", k, got, v)
+		}
+	}
+	if got := stringAttr(t, span.Attributes, "code.file.path"); !strings.HasPrefix(got, "services/api/") || !strings.HasSuffix(got, ".go") {
+		t.Errorf("code.file.path = %q, want the location prefix prepended to a .go file", got)
+	}
+	if _, ok := attr(span.Attributes, "buildkite.run_url"); ok {
+		t.Error("buildkite.run_url must be omitted when it equals the CI build URL")
+	}
+	for _, key := range []string{"service.name", "cicd.pipeline.run.id", "vcs.ref.head.name"} {
+		if _, ok := attr(span.Attributes, key); ok {
+			t.Errorf("producer attribute %s leaked onto the test span", key)
+		}
+	}
+}
+
+func TestRunURLOnlyWhenItDiffersFromTheCIURL(t *testing.T) {
+	r := newReceiver(t)
+	c := configured(t, r, map[string]string{
+		"BUILDKITE_BUILD_ID":      "build-uuid",
+		"BUILDKITE_BUILD_URL":     "https://buildkite.com/o/p/builds/1",
+		"BUILDKITE_ANALYTICS_URL": "https://example.com/custom",
+	})
+	runTest(c, "TestURL", nil)
+	c.shutdown()
+	span := r.testSpans()[0]
+	if got := stringAttr(t, span.Attributes, "buildkite.run_url"); got != "https://example.com/custom" {
+		t.Fatalf("buildkite.run_url = %q", got)
+	}
+}
+
+func TestWorkerIDTagOmittedWhenBlankAndOverridable(t *testing.T) {
+	r := newReceiver(t)
+	c := configured(t, r, map[string]string{"BUILDKITE_AGENT_ID": "  "})
+	runTest(c, "TestBlankAgent", nil)
+	c.shutdown()
+	if _, ok := attr(r.testSpans()[0].Attributes, "buildkite.tag.ci.worker.id"); ok {
+		t.Fatal("blank BUILDKITE_AGENT_ID must not produce a tag")
+	}
+
+	r2 := newReceiver(t)
+	c2 := configured(t, r2, map[string]string{"BUILDKITE_AGENT_ID": "agent-9"}, WithTags(map[string]string{"ci.worker.id": "pool-3"}))
+	runTest(c2, "TestExplicitAgent", nil)
+	c2.shutdown()
+	if got := stringAttr(t, r2.testSpans()[0].Attributes, "buildkite.tag.ci.worker.id"); got != "pool-3" {
+		t.Fatalf("explicit tag must win over the automatic worker id, got %q", got)
+	}
+}
+
+// closedPort returns a loopback URL nothing listens on.
+func closedPort(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	return "http://" + addr
+}
