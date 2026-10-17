@@ -11,8 +11,48 @@ server-side, and nothing is sent to `/v1/uploads`. Resources identify the suite,
 CI run, worker and VCS ref that produced the telemetry. Test Engine run metadata
 and any `tags` you configure live on each `test.execution` span.
 
-OpenTelemetry submission is off by default. Jest is the only framework that
-supports it so far.
+OpenTelemetry submission is off by default. Jest and Playwright support it.
+
+## Playwright
+
+Enable `otelEnabled` on the reporter; no fixture or test changes are needed:
+
+```js
+// playwright.config.js
+module.exports = {
+  reporter: [
+    ['line'],
+    ['buildkite-test-collector/playwright/reporter', { otelEnabled: true }],
+  ],
+}
+```
+
+Install the optional OpenTelemetry packages listed below. The reporter decides
+the submission mode in `onBegin`, before tests run. It exports one root span
+per reported attempt, including retries and skips, using Playwright's start
+time and duration (including hooks), then flushes and shuts down in `onEnd`.
+Export failures do not change Playwright's exit code.
+
+Scope, name, file, line, column and `@key:value` tags use the same record as
+the JSON upload. Scope includes the project, file, describe titles and test
+title, including the leading space from Playwright's empty root suite.
+Per-test tags override reporter tags and the automatic `ci.worker.id` tag.
+Each attempt gets a fresh UUID; retries keep the same scope and name.
+
+`passed` maps to `pass`, `failed` and `timedOut` to `fail`, and `skipped` to
+`skipped`. `interrupted` maps to `fail` in OpenTelemetry (the JSON path retains
+its existing `unknown`). As in JSON, `expectedStatus` does not override the
+actual attempt's result: expected failures are `fail`, unexpected passes are
+`pass`. A failing `beforeAll` hook fails the entering test; subsequent tests
+that Playwright reports as skipped get skipped spans. Failure messages and
+stack traces use the JSON failure detail in an `exception` event.
+
+The reporter runs in the main process, separate from the test workers. It
+does not export child spans, phase spans, browser instrumentation or in-test
+annotations, and does not install or change a global OpenTelemetry provider.
+HTTP mocks inside workers do not affect its exporter; HTTP mocks in the main
+process must allow the OTLP endpoint. The credentials, fallback rules, batch
+settings and missing-results warnings below apply to Playwright too.
 
 ## Jest
 

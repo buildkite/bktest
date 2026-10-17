@@ -174,6 +174,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
 
     Update your [Playwright configuration](https://playwright.dev/docs/test-configuration):<br>
 
+    For experimental OpenTelemetry submission, pass `{ otelEnabled: true }` to the reporter. See [OpenTelemetry submission](docs/opentelemetry.md#playwright) for dependencies and behavior.
+
     ```js
     // playwright.config.js
 
