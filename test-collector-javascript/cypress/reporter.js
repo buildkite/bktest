@@ -10,11 +10,15 @@ class CypressBuildkiteTestEngineReporter extends MochaBuildkiteTestEngineReporte
   }
 
   testFinished(test) {
+    this._testResults.push(this.testEngineRecord(test))
+  }
+
+  testEngineRecord(test) {
     const prefixedTestPath = this._paths.prefixTestPath(this.getRootParentFile(test))
 
     const { failureReason, failureExpanded } = this.getFailureReason(test.err)
 
-    const result = {
+    return {
       'id': test.testEngineId,
       'name': test.title,
       'scope': this.scope(test),
@@ -31,8 +35,6 @@ class CypressBuildkiteTestEngineReporter extends MochaBuildkiteTestEngineReporte
         'duration': test.duration / 1000,
       }
     }
-
-    this._testResults.push(result)
   }
 
   getFailureReason(err) {
