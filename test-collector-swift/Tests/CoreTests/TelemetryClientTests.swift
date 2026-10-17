@@ -327,6 +327,119 @@ final class TelemetryClientTests: XCTestCase {
     )
   }
 
+  func testLabelsEachSpanStreamOnTheWire() throws {
+    let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
+      environment: self.configuredEnvironment,
+      logger: nil
+    ))
+
+    XCTAssertEqual(configuration.headers(for: .test).map { "\($0.0): \($0.1)" }, [
+      "Buildkite-Tests-Run-Key: run-key",
+      #"Authorization: Token token="SECRET""#,
+      "Buildkite-Tests-Span-Stream: test",
+    ])
+    XCTAssertEqual(configuration.headers(for: .child).map { "\($0.0): \($0.1)" }, [
+      "Buildkite-Tests-Run-Key: run-key",
+      #"Authorization: Token token="SECRET""#,
+      "Buildkite-Tests-Span-Stream: child",
+    ])
+
+    let relay = try XCTUnwrap(CollectorOTLPConfiguration(
+      environment: EnvironmentValues(
+        values: [
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://relay.example/v1/traces",
+          "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "x-relay=1,BUILDKITE-TESTS-SPAN-STREAM=test",
+        ],
+        getFromEnvironment: { _ in nil },
+        getFromInfoDictionary: { _ in nil }
+      ),
+      logger: nil
+    ))
+    XCTAssertEqual(relay.headers(for: .child).map { "\($0.0): \($0.1)" }, [
+      "x-relay: 1",
+      "Buildkite-Tests-Span-Stream: child",
+    ])
+  }
+
+  func testDisablesExportForInvalidRunKey() {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
+    XCTAssertEqual(
+      self.configuration(runKey: String(repeating: "k", count: 255), logger: logger)?
+        .header(named: "Buildkite-Tests-Run-Key"),
+      String(repeating: "k", count: 255)
+    )
+    XCTAssertNil(self.configuration(runKey: String(repeating: "k", count: 256), logger: logger))
+    XCTAssertNil(self.configuration(runKey: "", logger: logger))
+    XCTAssertNil(self.configuration(runKey: "run key", logger: logger))
+    XCTAssertNil(self.configuration(runKey: "run-kéy", logger: logger))
+    XCTAssertNotNil(self.configuration(runKey: "run-key", relay: true, logger: logger))
+    XCTAssertNil(self.configuration(runKey: "run key", relay: true, logger: logger))
+    logger.waitForLogs()
+
+    XCTAssertTrue(messages.withValue { messages in
+      messages.contains(
+        #"[BuildkiteTestCollector] warning: OpenTelemetry span export disabled: run key "run key" is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); it must be 1-255 printable ASCII characters without spaces."#
+      )
+    })
+  }
+
+  func testCapsOversizedValuesBeforeExport() throws {
+    let rootExporter = InMemoryExporter()
+    let client = try XCTUnwrap(TelemetryClient.live(
+      environment: self.configuredEnvironment,
+      uploadTags: [:],
+      logger: nil,
+      rootExporter: rootExporter,
+      childExporter: InMemoryExporter()
+    ))
+    var test = TestState(id: UUID(), className: "LongTests", testName: "testLongFailure")
+    test.result = .failed
+    // Limits count Unicode scalars, so a combining mark counts separately.
+    let combining = "e\u{301}"
+    test.issues = [
+      TestIssue(
+        compactDescription: String(repeating: combining, count: 1_025),
+        description: String(repeating: "m", count: 10_241),
+        sourceCodeContext: SourceCodeContext(callStack: [
+          SourceCodeFrame(
+            address: 0,
+            symbolInfo: SourceCodeSymbolInfo(
+              imageName: "Tests",
+              symbolName: String(repeating: "f", count: 16_384)
+            )
+          ),
+        ])
+      ),
+    ]
+
+    let executionID = client.startExecution(test)
+    client.annotate(String(repeating: "a", count: 16_385), executionID: executionID)
+    client.finishExecution(executionID, test: test, tags: ["long": String(repeating: "t", count: 10_244)])
+
+    let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
+    XCTAssertEqual(span.status, .error(description: String(repeating: combining, count: 512)))
+    XCTAssertEqual(
+      span.attributes[BuildkiteTelemetryAttribute.tagPrefix + "long"],
+      .string(String(repeating: "t", count: 10_243))
+    )
+    XCTAssertEqual(span.events.count, 2)
+    XCTAssertEqual(
+      span.events.first?.attributes[BuildkiteTelemetryAttribute.annotation],
+      .string(String(repeating: "a", count: 16_384))
+    )
+    XCTAssertEqual(
+      span.events.last?.attributes["exception.message"],
+      .string(String(repeating: "m", count: 10_240) + "...")
+    )
+    XCTAssertEqual(
+      span.events.last?.attributes["exception.stacktrace"],
+      .string("0 " + String(repeating: "f", count: 16_382))
+    )
+  }
+
   func testAppliesExecutionNameAffixesAndCustomRunEnvironmentOverrides() throws {
     let rootExporter = InMemoryExporter()
     let client = try XCTUnwrap(TelemetryClient.live(
@@ -488,6 +601,27 @@ final class TelemetryClientTests: XCTestCase {
       ],
       getFromEnvironment: { _ in nil },
       getFromInfoDictionary: { _ in nil }
+    )
+  }
+
+  private func configuration(
+    runKey: String,
+    relay: Bool = false,
+    logger: Core.Logger?
+  ) -> CollectorOTLPConfiguration? {
+    var values = ["BUILDKITE_ANALYTICS_ENVIRONMENT": #"{"key":"\#(runKey)"}"#]
+    if relay {
+      values["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "http://relay.example/v1/traces"
+    } else {
+      values["BUILDKITE_ANALYTICS_TOKEN"] = "collector-token"
+    }
+    return CollectorOTLPConfiguration(
+      environment: EnvironmentValues(
+        values: values,
+        getFromEnvironment: { _ in nil },
+        getFromInfoDictionary: { _ in nil }
+      ),
+      logger: logger
     )
   }
 

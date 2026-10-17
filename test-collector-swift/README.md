@@ -29,7 +29,7 @@ To use the Buildkite Test Collector with a SwiftPM project, add this repository 
 let package = Package(
   name: "MyProject",
   dependencies: [
-    .package(url: "https://github.com/buildkite/test-collector-swift", exact: "2.0.0-beta.1")
+    .package(url: "https://github.com/buildkite/test-collector-swift", exact: "2.0.0-beta.2")
   ],
   targets: [
     .target(name: "MyProject"),
@@ -226,16 +226,22 @@ attribute limit is three; additional metadata and tags may be dropped at that
 limit.
 
 While the endpoint is healthy, finishing a test waits for its root span to be
-accepted by the configured OTLP endpoint. After a failure, subsequent roots stay
-in the collector's in-memory queue while export attempts back off for 10, 20,
-30, and then at most 60 seconds. The bundle-end flush always makes an immediate
-final attempt. When the endpoint is the Test Engine Client relay, acceptance
-transfers the span to the longer-lived parent process, which protects completed
-executions from an XCTest runner restart.
+accepted by the configured OTLP endpoint. After a transient failure (a network
+error, timeout, or an HTTP 408, 429, 502, 503 or 504 response), subsequent
+roots stay in the collector's in-memory queue while export attempts back off
+for 10, 20, 30, and then at most 60 seconds. The bundle-end flush always makes
+an immediate final attempt. Any other HTTP error (for example 401 or 403 for a
+bad token, or 413 for an oversized request) is not retried: the queued
+executions are dropped and a `TEST RESULTS MISSING` warning names the status.
+When the endpoint is the Test Engine Client relay, acceptance transfers the
+span to the longer-lived parent process, which protects completed executions
+from an XCTest runner restart.
 
 This is not disk-backed delivery. A hard exit before a test finishes, a process
 exit while the endpoint remains unavailable, or a machine restart can still
-lose spans. An ambiguous network timeout may also result in a retry after the
+lose spans. Drops the collector sees before the bundle-end flush are reported
+there as a `TEST RESULTS MISSING` total; losses from a hard exit or restart are
+not reported. An ambiguous network timeout may also result in a retry after the
 server accepted the first request.
 
 ## 🔍 Debugging

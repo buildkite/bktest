@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.0-beta.2
+
+- Label execution root requests `Buildkite-Tests-Span-Stream: test` and child span requests `child`
+- Disable export with a warning when the run key is not 1-255 printable ASCII characters without spaces, instead of sending requests the receiver rejects
+- Drop queued executions instead of retrying when the receiver returns a non-transient HTTP status (such as 401, 403, 413 or 500); only network errors, timeouts and 408/429/502/503/504 are retried. Drops are reported as `TEST RESULTS MISSING` with the cause, and the run total is reported at the bundle-end flush
+- Truncate oversized failure reasons, exception messages, stack traces, annotations and attribute values before export, so one huge value cannot get the request rejected
+
 ## 2.0.0-beta.1
 
 - Replace proprietary execution uploads with XCTest execution root spans submitted through OpenTelemetry

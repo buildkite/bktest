@@ -7,7 +7,8 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
   func testBacksOffFailedExportsAndResetsAfterSuccess() {
     let clock = TestClock()
     let exporter = SequencedExporter(results: [
-      .failure, .failure, .failure, .failure, .failure, .success, .failure, .success,
+      .failure(.httpStatus(503)), .failure(.httpStatus(503)), .failure(.httpStatus(503)), .failure(.httpStatus(503)),
+      .failure(.httpStatus(503)), .success(()), .failure(.httpStatus(503)), .success(()),
     ])
     let processor = SynchronousExecutionSpanProcessor(
       exporter: exporter,
@@ -64,7 +65,7 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
 
   func testLogsExecutionsQueuedDuringBackoff() {
     let clock = TestClock()
-    let exporter = SequencedExporter(results: [.failure])
+    let exporter = SequencedExporter(results: [.failure(.httpStatus(503))])
     let messages = LockIsolated([String]())
     let logger = Logger(logLevel: .debug, printer: { message in
       messages.withValue { $0.append(message) }
@@ -89,6 +90,79 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
     })
   }
 
+  func testDropsExecutionsRejectedByTheReceiverAndReportsTotalsAtFlush() {
+    let clock = TestClock()
+    let exporter = SequencedExporter(results: [
+      .failure(.httpStatus(403)),
+      .failure(.httpStatus(403)),
+      .success(()),
+    ])
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
+    let processor = SynchronousExecutionSpanProcessor(
+      exporter: exporter,
+      logger: logger,
+      now: { clock.now }
+    )
+    let tracer = TracerProviderSdk(spanProcessors: [processor]).get(
+      instrumentationName: "SynchronousExecutionSpanProcessorTests"
+    )
+
+    self.endSpan("one", with: tracer)
+    clock.now = 5
+    self.endSpan("two", with: tracer)
+    clock.now = 10
+    self.endSpan("three", with: tracer)
+    clock.now = 30
+    self.endSpan("four", with: tracer)
+    processor.forceFlush(timeout: nil)
+    logger.waitForLogs()
+
+    XCTAssertEqual(exporter.exports.map { $0.map(\.name) }, [["one"], ["two", "three"], ["four"]])
+    XCTAssertEqual(messages.withValue { $0.filter { $0.hasPrefix("[BuildkiteTestCollector] warning:") } }, [
+      "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 403). OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.",
+      "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 3 test.execution span(s) so far this run; those test executions were not uploaded to Buildkite Test Engine.",
+    ])
+  }
+
+  func testDropsExecutionsStillUnsentAtFlushAndStartsAFreshCountPerRun() {
+    let clock = TestClock()
+    let exporter = SequencedExporter(results: [
+      .failure(.transportError),
+      .failure(.httpStatus(503)),
+      .failure(.httpStatus(401)),
+    ])
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
+    let processor = SynchronousExecutionSpanProcessor(
+      exporter: exporter,
+      logger: logger,
+      now: { clock.now }
+    )
+    let tracer = TracerProviderSdk(spanProcessors: [processor]).get(
+      instrumentationName: "SynchronousExecutionSpanProcessorTests"
+    )
+
+    self.endSpan("one", with: tracer)
+    self.endSpan("two", with: tracer)
+    processor.forceFlush(timeout: nil)
+    clock.now = 60
+    self.endSpan("three", with: tracer)
+    processor.forceFlush(timeout: nil)
+    logger.waitForLogs()
+
+    XCTAssertEqual(exporter.exports.map { $0.map(\.name) }, [["one"], ["one", "two"], ["three"]])
+    XCTAssertEqual(messages.withValue { $0.filter { !$0.hasPrefix("[BuildkiteTestCollector] debug:") } }, [
+      "[BuildkiteTestCollector] error: OpenTelemetry export failed for one (socket_error); the execution remains queued in this process",
+      "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 2 test.execution span(s) (export-failure, last OTLP failure: 503). OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.",
+      "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 401). OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.",
+    ])
+  }
+
   private func endSpan(_ name: String, with tracer: any Tracer) {
     tracer.spanBuilder(spanName: name).setNoParent().startSpan().end()
   }
@@ -98,17 +172,25 @@ private final class TestClock {
   var now: TimeInterval = 0
 }
 
-private final class SequencedExporter: SpanExporter, @unchecked Sendable {
-  private var results: [SpanExporterResultCode]
+private final class SequencedExporter: FailureReportingSpanExporter, @unchecked Sendable {
+  private var results: [Result<Void, SpanExportFailure>]
+  private(set) var lastFailure: SpanExportFailure?
   var exports = [[SpanData]]()
 
-  init(results: [SpanExporterResultCode]) {
+  init(results: [Result<Void, SpanExportFailure>]) {
     self.results = results
   }
 
   func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
     self.exports.append(spans)
-    return self.results.removeFirst()
+    switch self.results.removeFirst() {
+    case .success:
+      self.lastFailure = nil
+      return .success
+    case let .failure(failure):
+      self.lastFailure = failure
+      return .failure
+    }
   }
 
   func flush(explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
