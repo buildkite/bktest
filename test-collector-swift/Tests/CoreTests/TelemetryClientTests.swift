@@ -361,26 +361,13 @@ final class TelemetryClientTests: XCTestCase {
     ])
   }
 
-  func testDisablesExportForInvalidRunKey() throws {
+  func testDisablesExportForInvalidRunKey() {
     let messages = LockIsolated([String]())
     let logger = Logger(printer: { message in
       messages.withValue { $0.append(message) }
     })
     func configure(key: String, relay: Bool = false) -> CollectorOTLPConfiguration? {
-      var values = ["BUILDKITE_ANALYTICS_ENVIRONMENT": #"{"key":"\#(key)"}"#]
-      if relay {
-        values["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "http://relay.example/v1/traces"
-      } else {
-        values["BUILDKITE_ANALYTICS_TOKEN"] = "collector-token"
-      }
-      return CollectorOTLPConfiguration(
-        environment: EnvironmentValues(
-          values: values,
-          getFromEnvironment: { _ in nil },
-          getFromInfoDictionary: { _ in nil }
-        ),
-        logger: logger
-      )
+      self.configuration(runKey: key, relay: relay, logger: logger)
     }
 
     XCTAssertEqual(
@@ -402,7 +389,7 @@ final class TelemetryClientTests: XCTestCase {
     })
   }
 
-  func testCapsFailureReasonAndExceptionMessage() throws {
+  func testCapsOversizedValuesBeforeExport() throws {
     let rootExporter = InMemoryExporter()
     let client = try XCTUnwrap(TelemetryClient.live(
       environment: self.configuredEnvironment,
@@ -617,6 +604,27 @@ final class TelemetryClientTests: XCTestCase {
       ],
       getFromEnvironment: { _ in nil },
       getFromInfoDictionary: { _ in nil }
+    )
+  }
+
+  private func configuration(
+    runKey: String,
+    relay: Bool,
+    logger: Core.Logger?
+  ) -> CollectorOTLPConfiguration? {
+    var values = ["BUILDKITE_ANALYTICS_ENVIRONMENT": #"{"key":"\#(runKey)"}"#]
+    if relay {
+      values["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "http://relay.example/v1/traces"
+    } else {
+      values["BUILDKITE_ANALYTICS_TOKEN"] = "collector-token"
+    }
+    return CollectorOTLPConfiguration(
+      environment: EnvironmentValues(
+        values: values,
+        getFromEnvironment: { _ in nil },
+        getFromInfoDictionary: { _ in nil }
+      ),
+      logger: logger
     )
   }
 

@@ -43,11 +43,6 @@ enum TelemetryLimit {
 
   static let rootSpanLimits = SpanLimits()
     .settingAttributeValueLengthLimit(UInt(attributeValueLength))
-
-  static func truncated(_ value: String, to length: Int) -> String {
-    guard value.unicodeScalars.count > length else { return value }
-    return String(String.UnicodeScalarView(value.unicodeScalars.prefix(length)))
-  }
 }
 
 private enum TelemetryValue {
@@ -69,15 +64,6 @@ struct CollectorOTLPConfiguration {
   let endpoint: URL
   let headers: [(String, String)]
   let runEnvironment: RunEnvironment
-
-  /// The exporter owns the stream header; a copy in configured headers would
-  /// be sent as a second value.
-  func headers(for stream: SpanStream) -> [(String, String)] {
-    self.headers.filter { $0.0.caseInsensitiveCompare(Self.streamHeader) != .orderedSame }
-      + [(Self.streamHeader, stream.rawValue)]
-  }
-
-  private static let streamHeader = "Buildkite-Tests-Span-Stream"
 
   init?(
     environment: EnvironmentValues,
@@ -166,10 +152,18 @@ struct CollectorOTLPConfiguration {
     self.runEnvironment = runEnvironment
   }
 
+  /// The exporter owns the stream header; a copy in configured headers would
+  /// be sent as a second value.
+  func headers(for stream: SpanStream) -> [(String, String)] {
+    var headers = self.headers
+    headers.removeAll { $0.0.caseInsensitiveCompare("Buildkite-Tests-Span-Stream") == .orderedSame }
+    headers.append(("Buildkite-Tests-Span-Stream", stream.rawValue))
+    return headers
+  }
+
   // The receiver accepts `/\A[!-~]{1,255}\z/`.
   private static func isValidRunKey(_ key: String) -> Bool {
-    (1...255).contains(key.count)
-      && key.unicodeScalars.allSatisfy { (33...126).contains($0.value) }
+    !key.isEmpty && key.count <= 255 && key.unicodeScalars.allSatisfy { (33...126).contains($0.value) }
   }
 
   private static func absoluteURL(_ value: String) -> URL? {
@@ -215,13 +209,15 @@ private final class SynchronousOtlpTraceExporter: FailureReportingSpanExporter, 
   }
 
   var lastFailure: SpanExportFailure? {
-    self.httpClient.lastFailure
+    if case let .failure(failure) = self.httpClient.outcome { return failure }
+    return nil
   }
 
   func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
     self.httpClient.prepare()
     _ = self.exporter.export(spans: spans, explicitTimeout: explicitTimeout)
-    return self.httpClient.result
+    if case .success = self.httpClient.outcome { return .success }
+    return .failure
   }
 
   func flush(explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
@@ -234,13 +230,9 @@ private final class SynchronousOtlpTraceExporter: FailureReportingSpanExporter, 
 }
 
 private final class SynchronousHTTPClient: HTTPClient {
-  // Matches the reference exporter: transient statuses are retried, every
-  // other non-2xx status (400 run key, 401/403 auth, 413, 415, 500, …) is not.
-  private static let retryableStatusCodes: Set<Int> = [408, 429, 502, 503, 504]
-
   private let lock = NSLock()
   private let session: URLSession
-  private var outcome: Result<Void, SpanExportFailure>?
+  private var _outcome: Result<Void, SpanExportFailure>?
 
   init(timeout: TimeInterval) {
     let configuration = URLSessionConfiguration.ephemeral
@@ -252,22 +244,15 @@ private final class SynchronousHTTPClient: HTTPClient {
 
   func prepare() {
     self.lock.lock()
-    self.outcome = nil
+    self._outcome = nil
     self.lock.unlock()
   }
 
-  var result: SpanExporterResultCode {
+  /// The outcome of the request sent since `prepare()`; nil until it completes.
+  var outcome: Result<Void, SpanExportFailure>? {
     self.lock.lock()
     defer { self.lock.unlock() }
-    if case .success = self.outcome { return .success }
-    return .failure
-  }
-
-  var lastFailure: SpanExportFailure? {
-    self.lock.lock()
-    defer { self.lock.unlock() }
-    if case let .failure(failure) = self.outcome { return failure }
-    return nil
+    return self._outcome
   }
 
   func send(
@@ -277,10 +262,10 @@ private final class SynchronousHTTPClient: HTTPClient {
     let semaphore = DispatchSemaphore(value: 0)
     let task = self.session.dataTask(with: request) { [weak self] _, response, error in
       let httpResponse = response as? HTTPURLResponse
-      let outcome = Self.outcome(response: httpResponse, error: error)
+      let outcome = Self.classify(response: httpResponse, error: error)
 
       self?.lock.lock()
-      self?.outcome = outcome
+      self?._outcome = outcome
       self?.lock.unlock()
 
       // The collector owns failed-span requeueing. Always report transport
@@ -297,27 +282,17 @@ private final class SynchronousHTTPClient: HTTPClient {
     semaphore.wait()
   }
 
-  private static func outcome(
+  private static func classify(
     response: HTTPURLResponse?,
     error: Error?
   ) -> Result<Void, SpanExportFailure> {
     if let error {
-      let isTimeout = (error as? URLError)?.code == .timedOut
-      return .failure(SpanExportFailure(
-        reason: isTimeout ? "timeout" : "socket_error",
-        isRetryable: true
-      ))
+      return .failure((error as? URLError)?.code == .timedOut ? .timeout : .transportError)
     }
     guard let status = response?.statusCode else {
-      return .failure(SpanExportFailure(reason: "socket_error", isRetryable: true))
+      return .failure(.transportError)
     }
-    if (200..<300).contains(status) {
-      return .success(())
-    }
-    return .failure(SpanExportFailure(
-      reason: String(status),
-      isRetryable: Self.retryableStatusCodes.contains(status)
-    ))
+    return (200..<300).contains(status) ? .success(()) : .failure(.httpStatus(status))
   }
 }
 
@@ -498,7 +473,7 @@ private final class LiveTelemetryClient {
       name: "test.annotation",
       attributes: [
         BuildkiteTelemetryAttribute.annotation: .string(
-          TelemetryLimit.truncated(content, to: TelemetryLimit.eventAttributeValueLength)
+          content.truncated(toUnicodeScalars: TelemetryLimit.eventAttributeValueLength)
         ),
       ]
     )
@@ -539,7 +514,7 @@ private final class LiveTelemetryClient {
           .joined(separator: "\n")
         if !backtrace.isEmpty {
           attributes[SemanticConventions.Exception.stacktrace.rawValue] = .string(
-            TelemetryLimit.truncated(backtrace, to: TelemetryLimit.eventAttributeValueLength)
+            backtrace.truncated(toUnicodeScalars: TelemetryLimit.eventAttributeValueLength)
           )
         }
         if let error = issue.associatedError {
@@ -616,16 +591,13 @@ private final class LiveTelemetryClient {
     } else {
       reason = issues.first?.compactDescription ?? "Test failed"
     }
-    return TelemetryLimit.truncated(reason, to: TelemetryLimit.failureReasonLength)
+    return reason.truncated(toUnicodeScalars: TelemetryLimit.failureReasonLength)
   }
 
   // Exception messages share a 10,240-character budget per execution on the
   // server; the truncation marker shows the message was cut by the collector.
   private static func exceptionMessage(_ description: String) -> String {
-    guard description.unicodeScalars.count > TelemetryLimit.exceptionMessageLength else {
-      return description
-    }
-    return TelemetryLimit.truncated(description, to: TelemetryLimit.exceptionMessageLength) + "..."
+    description.truncated(toUnicodeScalars: TelemetryLimit.exceptionMessageLength, marker: "...")
   }
 
   private static func makeProvider(
@@ -781,5 +753,12 @@ private final class LiveTelemetryClient {
     func get(carrier: [String: String], key: String) -> [String]? {
       carrier[key].map { [$0] }
     }
+  }
+}
+
+extension String {
+  fileprivate func truncated(toUnicodeScalars limit: Int, marker: String = "") -> String {
+    guard self.unicodeScalars.count > limit else { return self }
+    return String(self.unicodeScalars.prefix(limit)) + marker
   }
 }

@@ -7,8 +7,8 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
   func testBacksOffFailedExportsAndResetsAfterSuccess() {
     let clock = TestClock()
     let exporter = SequencedExporter(results: [
-      .failure(.transient), .failure(.transient), .failure(.transient), .failure(.transient),
-      .failure(.transient), .success(()), .failure(.transient), .success(()),
+      .failure(.httpStatus(503)), .failure(.httpStatus(503)), .failure(.httpStatus(503)), .failure(.httpStatus(503)),
+      .failure(.httpStatus(503)), .success(()), .failure(.httpStatus(503)), .success(()),
     ])
     let processor = SynchronousExecutionSpanProcessor(
       exporter: exporter,
@@ -65,7 +65,7 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
 
   func testLogsExecutionsQueuedDuringBackoff() {
     let clock = TestClock()
-    let exporter = SequencedExporter(results: [.failure(.transient)])
+    let exporter = SequencedExporter(results: [.failure(.httpStatus(503))])
     let messages = LockIsolated([String]())
     let logger = Logger(logLevel: .debug, printer: { message in
       messages.withValue { $0.append(message) }
@@ -93,8 +93,8 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
   func testDropsExecutionsRejectedByTheReceiverAndReportsTotalsAtFlush() {
     let clock = TestClock()
     let exporter = SequencedExporter(results: [
-      .failure(SpanExportFailure(reason: "403", isRetryable: false)),
-      .failure(SpanExportFailure(reason: "403", isRetryable: false)),
+      .failure(.httpStatus(403)),
+      .failure(.httpStatus(403)),
       .success(()),
     ])
     let messages = LockIsolated([String]())
@@ -121,7 +121,7 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
     logger.waitForLogs()
 
     XCTAssertEqual(exporter.exports.map { $0.map(\.name) }, [["one"], ["two", "three"], ["four"]])
-    XCTAssertEqual(messages.withValue { $0.filter { $0.contains("warning") } }, [
+    XCTAssertEqual(messages.withValue { $0.filter { $0.hasPrefix("[BuildkiteTestCollector] warning:") } }, [
       "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 403). OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.",
       "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 3 test.execution span(s) so far this run; those test executions were not uploaded to Buildkite Test Engine.",
     ])
@@ -130,9 +130,9 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
   func testDropsExecutionsStillUnsentAtFlushAndStartsAFreshCountPerRun() {
     let clock = TestClock()
     let exporter = SequencedExporter(results: [
-      .failure(SpanExportFailure(reason: "socket_error", isRetryable: true)),
-      .failure(SpanExportFailure(reason: "503", isRetryable: true)),
-      .failure(SpanExportFailure(reason: "401", isRetryable: false)),
+      .failure(.transportError),
+      .failure(.httpStatus(503)),
+      .failure(.httpStatus(401)),
     ])
     let messages = LockIsolated([String]())
     let logger = Logger(printer: { message in
@@ -156,7 +156,7 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
     logger.waitForLogs()
 
     XCTAssertEqual(exporter.exports.map { $0.map(\.name) }, [["one"], ["one", "two"], ["three"]])
-    XCTAssertEqual(messages.withValue { $0.filter { !$0.contains("debug") } }, [
+    XCTAssertEqual(messages.withValue { $0.filter { !$0.hasPrefix("[BuildkiteTestCollector] debug:") } }, [
       "[BuildkiteTestCollector] error: OpenTelemetry export failed for one (socket_error); the execution remains queued in this process",
       "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 2 test.execution span(s) (export-failure, last OTLP failure: 503). OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.",
       "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 401). OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.",
@@ -170,10 +170,6 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
 
 private final class TestClock {
   var now: TimeInterval = 0
-}
-
-private extension SpanExportFailure {
-  static let transient = SpanExportFailure(reason: "503", isRetryable: true)
 }
 
 private final class SequencedExporter: FailureReportingSpanExporter, @unchecked Sendable {

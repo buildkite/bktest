@@ -2,12 +2,34 @@ import Foundation
 import OpenTelemetryApi
 import OpenTelemetrySdk
 
-/// Why the most recent export attempt failed and whether a later attempt may
-/// succeed. Exporters that cannot tell report nothing and are retried.
-struct SpanExportFailure: Error {
-  /// The HTTP status, or the transport failure (`timeout`, `socket_error`).
-  let reason: String
-  let isRetryable: Bool
+/// Why the most recent export attempt failed. Exporters that cannot tell
+/// report nothing and are retried.
+enum SpanExportFailure: Error {
+  case timeout
+  case transportError
+  case httpStatus(Int)
+
+  // Matches the reference exporter: transient statuses are retried, every
+  // other non-2xx status (400 run key, 401/403 auth, 413, 415, 500, …) is not.
+  var isRetryable: Bool {
+    switch self {
+    case .timeout, .transportError:
+      return true
+    case let .httpStatus(status):
+      return [408, 429, 502, 503, 504].contains(status)
+    }
+  }
+
+  var reason: String {
+    switch self {
+    case .timeout:
+      return "timeout"
+    case .transportError:
+      return "socket_error"
+    case let .httpStatus(status):
+      return String(status)
+    }
+  }
 }
 
 protocol FailureReportingSpanExporter: SpanExporter {
@@ -21,6 +43,7 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
   let isEndRequired = true
 
   private let exporter: any SpanExporter
+  private let failureReporter: (any FailureReportingSpanExporter)?
   private let exporterLock = NSLock()
   private let logger: Logger?
   private let now: () -> TimeInterval
@@ -30,12 +53,19 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
   private var droppedCount = 0
   private var reportedDroppedCount = 0
 
+  private enum ExportAttempt {
+    case exported
+    case queued(failure: SpanExportFailure?)
+    case dropped(count: Int, failure: SpanExportFailure?)
+  }
+
   init(
     exporter: any SpanExporter,
     logger: Logger?,
     now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
   ) {
     self.exporter = exporter
+    self.failureReporter = exporter as? any FailureReportingSpanExporter
     self.logger = logger
     self.now = now
   }
@@ -89,7 +119,7 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
       case .exported:
         break
       case let .queued(failure):
-        self.reportDropped(count: self.drop(), failure: failure)
+        self.reportDropped(count: self.dropPending(), failure: failure)
       case let .dropped(count, failure):
         self.reportDropped(count: count, failure: failure)
       }
@@ -107,12 +137,6 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
     }
   }
 
-  private enum ExportAttempt {
-    case exported
-    case queued(SpanExportFailure?)
-    case dropped(count: Int, failure: SpanExportFailure?)
-  }
-
   private func exportPending(timeout: TimeInterval? = nil) -> ExportAttempt {
     switch self.exporter.export(spans: self.pending, explicitTimeout: timeout) {
     case .success:
@@ -125,15 +149,15 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
       self.retryNotBefore = self.now() + delay
       self.retryDelayIndex = min(self.retryDelayIndex + 1, Self.retryDelays.count - 1)
 
-      let failure = (self.exporter as? FailureReportingSpanExporter)?.lastFailure
+      let failure = self.failureReporter?.lastFailure
       guard failure?.isRetryable ?? true else {
-        return .dropped(count: self.drop(), failure: failure)
+        return .dropped(count: self.dropPending(), failure: failure)
       }
-      return .queued(failure)
+      return .queued(failure: failure)
     }
   }
 
-  private func drop() -> Int {
+  private func dropPending() -> Int {
     let count = self.pending.count
     self.pending.removeAll()
     self.droppedCount += count
