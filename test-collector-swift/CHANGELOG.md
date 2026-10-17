@@ -6,7 +6,7 @@
 - Disable export with a warning when the run key is not 1-255 printable ASCII characters without spaces, instead of sending requests the receiver rejects
 - Stop retrying root-span exports after an HTTP status the receiver will keep returning (such as 401, 403, 413 or 500); keep retrying only transient failures (network errors, timeouts, 408, 429, 502, 503, 504)
 - Warn `TEST RESULTS MISSING` with the count and cause when execution roots are dropped, and report the run total at the bundle-end flush
-- Cap the failure reason at 1,024 characters and each exception message at 10,240 characters before export
+- Cap the failure reason at 1,024 characters, each exception message at 10,240 characters, annotations and stack traces at 16,384 characters, and execution root attribute values at 10,243 characters before export, so one oversized value cannot push a request over the receiver's size limit
 - Add `docs/otel-spec-conformance.md`, the clause-by-clause audit against the portable OTel collector specification
 
 ## 2.0.0-beta.1

@@ -343,6 +343,22 @@ final class TelemetryClientTests: XCTestCase {
       #"Authorization: Token token="SECRET""#,
       "Buildkite-Tests-Span-Stream: child",
     ])
+
+    let relay = try XCTUnwrap(CollectorOTLPConfiguration(
+      environment: EnvironmentValues(
+        values: [
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://relay.example/v1/traces",
+          "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "x-relay=1,BUILDKITE-TESTS-SPAN-STREAM=test",
+        ],
+        getFromEnvironment: { _ in nil },
+        getFromInfoDictionary: { _ in nil }
+      ),
+      logger: nil
+    ))
+    XCTAssertEqual(relay.headers(for: .child).map { "\($0.0): \($0.1)" }, [
+      "x-relay: 1",
+      "Buildkite-Tests-Span-Stream: child",
+    ])
   }
 
   func testDisablesExportForInvalidRunKey() throws {
@@ -350,13 +366,16 @@ final class TelemetryClientTests: XCTestCase {
     let logger = Logger(printer: { message in
       messages.withValue { $0.append(message) }
     })
-    func configure(key: String) -> CollectorOTLPConfiguration? {
-      CollectorOTLPConfiguration(
+    func configure(key: String, relay: Bool = false) -> CollectorOTLPConfiguration? {
+      var values = ["BUILDKITE_ANALYTICS_ENVIRONMENT": #"{"key":"\#(key)"}"#]
+      if relay {
+        values["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "http://relay.example/v1/traces"
+      } else {
+        values["BUILDKITE_ANALYTICS_TOKEN"] = "collector-token"
+      }
+      return CollectorOTLPConfiguration(
         environment: EnvironmentValues(
-          values: [
-            "BUILDKITE_ANALYTICS_TOKEN": "collector-token",
-            "BUILDKITE_ANALYTICS_ENVIRONMENT": #"{"key":"\#(key)"}"#,
-          ],
+          values: values,
           getFromEnvironment: { _ in nil },
           getFromInfoDictionary: { _ in nil }
         ),
@@ -372,6 +391,8 @@ final class TelemetryClientTests: XCTestCase {
     XCTAssertNil(configure(key: ""))
     XCTAssertNil(configure(key: "run key"))
     XCTAssertNil(configure(key: "run-kéy"))
+    XCTAssertNotNil(configure(key: "run-key", relay: true))
+    XCTAssertNil(configure(key: "run key", relay: true))
     logger.waitForLogs()
 
     XCTAssertTrue(messages.withValue { messages in
@@ -392,22 +413,46 @@ final class TelemetryClientTests: XCTestCase {
     ))
     var test = TestState(id: UUID(), className: "LongTests", testName: "testLongFailure")
     test.result = .failed
+    // Limits count Unicode scalars, so a combining mark counts separately.
+    let combining = "e\u{301}"
     test.issues = [
       TestIssue(
-        compactDescription: String(repeating: "r", count: 1_025),
+        compactDescription: String(repeating: combining, count: 1_025),
         description: String(repeating: "m", count: 10_241),
-        sourceCodeContext: SourceCodeContext()
+        sourceCodeContext: SourceCodeContext(callStack: [
+          SourceCodeFrame(
+            address: 0,
+            symbolInfo: SourceCodeSymbolInfo(
+              imageName: "Tests",
+              symbolName: String(repeating: "f", count: 16_384)
+            )
+          ),
+        ])
       ),
     ]
 
     let executionID = client.startExecution(test)
-    client.finishExecution(executionID, test: test, tags: nil)
+    client.annotate(String(repeating: "a", count: 16_385), executionID: executionID)
+    client.finishExecution(executionID, test: test, tags: ["long": String(repeating: "t", count: 10_244)])
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
-    XCTAssertEqual(span.status, .error(description: String(repeating: "r", count: 1_024)))
+    XCTAssertEqual(span.status, .error(description: String(repeating: combining, count: 512)))
     XCTAssertEqual(
-      span.events.only?.attributes["exception.message"],
+      span.attributes[BuildkiteTelemetryAttribute.tagPrefix + "long"],
+      .string(String(repeating: "t", count: 10_243))
+    )
+    XCTAssertEqual(span.events.count, 2)
+    XCTAssertEqual(
+      span.events.first?.attributes[BuildkiteTelemetryAttribute.annotation],
+      .string(String(repeating: "a", count: 16_384))
+    )
+    XCTAssertEqual(
+      span.events.last?.attributes["exception.message"],
       .string(String(repeating: "m", count: 10_240) + "...")
+    )
+    XCTAssertEqual(
+      span.events.last?.attributes["exception.stacktrace"],
+      .string("0 " + String(repeating: "f", count: 16_382))
     )
   }
 

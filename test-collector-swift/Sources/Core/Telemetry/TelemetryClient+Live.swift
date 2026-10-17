@@ -33,9 +33,21 @@ enum BuildkiteTelemetryAttribute {
   static let testName = "buildkite.test.name"
 }
 
-private enum TelemetryLimit {
+/// Length limits in Unicode scalars, matching the receiver's code-point
+/// budgets so one oversized value cannot push a request past its size limit.
+enum TelemetryLimit {
+  static let attributeValueLength = 10_243
+  static let eventAttributeValueLength = 16_384
   static let exceptionMessageLength = 10_240
   static let failureReasonLength = 1_024
+
+  static let rootSpanLimits = SpanLimits()
+    .settingAttributeValueLengthLimit(UInt(attributeValueLength))
+
+  static func truncated(_ value: String, to length: Int) -> String {
+    guard value.unicodeScalars.count > length else { return value }
+    return String(String.UnicodeScalarView(value.unicodeScalars.prefix(length)))
+  }
 }
 
 private enum TelemetryValue {
@@ -58,9 +70,14 @@ struct CollectorOTLPConfiguration {
   let headers: [(String, String)]
   let runEnvironment: RunEnvironment
 
+  /// The exporter owns the stream header; a copy in configured headers would
+  /// be sent as a second value.
   func headers(for stream: SpanStream) -> [(String, String)] {
-    self.headers + [("Buildkite-Tests-Span-Stream", stream.rawValue)]
+    self.headers.filter { $0.0.caseInsensitiveCompare(Self.streamHeader) != .orderedSame }
+      + [(Self.streamHeader, stream.rawValue)]
   }
+
+  private static let streamHeader = "Buildkite-Tests-Span-Stream"
 
   init?(
     environment: EnvironmentValues,
@@ -77,6 +94,16 @@ struct CollectorOTLPConfiguration {
       || environment.analyticsOTLPEndpoint != nil
 
     guard environment.analyticsToken != nil || hasExplicitConfiguration else { return nil }
+
+    // The receiver rejects the whole request with 400 for an invalid run key,
+    // and a relay forwards the key as-is, so disable export up front rather
+    // than fail every export.
+    guard Self.isValidRunKey(runEnvironment.key) else {
+      logger?.warning(
+        "OpenTelemetry span export disabled: run key \(runEnvironment.key.debugDescription) is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); it must be 1-255 printable ASCII characters without spaces."
+      )
+      return nil
+    }
 
     let endpoint: URL
     let usesBuildkiteCredentials: Bool
@@ -117,14 +144,6 @@ struct CollectorOTLPConfiguration {
 
     var headers = [(String, String)]()
     if usesBuildkiteCredentials {
-      // The receiver rejects the whole request with 400 for an invalid run
-      // key, so disable export up front rather than fail every export.
-      guard Self.isValidRunKey(runEnvironment.key) else {
-        logger?.warning(
-          "OpenTelemetry span export disabled: run key \(runEnvironment.key.debugDescription) is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); it must be 1-255 printable ASCII characters without spaces."
-        )
-        return nil
-      }
       headers.append(("Buildkite-Tests-Run-Key", runEnvironment.key))
       if let token = environment.analyticsToken {
         headers.append(("Authorization", "Token token=\"\(token)\""))
@@ -309,7 +328,7 @@ extension TelemetryClient {
     logger: Logger?,
     rootExporter: (any SpanExporter)? = nil,
     childExporter: (any SpanExporter)? = nil,
-    rootSpanLimits: SpanLimits = SpanLimits()
+    rootSpanLimits: SpanLimits = TelemetryLimit.rootSpanLimits
   ) -> TelemetryClient? {
     guard let configuration = CollectorOTLPConfiguration(
       environment: environment,
@@ -477,7 +496,11 @@ private final class LiveTelemetryClient {
     guard let span = self.spans.withValue({ $0[executionID] }) else { return }
     span.addEvent(
       name: "test.annotation",
-      attributes: [BuildkiteTelemetryAttribute.annotation: .string(content)]
+      attributes: [
+        BuildkiteTelemetryAttribute.annotation: .string(
+          TelemetryLimit.truncated(content, to: TelemetryLimit.eventAttributeValueLength)
+        ),
+      ]
     )
   }
 
@@ -515,7 +538,9 @@ private final class LiveTelemetryClient {
           .map { "\($0.offset) \($0.element)" }
           .joined(separator: "\n")
         if !backtrace.isEmpty {
-          attributes[SemanticConventions.Exception.stacktrace.rawValue] = .string(backtrace)
+          attributes[SemanticConventions.Exception.stacktrace.rawValue] = .string(
+            TelemetryLimit.truncated(backtrace, to: TelemetryLimit.eventAttributeValueLength)
+          )
         }
         if let error = issue.associatedError {
           attributes[SemanticConventions.Exception.type.rawValue] = .string(
@@ -591,14 +616,16 @@ private final class LiveTelemetryClient {
     } else {
       reason = issues.first?.compactDescription ?? "Test failed"
     }
-    return String(reason.prefix(TelemetryLimit.failureReasonLength))
+    return TelemetryLimit.truncated(reason, to: TelemetryLimit.failureReasonLength)
   }
 
   // Exception messages share a 10,240-character budget per execution on the
   // server; the truncation marker shows the message was cut by the collector.
   private static func exceptionMessage(_ description: String) -> String {
-    guard description.count > TelemetryLimit.exceptionMessageLength else { return description }
-    return description.prefix(TelemetryLimit.exceptionMessageLength) + "..."
+    guard description.unicodeScalars.count > TelemetryLimit.exceptionMessageLength else {
+      return description
+    }
+    return TelemetryLimit.truncated(description, to: TelemetryLimit.exceptionMessageLength) + "..."
   }
 
   private static func makeProvider(

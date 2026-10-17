@@ -95,11 +95,13 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
       }
     }
     if self.droppedCount > self.reportedDroppedCount {
-      self.reportedDroppedCount = self.droppedCount
       self.logger?.warning(
         "TEST RESULTS MISSING: OpenTelemetry dropped \(self.droppedCount) test.execution span(s) so far this run; those test executions were not uploaded to Buildkite Test Engine."
       )
     }
+    // Each flush closes a run; the next one starts a fresh count.
+    self.droppedCount = 0
+    self.reportedDroppedCount = 0
     if case .failure = self.exporter.flush(explicitTimeout: timeout) {
       self.logger?.error("OpenTelemetry export failed while flushing pending test executions")
     }

@@ -127,16 +127,22 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
     ])
   }
 
-  func testDropsExecutionsStillUnsentAtFlush() {
+  func testDropsExecutionsStillUnsentAtFlushAndStartsAFreshCountPerRun() {
+    let clock = TestClock()
     let exporter = SequencedExporter(results: [
       .failure(SpanExportFailure(reason: "socket_error", isRetryable: true)),
       .failure(SpanExportFailure(reason: "503", isRetryable: true)),
+      .failure(SpanExportFailure(reason: "401", isRetryable: false)),
     ])
     let messages = LockIsolated([String]())
     let logger = Logger(printer: { message in
       messages.withValue { $0.append(message) }
     })
-    let processor = SynchronousExecutionSpanProcessor(exporter: exporter, logger: logger)
+    let processor = SynchronousExecutionSpanProcessor(
+      exporter: exporter,
+      logger: logger,
+      now: { clock.now }
+    )
     let tracer = TracerProviderSdk(spanProcessors: [processor]).get(
       instrumentationName: "SynchronousExecutionSpanProcessorTests"
     )
@@ -144,12 +150,16 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
     self.endSpan("one", with: tracer)
     self.endSpan("two", with: tracer)
     processor.forceFlush(timeout: nil)
+    clock.now = 60
+    self.endSpan("three", with: tracer)
+    processor.forceFlush(timeout: nil)
     logger.waitForLogs()
 
-    XCTAssertEqual(exporter.exports.map { $0.map(\.name) }, [["one"], ["one", "two"]])
+    XCTAssertEqual(exporter.exports.map { $0.map(\.name) }, [["one"], ["one", "two"], ["three"]])
     XCTAssertEqual(messages.withValue { $0.filter { !$0.contains("debug") } }, [
       "[BuildkiteTestCollector] error: OpenTelemetry export failed for one (socket_error); the execution remains queued in this process",
       "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 2 test.execution span(s) (export-failure, last OTLP failure: 503). OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.",
+      "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 401). OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.",
     ])
   }
 
