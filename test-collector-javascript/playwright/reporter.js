@@ -46,6 +46,10 @@ class PlaywrightBuildkiteTestEngineReporter {
    * @param {TestResult} testResult
    */
   onTestEnd(test, testResult) {
+    this._testResults.push(this.testEngineRecord(test, testResult));
+  }
+
+  testEngineRecord(test, testResult) {
     const scope = test.titlePath().join(' ');
     const fileName = this._paths.prefixTestPath(test.location.file);
     const location = [fileName, test.location.line, test.location.column].join(':');
@@ -58,7 +62,7 @@ class PlaywrightBuildkiteTestEngineReporter {
       return acc;
     }, {});
 
-    this._testResults.push({
+    return {
       'id': test.id,
       'name': test.title,
       'scope': scope,
@@ -73,7 +77,7 @@ class PlaywrightBuildkiteTestEngineReporter {
         'duration': testResult.duration / 1000,
       },
       'tags': tags
-    });
+    };
   }
 
   testEngineResult(status) {
