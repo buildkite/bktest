@@ -54,6 +54,18 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ];
     ```
 
+    To submit results as OpenTelemetry spans instead of a JSON upload (experimental), set `otelEnabled: true` in the reporter options and use the collector's test environment. See [OpenTelemetry submission](docs/opentelemetry.md).
+
+    ```js
+    // jest.config.js
+
+    reporters: [
+      "default",
+      ["buildkite-test-collector/jest/reporter", { otelEnabled: true }],
+    ],
+    testEnvironment: "buildkite-test-collector/jest/environment",
+    ```
+
     ### Vitest
 
     Supports Vitest 1–5. Vitest 5 requires Node.js 22.12+; the reporter
