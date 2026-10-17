@@ -1,0 +1,29 @@
+# Monorepo pipeline for test-collector-go, uploaded by the top-level
+# dispatcher when this project changes.
+#
+# Pure test and lint steps; no credentials. Jobs check out the monorepo
+# root, so the step scripts cd into this project.
+
+agents:
+  queue: hosted
+
+steps:
+  - group: ":go: test-collector-go"
+    steps:
+      - label: ":go: go test {{matrix}}"
+        command: "test-collector-go/.buildkite/steps/test"
+        plugins:
+          - docker#v3.7.0:
+              image: "golang:{{matrix}}-bookworm"
+        matrix:
+          - "1.23"
+          - "1.24"
+
+      - label: ":go: lint {{matrix}}"
+        command: "test-collector-go/.buildkite/steps/lint"
+        plugins:
+          - docker#v3.7.0:
+              image: "golang:{{matrix}}-bookworm"
+        matrix:
+          - "1.23"
+          - "1.24"

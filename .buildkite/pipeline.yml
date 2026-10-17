@@ -58,3 +58,7 @@ steps:
   - label: ":pipeline: test-collector-rust"
     if_changed: "test-collector-rust/**"
     command: "[ ! -d test-collector-rust ] || buildkite-agent pipeline upload test-collector-rust/.buildkite/pipeline.yml"
+
+  - label: ":pipeline: test-collector-go"
+    if_changed: "test-collector-go/**"
+    command: "[ ! -d test-collector-go ] || buildkite-agent pipeline upload test-collector-go/.buildkite/pipeline.yml"
