@@ -11,7 +11,7 @@ server-side, and nothing is sent to `/v1/uploads`. Resources identify the suite,
 CI run, worker and VCS ref that produced the telemetry. Test Engine run metadata
 and any `tags` you configure live on each `test.execution` span.
 
-OpenTelemetry submission is off by default. Jest and Playwright support it.
+OpenTelemetry submission is off by default. Jest, Playwright and Cypress support it.
 
 ## Playwright
 
@@ -262,6 +262,55 @@ The execution name affixes (`BUILDKITE_ANALYTICS_EXECUTION_NAME_PREFIX` and
 `BUILDKITE_ANALYTICS_EXECUTION_NAME_SUFFIX`) are not sent over OpenTelemetry;
 `buildkite.test.name` is the test title as written. Use `tags` to distinguish
 runs that share a suite, or keep `otelEnabled` off if you rely on them.
+
+## Cypress
+
+The reporter uses Cypress's attempt-completion events and is tested on Cypress 15.
+Install the same optional OpenTelemetry packages listed above, then enable
+the reporter in `cypress.config.js` (component and end-to-end tests work):
+
+```js
+module.exports = {
+  reporter: 'buildkite-test-collector/cypress/reporter',
+  reporterOptions: {
+    otelEnabled: true,
+    token_name: 'BUILDKITE_ANALYTICS_TOKEN',
+    tags: { 'collector.mode': 'otel' },
+  },
+}
+```
+
+The relay token takes precedence over the environment variable named by
+`token_name`, then `BUILDKITE_ANALYTICS_TOKEN`. Missing credentials silently
+select the existing JSON path. Cypress filters Electron stderr, so OTel
+warnings use stdout to keep `TEST RESULTS MISSING` visible in the build log.
+
+Cypress creates a reporter for every spec in the same Node process. The first
+OTel-enabled reporter decides the mode and fixes the session's run key, tags
+and credential for that process. Every spec awaits a flush in the reporter's
+`done` callback; the session stays alive for later specs and shuts down on a
+natural Node exit. Forced exits rely on the per-spec flush and report any
+remaining results as missing. Export failures do not change Cypress's exit
+code or fall back to JSON after tests have started.
+
+Each `test:after:run` event produces a span, including every retry attempt and
+pending test. Tests Cypress abandons after a hook failure get skipped spans
+when the spec finishes. Passed → `pass`, failed → `fail`, pending and skipped
+→ `skipped`. The legacy JSON path is unchanged: it reports final attempts and
+omits pending and hook-aborted tests. Both paths use the same scope, name,
+prefixed file path and failure builder for the tests they share.
+
+Spans are constructed when results arrive, using Cypress's
+`wallClockStartedAt` and `wallClockDuration` (including hooks); `cy.clock` in
+the browser does not change those timestamps. Tests without timing information
+get zero-duration spans at report time. The JSON identity uses file paths without
+line numbers, so `code.line.number` is omitted. Failures include the JSON
+record's expanded message and separate backtrace as exception event fields.
+
+The reporter runs in Node while tests run in the browser. Child spans, phase
+spans and active test context are not exported; per-test annotations and tags
+are not available. `cy.intercept` does not intercept the Node exporter;
+Node-side HTTP stubs must allow the OTLP endpoint.
 
 ## What gets sent
 
