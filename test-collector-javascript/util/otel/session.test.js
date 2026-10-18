@@ -173,13 +173,15 @@ describe('createSession', () => {
     const message = '😀'.repeat(10244)
     const { spans } = await runSession({
       tests: [
-        { start: record({ name: whole }), line: 3 },
-        { start: record({ name: over }), finish: record({ name: over, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }] }), line: 3 },
+        { start: record({ name: whole, tags: { detail: whole } }), line: 3 },
+        { start: record({ name: over }), finish: record({ name: over, tags: { detail: over }, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }] }), line: 3 },
       ],
     })
 
     expect(spans[0].attributes['buildkite.test.name']).toBe(whole)
+    expect(spans[0].attributes['buildkite.tag.detail']).toBe(whole)
     expect(spans[1].attributes['buildkite.test.name']).toBe(`${'😀'.repeat(10240)}...`)
+    expect(spans[1].attributes['buildkite.tag.detail']).toBe(`${'😀'.repeat(10240)}...`)
     expect(spans[1].events[0].attributes['exception.message']).toBe(`${'😀'.repeat(10240)}...`)
     expect(spans[1].droppedAttributesCount).toBe(0)
   })

@@ -29,7 +29,13 @@ module.exports = {
 }
 ```
 
-Install the optional OpenTelemetry packages listed below. The reporter decides
+Install the optional OpenTelemetry packages:
+
+```sh
+npm install '@opentelemetry/api@^1.9.0' '@opentelemetry/sdk-trace-base@^2.0.0' '@opentelemetry/resources@^2.0.0' '@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <1'
+```
+
+The reporter decides
 the submission mode in `onBegin`, before tests run. It exports one root span
 per reported attempt, including retries and skips, using Playwright's start
 time and duration (including hooks), then flushes and shuts down in `onEnd`.
@@ -381,3 +387,8 @@ signal ends the process, and the collector does not install signal handlers in
 Jest's workers, so a worker killed mid-file loses the spans it had not yet
 exported without a `TEST RESULTS MISSING` warning. The JSON upload loses the
 same results.
+
+Playwright handles SIGINT (Ctrl-C) itself: interrupted attempts are reported
+as skipped in OTel and flushed by the reporter in `onEnd`. SIGTERM still kills
+the process without flushing queued executions or running the exit warning.
+The collector does not install signal handlers.

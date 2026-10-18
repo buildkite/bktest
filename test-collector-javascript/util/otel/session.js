@@ -222,6 +222,8 @@ const createSession = (settings) => {
         for (const [key, value] of Object.entries(limitAttributes({ ...description.attributes, ...run }))) {
           span.setAttribute(key, value)
         }
+        // The server drops tag values over 128 bytes; this cut only keeps
+        // the span attribute within the collector's code-point limit.
         for (const [key, value] of Object.entries(record.tags || {})) {
           if (value !== undefined && value !== null) span.setAttribute(`buildkite.tag.${key}`, truncate(String(value), SPAN_ATTRIBUTE_VALUE_MAX_LENGTH))
         }
