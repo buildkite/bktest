@@ -124,15 +124,9 @@ func Main(m *testing.M, opts ...Option) int {
 			}()
 			c.Shutdown()
 		}()
-		fmt.Fprintln(os.Stderr, ExportedLine(c.Exported(), callerPackage()))
+		fmt.Fprintln(os.Stderr, collector.ExportedLine(c.Exported(), callerPackage()))
 	}
 	return code
-}
-
-// ExportedLine is the line Main prints after export; the
-// buildkite-test-collector command recognises it in go test output.
-func ExportedLine(count int, importPath string) string {
-	return fmt.Sprintf("buildkite-test-collector: exported %d test executions from %s", count, importPath)
 }
 
 // callerPackage is the import path of the package that called Main.

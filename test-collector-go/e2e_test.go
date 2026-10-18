@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/buildkite/bktest/test-collector-go/internal/collector"
 	"github.com/buildkite/bktest/test-collector-go/internal/otlptest"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
@@ -100,7 +101,7 @@ func TestEndToEndWithGoTest(t *testing.T) {
 	if strings.Contains(out, "[buildkite-test-collector]") {
 		t.Errorf("a clean run must not warn:\n%s", out)
 	}
-	if want := ExportedLine(10, fixtureModule); strings.Count(out, want) != 1 {
+	if want := collector.ExportedLine(10, fixtureModule); strings.Count(out, want) != 1 {
 		t.Errorf("go test output lacks %q:\n%s", want, out)
 	}
 
