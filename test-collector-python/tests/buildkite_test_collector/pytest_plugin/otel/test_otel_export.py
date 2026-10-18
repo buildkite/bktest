@@ -413,6 +413,19 @@ def test_drop_report_does_not_blame_an_earlier_failure_for_a_full_buffer(capfd):
     assert "last OTLP failure" not in err
 
 
+def test_missing_test_spans_counts_drops_and_unconfirmed_spans(fresh_otel, run_env, receiver):
+    assert export.missing_test_spans() == (0, "")
+    state = export.configure({}, run_env, otel_config(receiver), None)
+    state.test_accounting.offered = 6
+    state.test_accounting.handed = 5
+    state.test_accounting.succeeded = 2
+    state.test_accounting.failed = 1
+    state.test_accounting.last_failure = "ConnectionError"
+    assert export.missing_test_spans() == (
+        4, "export-failure: 1, last OTLP failure: ConnectionError, not confirmed within 30 seconds: 3",
+    )
+
+
 def test_drop_report_stays_silent_when_nothing_was_dropped(capfd):
     drained(export.StreamAccounting(offered=3, handed=3, succeeded=3))
     drained(export.StreamAccounting(offered=3, handed=3, succeeded=3), stream="child")

@@ -9,7 +9,7 @@ tracer provider.
 import time
 from contextvars import Token
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Mapping, Optional, Tuple
 
 import pytest
 
@@ -27,6 +27,11 @@ if TYPE_CHECKING:
     from .export import ExportState
 
 SPAN_FILTER_HOOK = "pytest_buildkite_otel_span_filter"
+# Key under which an xdist worker sends its upload status to the controller
+# in ``config.workeroutput``.
+WORKER_STATUS_KEY = "buildkite_test_collector_otel"
+
+_worker_losses: List[Tuple[str, int, str]] = []
 
 
 class OTelPlugin:
@@ -107,25 +112,23 @@ class OTelPlugin:
         # which is before pytest_unconfigure and atexit and well inside the
         # flush budget; the worker's TEST RESULTS MISSING warning would die
         # with it. Flushing here, inside that wrapper but after pytest's own
-        # session teardown, makes the controller wait for it. The worker's
-        # stderr is inherited, so the warning lands in the controller's output.
+        # session teardown, makes the controller wait for it. What could not
+        # be uploaded travels to the controller with the worker's output, so
+        # the controller can repeat it even when the worker's stderr did not
+        # reach the log.
         if self._state is not None and _is_xdist_worker(session.config):
             self._export.force_flush()
+            missing, reasons = self._export.missing_test_spans()
+            session.config.workeroutput[WORKER_STATUS_KEY] = {  # type: ignore[attr-defined]
+                "missing": missing, "reasons": reasons,
+            }
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_unconfigure(self, config: pytest.Config) -> None:
         """pytest_unconfigure hook callback to push every finished span before pytest exits"""
         if self._state is None or _is_xdist_worker(config):
             return
-        # pytest has printed its summary by now; flushing it first keeps the
-        # export warnings on their own lines after it instead of glued onto
-        # the still-open progress line (pytest_sessionfinish runs too early).
-        try:
-            reporter = config.pluginmanager.get_plugin("terminalreporter")
-            if reporter is not None:
-                reporter.flush()
-        except Exception as error:  # pylint: disable=broad-except
-            warn_failure("Could not flush pytest's terminal output", error)
+        _flush_terminal(config)
         self._export.force_flush()
 
     @pytest.hookimpl(trylast=True)
@@ -209,6 +212,39 @@ class OTelPlugin:
 
 def _is_xdist_worker(config: pytest.Config) -> bool:
     return hasattr(config, "workerinput")
+
+
+def _flush_terminal(config: pytest.Config) -> None:
+    # pytest has printed its summary by now; flushing it first keeps the
+    # export warnings on their own lines after it instead of glued onto
+    # the still-open progress line.
+    try:
+        reporter = config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.flush()
+    except Exception as error:  # pylint: disable=broad-except
+        warn_failure("Could not flush pytest's terminal output", error)
+
+
+def record_worker_status(node: Any) -> None:
+    """Keep what an xdist worker reported it could not upload, for the controller's summary."""
+    status = (getattr(node, "workeroutput", None) or {}).get(WORKER_STATUS_KEY)
+    if status and status["missing"]:
+        _worker_losses.append((node.gateway.id, status["missing"], status["reasons"]))
+
+
+def report_worker_losses(config: pytest.Config) -> None:
+    """Warn, from the xdist controller, about every test span a worker could not upload."""
+    if not _worker_losses:
+        return
+    _flush_terminal(config)
+    for worker, missing, reasons in _worker_losses:
+        logger.warning(
+            "TEST RESULTS MISSING: OpenTelemetry on xdist worker %s did not upload %d "
+            "test.execution span(s) (%s); those test executions were not uploaded to "
+            "Buildkite Test Engine.", worker, missing, reasons,
+        )
+    _worker_losses.clear()
 
 
 def build(

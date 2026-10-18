@@ -687,6 +687,18 @@ def _report_child_drops(accounting: StreamAccounting) -> None:
         )
 
 
+def missing_test_spans() -> Tuple[int, str]:
+    """Return how many test spans this process has not uploaded, with the reasons."""
+    if _state is None:
+        return 0, ""
+    accounting = _state.test_accounting
+    reasons = _drop_reasons(accounting)
+    pending = accounting.pending()
+    if pending > 0:
+        reasons.append(f"not confirmed within {PROCESSOR_TIMEOUT_SECONDS} seconds: {pending}")
+    return accounting.dropped() + pending, ", ".join(reasons)
+
+
 def _drop_reasons(accounting: StreamAccounting) -> List[str]:
     reasons = []
     if accounting.start_failures:

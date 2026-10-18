@@ -71,6 +71,12 @@ def _xdist_role(config: pytest.Config) -> Tuple[bool, bool]:
     return xdist_enabled, hasattr(config, 'workerinput')
 
 
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error):  # pylint: disable=unused-argument
+    """pytest_testnodedown hook callback (xdist controller) to keep a worker's OTel upload status"""
+    otel_plugin.record_worker_status(node)
+
+
 @pytest.hookimpl
 def pytest_unconfigure(config):
     """pytest_unconfigure hook callback"""
@@ -101,6 +107,7 @@ def pytest_unconfigure(config):
             jsonpath = config.option.jsonpath
             if jsonpath:
                 plugin.save_payload_as_json(jsonpath, merge=config.option.mergejson)
+            otel_plugin.report_worker_losses(config)
 
         del config._buildkite
         config.pluginmanager.unregister(plugin)

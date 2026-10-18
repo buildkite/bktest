@@ -259,6 +259,13 @@ def test_xdist_workers_report_missing_results_before_the_controller_stops_them(t
 
     dropped = re.findall(r"TEST RESULTS MISSING: OpenTelemetry dropped (\d+) test\.execution", run.stderr)
     assert sum(int(count) for count in dropped) == len(EXPECTED_RESULTS), run.stderr
+    # The controller repeats each worker's losses after the summary, in case
+    # the worker's own stderr never made it to the log.
+    by_worker = re.findall(
+        r"TEST RESULTS MISSING: OpenTelemetry on xdist worker (gw\d+) did not upload (\d+) "
+        r"test\.execution span\(s\) \(export-failure: \2, last OTLP failure: 400\)", run.stderr,
+    )
+    assert sum(int(count) for _, count in by_worker) == len(EXPECTED_RESULTS), run.stderr
     assert receiver.upload_requests() == []
 
 
