@@ -280,6 +280,15 @@ module.exports = {
 }
 ```
 
+Only boolean `true` or trimmed, case-insensitive `"true"` enables OTel;
+`"false"`, `"1"` and numeric `1` do not. Cypress CLI reporter options can be
+strings: `--reporter-options otelEnabled=true` enables it, while
+`--reporter-options otelEnabled=false` keeps the JSON path. If your Cypress
+config forwards `config.env.otelEnabled` into `reporterOptions.otelEnabled`,
+the same rule applies to `--env otelEnabled=true` (enabled, including the
+string `"true"`) and `--env otelEnabled=false` (disabled); `--env` alone does
+not configure the reporter.
+
 The relay token takes precedence over the environment variable named by
 `token_name`, then `BUILDKITE_ANALYTICS_TOKEN`. Missing credentials silently
 select the existing JSON path. Cypress filters Electron stderr, so OTel
@@ -315,9 +324,9 @@ the browser does not change those timestamps. Tests without timing information
 get zero-duration spans at report time. The JSON identity uses file paths without
 line numbers, so `code.line.number` is omitted. Failures include the JSON
 record's expanded message and separate backtrace as exception event fields.
-The JS SDK applies the same value-length limit to span and event attributes,
-so backtraces are capped at 10,243 UTF-16 code units, with `...` and without
-splitting surrogate pairs (rather than the spec's 16,384-character cap).
+Messages and backtraces are capped at 16,384 UTF-16 code units, with `...`
+and without splitting surrogate pairs. Span attributes retain their separate
+10,243-code-unit limit.
 
 The reporter runs in Node while tests run in the browser. Child spans, phase
 spans and active test context are not exported; per-test annotations and tags

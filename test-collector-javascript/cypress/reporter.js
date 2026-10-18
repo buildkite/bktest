@@ -1,7 +1,7 @@
 const { randomUUID } = require('crypto')
 const MochaBuildkiteTestEngineReporter = require('../mocha/reporter')
 const failureExpanded = require('../util/failureExpanded')
-const { resolveSettings } = require('../util/otel/config')
+const { isOtelEnabled, resolveSettings } = require('../util/otel/config')
 const { sessionFor } = require('../util/otel/session')
 const { warn, describeError, setWarningHandler } = require('../util/otel/warn')
 
@@ -15,7 +15,7 @@ let session
 class CypressBuildkiteTestEngineReporter extends MochaBuildkiteTestEngineReporter {
   constructor(runner, options) {
     super(runner, options, 'cypress')
-    if (!options.reporterOptions.otelEnabled) return
+    if (!isOtelEnabled(options.reporterOptions.otelEnabled)) return
 
     if (session === undefined) {
       session = null
