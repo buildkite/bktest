@@ -35,6 +35,12 @@ module.exports = {
 }
 ```
 
+Both settings are required. With `otelEnabled: true` but no `testEnvironment`
+(or one that is not the collector's and was not built with its `extend`), the
+reporter warns `otelEnabled is set, but test environment "…" is not
+buildkite-test-collector/jest/environment …` once per environment and uploads
+those files' results as JSON.
+
 `buildkite-test-collector/jest/environment` extends `jest-environment-node`.
 If your suite needs another environment, build one with `extend`:
 
