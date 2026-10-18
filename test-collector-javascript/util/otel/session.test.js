@@ -203,15 +203,15 @@ describe('createSession', () => {
       finish: record({
         result: 'failed',
         failure_expanded: [
-          { backtrace: ['s'.repeat(15000)] },
-          { backtrace: [`${'s'.repeat(10239)}😀${'s'.repeat(100)}`] },
+          { backtrace: ['s'.repeat(20000)] },
+          { backtrace: [`${'s'.repeat(16380)}😀${'s'.repeat(100)}`] },
         ],
       }),
     }] })
 
     const stacks = spans[0].events.map((event) => event.attributes['exception.stacktrace'])
-    expect(stacks[0]).toHaveLength(10243)
-    expect(stacks).toEqual([`${'s'.repeat(10240)}...`, `${'s'.repeat(10239)}...`])
+    expect(stacks[0]).toHaveLength(16384)
+    expect(stacks).toEqual([`${'s'.repeat(16381)}...`, `${'s'.repeat(16380)}...`])
   })
 
   it('keeps the identity attributes when OTEL_* limits, sampler and exporter env are hostile', async () => {
