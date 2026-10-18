@@ -148,13 +148,15 @@ class BuildkitePlugin:
 
         chunks = nodeid.split("::")
         file_name = self._normalize_file_path(location[0])
+        # pytest's location line is 0-based; editors and Test Engine count from 1.
+        line = location[1] + 1 if location[1] is not None else None
 
         test_data = TestData.start(
             uuid4(),
             scope="::".join(chunks[:-1]),
             name=chunks[-1],
             file_name=file_name,
-            location=f"{file_name}:{location[1]}"
+            location=f"{file_name}:{line}"
         )
         self.in_flight[nodeid] = test_data
 

@@ -46,6 +46,38 @@ def test_add_tag_to_execution_data(tmp_path, fake_env):
     no_tag_test = tests_by_name["test_without_tags"]
     assert "tags" not in no_tag_test or no_tag_test.get("tags") == {}
 
+def test_location_uses_one_based_line_numbers(tmp_path):
+    """The JSON ``location`` line matches what an editor shows for the test (pytest's is 0-based)."""
+    (tmp_path / "test_lines.py").write_text(
+        "import pytest\n"
+        "\n"
+        "def test_on_line_three():\n"
+        "    pass\n"
+        "\n"
+        "class TestGroup:\n"
+        "    def test_on_line_seven(self):\n"
+        "        pass\n"
+        "\n"
+        "@pytest.mark.skip\n"
+        "def test_decorated_on_line_ten():\n"
+        "    pass\n"
+    )
+    json_output_file = tmp_path / "results.json"
+    cmd = [
+        sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "test_lines.py",
+        f"--json={json_output_file}",
+    ]
+    result = subprocess.run(cmd, cwd=str(tmp_path), capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    locations = {test["name"]: test["location"] for test in json.loads(json_output_file.read_text())}
+    assert locations == {
+        "test_on_line_three": "test_lines.py:3",
+        "test_on_line_seven": "test_lines.py:7",
+        "test_decorated_on_line_ten": "test_lines.py:10",
+    }
+
+
 class TestTagFiltering:
     import subprocess
     import sys

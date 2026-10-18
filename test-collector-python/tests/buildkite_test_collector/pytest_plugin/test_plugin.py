@@ -486,7 +486,7 @@ def test_runtest_logstart_normalizes_path_in_monorepo(fake_env, tmp_path, monkey
 
     test_data = plugin.in_flight.get(nodeid)
     assert test_data.file_name == "test_bar.py"
-    assert test_data.location == "test_bar.py:10"
+    assert test_data.location == "test_bar.py:11"
 
 
 def test_runtest_logstart_no_change_when_rootpath_is_cwd(fake_env, tmp_path, monkeypatch):
@@ -503,7 +503,7 @@ def test_runtest_logstart_no_change_when_rootpath_is_cwd(fake_env, tmp_path, mon
 
     test_data = plugin.in_flight.get(nodeid)
     assert test_data.file_name == "tests/test_bar.py"
-    assert test_data.location == "tests/test_bar.py:10"
+    assert test_data.location == "tests/test_bar.py:11"
 
 
 def test_runtest_logstart_no_rootpath_leaves_path_untouched(fake_env):
