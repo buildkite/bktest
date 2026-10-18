@@ -6,7 +6,10 @@
 //
 // It exits 1 when any test or package failed and 0 otherwise, whatever
 // happens to the export; it exits 2 when stdin holds no go test -json
-// events or the flags are wrong.
+// events or the flags are wrong. -quiet keeps the output off stdout, for a
+// file gotestsum already printed:
+//
+//	gotestsum --jsonfile results.json ./... ; buildkite-test-collector -quiet < results.json
 package main
 
 import (
@@ -39,10 +42,11 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 	fs := flag.NewFlagSet("buildkite-test-collector", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: go test -json ./... | buildkite-test-collector [-tag key=value]...")
+		fmt.Fprintln(stderr, "usage: go test -json ./... | buildkite-test-collector [-quiet] [-tag key=value]...")
 		fs.PrintDefaults()
 	}
 	fs.Var(tags, "tag", "run-level tag, repeatable (key=value)")
+	quiet := fs.Bool("quiet", false, "do not print the tests' output (for input gotestsum already printed)")
 	switch err := fs.Parse(args); {
 	case errors.Is(err, flag.ErrHelp):
 		return exitPass
@@ -52,6 +56,9 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		fmt.Fprintf(stderr, "buildkite-test-collector: unexpected argument %q; results are read from stdin\n", fs.Arg(0))
 		fs.Usage()
 		return exitUsage
+	}
+	if *quiet {
+		stdout = io.Discard
 	}
 
 	defer collector.RedirectWarnings(stderr)()

@@ -134,6 +134,23 @@ func TestExportsEachTestAndMirrorsTheFailure(t *testing.T) {
 	}
 }
 
+func TestQuietKeepsStdoutEmptyAndChangesNothingElse(t *testing.T) {
+	r := otlptest.NewReceiver(t)
+	configure(t, r, map[string]string{"BUILDKITE_ANALYTICS_OTLP_ENDPOINT": otlptest.ClosedPort(t) + "/v1/traces"})
+
+	code, stdout, stderr := runWrapper(t, oneFailingStream, "-quiet")
+
+	if code != 1 {
+		t.Errorf("exit = %d, want 1 for a failing test", code)
+	}
+	if stdout != "" {
+		t.Errorf("-quiet must print nothing on stdout:\n%q", stdout)
+	}
+	if !strings.Contains(stderr, "TEST RESULTS MISSING: OpenTelemetry dropped 2 test.execution span(s)") {
+		t.Errorf("warnings must still reach stderr:\n%s", stderr)
+	}
+}
+
 func TestNoTokenWarnsOnceAndStillMirrorsTheTests(t *testing.T) {
 	r := otlptest.NewReceiver(t)
 	configure(t, r, map[string]string{"BUILDKITE_TESTS_OTLP_TOKEN": "", "BUILDKITE_ANALYTICS_TOKEN": ""})

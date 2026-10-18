@@ -41,7 +41,7 @@ via the `BUILDKITE_ANALYTICS_*` environment variables.
    On Buildkite, GitHub Actions, CircleCI and Codeship the run key and the
    build metadata are detected from the CI environment. Elsewhere set
    `BUILDKITE_ANALYTICS_KEY` and the other `BUILDKITE_ANALYTICS_*` variables
-   below. Run-level tags are the one flag:
+   below. Run-level tags are a flag:
    `buildkite-test-collector -tag team=payments -tag suite=unit`.
 
 Export is on when a token is set and the run key and endpoint are valid.
@@ -55,6 +55,40 @@ prints `no go test -json events on stdin` and exits 2.
 A file works as well as a pipe: `buildkite-test-collector < results.json`
 reads what `gotestsum --jsonfile results.json` or `go test -json > results.json`
 wrote.
+
+## Using gotestsum / keeping JUnit
+
+The command only reads `go test -json`; it does not read JUnit XML, which
+gotestsum derives from the same stream with less in it (no start times, and
+a test's output and its failure merged into one message). gotestsum and a
+JUnit file fit beside it either way round.
+
+gotestsum first, when you want gotestsum's output format and JUnit for other
+tools:
+
+```sh
+gotestsum --jsonfile results.json --junitfile junit.xml ./...
+buildkite-test-collector -quiet < results.json
+```
+
+`-quiet` keeps the test output off stdout, since gotestsum already printed
+it; warnings still go to stderr and the exit code still mirrors the tests.
+
+Collector first, when you want the `go test -v` log and still need JUnit:
+
+```sh
+go test -json ./... | tee results.json | buildkite-test-collector
+gotestsum --junitfile junit.xml --raw-command -- cat results.json
+```
+
+Either way the command reports each test under the same Test Engine test ID
+as the JUnit and `go test -json` upload paths (bktec, the `test-collector`
+plugin), so test history, flake detection and `bktec` splitting continue
+unchanged after switching.
+
+**Run the command or the JUnit upload, not both on the same build**: each
+reports every execution, so uploading the JUnit file as well double-counts
+them.
 
 ## What is reported
 
@@ -217,6 +251,8 @@ missing results.
 - Deduplicating a package reported by both modes.
 - Execution name affixes (`BUILDKITE_ANALYTICS_EXECUTION_NAME_PREFIX` /
   `_SUFFIX`) and any upload path other than OTLP.
+- JUnit XML input; feed the command the `go test -json` stream the JUnit
+  file was made from (see [Using gotestsum](#using-gotestsum--keeping-junit)).
 
 ## 🔍 Debugging
 
