@@ -13,12 +13,12 @@ test('counts a record-builder failure in the end-of-run dropped-span warning', a
     expect(warning.mock.calls.map(([message]) => message)).toEqual([
       '[buildkite-test-collector] TEST RESULTS MISSING: Could not report the Playwright test execution over OpenTelemetry: Error: record failed',
     ])
-    expect(reporter._session.metrics.startFailures).toBe(1)
+    expect(reporter._session.metrics.recordFailures).toBe(1)
 
     await reporter.onEnd()
     expect(warning.mock.calls.map(([message]) => message)).toEqual([
       expect.stringContaining('Could not report the Playwright test execution'),
-      '[buildkite-test-collector] TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (start-failure).\n' +
+      '[buildkite-test-collector] TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (record-failure).\n' +
       '[buildkite-test-collector] OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.',
     ])
   } finally {
