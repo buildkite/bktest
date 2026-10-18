@@ -222,7 +222,7 @@ const createSession = (settings) => {
           span.setAttribute(key, value)
         }
         for (const [key, value] of Object.entries(record.tags || {})) {
-          if (value !== undefined && value !== null) span.setAttribute(`buildkite.tag.${key}`, String(value))
+          if (value !== undefined && value !== null) span.setAttribute(`buildkite.tag.${key}`, truncate(String(value), SPAN_ATTRIBUTE_VALUE_MAX_LENGTH))
         }
       }
     } catch (error) {
