@@ -228,8 +228,10 @@ destination's settings do not redirect test results. `OTEL_TRACES_SAMPLER`,
 `OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_EVENT_*` are ignored for the same reason.
 
 Without either token, nothing is exported and the run uses the JSON path as it
-always has (which also does not upload without a token), so a suite that
-hard-codes `otelEnabled: true` stays quiet on a developer machine.
+always has. There is no OTel warning, but the legacy uploader still prints
+`Missing BUILDKITE_ANALYTICS_TOKEN` and uploads nothing, so a suite that
+hard-codes `otelEnabled: true` behaves on a developer machine exactly as it
+did before.
 
 Each worker exports its spans in batches of up to 120, with a queue of 8,192
 spans, a 1,000 ms schedule delay and a 30-second export timeout. Set
