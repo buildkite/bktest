@@ -29,16 +29,12 @@ public struct TestCollector {
     let envTags = environment.analyticsTags ?? [:]
     let tags = uploadTags.merging(envTags) { _, env in env }
 
+    // When this returns nil it has already logged the one reason export is off.
     let telemetry = TelemetryClient.live(
       environment: environment,
       uploadTags: tags,
       logger: logger
     )
-    if telemetry == nil {
-      logger?.info(
-        "TestCollector requires an API token or OpenTelemetry exporter configuration. Test results will not be exported."
-      )
-    }
 
     self.observer = TestObserver(logger: logger, telemetry: telemetry)
   }

@@ -83,7 +83,12 @@ struct CollectorOTLPConfiguration {
       || environment.otelEndpoint != nil
       || environment.analyticsOTLPEndpoint != nil
 
-    guard environment.analyticsToken != nil || hasExplicitConfiguration else { return nil }
+    guard environment.analyticsToken != nil || hasExplicitConfiguration else {
+      logger?.info(
+        "TestCollector requires an API token or OpenTelemetry exporter configuration. Test results will not be exported."
+      )
+      return nil
+    }
 
     // The receiver rejects the whole request with 400 for an invalid run key,
     // and a relay forwards the key as-is, so disable export up front rather

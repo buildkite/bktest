@@ -4,6 +4,7 @@
 
 - Label execution root requests `Buildkite-Tests-Span-Stream: test` and child span requests `child`
 - Disable export with a warning when the run key is not 1-255 printable ASCII characters without spaces, instead of sending requests the receiver rejects
+- Log one reason when export is disabled: the generic `requires an API token` line no longer follows an invalid run key, endpoint, protocol or headers message
 - Drop queued executions instead of retrying when the receiver returns a non-transient HTTP status (such as 401, 403, 413 or 500); only network errors, timeouts and 408/429/502/503/504 are retried. Drops are reported as `TEST RESULTS MISSING` with the cause, and the run total is reported at the bundle-end flush
 - Truncate oversized failure reasons, exception messages, stack traces, annotations and attribute values (including run metadata and configured tags set when the execution starts) before export, so one huge value cannot get the request rejected
 
