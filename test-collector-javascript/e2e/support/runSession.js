@@ -17,6 +17,7 @@ console.warn = (message) => warnings.push(message)
 const responders = {
   '503-once': (index) => (index === 0 ? 503 : 200),
   401: () => 401,
+  '401-slow': () => ({ status: 401, delay: 1500 }),
 }
 
 const main = async () => {

@@ -88,7 +88,16 @@ const createSession = (settings) => {
   const { runEnv } = settings
   const runKey = runEnv.key
 
-  const metrics = { started: 0, startFailures: 0, ended: 0, handed: 0, exported: 0, failed: 0, lastFailure: null }
+  const metrics = {
+    started: 0,
+    startFailures: 0,
+    ended: 0,
+    handed: 0,
+    exported: 0,
+    failed: 0,
+    lastFailure: null,
+    flushBudget: FLUSH_BUDGET_MILLISECONDS,
+  }
   const reported = { failed: 0, notExported: 0 }
 
   const sizes = processorSizes()
@@ -188,27 +197,36 @@ const createSession = (settings) => {
   // failure or run out of time consume it, and once it is gone later flushes
   // stop waiting (export continues in the background). A healthy endpoint
   // never consumes it, so a long run of test files keeps waiting for each one.
-  let budget = FLUSH_BUDGET_MILLISECONDS
+  //
+  // Failure is judged by the exporter's count, not by the promise: a batch
+  // the processor timer handed over before the flush fails inside
+  // exporter.forceFlush(), which resolves, so a rejected promise alone would
+  // let an outage charge every test file the full retry delay.
   const awaitWithinBudget = async (promise) => {
-    if (budget <= 0) {
+    if (metrics.flushBudget <= 0) {
       promise.catch(() => {})
       return false
     }
     const startedAt = Date.now()
+    const failedBefore = metrics.failed
+    let rejected = false
     let timer
-    const expiry = new Promise((resolve) => { timer = setTimeout(resolve, budget, TIMED_OUT) })
+    const expiry = new Promise((resolve) => { timer = setTimeout(resolve, metrics.flushBudget, TIMED_OUT) })
     try {
       const outcome = await Promise.race([promise, expiry])
       if (outcome === TIMED_OUT) {
-        budget = 0
+        metrics.flushBudget = 0
         return false
       }
       return true
     } catch (error) {
-      budget -= Date.now() - startedAt
+      rejected = true
       throw error
     } finally {
       clearTimeout(timer)
+      if (rejected || metrics.failed > failedBefore) {
+        metrics.flushBudget = Math.max(0, metrics.flushBudget - (Date.now() - startedAt))
+      }
     }
   }
 

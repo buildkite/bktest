@@ -229,7 +229,18 @@ describe('createSession', () => {
     const { flushed } = await runSession({ respond: '503-once', waitBeforeFlush: 1200, forceFlush: true })
 
     expect(flushed.requests).toEqual([503, 200])
-    expect(flushed.metrics).toMatchObject({ exported: 1, failed: 0 })
+    expect(flushed.metrics).toMatchObject({ exported: 1, failed: 0, flushBudget: 30000 })
+  })
+
+  it('charges the flush budget for a timer-handed batch that fails while the flush waits on it', async () => {
+    const { flushed } = await runSession({ respond: '401-slow', waitBeforeFlush: 1200, forceFlush: true })
+
+    expect(flushed.requests).toEqual([401])
+    expect(flushed.metrics).toMatchObject({ failed: 1, lastFailure: '401' })
+    // The 401 arrives ~1.5 s after the timer handed the batch over, ~1.2 s of
+    // which the flush spent waiting; a healthy flush would leave 30000.
+    expect(flushed.metrics.flushBudget).toBeLessThanOrEqual(30000 - 1000)
+    expect(flushed.metrics.flushBudget).toBeGreaterThan(30000 - 5000)
   })
 
   it('warns TEST RESULTS MISSING once, naming the status, when export fails for good', async () => {
