@@ -111,16 +111,16 @@ Note: the Ruby test collector is the only Test Engine collector that automatical
 
 | Variable | Purpose |
 | --- | --- |
-| `BUILDKITE_ANALYTICS_TOKEN` | Suite API token. Required for the JSON upload. |
-| `BUILDKITE_ANALYTICS_API_URL` | JSON upload endpoint. Default `https://analytics-api.buildkite.com/v1`. |
-| `BUILDKITE_ANALYTICS_OTEL_ENABLED` | `true` sends results over OpenTelemetry instead; see below. |
+| `BUILDKITE_ANALYTICS_TOKEN` | Suite API token. Required for the JSON upload; also the OpenTelemetry credential when `BUILDKITE_TESTS_OTLP_TOKEN` is not set. |
+| `BUILDKITE_ANALYTICS_API_URL` | Base URL of the JSON upload API. Default `https://analytics-api.buildkite.com/v1`. |
+| `BUILDKITE_ANALYTICS_OTEL_ENABLED` | `true` (or `1`) sends results over OpenTelemetry instead; see below. |
 | `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | `1` logs the collector's hooks and uploads. |
 
 The run's metadata (key, URL, branch, commit, number, job ID, message) is detected from Buildkite, GitHub Actions or CircleCI. A non-empty value of any of these overrides the detected one, on both the JSON and the OpenTelemetry path:
 
 | Variable | Run field |
 | --- | --- |
-| `BUILDKITE_ANALYTICS_KEY` | Run key; executions from processes sharing a key land in one run. Default: the build ID. |
+| `BUILDKITE_ANALYTICS_KEY` | Run key; executions from processes sharing a key land in one run. Default: the Buildkite build ID, the GitHub Actions or CircleCI run identifier, or a random UUID per process outside CI. |
 | `BUILDKITE_ANALYTICS_URL` | Link back to the build. |
 | `BUILDKITE_ANALYTICS_BRANCH` | Branch. |
 | `BUILDKITE_ANALYTICS_SHA` | Commit SHA. |

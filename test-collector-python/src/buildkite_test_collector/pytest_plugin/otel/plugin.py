@@ -99,15 +99,16 @@ class OTelPlugin:
             return True if result is None else result
         return predicate
 
+    @pytest.hookimpl(trylast=True)
     def pytest_sessionfinish(self, session: pytest.Session) -> None:
         """pytest_sessionfinish hook callback to push every finished span from an xdist worker"""
         # The xdist controller tears a worker down (SIGKILL after 10 seconds)
         # as soon as the worker's own sessionfinish wrapper reports it done,
         # which is before pytest_unconfigure and atexit and well inside the
         # flush budget; the worker's TEST RESULTS MISSING warning would die
-        # with it. Flushing here, inside that wrapper, makes the controller
-        # wait for it. The worker's stderr is inherited, so the warning lands
-        # in the controller's output.
+        # with it. Flushing here, inside that wrapper but after pytest's own
+        # session teardown, makes the controller wait for it. The worker's
+        # stderr is inherited, so the warning lands in the controller's output.
         if self._state is not None and _is_xdist_worker(session.config):
             self._export.force_flush()
 

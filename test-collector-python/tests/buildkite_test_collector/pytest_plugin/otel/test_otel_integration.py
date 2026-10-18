@@ -250,9 +250,9 @@ def test_export_failure_names_the_http_status(tmp_path, receiver):
 def test_xdist_workers_report_missing_results_before_the_controller_stops_them(tmp_path, receiver):
     # Each worker exports for itself. The controller kills a worker 10 seconds
     # after it reports its session finished, so a flush that outlives that
-    # (here: every request takes 15 seconds, then fails) must warn first.
+    # (here: every request takes 12 seconds, then fails) must warn first.
     pytest.importorskip("xdist")
-    receiver.request_delay = 15.0
+    receiver.request_delay = 12.0
     receiver.next_statuses = [400] * 20
     run = run_pytest(tmp_path, otel_env(receiver), "-n", "2")
     assert run.returncode == SAMPLE_EXIT_CODE, run.stderr
