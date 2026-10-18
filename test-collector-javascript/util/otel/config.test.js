@@ -1,4 +1,4 @@
-const { resolveSettings, publishSettings, readSettings, isValidRunKey, SETTINGS_ENV, DEFAULT_ENDPOINT } = require('./config')
+const { resolveSettings, publishSettings, readSettings, isOtelEnabled, isValidRunKey, fallbackOutcome, SETTINGS_ENV, DEFAULT_ENDPOINT } = require('./config')
 
 const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
 
@@ -48,6 +48,35 @@ describe('isValidRunKey', () => {
   })
 })
 
+describe('isOtelEnabled', () => {
+  it('accepts only true and the string true, in any case', () => {
+    expect(isOtelEnabled(true)).toBe(true)
+    expect(isOtelEnabled('true')).toBe(true)
+    expect(isOtelEnabled('TRUE')).toBe(true)
+    expect(isOtelEnabled(' true ')).toBe(true)
+  })
+
+  it('treats every other value as off, including truthy strings and numbers', () => {
+    for (const value of ['false', 'FALSE', 0, '0', 1, '1', 'yes', 'on', '', false, null, undefined, {}, []]) {
+      expect(isOtelEnabled(value)).toBe(false)
+    }
+  })
+})
+
+describe('fallbackOutcome', () => {
+  it('says JSON uploads when the reporter option or BUILDKITE_ANALYTICS_TOKEN holds a token', () => {
+    expect(fallbackOutcome({ token: 'option-token' })).toBe('uploading results as JSON instead')
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    expect(fallbackOutcome()).toBe('uploading results as JSON instead')
+  })
+
+  it('says nothing uploads when only the relay token is set', () => {
+    process.env.BUILDKITE_TESTS_OTLP_TOKEN = 'relay-token'
+    process.env.BUILDKITE_ANALYTICS_TOKEN = '  '
+    expect(fallbackOutcome({ token: '' })).toBe('results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set')
+  })
+})
+
 describe('resolveSettings', () => {
   it('returns null without loading anything when otelEnabled is not set', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'json-token'
@@ -56,6 +85,18 @@ describe('resolveSettings', () => {
     expect(resolve({ otelEnabled: undefined, probe })).toBeNull()
     expect(resolve({ otelEnabled: false, probe })).toBeNull()
     expect(probe).not.toHaveBeenCalled()
+    expect(warnings()).toEqual([])
+  })
+
+  it('reads otelEnabled strictly, so a CLI string "false" stays off and "TRUE" turns on', () => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'json-token'
+
+    expect(resolve({ otelEnabled: 'false' })).toBeNull()
+    expect(resolve({ otelEnabled: 0 })).toBeNull()
+    expect(resolve({ otelEnabled: '0' })).toBeNull()
+    expect(resolve({ otelEnabled: 1 })).toBeNull()
+    expect(resolve({ otelEnabled: 'true' })).not.toBeNull()
+    expect(resolve({ otelEnabled: 'TRUE' })).not.toBeNull()
     expect(warnings()).toEqual([])
   })
 
@@ -95,6 +136,24 @@ describe('resolveSettings', () => {
 
     process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT = 'http://127.0.0.1:4318/v1/traces'
     expect(resolve().endpoint).toBe('http://127.0.0.1:4318/v1/traces')
+  })
+
+  it('warns and falls back for an endpoint that is not an http(s) URL with a host, without probing the SDK', () => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    const probe = jest.fn()
+
+    for (const endpoint of ['', '   ', 'tests-otlp.buildkite.com/v1/traces', 'ftp://tests-otlp.buildkite.com/v1/traces', 'http://', 'not a url']) {
+      process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT = endpoint
+      expect(resolve({ probe })).toBeNull()
+      expect(readSettings()).toBeNull()
+    }
+    expect(probe).not.toHaveBeenCalled()
+    expect(warnings()).toHaveLength(12)
+    expect(warnings()[0]).toBe(
+      "[buildkite-test-collector] OpenTelemetry span export disabled: endpoint '' is invalid. " +
+      'BUILDKITE_ANALYTICS_OTLP_ENDPOINT must be an http or https URL with a host.'
+    )
+    expect(warnings()[1]).toMatch(/could not be configured .*uploading results as JSON instead/)
   })
 
   it('carries the run environment, framework and tags into the settings', () => {

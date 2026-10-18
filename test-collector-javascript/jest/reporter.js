@@ -5,7 +5,7 @@ const CI = require('../util/ci')
 const Debug = require('../util/debug')
 const uploadTestResults = require('../util/uploadTestResults')
 const Paths = require('../util/paths')
-const { resolveSettings } = require('../util/otel/config')
+const { resolveSettings, fallbackOutcome } = require('../util/otel/config')
 const { warn, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
 
@@ -122,13 +122,14 @@ class JestBuildkiteTestEngineReporter {
   // Only jest-circus calls the environment's handleTestEvent, so files run by
   // jest-jasmine2 cannot export either.
   async _exportedByEnvironment(test) {
+    const fallback = fallbackOutcome({ token: this._options?.token })
     if (!circusRunner(test.context.config)) {
-      this._warnOnce('runner', 'otelEnabled is set, but only the jest-circus test runner reports to OpenTelemetry; results will be uploaded as JSON instead.')
+      this._warnOnce('runner', `otelEnabled is set, but only the jest-circus test runner reports to OpenTelemetry; ${fallback}.`)
       return false
     }
     const environmentPath = environmentFor(test)
     if (environmentPath === null) {
-      this._warnOnce(test.path, `otelEnabled is set, but the test environment for ${test.path} could not be resolved; its results will be uploaded as JSON instead.`)
+      this._warnOnce(test.path, `otelEnabled is set, but the test environment for ${test.path} could not be resolved; ${fallback}.`)
       return false
     }
     if (!this._environments.has(environmentPath)) {
@@ -139,7 +140,7 @@ class JestBuildkiteTestEngineReporter {
       this._warnOnce(
         environmentPath,
         `otelEnabled is set, but test environment ${JSON.stringify(environmentPath)} is not buildkite-test-collector/jest/environment ` +
-        '(or built with its extend()); results from test files using it will be uploaded as JSON instead.'
+        `(or built with its extend()); for test files using it, ${fallback}.`
       )
     }
     return exportsSpans

@@ -13,7 +13,29 @@ const SETTINGS_ENV = 'BUILDKITE_TEST_COLLECTOR_OTEL_SETTINGS'
 
 const isValidRunKey = (runKey) => typeof runKey === 'string' && RUN_KEY_FORMAT.test(runKey)
 
+// Reporter options can arrive as strings from a CLI (`otelEnabled=false`), so
+// only `true` and the string 'true' turn OTel on; anything else is off.
+const isOtelEnabled = (value) => value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true')
+
 const otlpEndpoint = () => process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT ?? DEFAULT_ENDPOINT
+
+const isValidEndpoint = (endpoint) => {
+  try {
+    const url = new URL(endpoint)
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname !== ''
+  } catch {
+    return false
+  }
+}
+
+// What happens to results when OTel is on but cannot be used: the JSON path
+// runs only when it has a token of its own.
+const fallbackOutcome = ({ token } = {}) => {
+  const jsonToken = (token || process.env.BUILDKITE_ANALYTICS_TOKEN || '').trim()
+  return jsonToken
+    ? 'uploading results as JSON instead'
+    : 'results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set'
+}
 
 // Tag values travel to the workers as JSON and to Test Engine as string
 // attributes, so they are stringified once here.
@@ -47,18 +69,15 @@ const resolveSettings = (options) => {
 }
 
 const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runEnv, tags, probe = buildSession }) => {
-  if (!otelEnabled) return null
+  if (!isOtelEnabled(otelEnabled)) return null
 
   const jsonToken = (token || process.env.BUILDKITE_ANALYTICS_TOKEN || '').trim()
   const relayToken = (process.env.BUILDKITE_TESTS_OTLP_TOKEN || '').trim()
   const credential = relayToken || jsonToken
   if (!credential) return null
 
-  const fallback = jsonToken
-    ? 'uploading results as JSON instead'
-    : 'results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set'
   const couldNotConfigure = () => {
-    warn(`otelEnabled is set, but OpenTelemetry could not be configured (see the warning above); ${fallback}`)
+    warn(`otelEnabled is set, but OpenTelemetry could not be configured (see the warning above); ${fallbackOutcome({ token })}`)
     return null
   }
 
@@ -71,8 +90,17 @@ const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runE
     return couldNotConfigure()
   }
 
+  const endpoint = otlpEndpoint()
+  if (!isValidEndpoint(endpoint)) {
+    warn(
+      `OpenTelemetry span export disabled: endpoint ${inspect(endpoint)} is invalid. ` +
+      'BUILDKITE_ANALYTICS_OTLP_ENDPOINT must be an http or https URL with a host.'
+    )
+    return couldNotConfigure()
+  }
+
   const settings = {
-    endpoint: otlpEndpoint(),
+    endpoint,
     token: credential,
     runEnv,
     tags: stringTags(tags),
@@ -106,7 +134,9 @@ const readSettings = () => {
 module.exports = {
   DEFAULT_ENDPOINT,
   SETTINGS_ENV,
+  isOtelEnabled,
   isValidRunKey,
+  fallbackOutcome,
   resolveSettings,
   publishSettings,
   readSettings,
