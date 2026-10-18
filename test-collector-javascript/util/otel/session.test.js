@@ -43,10 +43,11 @@ const runSession = (scenario) => new Promise((resolve, reject) => {
   }
   // A 10,000-span burst prints well over the default 1 MiB.
   const maxBuffer = 256 * 1024 * 1024
-  execFile(process.execPath, [driver, JSON.stringify({ tests: [{ start: record(), line: 3 }], ...scenario })], { env, maxBuffer }, (error, stdout, stderr) => {
+  const child = execFile(process.execPath, [driver], { env, maxBuffer }, (error, stdout, stderr) => {
     if (error) return reject(new Error(`${error.message}\n${stderr}`))
     resolve(JSON.parse(stdout))
   })
+  child.stdin.end(JSON.stringify({ tests: [{ start: record(), line: 3 }], ...scenario }))
 })
 
 const OLD_ENV = process.env

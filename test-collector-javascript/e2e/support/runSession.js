@@ -3,13 +3,13 @@
 // files inside a vm context where the OTLP exporter's dynamic import('http')
 // is refused, so export behaviour is observed from outside instead.
 //
-// Usage: node runSession.js '<json scenario>'; main() shows the scenario
-// keys. waitBeforeFlush should exceed the processor's 1 s schedule delay so
+// Usage: echo '<json scenario>' | node runSession.js; main() shows the
+// scenario keys (stdin, because a long test name overflows one argv string). waitBeforeFlush should exceed the processor's 1 s schedule delay so
 // its timer hands off a batch before forceFlush().
 const { startOtlpServer } = require('./otlpServer')
 const { version } = require('../../package.json')
 
-const scenario = JSON.parse(process.argv[2])
+const scenario = JSON.parse(require('fs').readFileSync(0, 'utf8'))
 
 const warnings = []
 console.warn = (message) => warnings.push(message)
