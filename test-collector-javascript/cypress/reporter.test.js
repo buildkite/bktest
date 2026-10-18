@@ -58,6 +58,50 @@ test.each([
   }
 })
 
+test('counts record preparation failures once in the per-spec loss summary', async () => {
+  const originalEnv = process.env
+  process.env = { ...originalEnv, BUILDKITE_TESTS_OTLP_TOKEN: 'test', BUILDKITE_ANALYTICS_KEY: 'record-failure' }
+  const output = jest.spyOn(console, 'log').mockImplementation()
+  const beforeExit = process.listeners('beforeExit')
+  let session
+  try {
+    const suite = new Mocha.Suite('broken record')
+    const runner = new Mocha.Runner(suite)
+    let reporter
+    jest.isolateModules(() => {
+      const { createSession } = jest.requireActual('../util/otel/session')
+      require('../util/otel/session').sessionFor.mockImplementation((settings) => {
+        session = createSession(settings)
+        return session
+      })
+      const Reporter = require('./reporter')
+      reporter = new Reporter(runner, { reporterOptions: { otelEnabled: true } })
+    })
+    const test = new Mocha.Test('cannot describe', () => {})
+    test.file = 'broken.cy.js'
+    test.state = 'passed'
+    test.titlePath = () => { throw new Error('record failed') }
+    suite.addTest(test)
+    runner.emit('test:after:run', test)
+    const exits = []
+    await reporter.done(2, (failures) => exits.push(failures))
+    await session.shutdown()
+    expect(exits).toEqual([2])
+    expect(output.mock.calls.map(([message]) => message)).toEqual([
+      '[buildkite-test-collector] TEST RESULTS MISSING: Could not report a Cypress test to OpenTelemetry: Error: record failed',
+      '[buildkite-test-collector] TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (record-failure).\n' +
+      '[buildkite-test-collector] OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.',
+    ])
+  } finally {
+    await session?.shutdown()
+    output.mockRestore()
+    process.env = originalEnv
+    for (const listener of process.listeners('beforeExit')) {
+      if (!beforeExit.includes(listener)) process.off('beforeExit', listener)
+    }
+  }
+})
+
 test('maps interrupted Cypress results and warns instead of exporting unknown outcomes', async () => {
   const originalEnv = process.env
   process.env = { ...originalEnv, BUILDKITE_TESTS_OTLP_TOKEN: 'test', BUILDKITE_ANALYTICS_KEY: 'states' }

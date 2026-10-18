@@ -65,6 +65,7 @@ class CypressBuildkiteTestEngineReporter extends MochaBuildkiteTestEngineReporte
       const handle = this._otel.startTestSpan(record, { startTime })
       this._otel.finishTestSpan(handle, record, { endTime: startTime + duration })
     } catch (error) {
+      this._otel.metrics.recordFailures++
       warn(`TEST RESULTS MISSING: Could not report a Cypress test to OpenTelemetry: ${describeError(error)}`)
     }
   }
