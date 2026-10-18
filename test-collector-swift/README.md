@@ -2,7 +2,8 @@
 
 Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine/) collector for Swift test frameworks ✨
 
-⚒ **Supported test frameworks:** XCTest, Quick, and Nimble.
+⚒ **Supported test frameworks:** XCTest, Quick, and Nimble. XCTest only:
+Swift Testing (`@Test`) results are not collected.
 
 📦 **Supported CI systems:** Buildkite, GitHub Actions, CircleCI, Xcode Cloud, and others via the `BUILDKITE_ANALYTICS_*` environment variables.
 
@@ -50,10 +51,14 @@ Set the `BUILDKITE_ANALYTICS_TOKEN` secret on your CI to the API token from earl
 
 By default, traces are sent using OTLP/HTTP protobuf to
 `https://tests-otlp.buildkite.com/v1/traces`. The collector adds the suite token
-and run key as request headers.
+and run key as request headers. `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` overrides
+that endpoint and still receives the suite token and run key over
+HTTP/protobuf.
 
 To send traces through an OpenTelemetry endpoint such as the Buildkite Test
-Engine Client relay, set the standard exporter variables instead:
+Engine Client relay instead, leave `BUILDKITE_ANALYTICS_TOKEN` and
+`BUILDKITE_ANALYTICS_OTLP_ENDPOINT` unset and use the standard exporter
+variables:
 
 ```bash
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://127.0.0.1:4318/v1/traces"
@@ -61,18 +66,26 @@ export OTEL_EXPORTER_OTLP_TRACES_HEADERS="authorization=Bearer%20local-token"
 export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf"
 ```
 
-The signal-specific variables take precedence over
-`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, and
-`OTEL_EXPORTER_OTLP_PROTOCOL`. A generic OTLP endpoint has `/v1/traces`
-appended. Standard header and protocol variables are applied only when a
-standard endpoint is explicitly configured; those variables alone do not enable
-the collector or select an endpoint. Standard endpoints receive only the
-explicitly configured OTLP headers, and the collector does not send the
-Buildkite suite token to them.
-`BUILDKITE_ANALYTICS_OTLP_ENDPOINT` remains available as a trusted,
-collector-specific endpoint override that receives only the suite token and run
-key and always uses HTTP/protobuf. To send custom headers or select a protocol
-for a relay, configure it through the standard exporter variables instead.
+Buildkite settings always win: while `BUILDKITE_ANALYTICS_TOKEN` or
+`BUILDKITE_ANALYTICS_OTLP_ENDPOINT` is set, every `OTEL_EXPORTER_OTLP_*`
+variable is ignored (with a warning naming the endpoint in use), so an
+application's own OpenTelemetry configuration cannot redirect test results away
+from Test Engine. Without Buildkite settings, the signal-specific variables take
+precedence over `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, and
+`OTEL_EXPORTER_OTLP_PROTOCOL`; a generic OTLP endpoint has `/v1/traces`
+appended; and the collector logs the endpoint it sends to. Standard endpoints
+receive only the explicitly configured OTLP headers, never the suite token.
+Header and protocol variables alone do not enable the collector or select an
+endpoint.
+
+Each test process is one Test Engine run, identified by `BUILDKITE_ANALYTICS_KEY`
+or, on a supported CI system, the build and job. Outside recognised CI,
+`swift test --parallel` spreads tests across several worker processes, so set
+one key for the whole invocation to keep them in one run:
+
+```bash
+BUILDKITE_ANALYTICS_KEY="$(uuidgen)" swift test --parallel
+```
 
 ### Step 3
 
@@ -173,13 +186,7 @@ Run-level tags apply to all test executions in a run. Set the `BUILDKITE_ANALYTI
 export BUILDKITE_ANALYTICS_TAGS='{"host.arch":"arm64","cloud.region":"us-east-1"}'
 ```
 
-If you're using an Xcode project, add this to your test scheme or test plan environment variables like the other `BUILDKITE_ANALYTICS_*` variables.
-
-Run-level tags can also be set programmatically by passing them to `load`. Environment variable tags take precedence over programmatic tags when keys collide:
-
-```swift
-TestCollector.load(uploadTags: ["host.arch": "arm64"])
-```
+If you're using an Xcode project, add this to your test scheme or test plan environment variables like the other `BUILDKITE_ANALYTICS_*` variables. The environment variable is the only way to set run-level tags; the collector loads itself before any test code runs, so there is no programmatic hook.
 
 Run tags are exported as `buildkite.tag.<key>` attributes on every test root.
 An execution-level tag takes precedence when it uses the same key.
