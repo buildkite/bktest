@@ -146,8 +146,29 @@ func (p *Parser) handle(ev Event) {
 		if ev.Action == "fail" {
 			p.failed = true
 		}
-		p.emit(pkgName, ev.Test, ts, ts.start.Add(time.Duration(ev.Elapsed*float64(time.Second))), ev.Action)
+		p.emit(pkgName, ev.Test, ts, testEnd(ts.start, ev), ev.Action)
 	}
+}
+
+// elapsedResolution is the precision of the Elapsed field: go test prints
+// it with two decimals, so any test under 5 ms reports 0.
+const elapsedResolution = 10 * time.Millisecond
+
+// testEnd derives the end of a test from its terminal event. Elapsed is the
+// test's own measurement, so it wins whenever it is non-zero; otherwise the
+// event timestamps bound the duration, which is at most one Elapsed tick.
+func testEnd(start time.Time, ev Event) time.Time {
+	if ev.Elapsed > 0 {
+		return start.Add(time.Duration(ev.Elapsed * float64(time.Second)))
+	}
+	end := ev.Time
+	if limit := start.Add(elapsedResolution); end.After(limit) {
+		end = limit
+	}
+	if end.Before(start) {
+		return start
+	}
+	return end
 }
 
 func (p *Parser) handlePackageEvent(pkgName string, pkg *packageState, ev Event) {

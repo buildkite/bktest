@@ -147,6 +147,30 @@ func TestPassFailSkipBecomeExecutionsWithTheirOutputEchoed(t *testing.T) {
 	}
 }
 
+func TestZeroElapsedFallsBackToEventTimestampsCappedAtOneTick(t *testing.T) {
+	_, r := parse(t,
+		ev(0.100, "run", "TestFast", ""),
+		ev(0.103, "pass", "TestFast", "", `"Elapsed":0`),
+		ev(0.200, "run", "TestLate", ""),
+		ev(0.250, "pass", "TestLate", "", `"Elapsed":0`),
+		ev(0.300, "run", "TestBackwards", ""),
+		ev(0.299, "pass", "TestBackwards", "", `"Elapsed":0`),
+		ev(0.400, "run", "TestMeasured", ""),
+		ev(0.401, "pass", "TestMeasured", "", `"Elapsed":0.05`),
+	)
+	for name, want := range map[string]time.Duration{
+		"TestFast":      3 * time.Millisecond,
+		"TestLate":      10 * time.Millisecond,
+		"TestBackwards": 0,
+		"TestMeasured":  50 * time.Millisecond,
+	} {
+		e := r.byName(t, name)
+		if d := e.End.Sub(e.Start); d != want {
+			t.Errorf("%s duration = %v, want %v", name, d, want)
+		}
+	}
+}
+
 func TestSubtestsKeepTheirFullNameAndOwnOutput(t *testing.T) {
 	_, r := parse(t,
 		ev(0, "run", "TestSub", ""),
