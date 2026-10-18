@@ -41,8 +41,9 @@ Per-test tags override reporter tags and the automatic `ci.worker.id` tag.
 Each attempt gets a fresh UUID; retries keep the same scope and name.
 
 `passed` maps to `pass`, `failed` and `timedOut` to `fail`, and `skipped` to
-`skipped`. `interrupted` maps to `fail` in OpenTelemetry (the JSON path retains
-its existing `unknown`). As in JSON, `expectedStatus` does not override the
+`skipped`. `interrupted` maps to `skipped` in OpenTelemetry: cancellation by
+Ctrl-C or `--max-failures` is not a test failure (the JSON path retains its
+existing `unknown`). As in JSON, `expectedStatus` does not override the
 actual attempt's result: expected failures are `fail`, unexpected passes are
 `pass`. A failing `beforeAll` hook fails the entering test; subsequent tests
 that Playwright reports as skipped get skipped spans. Failure messages and

@@ -345,15 +345,21 @@ describe('examples/playwright in OTel mode', () => {
     expect(result.stderr).toMatch(/TEST RESULTS MISSING: OpenTelemetry dropped 1 test\.execution span\(s\) \(export-failure, last OTLP failure: ECONNREFUSED\)/);
   }, 60000);
 
-  test('exports an interrupted attempt as failed and preserves the SIGINT exit code', async () => {
+  test('exports an interrupted attempt as skipped and preserves the SIGINT exit code', async () => {
     server = await startOtlpServer();
     const result = await run(['--config', 'otel-interrupted.config.js']);
     expect(result.code).toBe(130);
     expect(specs(result.report)[0].tests[0].results[0].status).toBe('interrupted');
     expect(server.spans()).toHaveLength(1);
-    expect(server.spans()[0].attributes['test.case.result.status']).toBe('fail');
+    expect(server.spans()[0].attributes['test.case.result.status']).toBe('skipped');
+    expect(server.spans()[0].status.code).toBe(0);
+    expect(server.spans()[0].events).toEqual([]);
     expect(result.stdout).not.toMatch(/Test Engine Sending:/);
     expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]|Error in reporter/);
+
+    const json = await run(['--config', 'otel-interrupted.config.js', '--reporter', 'buildkite-test-collector/playwright/reporter,json'], { BUILDKITE_ANALYTICS_TOKEN: 'json-token' });
+    expect(json.code).toBe(130);
+    expect(jsonRecords(json.stdout)[0].result).toBe('unknown');
   }, 30000);
 
   test('loads no SDK with OTel off, or before onBegin with OTel requested', async () => {

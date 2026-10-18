@@ -76,8 +76,8 @@ class PlaywrightBuildkiteTestEngineReporter {
     try {
       const record = this.testEngineRecord(test, testResult);
       record.id = randomUUID();
-      // JSON retains its historical 'unknown'; OTLP would discard that status.
-      if (testResult.status === 'interrupted') record.result = 'failed';
+      // Cancellation is not a test failure; JSON retains its historical 'unknown'.
+      if (testResult.status === 'interrupted') record.result = 'skipped';
       const { line, column } = test.location;
       const startTime = testResult.startTime.getTime();
       // Worker timings include hooks and exclude reporter/transport latency.
