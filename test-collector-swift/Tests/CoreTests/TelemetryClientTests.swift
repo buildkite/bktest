@@ -236,24 +236,62 @@ final class TelemetryClientTests: XCTestCase {
   }
 
   func testUsesOnlyConfiguredHeadersForStandardTraceEndpoint() throws {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
     let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
       environment: EnvironmentValues(
         values: [
           "BUILDKITE_ANALYTICS_KEY": "run-key",
-          "BUILDKITE_ANALYTICS_TOKEN": "collector-token",
           "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:1234/v1/traces",
           "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "authorization=Bearer%20relay-token,x-test=value%2Fone",
         ],
         getFromEnvironment: { _ in nil },
         getFromInfoDictionary: { _ in nil }
       ),
-      logger: nil
+      logger: logger
     ))
+    logger.waitForLogs()
 
     XCTAssertEqual(configuration.endpoint.absoluteString, "http://127.0.0.1:1234/v1/traces")
     XCTAssertNil(configuration.header(named: "Buildkite-Tests-Run-Key"))
     XCTAssertEqual(configuration.header(named: "Authorization"), "Bearer relay-token")
     XCTAssertEqual(configuration.header(named: "x-test"), "value/one")
+    XCTAssertEqual(messages.value, [
+      "[BuildkiteTestCollector] info: Sending test executions to http://127.0.0.1:1234/v1/traces from OTEL_EXPORTER_OTLP_* without Buildkite credentials; they reach Buildkite Test Engine only if that endpoint forwards them.",
+    ])
+  }
+
+  func testBuildkiteTokenWinsOverStandardEndpoint() throws {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
+    let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
+      environment: EnvironmentValues(
+        values: [
+          "BUILDKITE_ANALYTICS_KEY": "run-key",
+          "BUILDKITE_ANALYTICS_TOKEN": "collector-token",
+          "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:1234/v1/traces",
+          "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "authorization=Bearer%20app-token",
+        ],
+        getFromEnvironment: { _ in nil },
+        getFromInfoDictionary: { _ in nil }
+      ),
+      logger: logger
+    ))
+    logger.waitForLogs()
+
+    XCTAssertEqual(configuration.endpoint.absoluteString, TestCollector.endpoint)
+    XCTAssertEqual(configuration.headers.map { "\($0.0): \($0.1)" }, [
+      "Buildkite-Tests-Run-Key: run-key",
+      #"Authorization: Token token="collector-token""#,
+    ])
+    XCTAssertEqual(messages.value, [
+      "[BuildkiteTestCollector] warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(TestCollector.endpoint) with Buildkite credentials.",
+    ])
   }
 
   func testHeadersAloneDoNotEnableCollector() {
@@ -300,7 +338,7 @@ final class TelemetryClientTests: XCTestCase {
     XCTAssertNil(configuration.header(named: "x-test"))
     XCTAssertTrue(messages.withValue { messages in
       messages.contains(
-        "[BuildkiteTestCollector] warning: Standard OpenTelemetry exporter headers are ignored for endpoints that receive Buildkite credentials; use OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT to send custom headers."
+        "[BuildkiteTestCollector] warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(TestCollector.endpoint) with Buildkite credentials."
       )
     })
   }

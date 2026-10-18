@@ -76,14 +76,17 @@ struct CollectorOTLPConfiguration {
     var runEnvironment = environment.runEnvironment()
     runEnvironment.applyCustomEnvironmentOverrides()
     let rawHeaders = environment.otelTracesHeaders ?? environment.otelHeaders
-    // Standard headers alone must not enable collection or select the OTLP
-    // specification's localhost default. They may be process-wide settings for
-    // unrelated telemetry and are safe to use only with an explicit standard endpoint.
-    let hasExplicitConfiguration = environment.otelTracesEndpoint != nil
-      || environment.otelEndpoint != nil
+    // Buildkite settings always win: an app's own OTEL_EXPORTER_OTLP_* values
+    // must not redirect test results away from Test Engine. The standard
+    // variables select an endpoint only when no Buildkite credential is set,
+    // and headers alone never enable collection or select the OTLP
+    // specification's localhost default.
+    let usesBuildkiteCredentials = environment.analyticsToken != nil
       || environment.analyticsOTLPEndpoint != nil
+    let standardEndpoint = environment.otelTracesEndpoint.map { (value: $0, appendsPath: false) }
+      ?? environment.otelEndpoint.map { (value: $0, appendsPath: true) }
 
-    guard environment.analyticsToken != nil || hasExplicitConfiguration else {
+    guard usesBuildkiteCredentials || standardEndpoint != nil else {
       logger?.info(
         "TestCollector requires an API token or OpenTelemetry exporter configuration. Test results will not be exported."
       )
@@ -100,60 +103,49 @@ struct CollectorOTLPConfiguration {
       return nil
     }
 
-    let endpoint: URL
-    let usesBuildkiteCredentials: Bool
-    if let value = environment.otelTracesEndpoint {
-      guard let url = Self.absoluteURL(value) else {
-        logger?.error("OpenTelemetry traces endpoint is not a valid absolute URL")
-        return nil
-      }
-      endpoint = url
-      usesBuildkiteCredentials = false
-    } else if let value = environment.analyticsOTLPEndpoint {
-      guard let url = Self.absoluteURL(value) else {
-        logger?.error("OpenTelemetry traces endpoint is not a valid absolute URL")
-        return nil
-      }
-      endpoint = url
-      usesBuildkiteCredentials = true
-    } else if let value = environment.otelEndpoint {
-      guard let url = Self.absoluteURL(value) else {
-        logger?.error("OpenTelemetry endpoint is not a valid absolute URL")
-        return nil
-      }
-      endpoint = url.appendingPathComponent("v1/traces")
-      usesBuildkiteCredentials = false
-    } else {
-      endpoint = URL(string: TestCollector.endpoint)!
-      usesBuildkiteCredentials = true
-    }
-
-    if !usesBuildkiteCredentials,
-       let protocolName = environment.otelTracesProtocol ?? environment.otelProtocol,
-       protocolName.lowercased() != "http/protobuf" {
-      logger?.error(
-        "Unsupported OpenTelemetry traces protocol \(protocolName); expected http/protobuf"
-      )
-      return nil
-    }
-
+    var endpoint = URL(string: TestCollector.endpoint)!
     var headers = [(String, String)]()
     if usesBuildkiteCredentials {
+      if let value = environment.analyticsOTLPEndpoint {
+        guard let url = Self.absoluteURL(value) else {
+          logger?.error("OpenTelemetry traces endpoint is not a valid absolute URL")
+          return nil
+        }
+        endpoint = url
+      }
       headers.append(("Buildkite-Tests-Run-Key", runEnvironment.key))
       if let token = environment.analyticsToken {
         headers.append(("Authorization", "Token token=\"\(token)\""))
       }
-      if rawHeaders != nil {
+      if standardEndpoint != nil || rawHeaders != nil {
         logger?.warning(
-          "Standard OpenTelemetry exporter headers are ignored for endpoints that receive Buildkite credentials; use OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT to send custom headers."
+          "Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(endpoint.absoluteString) with Buildkite credentials."
         )
       }
-    } else if let rawHeaders {
-      guard let parsedHeaders = Self.parseHeaders(rawHeaders) else {
-        logger?.error("OpenTelemetry exporter headers are invalid")
+    } else if let standardEndpoint {
+      guard let url = Self.absoluteURL(standardEndpoint.value) else {
+        logger?.error("OpenTelemetry traces endpoint is not a valid absolute URL")
         return nil
       }
-      headers = parsedHeaders
+      endpoint = standardEndpoint.appendsPath ? url.appendingPathComponent("v1/traces") : url
+
+      if let protocolName = environment.otelTracesProtocol ?? environment.otelProtocol,
+         protocolName.lowercased() != "http/protobuf" {
+        logger?.error(
+          "Unsupported OpenTelemetry traces protocol \(protocolName); expected http/protobuf"
+        )
+        return nil
+      }
+      if let rawHeaders {
+        guard let parsedHeaders = Self.parseHeaders(rawHeaders) else {
+          logger?.error("OpenTelemetry exporter headers are invalid")
+          return nil
+        }
+        headers = parsedHeaders
+      }
+      logger?.info(
+        "Sending test executions to \(endpoint.absoluteString) from OTEL_EXPORTER_OTLP_* without Buildkite credentials; they reach Buildkite Test Engine only if that endpoint forwards them."
+      )
     }
 
     self.endpoint = endpoint
