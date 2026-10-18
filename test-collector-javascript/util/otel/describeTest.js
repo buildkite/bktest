@@ -2,7 +2,7 @@
 // Test Engine identity.
 
 const FAILURE_REASON_MAX_LENGTH = 1024
-const EXCEPTION_MESSAGE_MAX_LENGTH = 16384
+const EXCEPTION_MESSAGE_MAX_LENGTH = 10243
 
 // A result not listed here leaves the span's 'unset' placeholder, which the
 // server skips.
@@ -13,13 +13,14 @@ const STATUSES = {
   skipped: 'skipped',
 }
 
-// Limits are in UTF-16 code units, like the SDK's own attribute limits; the
-// cut never leaves half a surrogate pair behind.
+// Limits count Unicode code points, as the server and the other collectors
+// do, so a name full of emoji keeps the identity of its JSON upload; the SDK's
+// own UTF-16 limits are set wide enough never to cut these values again.
 const truncate = (text, max) => {
   if (text.length <= max) return text
-  let head = text.slice(0, max - 3)
-  if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1)
-  return `${head}...`
+  const codePoints = Array.from(text)
+  if (codePoints.length <= max) return text
+  return `${codePoints.slice(0, max - 3).join('')}...`
 }
 
 // The SDK skips undefined attribute values, so a missing line is left as is.

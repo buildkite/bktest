@@ -12,15 +12,16 @@ const SPAN_STREAM = 'test'
 const FLUSH_BUDGET_MILLISECONDS = 30000
 const TIMED_OUT = Symbol('timed out')
 
-// The SDK applies one value-length limit to span and event attributes alike,
-// so it is set high enough for exception events (16,384) and the span's own
-// string attributes are cut to 10,243 here: the server truncates test names
-// to 10,240 before deriving the test ID, so a long name keeps the identity of
-// its JSON upload.
+// The span's own string attributes are cut to 10,243 code points here: the
+// server truncates test names to 10,240 before deriving the test ID, so a
+// long name keeps the identity of its JSON upload. The SDK applies one limit,
+// in UTF-16 code units, to span and event attributes alike, so it is set to
+// the widest encoding of the event attribute limit the other collectors use
+// (16,384 code points) and only ever cuts a value the collector missed.
 const SPAN_ATTRIBUTE_VALUE_MAX_LENGTH = 10243
 const SPAN_LIMITS = {
   attributeCountLimit: 128,
-  attributeValueLengthLimit: 16384,
+  attributeValueLengthLimit: 2 * 16384,
   eventCountLimit: 100,
   attributePerEventCountLimit: 128,
 }

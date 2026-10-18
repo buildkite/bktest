@@ -116,7 +116,7 @@ describe('createSession', () => {
     ])
   })
 
-  it('exports exception messages up to 16,384 characters but cuts span attributes at 10,243', async () => {
+  it('cuts span attributes and exception messages at 10,243 characters', async () => {
     const name = 'n'.repeat(20000)
     const message = 'm'.repeat(20000)
     const { spans } = await runSession({
@@ -134,9 +134,27 @@ describe('createSession', () => {
     const [span, startOnly] = spans
     expect(span.attributes['buildkite.test.name']).toBe(`${'n'.repeat(10240)}...`)
     expect(span.attributes['test.case.name']).toHaveLength(10243)
-    expect(span.events[0].attributes['exception.message']).toBe(`${'m'.repeat(16381)}...`)
+    expect(span.events[0].attributes['exception.message']).toBe(`${'m'.repeat(10240)}...`)
     expect(span.droppedAttributesCount).toBe(0)
     expect(startOnly.attributes['buildkite.test.name']).toBe(`${'n'.repeat(10240)}...`)
+  })
+
+  it('counts the limits in code points, so an emoji name arrives as the JSON path sends it', async () => {
+    // 6,000 emoji are 12,000 UTF-16 units but only 6,000 characters to the server.
+    const whole = '😀'.repeat(6000)
+    const over = '😀'.repeat(10244)
+    const message = '😀'.repeat(10244)
+    const { spans } = await runSession({
+      tests: [
+        { start: record({ name: whole }), line: 3 },
+        { start: record({ name: over }), finish: record({ name: over, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }] }), line: 3 },
+      ],
+    })
+
+    expect(spans[0].attributes['buildkite.test.name']).toBe(whole)
+    expect(spans[1].attributes['buildkite.test.name']).toBe(`${'😀'.repeat(10240)}...`)
+    expect(spans[1].events[0].attributes['exception.message']).toBe(`${'😀'.repeat(10240)}...`)
+    expect(spans[1].droppedAttributesCount).toBe(0)
   })
 
   it('maps skipped results and leaves the placeholder when the result is unknown', async () => {

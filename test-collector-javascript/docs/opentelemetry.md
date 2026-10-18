@@ -154,7 +154,9 @@ Jest results map to `test.case.result.status` as `passed` → `pass`,
 A failed test sets the span's status to error with the failure's first line as
 its description (at most 1,024 characters). Each failure is an `exception`
 event whose `exception.message` carries the rest of Jest's failure message,
-including the stack trace, truncated to 16,384 characters.
+including the stack trace, truncated to 10,243 characters. Lengths count
+Unicode code points, as the server and the other collectors do, so an emoji
+counts once and is never cut in half.
 
 ### Resource and run attributes
 
@@ -243,8 +245,9 @@ Span attribute values are truncated to 10,243 characters, each span keeps at
 most 128 attributes and 100 events, and each event keeps at most 128
 attributes. The attribute limit matches the server, which truncates test names
 to 10,240 characters before deriving the test ID, so a long test name keeps
-the same identity and history as the JSON upload. Exception events carry up to
-16,384 characters, the same as the other collectors.
+the same identity and history as the JSON upload. Exception messages are cut
+at the same 10,243 characters, as the other collectors cut theirs. Both limits
+count Unicode code points.
 
 The worker flushes its queue at the end of every test file, because Jest
 exits workers without any later hook. Flushes in one worker share a 30-second

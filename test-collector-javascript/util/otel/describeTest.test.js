@@ -56,7 +56,7 @@ describe('describeTest', () => {
     ])
   })
 
-  it('truncates the reason to 1024 and the exception message to 16384 characters', () => {
+  it('truncates the reason to 1024 and the exception message to 10243 characters', () => {
     const described = describeTest(record({
       result: 'failed',
       failure_reason: 'r'.repeat(2000),
@@ -65,18 +65,22 @@ describe('describeTest', () => {
 
     expect(described.failureReason).toHaveLength(1024)
     expect(described.failureReason.endsWith('...')).toBe(true)
-    expect(described.exceptionEvents[0].attributes['exception.message']).toHaveLength(16384)
+    expect(described.exceptionEvents[0].attributes['exception.message']).toHaveLength(10243)
     expect(described.exceptionEvents[0].attributes['exception.message'].endsWith('...')).toBe(true)
   })
 
-  it('never cuts a surrogate pair in half when truncating', () => {
-    // The cut falls at 1021 code units (1024 minus '...'), between the emoji's two surrogates.
+  it('truncates by code point, so an emoji counts once and is never cut in half', () => {
+    // 1,021 code points are kept before '...'; the emoji is the 1,021st.
     const reason = `${'r'.repeat(1020)}😀${'r'.repeat(1000)}`
     const described = describeTest(record({ result: 'failed', failure_reason: reason }))
 
-    expect(described.failureReason).toBe(`${'r'.repeat(1020)}...`)
-    expect(described.failureReason.length).toBeLessThanOrEqual(1024)
+    expect(described.failureReason).toBe(`${'r'.repeat(1020)}😀...`)
+    expect(Array.from(described.failureReason)).toHaveLength(1024)
     expect(described.failureReason).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
+
+    // A value within the limit in code points stays whole even when its UTF-16 length exceeds it.
+    const emoji = '😀'.repeat(1024)
+    expect(describeTest(record({ result: 'failed', failure_reason: emoji })).failureReason).toBe(emoji)
   })
 
   it('records no failure details for a passing test even if the record carries some', () => {
