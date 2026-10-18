@@ -429,36 +429,39 @@ private final class LiveTelemetryClient {
     let builder = self.tracer.spanBuilder(spanName: TelemetryValue.rootSpanName)
     builder.setNoParent()
 
-    for (key, value) in self.executionAttributes {
-      builder.setAttribute(key: key, value: value)
+    // The SDK's span builder applies the attribute count limit but not the
+    // value length limit, and the span keeps the builder's values unchanged,
+    // so start-time values are capped here. Values set after start are capped
+    // by the span itself.
+    func set(_ key: String, _ value: AttributeValue) {
+      if case .string(let string) = value {
+        builder.setAttribute(
+          key: key,
+          value: string.truncated(toUnicodeScalars: TelemetryLimit.attributeValueLength)
+        )
+      } else {
+        builder.setAttribute(key: key, value: value)
+      }
     }
 
-    builder.setAttribute(key: BuildkiteTelemetryAttribute.executionScope, value: test.className)
-    builder.setAttribute(key: BuildkiteTelemetryAttribute.testName, value: test.testName)
-    builder.setAttribute(
-      key: BuildkiteTelemetryAttribute.executionExternalID,
-      value: test.id.uuidString
-    )
-    builder.setAttribute(
-      key: SemanticConventions.Test.caseName.rawValue,
-      value: qualifiedTestName
-    )
-    builder.setAttribute(key: SemanticConventions.Test.suiteName.rawValue, value: test.className)
+    for (key, value) in self.executionAttributes {
+      set(key, value)
+    }
+
+    set(BuildkiteTelemetryAttribute.executionScope, .string(test.className))
+    set(BuildkiteTelemetryAttribute.testName, .string(test.testName))
+    set(BuildkiteTelemetryAttribute.executionExternalID, .string(test.id.uuidString))
+    set(SemanticConventions.Test.caseName.rawValue, .string(qualifiedTestName))
+    set(SemanticConventions.Test.suiteName.rawValue, .string(test.className))
 
     // The Swift SDK keeps the most recently set attributes when the span's
     // start-time attribute limit is exceeded. Set the three synthesis fields
     // last so even a limit of three still produces a usable execution.
-    builder.setAttribute(
-      key: BuildkiteTelemetryAttribute.executionVia,
-      value: TelemetryValue.executionVia
-    )
-    builder.setAttribute(key: BuildkiteTelemetryAttribute.runKey, value: self.runKey)
+    set(BuildkiteTelemetryAttribute.executionVia, .string(TelemetryValue.executionVia))
+    set(BuildkiteTelemetryAttribute.runKey, .string(self.runKey))
     // Reserve the result's place before test code can consume the remaining
     // attribute budget. finishExecution replaces this placeholder.
-    builder.setAttribute(
-      key: SemanticConventions.Test.caseResultStatus.rawValue,
-      value: TelemetryValue.unsetResult
-    )
+    set(SemanticConventions.Test.caseResultStatus.rawValue, .string(TelemetryValue.unsetResult))
 
     if let jobSpanContext = self.jobSpanContext {
       builder.addLink(spanContext: jobSpanContext)

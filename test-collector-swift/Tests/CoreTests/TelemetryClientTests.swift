@@ -390,7 +390,8 @@ final class TelemetryClientTests: XCTestCase {
     let rootExporter = InMemoryExporter()
     let client = try XCTUnwrap(TelemetryClient.live(
       environment: self.configuredEnvironment,
-      uploadTags: [:],
+      // Set at span start, where the SDK applies no value length limit.
+      uploadTags: ["configured": String(repeating: "c", count: 10_244)],
       logger: nil,
       rootExporter: rootExporter,
       childExporter: InMemoryExporter()
@@ -424,6 +425,10 @@ final class TelemetryClientTests: XCTestCase {
     XCTAssertEqual(
       span.attributes[BuildkiteTelemetryAttribute.tagPrefix + "long"],
       .string(String(repeating: "t", count: 10_243))
+    )
+    XCTAssertEqual(
+      span.attributes[BuildkiteTelemetryAttribute.tagPrefix + "configured"],
+      .string(String(repeating: "c", count: 10_243))
     )
     XCTAssertEqual(span.events.count, 2)
     XCTAssertEqual(
