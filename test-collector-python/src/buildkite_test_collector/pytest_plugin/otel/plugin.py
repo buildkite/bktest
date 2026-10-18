@@ -81,6 +81,11 @@ class OTelPlugin:
             )
         except Exception as error:  # pylint: disable=broad-except
             warn_failure("OpenTelemetry span export disabled", error)
+            if isinstance(error, ImportError):
+                logger.warning(
+                    'Install or upgrade the OpenTelemetry SDK with: '
+                    'pip install "buildkite-test-collector[otel]"'
+                )
             logger.warning(
                 "%s is set, but OpenTelemetry could not be configured (see the warning above); %s",
                 otel_config.ENV_ENABLED, fallback,

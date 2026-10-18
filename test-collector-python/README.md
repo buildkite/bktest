@@ -83,6 +83,10 @@ process. Each test file is imported and collected the first time a batch needs
 it, and session-scoped fixtures are set up once per job. Module- and
 class-scoped fixtures are torn down after each batch.
 
+pytest support in `bktec pool exec` requires bktec v3.4.0 or later (a
+pre-release at the time of writing); bktec v3.3.0 rejects it with
+`pool planning requires rspec`.
+
 ```sh
 BUILDKITE_TEST_ENGINE_TEST_RUNNER=pytest bktec pool exec -- buildkite-pytest [pytest options]
 ```

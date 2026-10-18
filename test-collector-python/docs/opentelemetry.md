@@ -197,8 +197,10 @@ The collector exports to `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` (default
 `BUILDKITE_TESTS_OTLP_TOKEN` or, when that is unset or blank,
 `BUILDKITE_ANALYTICS_TOKEN`: either the suite API token or an agent OIDC token
 for the suite with the `write_uploads` scope. Without either token nothing is
-exported and the run is left on the JSON path without a warning, so a suite
-that sets `BUILDKITE_ANALYTICS_OTEL_ENABLED` stays quiet on a developer machine.
+exported and the run is left on the JSON path, which logs its usual
+`No BUILDKITE_ANALYTICS_TOKEN environment variable present` warning and nothing
+about OpenTelemetry, so a suite that sets `BUILDKITE_ANALYTICS_OTEL_ENABLED`
+behaves on a developer machine exactly as it did before.
 
 Every request carries `Buildkite-Tests-Run-Key` (the run key, from
 `BUILDKITE_ANALYTICS_KEY` or the detected build ID) and
@@ -229,8 +231,10 @@ thread reading them at exactly that moment would miss them.
 `test.execution` spans have a reserved, faster-draining queue and exporter.
 Child spans use a separate queue and exporter, so a child flood or a rejected
 child request cannot displace or poison test spans. When the session finishes,
-both queues share one 30-second flush budget, test spans first, and the process
-exit handler gives shutdown the same budget.
+both queues share one 30-second flush budget, test spans first. The process
+exit handler then shuts the exporters down with a further 30-second budget, so
+a receiver that accepts connections but never answers can hold the process for
+up to 60 seconds in total before it exits with pytest's own status.
 
 ## Test span sizes and batching
 
@@ -275,7 +279,15 @@ key disables OpenTelemetry export with a warning and the collector falls back
 to the JSON upload, which still needs `BUILDKITE_ANALYTICS_TOKEN`; when the
 only credential was `BUILDKITE_TESTS_OTLP_TOKEN`, the warning says that results
 will not be uploaded. The same fallback applies when the OpenTelemetry packages
-are missing or the SDK cannot be configured.
+are missing or the SDK cannot be configured; when they are missing, the
+warning names the install command (`pip install "buildkite-test-collector[otel]"`).
+
+A test that is still running when pytest is interrupted with Ctrl-C (`SIGINT`)
+is exported as skipped, since pytest never reports its result, and the session
+end flush still runs. `SIGTERM` is not handled: Python exits without running
+the session end or process exit flush, so queued spans are lost without a
+`TEST RESULTS MISSING` warning, the same as the JSON upload is lost on
+`SIGTERM` today.
 
 Because `test.execution` spans are the submission, the collector warns
 `TEST RESULTS MISSING` whenever any of them have been dropped, naming the cause:
@@ -285,10 +297,11 @@ organization, or a `404` for a wrong endpoint), or a span that could not be
 started. A span that could not be started is reported as soon as it happens;
 every other drop is reported after the session-end flush and again after the
 process-exit shutdown, each time with the cumulative total for the run and only
-when that total has grown. Export is confirmed within a 30-second budget; spans
-still pending when it runs out are reported as unconfirmed, and the exit
-shutdown gives them one more budget before the process ends. Nothing is
-reconciled after that: a span unconfirmed at exit may or may not have arrived.
+when that total has grown. Export is confirmed within the 30-second session-end
+flush; spans still pending when it runs out are reported as unconfirmed, and
+the process-exit shutdown gives them up to 30 seconds more before the process
+ends. Nothing is reconciled after that: a span unconfirmed at exit may or may
+not have arrived.
 
 Dropped or unconfirmed child spans are reported the same way, but as
 best-effort: the warning says `test.execution` results are unaffected.

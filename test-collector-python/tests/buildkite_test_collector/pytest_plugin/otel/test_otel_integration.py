@@ -382,6 +382,7 @@ def test_missing_sdk_falls_back_to_json(tmp_path, receiver):
     assert run.returncode == 0, run.stderr
 
     assert "OpenTelemetry span export disabled: ImportError: no opentelemetry here" in run.stderr
+    assert 'pip install "buildkite-test-collector[otel]"' in run.stderr
     assert "results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set" in run.stderr
     assert receiver.trace_requests() == []
     assert receiver.upload_requests() == []
