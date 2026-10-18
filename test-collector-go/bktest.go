@@ -114,6 +114,8 @@ var (
 // to detect a suite that is reported twice.
 func Main(m *testing.M, opts ...Option) int {
 	mainCalled.Store(true)
+	pkg := callerPackage()
+	testPackage.Store(&pkg)
 	c := collector.Setup(context.Background(), newOptions(opts))
 	current.Store(c)
 
@@ -121,13 +123,18 @@ func Main(m *testing.M, opts ...Option) int {
 
 	if c != nil {
 		c.Shutdown()
-		fmt.Fprintln(os.Stderr, collector.ExportedLine(c.Exported(), callerPackage()))
+		fmt.Fprintln(os.Stderr, collector.ExportedLine(c.Exported(), pkg))
 	}
 	return code
 }
 
-// callerPackage is the import path of the package that called Main.
+// callerPackage is the import path of the package that called Main: the
+// test binary's build info names it on Go 1.24 and later, and before that
+// the frame that called Main does.
 func callerPackage() string {
+	if path := mainPackagePath(); path != "" {
+		return path
+	}
 	pcs := make([]uintptr, 8)
 	n := runtime.Callers(3, pcs)
 	frames := runtime.CallersFrames(pcs[:n])

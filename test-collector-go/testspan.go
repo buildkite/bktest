@@ -14,6 +14,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,20 +95,25 @@ type thisPackage struct{}
 
 var bktestPackagePath = reflect.TypeOf(thisPackage{}).PkgPath()
 
-// identify derives the test's identity from the frame of the test function
-// itself, so it matches what the buildkite-test-collector command reports
-// from the go test -json stream: scope is the package import path, name is
-// t.Name(), and the location is the declaration of the top-level test
-// function, shared by its subtests.
+// testPackage is the import path of the package under test, recorded by
+// Main, for tests whose own function is not on the stack when Start runs.
+var testPackage atomic.Pointer[string]
+
+// identify derives the test's identity the way the buildkite-test-collector
+// command derives it from the go test -json stream, so a test keeps its
+// identity when a suite switches modes: scope is the package import path,
+// name is t.Name(), and the location is the declaration of the top-level
+// test function, shared by its subtests.
 //
-// The top-level function is the one whose name is t.Name() up to the first
-// "/"; its frame is either that function or a closure inside it (which the
-// runtime names TestX.func1, TestX.func1.1, ...). Helpers in other packages
-// that call Start on a test's behalf therefore do not become the scope.
-// When no frame matches, which happens for a subtest closure created by a
-// helper in another package, the identity resolved earlier for the same
-// top-level test is reused, and failing that the first caller outside this
-// package is used.
+// The top-level function is the one named t.Name() up to the first "/".
+// Its frame is either that function or a closure inside it, which the
+// runtime names TestX.func1, TestX.func1.1 and so on, and that frame gives
+// the scope; helpers in other packages that call Start on a test's behalf
+// therefore never become the scope. The location is read from the frame
+// when it is the function itself, otherwise from the declaration in the
+// package's test files, which go test runs the binary in. A subtest created
+// by a helper in another package has no such frame on its stack, so its
+// scope is the package Main ran in.
 func identify(t testing.TB) collector.Identity {
 	id := collector.Identity{Name: t.Name()}
 	top, _, _ := strings.Cut(id.Name, "/")
@@ -129,45 +135,40 @@ func identify(t testing.TB) collector.Identity {
 		}
 	}
 
-	topLevelMu.Lock()
-	defer topLevelMu.Unlock()
-	matched := chosen != nil
-	if !matched {
-		if known, ok := topLevel[top]; ok {
-			id.Scope, id.File, id.Line = known.Scope, known.File, known.Line
-			return id
-		}
+	switch {
+	case chosen != nil:
+		id.Scope = importPath(chosen.Function)
+	case testPackage.Load() != nil:
+		id.Scope = *testPackage.Load()
+	case fallback != nil:
+		id.Scope = importPath(fallback.Function)
+	default:
+		id.Scope = "unknown"
+	}
+
+	exact := false
+	if chosen != nil {
+		_, fn := splitFunction(chosen.Function)
+		exact = fn == top
+	} else {
 		chosen = fallback
 	}
-	if chosen == nil {
-		id.Scope = "unknown"
-		return id
-	}
-
-	id.Scope = importPath(chosen.Function)
-	id.File, id.Line = chosen.File, chosen.Line
-	if fn := runtime.FuncForPC(chosen.Entry); fn != nil {
-		id.File, id.Line = fn.FileLine(fn.Entry())
-	}
-	if _, fn := splitFunction(chosen.Function); fn != top && strings.HasPrefix(fn, top+".") {
-		// A subtest closure: report the enclosing test function instead.
-		if line, ok := declarationLine(id.File, top); ok {
-			id.Line = line
+	if !exact {
+		if pos, ok := declarations()[top]; ok {
+			id.File, id.Line = moduleRelative(pos.file), pos.line
+			return id
 		}
 	}
-	id.File = moduleRelative(id.File)
-	if matched {
-		topLevel[top] = id
+	if chosen == nil {
+		return id
 	}
+	id.File, id.Line = chosen.File, chosen.Line
+	if f := runtime.FuncForPC(chosen.Entry); f != nil {
+		id.File, id.Line = f.FileLine(f.Entry())
+	}
+	id.File = moduleRelative(id.File)
 	return id
 }
-
-// topLevel remembers, by top-level test name, the identity resolved from a
-// matching frame. A test binary holds one package, so the name is unique.
-var (
-	topLevelMu sync.Mutex
-	topLevel   = map[string]collector.Identity{}
-)
 
 // splitFunction splits a runtime function name such as
 // "example.com/m/pkg_test.TestX.func1" into its package part
@@ -220,44 +221,39 @@ var mainPackagePath = sync.OnceValue(func() string {
 	return strings.TrimSuffix(info.Path, ".test")
 })
 
-// declarationLine is the line on which the top-level function name is
-// declared in file. The file is parsed once; under -trimpath the recorded
-// path is not on disk, so the file is also looked for in the working
-// directory, which go test sets to the package's source directory.
-func declarationLine(file, name string) (int, bool) {
-	decls := declarationsOf(file)
-	line, ok := decls[name]
-	return line, ok
+type declaration struct {
+	file string
+	line int
 }
 
-var (
-	declarationsMu sync.Mutex
-	declarations   = map[string]map[string]int{}
-)
-
-func declarationsOf(file string) map[string]int {
-	declarationsMu.Lock()
-	defer declarationsMu.Unlock()
-	if decls, ok := declarations[file]; ok {
+// declarations maps every top-level function declared in the package's
+// test files to its position. go test runs the binary in the package's
+// source directory, so the files are read from the working directory; a
+// binary run elsewhere finds none, and subtests then report the line of
+// their closure.
+var declarations = sync.OnceValue(func() map[string]declaration {
+	decls := map[string]declaration{}
+	cwd, err := os.Getwd()
+	if err != nil {
 		return decls
 	}
-	decls := map[string]int{}
+	files, _ := filepath.Glob(filepath.Join(cwd, "*_test.go"))
 	fset := token.NewFileSet()
-	for _, path := range []string{file, filepath.Base(file)} {
+	for _, path := range files {
 		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			continue
 		}
 		for _, decl := range f.Decls {
 			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil {
-				decls[fn.Name.Name] = fset.Position(fn.Pos()).Line
+				if _, seen := decls[fn.Name.Name]; !seen {
+					decls[fn.Name.Name] = declaration{file: path, line: fset.Position(fn.Pos()).Line}
+				}
 			}
 		}
-		break
 	}
-	declarations[file] = decls
 	return decls
-}
+})
 
 // moduleRelative strips the module root from a source path, so the location
 // is stable across machines: the directory containing go.mod for absolute

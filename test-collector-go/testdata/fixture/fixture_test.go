@@ -72,6 +72,13 @@ func TestViaHelper(t *testing.T) {
 	})
 }
 
+// TestHelperSubtests never calls Start itself: its subtests start through
+// the helper package, including one from a helper small enough to inline.
+func TestHelperSubtests(t *testing.T) {
+	testhelper.RunCase(t, "case", func(ctx context.Context, t *testing.T) {})
+	testhelper.RunInline(t, "inline", func(ctx context.Context, t *testing.T) {})
+}
+
 func TestWithoutStart(t *testing.T) {
 	// A test that never calls Start produces no execution.
 }

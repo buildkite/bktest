@@ -23,3 +23,12 @@ func RunCase(t *testing.T, name string, fn func(ctx context.Context, t *testing.
 		fn(bktest.Start(t), t)
 	})
 }
+
+// RunInline is RunCase without t.Helper, which leaves it small enough for
+// the compiler to inline into the test; Go 1.23 then names the subtest's
+// closure after the test function even though it lives in this file.
+func RunInline(t *testing.T, name string, fn func(ctx context.Context, t *testing.T)) {
+	t.Run(name, func(t *testing.T) {
+		fn(bktest.Start(t), t)
+	})
+}

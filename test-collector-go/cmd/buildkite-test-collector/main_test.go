@@ -301,7 +301,7 @@ func TestRealGoTestStreamResolvesLocations(t *testing.T) {
 	}
 
 	spans := r.TestSpans()
-	want := []string{"TestPass", "TestFail", "TestSkip", "TestSubtests", "TestSubtests/a", "TestSubtests/b", "TestParallel", "TestParallel/p1", "TestParallel/p2", "TestTagged", "TestViaHelper", "TestViaHelper/case", "TestWithoutStart"}
+	want := []string{"TestPass", "TestFail", "TestSkip", "TestSubtests", "TestSubtests/a", "TestSubtests/b", "TestParallel", "TestParallel/p1", "TestParallel/p2", "TestTagged", "TestViaHelper", "TestViaHelper/case", "TestHelperSubtests", "TestHelperSubtests/case", "TestHelperSubtests/inline", "TestWithoutStart"}
 	if got := otlptest.TestNames(spans); !equalSets(got, want) {
 		t.Fatalf("exported %v\nwant %v", got, want)
 	}

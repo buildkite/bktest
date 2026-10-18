@@ -101,19 +101,20 @@ func TestEndToEndWithGoTest(t *testing.T) {
 	if strings.Contains(out, "[buildkite-test-collector]") {
 		t.Errorf("a clean run must not warn:\n%s", out)
 	}
-	if want := collector.ExportedLine(12, fixtureModule); strings.Count(out, want) != 1 {
+	if want := collector.ExportedLine(14, fixtureModule); strings.Count(out, want) != 1 {
 		t.Errorf("go test output lacks %q:\n%s", want, out)
 	}
 
 	// Locations are the declaration of the top-level test function, shared
 	// by its subtests, as the buildkite-test-collector command reports them;
 	// a Start called through a helper in another package (TestViaHelper and
-	// its subtest) must not point at the helper.
+	// its subtest, and the TestHelperSubtests subtests whose parent never
+	// called Start) must not point at the helper.
 	fixtureLines := map[string]int{}
-	for _, name := range []string{"TestPass", "TestFail", "TestSkip", "TestSubtests", "TestParallel", "TestTagged", "TestViaHelper"} {
+	for _, name := range []string{"TestPass", "TestFail", "TestSkip", "TestSubtests", "TestParallel", "TestTagged", "TestViaHelper", "TestHelperSubtests"} {
 		fixtureLines[name] = fixtureLine(t, `^func `+name+`\(`)
 	}
-	for _, sub := range []string{"TestSubtests/a", "TestSubtests/b", "TestParallel/p1", "TestParallel/p2", "TestViaHelper/case"} {
+	for _, sub := range []string{"TestSubtests/a", "TestSubtests/b", "TestParallel/p1", "TestParallel/p2", "TestViaHelper/case", "TestHelperSubtests/case", "TestHelperSubtests/inline"} {
 		top, _, _ := strings.Cut(sub, "/")
 		fixtureLines[sub] = fixtureLines[top]
 	}
@@ -132,6 +133,9 @@ func TestEndToEndWithGoTest(t *testing.T) {
 		"TestTagged":         "pass",
 		"TestViaHelper":      "pass",
 		"TestViaHelper/case": "pass",
+
+		"TestHelperSubtests/case":   "pass",
+		"TestHelperSubtests/inline": "pass",
 	}
 	if len(spans) != len(want) {
 		t.Fatalf("got %d test spans, want %d: %v", len(spans), len(want), otlptest.TestNames(spans))
@@ -298,17 +302,29 @@ func TestEndToEndWithoutATokenIsANoOp(t *testing.T) {
 	}
 }
 
-func TestEndToEndInvalidRunKeyWarnsOnce(t *testing.T) {
+// A token with a bad run key or endpoint is a misconfiguration worth one
+// warning, unlike the silent no-token case.
+func TestEndToEndMisconfigurationWarnsOnce(t *testing.T) {
 	r := otlptest.NewReceiver(t)
-	out, code := goTest(t, ".", exportedTo(r, "has a space"))
-	if code != 1 {
-		t.Fatalf("exit code = %d, want go test's own 1:\n%s", code, out)
-	}
-	if n := strings.Count(out, "OpenTelemetry span export disabled: run key"); n != 1 {
-		t.Errorf("disabled warning appeared %d times, want once:\n%s", n, out)
-	}
-	if n := len(r.All()); n != 0 {
-		t.Errorf("%d requests sent while disabled", n)
+	for name, vars := range map[string]map[string]string{
+		"run key":  exportedTo(r, "has a space"),
+		"endpoint": exportedTo(r, "fixture-endpoint"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if name == "endpoint" {
+				vars["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] = "not a url"
+			}
+			out, code := goTest(t, ".", vars)
+			if code != 1 {
+				t.Fatalf("exit code = %d, want go test's own 1:\n%s", code, out)
+			}
+			if n := strings.Count(out, "OpenTelemetry span export disabled: "+name); n != 1 {
+				t.Errorf("disabled warning appeared %d times, want once:\n%s", n, out)
+			}
+			if n := len(r.All()); n != 0 {
+				t.Errorf("%d requests sent while disabled", n)
+			}
+		})
 	}
 }
 

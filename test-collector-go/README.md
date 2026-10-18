@@ -135,8 +135,11 @@ own `*testing.T`, and `t.Parallel()` works as usual. The scope is the test
 function's package and the location is that function's declaration, shared
 by its subtests, even when `Start` is called through a helper in another
 package; tests in a `package main` get the package's import path as their
-scope. A non-panic failure has no failure text in this mode: `go test`
-keeps `t.Error` output to itself.
+scope. Subtest locations are read from the package's `_test.go` files in
+the directory `go test` runs the binary in; a test binary run from another
+directory reports the subtest closure's own line instead. A non-panic
+failure has no failure text in this mode: `go test` keeps `t.Error` output
+to itself.
 
 Under the test span the collector opens a `test.body` phase span on the
 suite's tracer provider (the global one unless you pass `WithTracerProvider`)
