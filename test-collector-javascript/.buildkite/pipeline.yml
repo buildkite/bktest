@@ -34,6 +34,22 @@ steps:
               # BUILDKITE_BUILD_ID are passed through to the container and
               # mess up the CI detection — we want a clean process.env.
               mount-buildkite-agent: false
+      - label: ":opentelemetry: OTel tests against the newest published OpenTelemetry SDK (soft fail: early warning that an SDK release broke the collector)"
+        # The lockfile pins the SDK the collector was built against. This
+        # step installs the newest versions the peer ranges allow, so a new
+        # SDK release that breaks span export shows up here before a
+        # customer finds it. It never fails the build.
+        soft_fail: true
+        command:
+          - "cd test-collector-javascript"
+          - "npm ci"
+          - "node -e 'const peers = Object.entries(require(\"./package.json\").peerDependencies).map(([name, range]) => name + \"@\" + range); require(\"child_process\").execFileSync(\"npm\", [\"install\", \"--no-save\", ...peers], { stdio: \"inherit\" })'"
+          - "npm ls @opentelemetry/api @opentelemetry/sdk-trace-base @opentelemetry/resources @opentelemetry/exporter-trace-otlp-proto"
+          - "npm test -- otel"
+        plugins:
+          - docker#v3.7.0:
+              image: node:22.15.0
+              mount-buildkite-agent: false
       - label: ":vitest: Vitest {{matrix}} compatibility"
         matrix:
           - "1.6.1"
