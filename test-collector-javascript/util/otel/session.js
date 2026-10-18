@@ -115,7 +115,7 @@ const createSession = (settings) => {
     lastFailure: null,
     flushBudget: FLUSH_BUDGET_MILLISECONDS,
   }
-  const reported = { failed: 0, notExported: 0 }
+  const reported = { startFailures: 0, failed: 0, notExported: 0 }
 
   // The batch processor drops a span when its queue is full, and a run of
   // fast tests ends spans faster than one Node thread can export them, so
@@ -278,6 +278,11 @@ const createSession = (settings) => {
   }
 
   const reportDrops = ({ drained }) => {
+    const startFailures = metrics.startFailures - reported.startFailures
+    if (startFailures > 0) {
+      reported.startFailures = metrics.startFailures
+      missingResults(startFailures, 'start-failure')
+    }
     const failed = metrics.failed - reported.failed
     if (failed > 0) {
       reported.failed = metrics.failed

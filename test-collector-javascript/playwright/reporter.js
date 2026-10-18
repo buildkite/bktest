@@ -84,6 +84,7 @@ class PlaywrightBuildkiteTestEngineReporter {
       const handle = this._session.startTestSpan(record, { line, column, startTime });
       this._session.finishTestSpan(handle, record, { line, column, endTime: startTime + testResult.duration });
     } catch (error) {
+      this._session.metrics.startFailures += 1;
       warn(`TEST RESULTS MISSING: Could not report the Playwright test execution over OpenTelemetry: ${describeError(error)}`);
     }
   }
