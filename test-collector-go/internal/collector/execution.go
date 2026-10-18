@@ -193,6 +193,7 @@ func (ex *Execution) Finish(end time.Time, r Result) {
 		ex.span.SetAttributes(tagAttributes(ex.mergedTags())...)
 	})
 	attempt("Could not finish OpenTelemetry test span", func() {
+		ex.c.awaitRoom()
 		ex.endSpan(ex.span, end)
 	})
 }

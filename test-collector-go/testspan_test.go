@@ -84,25 +84,32 @@ func (f *fakeT) finish() {
 func TestResultMappingFromTestingTB(t *testing.T) {
 	cases := []struct {
 		name   string
-		drive  func(ft *fakeT)
+		before func(ft *fakeT) // runs before Start
+		drive  func(ft *fakeT) // runs after Start
 		status string
 		reason string
 	}{
-		{"passed", nil, "pass", ""},
-		{"failed", func(ft *fakeT) { ft.Fail() }, "fail", "test failed"},
-		{"skipped", func(ft *fakeT) { ft.SkipNow() }, "skipped", ""},
-		{"failed then skipped", func(ft *fakeT) { ft.Fail(); ft.SkipNow() }, "fail", "test failed"},
+		{"passed", nil, nil, "pass", ""},
+		{"failed", nil, func(ft *fakeT) { ft.Fail() }, "fail", "test failed"},
+		{"skipped", nil, func(ft *fakeT) { ft.SkipNow() }, "skipped", ""},
+		{"failed then skipped", nil, func(ft *fakeT) { ft.Fail(); ft.SkipNow() }, "fail", "test failed"},
+		// A cleanup registered before Start runs after Start's own cleanup.
+		{"failed by an earlier cleanup", func(ft *fakeT) { ft.Cleanup(ft.Fail) }, nil, "fail", "test failed"},
 	}
 	r := otlptest.NewReceiver(t)
 	c := enabled(t, r)
 	for _, tc := range cases {
 		ft := newFakeT(tc.name)
+		if tc.before != nil {
+			tc.before(ft)
+		}
 		Start(ft)
 		if tc.drive != nil {
 			tc.drive(ft)
 		}
 		ft.finish()
 	}
+	finishAllPending()
 	c.Shutdown()
 
 	spans := r.TestSpans()
@@ -130,6 +137,7 @@ func TestStartTwiceReturnsTheSameExecution(t *testing.T) {
 		t.Fatal("second Start returned a different context")
 	}
 	ft.finish()
+	finishAllPending()
 	c.Shutdown()
 	if n := len(r.TestSpans()); n != 1 {
 		t.Fatalf("got %d test spans, want 1", n)
@@ -145,6 +153,7 @@ func TestTagAndAnnotateTargetTheTest(t *testing.T) {
 	Tag(ft, "shard", "7")
 	Annotate(ft, "note\xff")
 	ft.finish()
+	finishAllPending()
 	c.Shutdown()
 
 	s := r.TestSpans()[0]

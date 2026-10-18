@@ -260,7 +260,11 @@ func TestBuildFailureWarnsNamingThePackageAndExitsOne(t *testing.T) {
 // TestRealGoTestStreamResolvesLocations pipes a real go test -json run of
 // the fixture module through the wrapper from inside that module, so go
 // list can find the test files.
-func TestRealGoTestStreamResolvesLocations(t *testing.T) {
+// goTestJSON runs go test -json for a fixture package in a subprocess, from
+// the fixture's directory as a customer would, with the collector's
+// variables cleared so the fixture's own TestMain does not export.
+func goTestJSON(t *testing.T, pkg string, flags ...string) string {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("runs go test in a subprocess")
 	}
@@ -283,14 +287,9 @@ func TestRealGoTestStreamResolvesLocations(t *testing.T) {
 			t.Error(err)
 		}
 	})
-
-	r := otlptest.NewReceiver(t)
-	// The fixture's own TestMain must not export, so the token is cleared
-	// for go test and set only for the wrapper.
-	configure(t, r, nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "test", "-json", "-count=1", ".")
+	cmd := exec.CommandContext(ctx, "go", append(append([]string{"test", "-json", "-count=1"}, flags...), pkg)...)
 	for _, e := range os.Environ() {
 		if k, _, _ := strings.Cut(e, "="); !otlptest.CollectorEnvVar(k) {
 			cmd.Env = append(cmd.Env, e)
@@ -301,8 +300,15 @@ func TestRealGoTestStreamResolvesLocations(t *testing.T) {
 	if err != nil && !errors.As(err, &exit) {
 		t.Fatalf("go test -json: %v", err)
 	}
+	return string(stream)
+}
 
-	code, stdout, stderr := runWrapper(t, string(stream))
+func TestRealGoTestStreamResolvesLocations(t *testing.T) {
+	stream := goTestJSON(t, ".")
+	r := otlptest.NewReceiver(t)
+	configure(t, r, nil)
+
+	code, stdout, stderr := runWrapper(t, stream)
 
 	if code != 1 {
 		t.Errorf("exit = %d\n%s", code, stderr)
@@ -318,7 +324,7 @@ func TestRealGoTestStreamResolvesLocations(t *testing.T) {
 	}
 
 	spans := r.TestSpans()
-	want := []string{"TestPass", "TestFail", "TestSkip", "TestSubtests", "TestSubtests/a", "TestSubtests/b", "TestParallel", "TestParallel/p1", "TestParallel/p2", "TestTagged", "TestViaHelper", "TestViaHelper/case", "TestHelperSubtests", "TestHelperSubtests/case", "TestHelperSubtests/inline", "TestWithoutStart"}
+	want := []string{"TestPass", "TestFail", "TestSkip", "TestSubtests", "TestSubtests/a", "TestSubtests/b", "TestParallel", "TestParallel/p1", "TestParallel/p2", "TestTagged", "TestViaHelper", "TestViaHelper/case", "TestHelperSubtests", "TestHelperSubtests/case", "TestHelperSubtests/inline", "TestCleanupBeforeStart", "TestCleanupBeforeStart/sub", "TestWithoutStart"}
 	if got := otlptest.TestNames(spans); !equalSets(got, want) {
 		t.Fatalf("exported %v\nwant %v", got, want)
 	}
@@ -343,6 +349,27 @@ func TestRealGoTestStreamResolvesLocations(t *testing.T) {
 	}
 	if otlptest.StringAttr(t, otlptest.FindSpan(t, spans, "TestSkip").Attributes, string(semconv.TestCaseResultStatusKey)) != "skipped" {
 		t.Errorf("skip not mapped to skipped")
+	}
+}
+
+// A package behind a build tag has locations only when the wrapper lists
+// it with the same tags go test compiled it with.
+func TestBuildTagsFlagGivesTaggedPackagesTheirLocations(t *testing.T) {
+	stream := goTestJSON(t, "./tagged", "-tags=integration")
+	r := otlptest.NewReceiver(t)
+	configure(t, r, nil)
+
+	if code, _, stderr := runWrapper(t, stream, "-tags=integration"); code != 0 {
+		t.Fatalf("exit = %d\n%s", code, stderr)
+	}
+	spans := r.TestSpans()
+	if got := otlptest.TestNames(spans); !equalSets(got, []string{"TestTagged", "TestTagged/sub", "TestTagged/helper"}) {
+		t.Fatalf("exported %v", got)
+	}
+	for _, s := range spans {
+		if otlptest.StringAttr(t, s.Attributes, string(semconv.CodeFilePathKey)) != "tagged/tagged_test.go" || otlptest.IntAttr(t, s.Attributes, string(semconv.CodeLineNumberKey)) != 21 {
+			t.Errorf("location = %v, want tagged/tagged_test.go:21", s.Attributes)
+		}
 	}
 }
 

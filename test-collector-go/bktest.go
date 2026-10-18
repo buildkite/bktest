@@ -34,6 +34,7 @@ import (
 	"maps"
 	"os"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -97,9 +98,13 @@ func newOptions(opts []Option) options {
 }
 
 var (
-	mainCalled atomic.Bool
-	// current is the collector Main configured for this process.
-	current atomic.Pointer[collector.Collector]
+	mainCalled  atomic.Bool
+	mainOptions []Option
+	// current is the collector configured for this process, nil until the
+	// first Start, Tag or Annotate and when export is disabled.
+	current   atomic.Pointer[collector.Collector]
+	setupMu   sync.Mutex
+	setupDone bool
 )
 
 // Main runs the package's tests through m.Run, exports their results and
@@ -114,17 +119,40 @@ var (
 // to detect a suite that is reported twice.
 func Main(m *testing.M, opts ...Option) int {
 	mainCalled.Store(true)
+	mainOptions = opts
 	testPackage = callerPackage()
-	c := collector.Setup(context.Background(), newOptions(opts))
-	current.Store(c)
 
 	code := m.Run()
 
-	if c != nil {
+	if c := current.Load(); c != nil {
+		finishAllPending()
 		c.Shutdown()
 		fmt.Fprintln(os.Stderr, collector.ExportedLine(c.Exported(), testPackage))
 	}
 	return code
+}
+
+// configured returns the collector for this process, setting it up on
+// first use. Setup waits for the first test rather than running in Main
+// because go test only records the environment variables a test binary
+// reads while m.Run is running, and caches a package's result keyed on
+// those reads: configured inside a test, the package re-runs when the
+// token, run key or endpoint change, and is served from the cache only
+// when they are the same.
+func configured() *collector.Collector {
+	if c := current.Load(); c != nil {
+		return c
+	}
+	if !mainCalled.Load() {
+		return nil
+	}
+	setupMu.Lock()
+	defer setupMu.Unlock()
+	if !setupDone {
+		setupDone = true
+		current.Store(collector.Setup(context.Background(), newOptions(mainOptions)))
+	}
+	return current.Load()
 }
 
 // callerPackage is the import path of the package that called Main: the
@@ -149,13 +177,16 @@ func callerPackage() string {
 }
 
 // Start records t as a test execution and returns the context its
-// instrumentation should use. The execution finishes in t.Cleanup with the
-// result read from t.Failed and t.Skipped; a panicking test is reported as
-// failed. Calling Start twice for the same test returns the same context.
+// instrumentation should use. The execution ends in t.Cleanup; its result
+// is read from t.Failed and t.Skipped once go test has finished the test,
+// so a cleanup registered before Start that fails the test is reflected.
+// A panicking test is reported as failed. Calling Start twice for the same
+// test returns the same context. Call Start after t.Parallel(): the span
+// starts at Start, so the wait for the parent would count as duration.
 //
 // Without Main, or when export is disabled, Start returns a plain context.
 func Start(t testing.TB) context.Context {
-	c := current.Load()
+	c := configured()
 	if c == nil {
 		if !mainCalled.Load() {
 			collector.WarnOnce("start-without-main", "bktest.Start was called but bktest.Main did not run; call os.Exit(bktest.Main(m)) from TestMain so test results are exported.")
@@ -172,7 +203,7 @@ func Start(t testing.TB) context.Context {
 func Tag(t testing.TB, key, value string) {
 	ex := lookup(t)
 	if ex == nil {
-		if current.Load() == nil {
+		if configured() == nil {
 			return
 		}
 		collector.WarnOnce("tag-without-start", "bktest.Tag was called for %s before bktest.Start; the tag %q was ignored. Further calls will not be reported.", t.Name(), key)
@@ -187,7 +218,7 @@ func Tag(t testing.TB, key, value string) {
 func Annotate(t testing.TB, content string) {
 	ex := lookup(t)
 	if ex == nil {
-		if current.Load() == nil {
+		if configured() == nil {
 			return
 		}
 		collector.WarnOnce("annotate-without-start", "bktest.Annotate was called for %s before bktest.Start; the annotation was ignored. Further calls will not be reported.", t.Name())

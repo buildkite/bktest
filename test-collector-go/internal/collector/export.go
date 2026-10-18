@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -75,6 +76,14 @@ func (s *streamStats) offer(n int) {
 	s.mu.Unlock()
 }
 
+// inFlight is the number of spans offered to the processor whose export has
+// not completed: queued, batched or on the wire.
+func (s *streamStats) inFlight() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.offered - s.succeeded - s.failed
+}
+
 // startFailure counts a span that could not be started. The caller warns
 // about it immediately, so it is already reported.
 func (s *streamStats) startFailure() {
@@ -137,10 +146,13 @@ func (p countingProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 }
 
 // countingExporter records per-span export outcomes and the last failure
-// cause, and keeps a panicking exporter from taking the batch worker down.
+// cause, keeps a panicking exporter from taking the batch worker down, and
+// redacts the request headers from export errors: the SDK logs the error it
+// gets back, and a server may echo the headers it rejected.
 type countingExporter struct {
 	sdktrace.SpanExporter
-	stats *streamStats
+	stats   *streamStats
+	secrets []string
 }
 
 func (e countingExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) (err error) {
@@ -148,6 +160,9 @@ func (e countingExporter) ExportSpans(ctx context.Context, spans []sdktrace.Read
 		if r := recover(); r != nil {
 			err = fmt.Errorf("exporter panicked: %v", r)
 			WarnOnce("export-panic:"+fmt.Sprintf("%T", r), "Could not export OpenTelemetry spans: %v. Further %T export failures will not be reported.\n%s", r, r, debug.Stack())
+		}
+		if err != nil {
+			err = redact(err, e.secrets)
 		}
 		e.stats.mu.Lock()
 		defer e.stats.mu.Unlock()
@@ -160,6 +175,21 @@ func (e countingExporter) ExportSpans(ctx context.Context, spans []sdktrace.Read
 		}
 	}()
 	return e.SpanExporter.ExportSpans(ctx, spans)
+}
+
+// redact replaces each secret in the error's text with [REDACTED].
+func redact(err error, secrets []string) error {
+	msg := err.Error()
+	redacted := msg
+	for _, secret := range secrets {
+		if secret != "" {
+			redacted = strings.ReplaceAll(redacted, secret, "[REDACTED]")
+		}
+	}
+	if redacted == msg {
+		return err
+	}
+	return errors.New(redacted)
 }
 
 // failureCause reduces an export error to the HTTP status when there is one,

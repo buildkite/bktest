@@ -16,6 +16,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -69,6 +70,10 @@ type Collector struct {
 	testProvider *sdktrace.TracerProvider
 	testTracer   trace.Tracer
 	testStats    *streamStats
+	testSizes    processorSizes
+	// waited is the time spent holding back test spans for queue room, out
+	// of a budget of processorTimeout for the whole run.
+	waited atomic.Int64
 
 	childSpans bool
 	// childProvider is the suite's own provider from Options.TracerProvider;
@@ -123,12 +128,13 @@ func New(ctx context.Context, opts Options) (*Collector, error) {
 		return nil, fmt.Errorf("could not create the test span exporter: %w", err)
 	}
 	testProcessor := sdktrace.NewBatchSpanProcessor(
-		countingExporter{SpanExporter: testExporter, stats: c.testStats},
+		countingExporter{SpanExporter: testExporter, stats: c.testStats, secrets: []string{token, env.key}},
 		sdktrace.WithMaxQueueSize(testSizes.queue),
 		sdktrace.WithMaxExportBatchSize(testSizes.batch),
 		sdktrace.WithBatchTimeout(testSpanScheduleDelay),
 		sdktrace.WithExportTimeout(exportTimeout),
 	)
+	c.testSizes = testSizes
 	c.testProvider = sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithIDGenerator(secureIDGenerator{}),
@@ -175,6 +181,22 @@ func Setup(ctx context.Context, opts Options) (c *Collector) {
 	return c
 }
 
+// awaitRoom holds the caller back while the test stream's queue is within
+// one batch of full, so a burst of results ending at once (ten thousand
+// subtests whose parent just finished, a cached package replayed through
+// the command) is exported rather than discarded by the batch processor,
+// which drops the spans it cannot queue. The waiting is bounded: once
+// processorTimeout has been spent waiting over the whole run, as it is when
+// the endpoint is down, results are queued without waiting and the drops
+// are reported at shutdown.
+func (c *Collector) awaitRoom() {
+	const poll = 2 * time.Millisecond
+	for c.testStats.inFlight()+c.testSizes.batch > c.testSizes.queue && time.Duration(c.waited.Load()) < processorTimeout {
+		time.Sleep(poll)
+		c.waited.Add(int64(poll))
+	}
+}
+
 // Exported is the number of test.execution spans the receiver has accepted
 // so far; call it after Shutdown for the final count.
 func (c *Collector) Exported() int {
@@ -194,7 +216,7 @@ func (c *Collector) configureChildExport(ctx context.Context, opts Options, endp
 		return fmt.Errorf("could not create the child span exporter: %w", err)
 	}
 	processor := sdktrace.NewBatchSpanProcessor(
-		countingExporter{SpanExporter: childExporter, stats: c.childStats},
+		countingExporter{SpanExporter: childExporter, stats: c.childStats, secrets: []string{token, c.env.key}},
 		sdktrace.WithMaxQueueSize(childSizes.queue),
 		sdktrace.WithMaxExportBatchSize(childSizes.batch),
 		sdktrace.WithBatchTimeout(childSpanDelay),

@@ -45,6 +45,14 @@ import "testing"
 
 func TestExternal(t *testing.T) {}
 `,
+		"pkg/integration_test.go": `//go:build integration
+
+package pkg
+
+import "testing"
+
+func TestIntegration(t *testing.T) {}
+`,
 	}
 	for name, content := range files {
 		path := filepath.Join(dir, name)
@@ -79,6 +87,23 @@ func TestLookupFindsTopLevelTestFunctionsRelativeToTheModule(t *testing.T) {
 	}
 	if got := r.Lookup(ctx, "example.com/mod/pkg", "TestMethod"); got != (Position{}) {
 		t.Errorf("method named Test* = %+v, want none", got)
+	}
+}
+
+func TestBuildTagsSelectTheFilesGoTestCompiled(t *testing.T) {
+	dir := writeModule(t)
+	ctx := context.Background()
+	want := Position{File: "pkg/integration_test.go", Line: 7}
+
+	if got := (&Resolver{Dir: dir}).Lookup(ctx, "example.com/mod/pkg", "TestIntegration"); got != (Position{}) {
+		t.Errorf("without tags = %+v, want none: the file is not compiled", got)
+	}
+	if got := (&Resolver{Dir: dir, Tags: "integration"}).Lookup(ctx, "example.com/mod/pkg", "TestIntegration"); got != want {
+		t.Errorf("with -tags = %+v, want %+v", got, want)
+	}
+	t.Setenv("GOFLAGS", "-tags=integration")
+	if got := (&Resolver{Dir: dir}).Lookup(ctx, "example.com/mod/pkg", "TestIntegration"); got != want {
+		t.Errorf("with GOFLAGS = %+v, want %+v", got, want)
 	}
 }
 

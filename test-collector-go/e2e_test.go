@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +26,13 @@ const fixtureModule = "example.com/fixture"
 // testing package: TestMain, t.Cleanup ordering, panics and exit codes.
 func goTest(t *testing.T, pkg string, vars map[string]string, flags ...string) (string, int) {
 	t.Helper()
+	return goTestUncached(t, pkg, vars, append([]string{"-count=1"}, flags...)...)
+}
+
+// goTestUncached is goTest without -count=1, so go test may serve the
+// package from its cache.
+func goTestUncached(t *testing.T, pkg string, vars map[string]string, flags ...string) (string, int) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("runs go test in a subprocess")
 	}
@@ -33,7 +41,7 @@ func goTest(t *testing.T, pkg string, vars map[string]string, flags ...string) (
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", append(append([]string{"test", "-count=1", "-v"}, flags...), pkg)...)
+	cmd := exec.CommandContext(ctx, "go", append(append([]string{"test", "-v"}, flags...), pkg)...)
 	cmd.Dir = filepath.Join("testdata", "fixture")
 	for _, e := range os.Environ() {
 		if k, _, _ := strings.Cut(e, "="); !otlptest.CollectorEnvVar(k) {
@@ -70,17 +78,17 @@ func exportedTo(r *otlptest.Receiver, runKey string) map[string]string {
 	}
 }
 
-// fixtureLine finds the line in fixture_test.go matching pattern,
+// fixtureLine finds the line in the fixture file matching pattern,
 // independently of the collector's own frame walking.
-func fixtureLine(t *testing.T, pattern string) int {
+func fixtureLine(t *testing.T, file, pattern string) int {
 	t.Helper()
-	src, err := os.ReadFile(filepath.Join("testdata", "fixture", "fixture_test.go"))
+	src, err := os.ReadFile(filepath.Join("testdata", "fixture", file))
 	if err != nil {
 		t.Fatal(err)
 	}
 	loc := regexp.MustCompile("(?m)" + pattern).FindIndex(src)
 	if loc == nil {
-		t.Fatalf("%s not found in fixture_test.go", pattern)
+		t.Fatalf("%s not found in %s", pattern, file)
 	}
 	return bytes.Count(src[:loc[0]], []byte("\n")) + 1
 }
@@ -101,7 +109,7 @@ func TestEndToEndWithGoTest(t *testing.T) {
 	if strings.Contains(out, "[buildkite-test-collector]") {
 		t.Errorf("a clean run must not warn:\n%s", out)
 	}
-	if want := collector.ExportedLine(14, fixtureModule); strings.Count(out, want) != 1 {
+	if want := collector.ExportedLine(16, fixtureModule); strings.Count(out, want) != 1 {
 		t.Errorf("go test output lacks %q:\n%s", want, out)
 	}
 
@@ -111,10 +119,10 @@ func TestEndToEndWithGoTest(t *testing.T) {
 	// its subtest, and the TestHelperSubtests subtests whose parent never
 	// called Start) must not point at the helper.
 	fixtureLines := map[string]int{}
-	for _, name := range []string{"TestPass", "TestFail", "TestSkip", "TestSubtests", "TestParallel", "TestTagged", "TestViaHelper", "TestHelperSubtests"} {
-		fixtureLines[name] = fixtureLine(t, `^func `+name+`\(`)
+	for _, name := range []string{"TestPass", "TestFail", "TestSkip", "TestSubtests", "TestParallel", "TestTagged", "TestViaHelper", "TestHelperSubtests", "TestCleanupBeforeStart"} {
+		fixtureLines[name] = fixtureLine(t, "fixture_test.go", `^func `+name+`\(`)
 	}
-	for _, sub := range []string{"TestSubtests/a", "TestSubtests/b", "TestParallel/p1", "TestParallel/p2", "TestViaHelper/case", "TestHelperSubtests/case", "TestHelperSubtests/inline"} {
+	for _, sub := range []string{"TestSubtests/a", "TestSubtests/b", "TestParallel/p1", "TestParallel/p2", "TestViaHelper/case", "TestHelperSubtests/case", "TestHelperSubtests/inline", "TestCleanupBeforeStart/sub"} {
 		top, _, _ := strings.Cut(sub, "/")
 		fixtureLines[sub] = fixtureLines[top]
 	}
@@ -136,6 +144,11 @@ func TestEndToEndWithGoTest(t *testing.T) {
 		// TestHelperSubtests never calls Start, so only its subtests are reported.
 		"TestHelperSubtests/case":   "pass",
 		"TestHelperSubtests/inline": "pass",
+		// Failed by cleanups registered before Start, which run after
+		// Start's own cleanup: the result go test reports, not the one
+		// visible when Start's cleanup ran.
+		"TestCleanupBeforeStart":     "fail",
+		"TestCleanupBeforeStart/sub": "fail",
 	}
 	if len(spans) != len(want) {
 		t.Fatalf("got %d test spans, want %d: %v", len(spans), len(want), otlptest.TestNames(spans))
@@ -217,7 +230,7 @@ func TestEndToEndWithGoTest(t *testing.T) {
 			t.Errorf("TestPass has an empty body phase that should not export")
 		}
 	}
-	if bodies != 4 { // TestFail, TestSubtests, TestSubtests/b, TestTagged
+	if bodies != 6 { // TestFail, TestSubtests, TestSubtests/b, TestTagged, TestCleanupBeforeStart and its subtest
 		t.Errorf("got %d body phases, want 4: %v", bodies, r.ChildNames())
 	}
 
@@ -228,6 +241,78 @@ func TestEndToEndWithGoTest(t *testing.T) {
 		if got := req.Header.Get("Authorization"); got != `Token token="fixture-token"` {
 			t.Errorf("authorization = %q", got)
 		}
+	}
+}
+
+// Results become final in bursts: a parent's subtests all at once when the
+// parent finishes, and everything else when m.Run returns. None may be lost
+// to the queue in between.
+func TestEndToEndTenThousandSubtestsAllArrive(t *testing.T) {
+	r := otlptest.NewReceiver(t)
+	out, code := goTest(t, "./many", exportedTo(r, "fixture-many"))
+	if code != 0 {
+		t.Fatalf("exit code = %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "TEST RESULTS MISSING") {
+		t.Errorf("results were dropped:\n%s", out)
+	}
+	if n := len(r.TestSpans()); n != 10001 {
+		t.Fatalf("got %d test spans, want 10001", n)
+	}
+	if want := collector.ExportedLine(10001, fixtureModule+"/many"); !strings.Contains(out, want) {
+		t.Errorf("go test output lacks %q", want)
+	}
+}
+
+// A test file behind a build tag is compiled all the same, so its
+// subtests, including one created by a helper in another package, are
+// located at the test function's declaration.
+func TestEndToEndBuildTagsDoNotMoveLocations(t *testing.T) {
+	r := otlptest.NewReceiver(t)
+	out, code := goTest(t, "./tagged", exportedTo(r, "fixture-tagged"), "-tags=integration")
+	if code != 0 {
+		t.Fatalf("exit code = %d:\n%s", code, out)
+	}
+	spans := r.TestSpans()
+	if len(spans) != 3 {
+		t.Fatalf("got %d test spans, want 3: %v", len(spans), otlptest.TestNames(spans))
+	}
+	line := fixtureLine(t, filepath.Join("tagged", "tagged_test.go"), `^func TestTagged\(`)
+	for _, name := range []string{"TestTagged", "TestTagged/sub", "TestTagged/helper"} {
+		s := otlptest.FindSpan(t, spans, name)
+		if got := otlptest.StringAttr(t, s.Attributes, "code.file.path"); got != "tagged/tagged_test.go" {
+			t.Errorf("%s file = %q", name, got)
+		}
+		if got := otlptest.IntAttr(t, s.Attributes, "code.line.number"); got != line {
+			t.Errorf("%s line = %d, want %d (the declaration of TestTagged)", name, got, line)
+		}
+	}
+}
+
+// go test caches a package's result keyed on the environment variables the
+// test binary read while running, so a run with a different run key or
+// endpoint is not served from the cache and is reported again.
+func TestEndToEndCachedPackageRerunsWhenTheRunChanges(t *testing.T) {
+	first, second := otlptest.NewReceiver(t), otlptest.NewReceiver(t)
+	cache := map[string]string{"GOCACHE": t.TempDir()}
+	run := func(r *otlptest.Receiver, runKey string) string {
+		vars := exportedTo(r, runKey)
+		maps.Copy(vars, cache)
+		out, code := goTestUncached(t, "./cmd/tool", vars)
+		if code != 0 {
+			t.Fatalf("exit code = %d:\n%s", code, out)
+		}
+		return out
+	}
+	run(first, "fixture-cache-1")
+	if out := run(second, "fixture-cache-2"); strings.Contains(out, "(cached)") {
+		t.Fatalf("the second run was served from the cache:\n%s", out)
+	}
+	if n, m := len(first.TestSpans()), len(second.TestSpans()); n != 1 || m != 1 {
+		t.Errorf("got %d and %d test spans, want 1 each", n, m)
+	}
+	if out := run(second, "fixture-cache-2"); !strings.Contains(out, "(cached)") {
+		t.Errorf("an identical run was not served from the cache:\n%s", out)
 	}
 }
 

@@ -10,6 +10,10 @@
 // file gotestsum already printed:
 //
 //	gotestsum --jsonfile results.json ./... ; buildkite-test-collector -quiet < results.json
+//
+// Test locations come from the package sources, listed with go list from
+// the current directory; pass the -tags you gave go test so it lists the
+// same files (GOFLAGS applies to both).
 package main
 
 import (
@@ -42,11 +46,12 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 	fs := flag.NewFlagSet("buildkite-test-collector", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: go test -json ./... | buildkite-test-collector [-quiet] [-tag key=value]...")
+		fmt.Fprintln(stderr, "usage: go test -json ./... | buildkite-test-collector [-quiet] [-tags build,tags] [-tag key=value]...")
 		fs.PrintDefaults()
 	}
 	fs.Var(tags, "tag", "run-level tag, repeatable (key=value)")
 	quiet := fs.Bool("quiet", false, "do not print the tests' output (for input gotestsum already printed)")
+	buildTags := fs.String("tags", "", "the -tags go test was run with, so test locations come from the same files")
 	switch err := fs.Parse(args); {
 	case errors.Is(err, flag.ErrHelp):
 		return exitPass
@@ -69,7 +74,7 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 	// hold up the tests that still have to be failed and exported.
 	lookupCtx, stopLookups := context.WithCancel(ctx)
 	defer stopLookups()
-	resolver := &location.Resolver{}
+	resolver := &location.Resolver{Tags: *buildTags}
 	if os.Getenv("BUILDKITE_ANALYTICS_DEBUG_ENABLED") != "" {
 		resolver.Debugf = func(format string, args ...any) {
 			fmt.Fprintf(stderr, "[buildkite-test-collector] debug: no test locations for "+format+"\n", args...)

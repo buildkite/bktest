@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -57,6 +58,12 @@ type Receiver struct {
 	// FailNext is the number of upcoming requests to answer with FailWith.
 	FailNext atomic.Int32
 	FailWith atomic.Int32
+	// EchoHeadersInFailure makes a failure response carry the request's
+	// Authorization and run key headers in its body, like a server that
+	// reports what it rejected.
+	EchoHeadersInFailure atomic.Bool
+	// Delay is how long each request takes to answer, in nanoseconds.
+	Delay atomic.Int64
 	// BlockUntil, when non-nil, makes handlers wait for it to close before
 	// answering.
 	BlockUntil chan struct{}
@@ -104,13 +111,18 @@ func (r *Receiver) handle(w http.ResponseWriter, req *http.Request) {
 	if block := r.BlockUntil; block != nil {
 		<-block
 	}
+	time.Sleep(time.Duration(r.Delay.Load()))
 
 	r.mu.Lock()
 	r.requests = append(r.requests, Request{Header: req.Header.Clone(), Body: &export})
 	r.mu.Unlock()
 
 	if r.FailNext.Add(-1) >= 0 {
-		http.Error(w, "nope", int(r.FailWith.Load()))
+		body := "nope"
+		if r.EchoHeadersInFailure.Load() {
+			body = "rejected: Authorization: " + req.Header.Get("Authorization") + ", " + RunKeyHeader + ": " + req.Header.Get(RunKeyHeader)
+		}
+		http.Error(w, body, int(r.FailWith.Load()))
 		return
 	}
 	w.Header().Set("Content-Type", "application/x-protobuf")

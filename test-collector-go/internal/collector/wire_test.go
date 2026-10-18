@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -161,6 +162,10 @@ func TestEveryTestSpanIsExportedOrCountedAsDropped(t *testing.T) {
 		"BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE": "2",
 		"BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE": "2",
 	})
+	// With the budget for waiting on queue room spent, as it is once the
+	// endpoint has been unresponsive for long enough, results are queued
+	// without waiting and overflow.
+	c.waited.Store(int64(processorTimeout))
 
 	const total = 6
 	for i := 0; i < total; i++ {
@@ -210,6 +215,63 @@ func TestExportFailureIsReportedWithItsStatus(t *testing.T) {
 	want := "TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 403)."
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("warning = %q\nwant it to contain %q", out.String(), want)
+	}
+}
+
+// Results that end faster than they export must wait for queue room rather
+// than overflow the batch processor's queue.
+func TestBurstOfResultsIsHeldBackRatherThanDropped(t *testing.T) {
+	out := captureWarnings(t)
+	r := otlptest.NewReceiver(t)
+	r.Delay.Store(int64(5 * time.Millisecond))
+	c := configured(t, r, map[string]string{
+		"BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE": "8",
+		"BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE": "4",
+	})
+	const n = 100
+	for i := range n {
+		run(c, fmt.Sprintf("Test%03d", i), nil)
+	}
+	c.Shutdown()
+
+	if got := len(r.TestSpans()); got != n {
+		t.Errorf("got %d test spans, want %d", got, n)
+	}
+	if strings.Contains(out.String(), "TEST RESULTS MISSING") {
+		t.Errorf("results were dropped:\n%s", out.String())
+	}
+}
+
+// A server that echoes the headers it rejected must not get the token or
+// the run key into the SDK's error log or the collector's warnings.
+func TestExportErrorsNeverCarryTheTokenOrRunKey(t *testing.T) {
+	out := captureWarnings(t)
+	var sdkErrors otlptest.Buffer
+	prev := otel.GetErrorHandler()
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { fmt.Fprintln(&sdkErrors, err) }))
+	t.Cleanup(func() { otel.SetErrorHandler(prev) })
+
+	r := otlptest.NewReceiver(t)
+	r.FailWith.Store(http.StatusBadRequest)
+	r.FailNext.Store(10)
+	r.EchoHeadersInFailure.Store(true)
+	c := configured(t, r, map[string]string{"BUILDKITE_TESTS_OTLP_TOKEN": "s3cret-token", "BUILDKITE_ANALYTICS_KEY": "run-key-7"})
+
+	run(c, "TestEchoed", nil)
+	c.Shutdown()
+
+	if !strings.Contains(sdkErrors.String(), "400 Bad Request") {
+		t.Fatalf("the SDK did not see the export error:\n%s", sdkErrors.String())
+	}
+	for _, text := range []string{sdkErrors.String(), out.String()} {
+		for _, secret := range []string{"s3cret-token", "run-key-7"} {
+			if strings.Contains(text, secret) {
+				t.Errorf("%q leaked:\n%s", secret, text)
+			}
+		}
+	}
+	if !strings.Contains(sdkErrors.String(), `Authorization: Token token="[REDACTED]", Buildkite-Tests-Run-Key: [REDACTED]`) {
+		t.Errorf("the SDK error was not redacted in place:\n%s", sdkErrors.String())
 	}
 }
 

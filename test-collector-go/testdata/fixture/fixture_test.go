@@ -79,6 +79,17 @@ func TestHelperSubtests(t *testing.T) {
 	testhelper.RunInline(t, "inline", func(ctx context.Context, t *testing.T) {})
 }
 
+// TestCleanupBeforeStart fails from cleanups registered before Start,
+// which run after the cleanup Start registers.
+func TestCleanupBeforeStart(t *testing.T) {
+	t.Cleanup(func() { t.Error("failed in a cleanup registered before Start") })
+	bktest.Start(t)
+	t.Run("sub", func(t *testing.T) {
+		t.Cleanup(func() { t.Error("failed in a cleanup registered before Start") })
+		bktest.Start(t)
+	})
+}
+
 func TestWithoutStart(t *testing.T) {
 	// A test that never calls Start produces no execution.
 }

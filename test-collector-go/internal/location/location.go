@@ -33,6 +33,10 @@ type Position struct {
 type Resolver struct {
 	// Dir is the directory to run go list in; empty means the current one.
 	Dir string
+	// Tags is the -tags value the tests were built with, so go list selects
+	// the same files; GOFLAGS in the environment applies as it did to go
+	// test.
+	Tags string
 	// Debugf, when set, receives one line per package that could not be
 	// resolved.
 	Debugf func(format string, args ...any)
@@ -99,7 +103,11 @@ func (r *Resolver) resolve(ctx context.Context, pkg string) map[string]Position 
 	}
 	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "list", "-json", "-e", pkg)
+	args := []string{"list", "-json", "-e"}
+	if r.Tags != "" {
+		args = append(args, "-tags", r.Tags)
+	}
+	cmd := exec.CommandContext(ctx, "go", append(args, pkg)...)
 	cmd.Dir = r.Dir
 	out, err := cmd.Output()
 	if err != nil {
