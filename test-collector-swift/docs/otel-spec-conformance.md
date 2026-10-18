@@ -129,6 +129,12 @@ https://buildkite.com/buildkite/test-engine-client-examples/builds/885
   matching XCTest's `Executed 5 tests, with 1 test skipped and 2 failures` (the example's
   random `FlakyTests.testFlaky` failed on that build); same test ids; the no-token and
   unreachable-endpoint steps printed the lines above.
+- Build 909 (collector at `20fc32c`, after the single disabled-reason log):
+  https://buildkite.com/buildkite/test-engine-client-examples/builds/909, run
+  `b10edaad-6da3-88be-8eff-68d64259c3e3`: five executions, 3 passed, 1 failed, 1 skipped,
+  matching XCTest's `Executed 5 tests, with 1 test skipped and 1 failure`; same test ids. The
+  no-token step printed only the `info:` line; the unreachable-endpoint step printed
+  `TEST RESULTS MISSING` with no `requires an API token` line after it.
 
 ## Documented deviations — what closing each would take
 
