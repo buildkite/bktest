@@ -56,8 +56,9 @@ testEnvironment: './buildkite-jsdom-environment.js',
 ```
 
 The reporter options (`token`, `tags`, `otelEnabled`) are the same as before.
-`otelEnabled` can also come from the environment, for example
-`otelEnabled: process.env.BUILDKITE_OTEL === 'true'`.
+`otelEnabled` is on only when it is `true` or the string `'true'` (any case),
+so a value passed through from a CLI or the environment, for example
+`otelEnabled: process.env.BUILDKITE_OTEL`, is off unless it says `true`.
 
 Export needs the OpenTelemetry packages, which are optional peer dependencies
 of `buildkite-test-collector` and are not installed with it:
@@ -123,7 +124,7 @@ Jest results map to `test.case.result.status` as `passed` → `pass`,
 A failed test sets the span's status to error with the failure's first line as
 its description (at most 1,024 characters). Each failure is an `exception`
 event whose `exception.message` carries the rest of Jest's failure message,
-including the stack trace, truncated to 10,243 characters.
+including the stack trace, truncated to 16,384 characters.
 
 ### Resource and run attributes
 
@@ -175,7 +176,8 @@ runs that share a suite, or keep `otelEnabled` off if you rely on them.
 ## What gets sent
 
 The collector exports to `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` (default
-`https://tests-otlp.buildkite.com/v1/traces`) and authenticates with
+`https://tests-otlp.buildkite.com/v1/traces`; it must be an http or https URL
+with a host, or the run warns and falls back) and authenticates with
 `BUILDKITE_TESTS_OTLP_TOKEN` or, when that is unset or blank, the reporter's
 `token` option or `BUILDKITE_ANALYTICS_TOKEN`: either the suite API token or an
 agent OIDC token with the `write_uploads` scope. bktec's OTLP relay sets both
@@ -207,11 +209,12 @@ than the queue size warns and resets both to their defaults. The server rejects
 request bodies over 900 KiB, so lower the batch size rather than raise it if a
 suite produces very large failure output.
 
-Attribute values are truncated to 10,243 characters, each span keeps at most
-128 attributes and 100 events, and each event keeps at most 128 attributes.
-The attribute limit matches the server, which truncates test names to 10,240
-characters before deriving the test ID, so a long test name keeps the same
-identity and history as the JSON upload.
+Span attribute values are truncated to 10,243 characters, each span keeps at
+most 128 attributes and 100 events, and each event keeps at most 128
+attributes. The attribute limit matches the server, which truncates test names
+to 10,240 characters before deriving the test ID, so a long test name keeps
+the same identity and history as the JSON upload. Exception events carry up to
+16,384 characters, the same as the other collectors.
 
 The worker flushes its queue at the end of every test file, because Jest
 exits workers without any later hook. Flushes in one worker share a 30-second
@@ -231,20 +234,25 @@ is loaded, and the run falls back to the JSON upload. That upload still needs
 `BUILDKITE_TESTS_OTLP_TOKEN` (as with bktec's relay), the warning says that
 results will not be uploaded instead.
 
-If the OpenTelemetry packages are missing or the exporter cannot be built, the
-reporter warns `OpenTelemetry span export disabled: …` followed by
-`otelEnabled is set, but OpenTelemetry could not be configured …` and the run
-uploads JSON, exactly as it does with `otelEnabled` off. This decision is made
-once in the main process before any worker starts, so every worker in a run
-uses the same path.
+If the OpenTelemetry packages are missing, the exporter cannot be built, the
+run key is invalid or `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` is not an http(s)
+URL, the reporter warns `OpenTelemetry span export disabled: …` followed by
+`otelEnabled is set, but OpenTelemetry could not be configured …` and the
+whole run uploads JSON, exactly as it does with `otelEnabled` off. That
+decision is made once in the main process before any worker starts.
 
-Test files that run under a `testEnvironment` other than the collector's (or
-one built with its `extend`) cannot export spans. The reporter warns once per
-environment and uploads those files' results as JSON. A run therefore never
-sends the same test over both paths, but check the warning if a project uses
-per-file `@jest-environment` docblocks. The same fallback applies to the whole
-run under the legacy `jest-jasmine2` test runner, which does not send test
-events to the environment; export needs the default `jest-circus` runner.
+Which files actually export is decided per file. Test files that run under a
+`testEnvironment` other than the collector's (or one built with its `extend`)
+cannot export spans: the reporter warns once per environment and uploads those
+files' results as JSON, while files under the collector's environment in the
+same run still export spans. A run never sends the same test over both paths,
+but check the warning if a project uses per-file `@jest-environment`
+docblocks. The whole run falls back under the legacy `jest-jasmine2` test
+runner, which does not send test events to the environment; export needs the
+default `jest-circus` runner. Every fallback warning ends with what happens to
+the results: `uploading results as JSON instead`, or, when only
+`BUILDKITE_TESTS_OTLP_TOKEN` is set, `results will not be uploaded because
+BUILDKITE_ANALYTICS_TOKEN is not set`.
 
 OpenTelemetry errors never fail a test or change Jest's exit code. If a worker
 cannot build its export session, or a span cannot be started, the collector
