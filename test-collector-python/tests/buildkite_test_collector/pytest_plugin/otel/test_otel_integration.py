@@ -200,6 +200,19 @@ def test_standard_otel_env_variables_are_ignored(tmp_path, receiver):
         assert not [name for name in request.headers if name.startswith("x-env")]
 
 
+def test_otel_sdk_disabled_does_not_lose_test_results(tmp_path, receiver):
+    run = run_pytest(tmp_path, otel_env(receiver, OTEL_SDK_DISABLED="true"))
+    assert run.returncode == SAMPLE_EXIT_CODE, run.stderr
+
+    spans = receiver.spans("test")
+    assert {name: span.attributes["test.case.result.status"] for name, span in _by_name(spans).items()} \
+        == EXPECTED_RESULTS
+    assert "TEST RESULTS MISSING" not in run.stderr
+    assert receiver.upload_requests() == []
+    # The global provider still honours the switch, so phases and children stay home.
+    assert receiver.spans("child") == []
+
+
 def test_queue_overflow_warns_about_missing_results(tmp_path, receiver):
     receiver.first_request_delay = 2.0
     env = otel_env(

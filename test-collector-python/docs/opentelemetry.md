@@ -253,6 +253,11 @@ message at 10,243. These limits ignore the process-wide `OTEL_SPAN_*` and
 `OTEL_ATTRIBUTE_*` settings, so an application's limits cannot strip execution
 identity, results or failure detail.
 
+`OTEL_SDK_DISABLED=true` and `OTEL_TRACES_SAMPLER` are also ignored for
+`test.execution` spans: with OTel mode on, test results always go out. Both
+still apply to the global tracer provider, so with `OTEL_SDK_DISABLED=true`
+the phase and child spans are not sent.
+
 ## When something goes wrong
 
 OTel errors never fail the test process: pytest's exit status is always its

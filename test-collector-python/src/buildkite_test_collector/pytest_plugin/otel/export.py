@@ -45,6 +45,10 @@ SPAN_STREAM_HEADER = "Buildkite-Tests-Span-Stream"
 EXPORTER_DISTRIBUTION = "opentelemetry-exporter-otlp-proto-http"
 MINIMUM_EXPORTER_VERSION = (1, 45)
 
+# Environment the SDK would otherwise merge into the Buildkite stream.
+OTLP_EXPORTER_ENV_PREFIXES = ("OTEL_EXPORTER_OTLP_", "OTEL_PYTHON_EXPORTER_OTLP_")
+SDK_DISABLED_ENV = "OTEL_SDK_DISABLED"
+
 PROCESSOR_TIMEOUT_SECONDS = 30
 EXPORT_TIMEOUT_MILLISECONDS = 30_000
 TEST_SPAN_SCHEDULE_DELAY_MILLISECONDS = 1_000
@@ -444,10 +448,14 @@ def _build_test_stream(
         export_timeout_millis=EXPORT_TIMEOUT_MILLISECONDS,
     )
     try:
-        provider = TracerProvider(
-            sampler=ALWAYS_ON, resource=resource, id_generator=SecureRandomIdGenerator(),
-            span_limits=TEST_SPAN_LIMITS, shutdown_on_exit=False,
-        )
+        # OTEL_SDK_DISABLED=true makes the provider hand out no-op tracers:
+        # nothing would be queued, nothing dropped, and the run would be
+        # silently empty. Test spans are not an opt-in signal.
+        with _without_env(SDK_DISABLED_ENV):
+            provider = TracerProvider(
+                sampler=ALWAYS_ON, resource=resource, id_generator=SecureRandomIdGenerator(),
+                span_limits=TEST_SPAN_LIMITS, shutdown_on_exit=False,
+            )
         provider.add_span_processor(processor)
     except Exception:
         processor.shutdown()
@@ -516,7 +524,7 @@ def _otlp_exporter(
         RUN_KEY_HEADER: run_key,
         SPAN_STREAM_HEADER: stream,
     }
-    with _without_otlp_env():
+    with _without_env(*OTLP_EXPORTER_ENV_PREFIXES):
         return OTLPSpanExporter(
             endpoint=endpoint, headers=headers, timeout=PROCESSOR_TIMEOUT_SECONDS,
             compression=Compression.Gzip, session=session,
@@ -524,15 +532,15 @@ def _otlp_exporter(
 
 
 @contextmanager
-def _without_otlp_env() -> Iterator[None]:
-    """Hide ``OTEL_EXPORTER_OTLP_*`` while an exporter is built so nothing merges in from env.
+def _without_env(*prefixes: str) -> Iterator[None]:
+    """Hide environment variables starting with ``prefixes`` while an SDK object is built.
 
     The exporter merges env headers into explicit ones and reads certificate
-    variables whenever the explicit option is ``None``; scrubbing the process
-    environment for the duration of the constructor is the only supported way
-    to keep the Buildkite request to exactly its own settings.
+    variables whenever the explicit option is ``None``, and the tracer
+    provider reads its kill switch; scrubbing the process environment for the
+    duration of the constructor is the only supported way to keep the
+    Buildkite stream to exactly its own settings.
     """
-    prefixes = ("OTEL_EXPORTER_OTLP_", "OTEL_PYTHON_EXPORTER_OTLP_")
     hidden = {key: os.environ.pop(key) for key in list(os.environ) if key.startswith(prefixes)}
     try:
         yield
