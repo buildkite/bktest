@@ -86,12 +86,19 @@ spans, your own spans), per-test tags and annotations to the execution.
 
 **Use one mode per package, not both.** A package that calls `bktest.Main`
 and is also piped through `buildkite-test-collector` reports every test
-twice; the command warns `package X was also exported by the library;
-results are duplicated` when it sees that happen, and does not try to dedupe.
+twice; the command warns `package X was also exported by the bktest
+library; results are duplicated` when it sees that happen, and does not try
+to dedupe.
 
 In this mode only tests that call `bktest.Start` are reported; the command
 reports every test in the stream. The two modes give a test the same identity
-(scope and name), so a suite can move between them without losing history.
+(scope, name and location), so a suite can move between them without losing
+history.
+
+Without a token this package is silent: `Main` runs the tests and `Start`
+returns a plain context, so `go test` on a laptop prints exactly what it
+would without the package. With a token but an invalid run key or endpoint
+`Main` prints one warning and runs the tests the same way.
 
 ```go
 package checkout
@@ -124,9 +131,12 @@ from <package>` on stderr. `Start` records the result in `t.Cleanup` from
 `t.Failed()` and `t.Skipped()`, so nothing else is needed in the test body;
 a panicking test is reported as failed with the stack trace, and its result
 is delivered before the process dies. Subtests call `Start(t)` with their
-own `*testing.T`, and `t.Parallel()` works as usual. The location is the
-`file:line` of the function that called `Start`. A non-panic failure has no
-failure text in this mode: `go test` keeps `t.Error` output to itself.
+own `*testing.T`, and `t.Parallel()` works as usual. The scope is the test
+function's package and the location is that function's declaration, shared
+by its subtests, even when `Start` is called through a helper in another
+package; tests in a `package main` get the package's import path as their
+scope. A non-panic failure has no failure text in this mode: `go test`
+keeps `t.Error` output to itself.
 
 Under the test span the collector opens a `test.body` phase span on the
 suite's tracer provider (the global one unless you pass `WithTracerProvider`)

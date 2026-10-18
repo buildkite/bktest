@@ -13,3 +13,4 @@
   a separate stream, per-test `Tag` and `Annotate`, and a warning when a
   package is reported by both the package and the command.
 * `TEST RESULTS MISSING` warnings when a result could not be delivered.
+  Without a token the `bktest` package is silent; the command warns once.

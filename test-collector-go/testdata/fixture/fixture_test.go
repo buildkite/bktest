@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"example.com/fixture/internal/testhelper"
 	bktest "github.com/buildkite/bktest/test-collector-go"
 	"go.opentelemetry.io/otel"
 )
@@ -60,6 +61,15 @@ func TestTagged(t *testing.T) {
 	bktest.Tag(t, "flavour", "vanilla")
 	bktest.Annotate(t, "hello from the fixture")
 	work(ctx)
+}
+
+func TestViaHelper(t *testing.T) {
+	testhelper.Start(t)
+	testhelper.RunCase(t, "case", func(ctx context.Context, t *testing.T) {
+		if ctx == nil {
+			t.Fatal("no context")
+		}
+	})
 }
 
 func TestWithoutStart(t *testing.T) {

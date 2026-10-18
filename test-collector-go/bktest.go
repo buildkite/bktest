@@ -19,8 +19,10 @@
 //
 // Only tests that call Start are reported. Export needs a token
 // (BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_TOKEN) and a valid run
-// key. Without them Main prints one warning and every other function is a
-// no-op, so go test runs exactly as it would without this package.
+// key. Without a token every function is a silent no-op, so go test on a
+// developer's machine runs and prints exactly as it would without this
+// package; with a token but an invalid run key or endpoint Main prints one
+// warning and runs the tests the same way.
 //
 // Do not combine this package with the buildkite-test-collector command on
 // the same package: every test would be reported twice.
@@ -85,7 +87,7 @@ func WithTracerProvider(tp trace.TracerProvider) Option {
 
 // newOptions starts from the environment and lets explicit options override it.
 func newOptions(opts []Option) options {
-	o := options{LocationPrefix: os.Getenv("BUILDKITE_ANALYTICS_LOCATION_PREFIX"), ChildSpans: true}
+	o := options{LocationPrefix: os.Getenv("BUILDKITE_ANALYTICS_LOCATION_PREFIX"), ChildSpans: true, QuietWithoutToken: true}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&o)
@@ -105,10 +107,11 @@ var (
 //
 //	func TestMain(m *testing.M) { os.Exit(bktest.Main(m)) }
 //
-// Setup failures and export failures are reported on stderr and never change
-// the exit code. After export Main prints one line on stderr saying how many
-// executions it exported for the package, which the buildkite-test-collector
-// command uses to detect a suite that is reported twice.
+// Without a token Main runs the tests silently. Other setup failures and
+// export failures are reported on stderr and never change the exit code.
+// After export Main prints one line on stderr saying how many executions it
+// exported for the package, which the buildkite-test-collector command uses
+// to detect a suite that is reported twice.
 func Main(m *testing.M, opts ...Option) int {
 	mainCalled.Store(true)
 	c := collector.Setup(context.Background(), newOptions(opts))
@@ -131,7 +134,7 @@ func callerPackage() string {
 	for {
 		frame, more := frames.Next()
 		if frame.Function != "" {
-			return packagePath(frame.Function)
+			return importPath(frame.Function)
 		}
 		if !more {
 			return "unknown"

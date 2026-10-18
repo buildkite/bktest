@@ -47,6 +47,11 @@ type Options struct {
 	// disables child export with a warning when the global provider cannot
 	// register span processors.
 	TracerProvider trace.TracerProvider
+	// QuietWithoutToken makes Setup return nil silently when no token is
+	// configured, for the library: a developer running go test on a laptop
+	// has no credential and should see no output. The command warns,
+	// since it was invoked to upload.
+	QuietWithoutToken bool
 }
 
 type spanProcessorRegistrar interface {
@@ -77,8 +82,7 @@ type Collector struct {
 	abortDeadline func() time.Time
 }
 
-// ErrNoToken is the error New returns when no token is configured. Callers
-// warn about it once and run without export.
+// ErrNoToken is the error New returns when no token is configured.
 var ErrNoToken = errors.New("no token configured. Set BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_TOKEN; test results will not be uploaded to Buildkite Test Engine")
 
 // New performs the mandatory test-span setup and, when opts.ChildSpans is
@@ -152,7 +156,7 @@ func New(ctx context.Context, opts Options) (*Collector, error) {
 // Setup is New for callers that must keep going whatever happens: a setup
 // error or panic becomes one "export disabled" warning and a nil Collector,
 // so a misconfigured collector never stops the tests or changes the exit
-// code.
+// code. A missing token is not a warning when opts.QuietWithoutToken is set.
 func Setup(ctx context.Context, opts Options) (c *Collector) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -161,6 +165,9 @@ func Setup(ctx context.Context, opts Options) (c *Collector) {
 		}
 	}()
 	c, err := New(ctx, opts)
+	if errors.Is(err, ErrNoToken) && opts.QuietWithoutToken {
+		return nil
+	}
 	if err != nil {
 		Warnf("OpenTelemetry span export disabled: %v", err)
 		return nil

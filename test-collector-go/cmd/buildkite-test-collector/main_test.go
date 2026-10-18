@@ -293,15 +293,15 @@ func TestRealGoTestStreamResolvesLocations(t *testing.T) {
 	if !strings.Contains(stdout, "--- FAIL: TestFail") || !strings.Contains(stdout, "--- SKIP: TestSkip") {
 		t.Errorf("stdout:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "OpenTelemetry span export disabled: no token configured") {
-		t.Errorf("the library's own warning should appear in the stream:\n%s", stdout)
+	if strings.Contains(stdout, "buildkite-test-collector") {
+		t.Errorf("the library must stay silent without a token:\n%s", stdout)
 	}
 	if strings.Contains(stderr, "duplicated") || strings.Contains(stderr, "TEST RESULTS MISSING") {
 		t.Errorf("stderr:\n%s", stderr)
 	}
 
 	spans := r.TestSpans()
-	want := []string{"TestPass", "TestFail", "TestSkip", "TestSubtests", "TestSubtests/a", "TestSubtests/b", "TestParallel", "TestParallel/p1", "TestParallel/p2", "TestTagged", "TestWithoutStart"}
+	want := []string{"TestPass", "TestFail", "TestSkip", "TestSubtests", "TestSubtests/a", "TestSubtests/b", "TestParallel", "TestParallel/p1", "TestParallel/p2", "TestTagged", "TestViaHelper", "TestViaHelper/case", "TestWithoutStart"}
 	if got := otlptest.TestNames(spans); !equalSets(got, want) {
 		t.Fatalf("exported %v\nwant %v", got, want)
 	}
@@ -310,7 +310,7 @@ func TestRealGoTestStreamResolvesLocations(t *testing.T) {
 	if otlptest.StringAttr(t, pass.Attributes, "buildkite.test.scope") != "example.com/fixture" {
 		t.Errorf("scope = %v", pass.Attributes)
 	}
-	if otlptest.StringAttr(t, pass.Attributes, string(semconv.CodeFilePathKey)) != "fixture_test.go" || otlptest.IntAttr(t, pass.Attributes, string(semconv.CodeLineNumberKey)) != 20 {
+	if otlptest.StringAttr(t, pass.Attributes, string(semconv.CodeFilePathKey)) != "fixture_test.go" || otlptest.IntAttr(t, pass.Attributes, string(semconv.CodeLineNumberKey)) != 21 {
 		t.Errorf("location = %v", pass.Attributes)
 	}
 	if d := time.Duration(pass.EndTimeUnixNano - pass.StartTimeUnixNano); d < 20*time.Millisecond || d > 5*time.Second {
@@ -318,7 +318,7 @@ func TestRealGoTestStreamResolvesLocations(t *testing.T) {
 	}
 
 	sub := otlptest.FindSpan(t, spans, "TestSubtests/b")
-	if otlptest.IntAttr(t, sub.Attributes, string(semconv.CodeLineNumberKey)) != 35 {
+	if otlptest.IntAttr(t, sub.Attributes, string(semconv.CodeLineNumberKey)) != 36 {
 		t.Errorf("subtest location = %v, want the parent's", sub.Attributes)
 	}
 	if otlptest.StringAttr(t, sub.Attributes, string(semconv.TestCaseResultStatusKey)) != "fail" {
