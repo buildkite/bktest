@@ -12,6 +12,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from importlib.metadata import version
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 from urllib.parse import urlsplit
@@ -341,10 +342,14 @@ class ExportState:
     child_accounting: StreamAccounting = field(default_factory=StreamAccounting)
     forwarder: Optional[ChildSpanForwarder] = None
 
+    # Both tracers are resolved once per state: providers do not change after
+    # configuration, and a lookup per span measurably slows large suites.
+    @cached_property
     def test_tracer(self) -> trace.Tracer:
         """Return the tracer test spans are started from."""
         return self.test_provider.get_tracer(TRACER_NAME, VERSION)
 
+    @cached_property
     def phase_tracer(self) -> Optional[trace.Tracer]:
         """Return the global-provider tracer for phase spans, or ``None`` without child export."""
         if self.forwarder is None:

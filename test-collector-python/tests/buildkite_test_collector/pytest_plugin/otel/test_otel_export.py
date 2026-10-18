@@ -234,7 +234,7 @@ def test_configure_keeps_test_export_when_the_suite_provider_is_incompatible(
     trace.set_tracer_provider(trace.NoOpTracerProvider())
     state = export.configure({}, run_env, otel_config(receiver), None)
     assert state.forwarder is None
-    assert state.phase_tracer() is None
+    assert state.phase_tracer is None
     err = capfd.readouterr().err
     assert "OpenTelemetry child span export disabled: TypeError" in err
     assert "test.execution export remains enabled" in err

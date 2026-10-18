@@ -37,7 +37,7 @@ def start_test_span(state: ExportState, test: TestData) -> Optional[Span]:
             attrs.RESULT_ATTRIBUTE: attrs.RESULT_UNSET,
         }
         span_attrs.update(attrs.test_attributes(test))
-        return state.test_tracer().start_span(
+        return state.test_tracer.start_span(
             TEST_SPAN_NAME,
             context=context.Context(),
             kind=SpanKind.INTERNAL,
@@ -159,7 +159,7 @@ def start_phase_span(
 ) -> Tuple[Optional[Span], Optional[Token]]:
     """Start a phase span under ``test_span`` and make it current (none without child export)."""
     try:
-        tracer = state.phase_tracer()
+        tracer = state.phase_tracer
         if tracer is None:
             return None, None
         span = tracer.start_span(
