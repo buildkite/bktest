@@ -3,7 +3,7 @@ const { randomUUID } = require('crypto')
 const CI = require('../util/ci')
 const uploadTestResults = require('../util/uploadTestResults')
 const Paths = require('../util/paths')
-const { resolveSettings } = require('../util/otel/config')
+const { isOtelEnabled, resolveSettings } = require('../util/otel/config')
 const { sessionFor } = require('../util/otel/session')
 const { warn, describeError } = require('../util/otel/warn')
 
@@ -36,7 +36,7 @@ class PlaywrightBuildkiteTestEngineReporter {
   }
 
   onBegin(config) {
-    if (!this._options?.otelEnabled) return;
+    if (!isOtelEnabled(this._options?.otelEnabled)) return;
 
     resolveSettings({
       otelEnabled: true,
