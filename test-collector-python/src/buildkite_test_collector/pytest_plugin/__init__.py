@@ -72,9 +72,9 @@ def _xdist_role(config: pytest.Config) -> Tuple[bool, bool]:
 
 
 @pytest.hookimpl(optionalhook=True)
-def pytest_testnodedown(node, error):  # pylint: disable=unused-argument
+def pytest_testnodedown(node, error):
     """pytest_testnodedown hook callback (xdist controller) to keep a worker's OTel upload status"""
-    otel_plugin.record_worker_status(node)
+    otel_plugin.record_worker_status(node, error)
 
 
 @pytest.hookimpl

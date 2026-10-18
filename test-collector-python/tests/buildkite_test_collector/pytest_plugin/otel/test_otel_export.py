@@ -2,6 +2,7 @@
 
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import List
 
 import pytest
@@ -12,7 +13,7 @@ from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
 from opentelemetry.trace import Status, StatusCode
 
 from buildkite_test_collector.collector.run_env import RunEnvBuilder
-from buildkite_test_collector.pytest_plugin.otel import config, export, spans
+from buildkite_test_collector.pytest_plugin.otel import config, export, plugin, spans
 
 
 class RecordingProcessor:
@@ -548,3 +549,25 @@ def test_shutdown_makes_the_forwarder_inert_first_and_runs_once(fresh_otel, run_
     assert export.current() is None
     assert forwarder._active is False
     export.shutdown()
+
+
+def _node(worker, config, status=None):
+    output = None if status is None else {plugin.WORKER_STATUS_KEY: status}
+    return SimpleNamespace(gateway=SimpleNamespace(id=worker), config=config, workeroutput=output)
+
+
+def test_controller_repeats_each_workers_losses_once(pytestconfig, capfd):
+    config = pytestconfig
+    lost = {"missing": 3, "reasons": "export-failure: 3, last OTLP failure: ConnectionError"}
+    plugin.record_worker_status(_node("gw0", config, lost), None)
+    plugin.record_worker_status(_node("gw0", config, lost), "keyboard-interrupt")  # reported again
+    plugin.record_worker_status(_node("gw1", config, {"missing": 0, "reasons": ""}), None)
+    crashed = _node("gw2", config)
+    del crashed.workeroutput
+    plugin.record_worker_status(crashed, "crashed")
+    plugin.report_worker_losses(config)
+    plugin.report_worker_losses(config)
+    err = capfd.readouterr().err
+    assert err.count("TEST RESULTS MISSING") == 1
+    assert "OpenTelemetry on xdist worker gw0 did not upload 3 test.execution span(s) " \
+        "(export-failure: 3, last OTLP failure: ConnectionError)" in err

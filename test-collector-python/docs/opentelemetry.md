@@ -76,7 +76,8 @@ it. A worker's `TEST RESULTS MISSING` warning appears in the controller's
 output like any other worker stderr, and the controller repeats what each
 worker could not upload after pytest's summary (`TEST RESULTS MISSING:
 OpenTelemetry on xdist worker gw1 did not upload 4 test.execution span(s)
-(...)`). Under
+(...)`). A worker that crashes never reports; its tests are missing from the
+run without a warning, as with the JSON upload. Under
 pytest-forked the test span is recorded by the parent process; phase and child
 spans recorded inside the forked child are lost with it.
 

@@ -30,8 +30,8 @@ SPAN_FILTER_HOOK = "pytest_buildkite_otel_span_filter"
 # Key under which an xdist worker sends its upload status to the controller
 # in ``config.workeroutput``.
 WORKER_STATUS_KEY = "buildkite_test_collector_otel"
-
-_worker_losses: List[Tuple[str, int, str]] = []
+# Controller-side record of (worker id, missing span count, reasons).
+WORKER_LOSSES = pytest.StashKey[List[Tuple[str, int, str]]]()
 
 
 class OTelPlugin:
@@ -116,12 +116,17 @@ class OTelPlugin:
         # be uploaded travels to the controller with the worker's output, so
         # the controller can repeat it even when the worker's stderr did not
         # reach the log.
-        if self._state is not None and _is_xdist_worker(session.config):
-            self._export.force_flush()
+        if self._state is None or not _is_xdist_worker(session.config):
+            return
+        self._export.force_flush()
+        try:
             missing, reasons = self._export.missing_test_spans()
             session.config.workeroutput[WORKER_STATUS_KEY] = {  # type: ignore[attr-defined]
                 "missing": missing, "reasons": reasons,
             }
+        except Exception as error:  # pylint: disable=broad-except
+            warn_failure("Could not report OpenTelemetry upload status to the xdist controller",
+                         error)
 
     @pytest.hookimpl(tryfirst=True)
     def pytest_unconfigure(self, config: pytest.Config) -> None:
@@ -226,25 +231,32 @@ def _flush_terminal(config: pytest.Config) -> None:
         warn_failure("Could not flush pytest's terminal output", error)
 
 
-def record_worker_status(node: Any) -> None:
+def record_worker_status(node: Any, error: object) -> None:
     """Keep what an xdist worker reported it could not upload, for the controller's summary."""
+    # xdist reports a worker that finished normally once with ``error=None``;
+    # a crashed or interrupted worker is reported (again) with an error, and
+    # a crashed one never sent its status at all.
+    if error is not None:
+        return
     status = (getattr(node, "workeroutput", None) or {}).get(WORKER_STATUS_KEY)
     if status and status["missing"]:
-        _worker_losses.append((node.gateway.id, status["missing"], status["reasons"]))
+        losses = node.config.stash.setdefault(WORKER_LOSSES, [])
+        losses.append((node.gateway.id, status["missing"], status["reasons"]))
 
 
 def report_worker_losses(config: pytest.Config) -> None:
     """Warn, from the xdist controller, about every test span a worker could not upload."""
-    if not _worker_losses:
+    losses = config.stash.get(WORKER_LOSSES, [])
+    if not losses:
         return
     _flush_terminal(config)
-    for worker, missing, reasons in _worker_losses:
+    for worker, missing, reasons in losses:
         logger.warning(
             "TEST RESULTS MISSING: OpenTelemetry on xdist worker %s did not upload %d "
             "test.execution span(s) (%s); those test executions were not uploaded to "
             "Buildkite Test Engine.", worker, missing, reasons,
         )
-    _worker_losses.clear()
+    del config.stash[WORKER_LOSSES]
 
 
 def build(
