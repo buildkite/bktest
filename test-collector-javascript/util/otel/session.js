@@ -86,6 +86,8 @@ const jobSpanLinks = (api) => {
   return api.isSpanContextValid(context) ? [{ context }] : []
 }
 
+// One console.warn call keeps both lines together in interleaved worker
+// output; each carries the prefix so either line can be grepped.
 const missingResults = (count, detail) => {
   warn(
     `TEST RESULTS MISSING: OpenTelemetry dropped ${count} test.execution span(s) (${detail}).\n` +

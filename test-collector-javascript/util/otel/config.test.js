@@ -142,13 +142,14 @@ describe('resolveSettings', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
     const probe = jest.fn()
 
-    for (const endpoint of ['', '   ', 'tests-otlp.buildkite.com/v1/traces', 'ftp://tests-otlp.buildkite.com/v1/traces', 'http://', 'not a url']) {
+    const endpoints = ['', '   ', 'tests-otlp.buildkite.com/v1/traces', 'ftp://tests-otlp.buildkite.com/v1/traces', 'http://', 'not a url']
+    for (const endpoint of endpoints) {
       process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT = endpoint
       expect(resolve({ probe })).toBeNull()
       expect(readSettings()).toBeNull()
     }
     expect(probe).not.toHaveBeenCalled()
-    expect(warnings()).toHaveLength(12)
+    expect(warnings()).toHaveLength(endpoints.length * 2)
     expect(warnings()[0]).toBe(
       "[buildkite-test-collector] OpenTelemetry span export disabled: endpoint '' is invalid. " +
       'BUILDKITE_ANALYTICS_OTLP_ENDPOINT must be an http or https URL with a host.'

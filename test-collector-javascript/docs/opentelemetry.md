@@ -236,13 +236,13 @@ is loaded, and the run falls back to the JSON upload. That upload still needs
 results will not be uploaded instead.
 
 If the OpenTelemetry packages are missing, the exporter cannot be built, the
-run key is invalid or `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` is not an http(s)
-URL, the reporter warns `OpenTelemetry span export disabled: …` followed by
+run key is invalid or `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` is not an http or
+https URL, the reporter warns `OpenTelemetry span export disabled: …` followed by
 `otelEnabled is set, but OpenTelemetry could not be configured …` and the
 whole run uploads JSON, exactly as it does with `otelEnabled` off. That
 decision is made once in the main process before any worker starts.
 
-Which files actually export is decided per file. Test files that run under a
+Export is decided per test file. Test files that run under a
 `testEnvironment` other than the collector's (or one built with its `extend`)
 cannot export spans: the reporter warns once per environment and uploads those
 files' results as JSON, while files under the collector's environment in the

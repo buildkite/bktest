@@ -77,6 +77,7 @@ class JestBuildkiteTestEngineReporter {
       runEnv: this._testEnv,
       tags: this._tags,
     })
+    this._fallback = fallbackOutcome({ token: options?.token })
     this._environments = new Map()
     this._warned = new Set()
   }
@@ -122,7 +123,7 @@ class JestBuildkiteTestEngineReporter {
   // Only jest-circus calls the environment's handleTestEvent, so files run by
   // jest-jasmine2 cannot export either.
   async _exportedByEnvironment(test) {
-    const fallback = fallbackOutcome({ token: this._options?.token })
+    const fallback = this._fallback
     if (!circusRunner(test.context.config)) {
       this._warnOnce('runner', `otelEnabled is set, but only the jest-circus test runner reports to OpenTelemetry; ${fallback}.`)
       return false

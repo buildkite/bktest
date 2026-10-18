@@ -14,7 +14,8 @@ const SETTINGS_ENV = 'BUILDKITE_TEST_COLLECTOR_OTEL_SETTINGS'
 const isValidRunKey = (runKey) => typeof runKey === 'string' && RUN_KEY_FORMAT.test(runKey)
 
 // Reporter options can arrive as strings from a CLI (`otelEnabled=false`), so
-// only `true` and the string 'true' turn OTel on; anything else is off.
+// only `true` and the string 'true', in any case, turn OTel on; 'false', '1'
+// and 1 stay off.
 const isOtelEnabled = (value) => value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true')
 
 const otlpEndpoint = () => (process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT ?? DEFAULT_ENDPOINT).trim()
@@ -28,11 +29,12 @@ const isValidEndpoint = (endpoint) => {
   }
 }
 
+const jsonTokenFor = (token) => (token || process.env.BUILDKITE_ANALYTICS_TOKEN || '').trim()
+
 // What happens to results when OTel is on but cannot be used: the JSON path
 // runs only when it has a token of its own.
 const fallbackOutcome = ({ token } = {}) => {
-  const jsonToken = (token || process.env.BUILDKITE_ANALYTICS_TOKEN || '').trim()
-  return jsonToken
+  return jsonTokenFor(token)
     ? 'uploading results as JSON instead'
     : 'results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set'
 }
@@ -71,7 +73,7 @@ const resolveSettings = (options) => {
 const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runEnv, tags, probe = buildSession }) => {
   if (!isOtelEnabled(otelEnabled)) return null
 
-  const jsonToken = (token || process.env.BUILDKITE_ANALYTICS_TOKEN || '').trim()
+  const jsonToken = jsonTokenFor(token)
   const relayToken = (process.env.BUILDKITE_TESTS_OTLP_TOKEN || '').trim()
   const credential = relayToken || jsonToken
   if (!credential) return null
