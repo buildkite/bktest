@@ -13,99 +13,127 @@ via the `BUILDKITE_ANALYTICS_*` environment variables.
    API token, or set up [OIDC](https://buildkite.com/docs/pipelines/configure/tests/test-collection/oidc)
    so each job mints a short-lived one.
 
-2. Add the module to your project:
+2. Install the `buildkite-test-collector` command (Go 1.23 or newer):
 
    ```sh
-   go get github.com/buildkite/bktest/test-collector-go
+   go install github.com/buildkite/bktest/test-collector-go/cmd/buildkite-test-collector@latest
    ```
 
-   The module requires Go 1.23 or newer.
-
-3. Run the package's tests through the collector from `TestMain`, and start an
-   execution at the top of each test:
-
-   ```go
-   package calculator
-
-   import (
-       "os"
-       "testing"
-
-       bktest "github.com/buildkite/bktest/test-collector-go"
-   )
-
-   func TestMain(m *testing.M) {
-       os.Exit(bktest.Main(m))
-   }
-
-   func TestAdd(t *testing.T) {
-       bktest.Start(t)
-       if Add(1, 2) != 3 {
-           t.Error("wrong")
-       }
-   }
-   ```
-
-   `Main` returns `m.Run`'s exit code unchanged. `Start` returns a context
-   that carries the test's span, for tests that instrument their own work
-   (see [Child spans](#child-spans)); the result is recorded in `t.Cleanup` from
-   `t.Failed()` and `t.Skipped()`, so nothing else is needed in the test body.
-   Subtests call `Start(t)` with their own `*testing.T`, and `t.Parallel()`
-   works as usual.
-
-4. Set the environment in CI:
+3. Pipe `go test -json` through it in your pipeline step:
 
    ```sh
+   set -o pipefail
    export BUILDKITE_TESTS_OTLP_TOKEN="$(buildkite-agent oidc request-token --audience https://buildkite.com/organizations/<org>/analytics/suites/<suite>)"
-   go test ./...
+   go test -json ./... | buildkite-test-collector
    ```
+
+   The command prints the tests' output exactly as `go test -v` would, so the
+   job log looks the same as before, and exits 1 when a test or package
+   failed and 0 otherwise. `set -o pipefail` keeps `go test`'s own exit
+   status visible to the step if `go test` itself cannot run.
+
+   Every test the stream mentions appears in Test Engine within a minute:
+   one execution per test and subtest, with its package as the scope, its
+   full name (`TestCheckout/empty_cart`), its file and line, its result and
+   its duration. A failing test carries the output it printed (`t.Error`,
+   `t.Fatal`, a panic trace) as its failure reason and detail.
 
    On Buildkite, GitHub Actions, CircleCI and Codeship the run key and the
    build metadata are detected from the CI environment. Elsewhere set
    `BUILDKITE_ANALYTICS_KEY` and the other `BUILDKITE_ANALYTICS_*` variables
-   below.
+   below. Run-level tags are the one flag:
+   `buildkite-test-collector -tag team=payments -tag suite=unit`.
 
 Export is on when a token is set and the run key and endpoint are valid.
-Otherwise the package prints one warning and `go test` runs exactly as it would without the
-collector. A collector problem of any kind (bad configuration, unreachable
-endpoint, export failure) is printed to stderr prefixed with
-`[buildkite-test-collector]` and never changes the exit code.
+Otherwise the command prints one warning and keeps streaming the output, and
+the exit code still mirrors the tests. A collector problem of any kind (bad
+configuration, unreachable endpoint, export failure) is printed to stderr
+prefixed with `[buildkite-test-collector]` and never changes the exit code.
+If stdin holds no `go test -json` events (you forgot `-json`) the command
+prints `no go test -json events on stdin` and exits 2.
+
+A file works as well as a pipe: `buildkite-test-collector < results.json`
+reads what `gotestsum --jsonfile results.json` or `go test -json > results.json`
+wrote.
 
 ## What is reported
-
-Every test that calls `Start` becomes one `test.execution` span:
 
 | Field | Value |
 | --- | --- |
 | scope | the package import path |
-| name | `t.Name()`, including `/subtest` segments |
-| location | `file:line` of the function that called `Start`, relative to the module root |
-| result | `pass`, `fail` (`t.Failed()`, or a panic), or `skipped` (`t.Skipped()`) |
-| duration | from `Start` to the end of the test |
+| name | the test's name as `t.Name()` reports it, including `/subtest` segments |
+| location | `file:line` of the top-level test function, relative to the module root; subtests share their parent's |
+| result | `pass`, `fail` or `skipped`; a test that was still running when its package died (panic in another test, `-timeout`) is `fail` |
+| duration | the `Elapsed` time `go test` reports for the test |
+| failure | the test's own output lines; the first non-empty one is the reason, the whole text is the detail, and a panic trace is attached as a stack trace |
 
-A test that panics is reported as failed with an `exception` event carrying
-the stack trace, and its result is delivered before the process dies. A
-non-panic failure has no failure text: `go test` keeps `t.Error` output to
-itself, so the execution's failure reason is `test failed`; the job log has the
-details.
+Benchmarks and a package's own `ok`/`FAIL` lines are not executions. A
+package whose test binary failed to build (or whose `TestMain` exited before
+running tests) gets one warning naming it, no executions, and exit code 1.
+
+Locations come from `go list` and the package's test files, so run the
+command from inside the module (where you ran `go test`). From anywhere
+else the executions have no location; set `BUILDKITE_ANALYTICS_DEBUG_ENABLED=1`
+to see why.
+
+## Child spans, tags and annotations
+
+The `bktest` package is optional. It reports tests from inside the test
+process instead of from the `go test -json` stream, which is what lets it
+attach a test's own OpenTelemetry instrumentation (database and HTTP client
+spans, your own spans), per-test tags and annotations to the execution.
+
+**Use one mode per package, not both.** A package that calls `bktest.Main`
+and is also piped through `buildkite-test-collector` reports every test
+twice; the command warns `package X was also exported by the library;
+results are duplicated` when it sees that happen, and does not try to dedupe.
+
+In this mode only tests that call `bktest.Start` are reported; the command
+reports every test in the stream. The two modes give a test the same identity
+(scope and name), so a suite can move between them without losing history.
+
+```go
+package checkout
+
+import (
+    "os"
+    "testing"
+
+    bktest "github.com/buildkite/bktest/test-collector-go"
+)
+
+func TestMain(m *testing.M) {
+    os.Exit(bktest.Main(m, bktest.WithTags(map[string]string{"team": "payments"})))
+}
+
+func TestCheckout(t *testing.T) {
+    ctx := bktest.Start(t)                    // the test's span; child spans attach to ctx
+    bktest.Tag(t, "tier", "critical")         // buildkite.tag.tier on this execution
+    bktest.Annotate(t, "cart id "+cart.ID)    // a test.annotation event
+
+    if err := checkout(ctx, cart); err != nil {
+        t.Fatal(err)
+    }
+}
+```
+
+`Main` runs the tests through `m.Run` and returns its exit code unchanged;
+after export it prints `buildkite-test-collector: exported N test executions
+from <package>` on stderr. `Start` records the result in `t.Cleanup` from
+`t.Failed()` and `t.Skipped()`, so nothing else is needed in the test body;
+a panicking test is reported as failed with the stack trace, and its result
+is delivered before the process dies. Subtests call `Start(t)` with their
+own `*testing.T`, and `t.Parallel()` works as usual. The location is the
+`file:line` of the function that called `Start`. A non-panic failure has no
+failure text in this mode: `go test` keeps `t.Error` output to itself.
 
 Under the test span the collector opens a `test.body` phase span on the
 suite's tracer provider (the global one unless you pass `WithTracerProvider`)
-and makes it the current span in `ctx`, so any OpenTelemetry
-instrumentation your test runs with that context (database clients, HTTP
-clients, your own spans) nests under the test and is shown against it in Test
-Engine. Phase and instrumentation spans travel on a separate child stream;
-losing them never loses the result.
-
-Per-test tags and annotations:
-
-```go
-func TestCheckout(t *testing.T) {
-    ctx := bktest.Start(t)
-    bktest.Tag(ctx, "team", "payments")      // buildkite.tag.team on this execution
-    bktest.Annotate(ctx, "cart id "+cart.ID) // a test.annotation event
-}
-```
+and makes it the current span in `ctx`, so instrumentation that runs with
+that context nests under the test and is shown against it in Test Engine.
+Phase and instrumentation spans travel on a separate child stream; losing
+them never loses the result. The command does not produce child spans:
+nothing runs in the test process to make them.
 
 Run-level tags, a location prefix, a child span filter and the suite's own
 tracer provider are `Main` options:
@@ -131,6 +159,8 @@ provider and are never sampled out.
 
 ## Environment variables
 
+Both modes read the same variables.
+
 | Variable | Purpose |
 | --- | --- |
 | `BUILDKITE_TESTS_OTLP_TOKEN` | Suite API token or OIDC token. Preferred over `BUILDKITE_ANALYTICS_TOKEN` when both are set. |
@@ -139,6 +169,7 @@ provider and are never sampled out.
 | `BUILDKITE_ANALYTICS_URL`, `_BRANCH`, `_SHA`, `_NUMBER`, `_JOB_ID`, `_MESSAGE` | Override the detected CI metadata. |
 | `BUILDKITE_ANALYTICS_LOCATION_PREFIX` | Prepended to every file path; `WithLocationPrefix` wins when both are set. |
 | `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` | Where to send spans. Defaults to `https://tests-otlp.buildkite.com/v1/traces`. |
+| `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | Print why a package's test locations could not be resolved. |
 | `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE`, `_BATCH_SIZE` | Test span batch processor sizes (defaults 8192 and 120). |
 | `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE`, `_BATCH_SIZE` | Child span batch processor sizes (defaults 2048 and 512). |
 
@@ -151,31 +182,31 @@ and `OTEL_SERVICE_NAME` are honoured through the SDK's default resource.
 
 ## Missing results
 
-At the end of `m.Run` the collector flushes both streams within a 30 second
-budget. If any `test.execution` span could not be delivered it prints
+When the stream ends (or `m.Run` returns) the collector flushes within a 30
+second budget. If any `test.execution` span could not be delivered it prints
 `TEST RESULTS MISSING: OpenTelemetry dropped N test.execution span(s) (...)`
-with the reason and the last OTLP failure, and still returns `go test`'s own
-exit code. Lost child spans are reported separately and never count as missing
-results.
+with the reason and the last OTLP failure, and the exit code still mirrors
+the tests. Lost child spans are reported separately and never count as
+missing results.
 
 ## What is not supported
 
-- Tests that do not call `bktest.Start` produce nothing; the collector cannot
-  see them.
-- There are no `test.setup` or `test.teardown` phases. `go test` has no
-  setup or teardown hooks a library can observe, so a test's trace has the
+- Child spans, tags and annotations from the command; use the `bktest`
+  package for those.
+- Tests that do not call `bktest.Start` when using the package; the command
+  sees every test.
+- `test.setup` and `test.teardown` phases. `go test` has no setup or
+  teardown hooks a library can observe, so a test's trace has the
   `test.body` phase only.
-- Failure text for non-panic failures (see above).
-- `go test -json` post-processing. Results come from inside the test process.
+- Deduplicating a package reported by both modes.
 - Execution name affixes (`BUILDKITE_ANALYTICS_EXECUTION_NAME_PREFIX` /
   `_SUFFIX`) and any upload path other than OTLP.
 
 ## 🔍 Debugging
 
 Collector warnings go to stderr with the `[buildkite-test-collector]` prefix.
-`go test -v` shows them next to the tests they relate to. For export problems,
-point `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` at a local OTLP/HTTP receiver to see
-what the collector sends.
+For export problems, point `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` at a local
+OTLP/HTTP receiver to see what the collector sends.
 
 ## 🔜 Roadmap
 
