@@ -123,6 +123,12 @@ https://buildkite.com/buildkite/test-engine-client-examples/builds/885
   `warning: TEST RESULTS MISSING: OpenTelemetry dropped 5 test.execution span(s)
   (export-failure, last OTLP failure: socket_error). OpenTelemetry is the only upload path, so
   those test executions were not uploaded to Buildkite Test Engine.`; exit 1 (XCTest's).
+- Build 901 (collector at `027ae33`, after the start-time attribute cap):
+  https://buildkite.com/buildkite/test-engine-client-examples/builds/901, run
+  `fd5d2891-b128-83c2-8099-44d1300c3439`: five executions, 2 passed, 2 failed, 1 skipped,
+  matching XCTest's `Executed 5 tests, with 1 test skipped and 2 failures` (the example's
+  random `FlakyTests.testFlaky` failed on that build); same test ids; the no-token and
+  unreachable-endpoint steps printed the lines above.
 
 ## Documented deviations — what closing each would take
 
