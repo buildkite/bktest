@@ -64,9 +64,10 @@ wrote.
 | name | the test's name as `t.Name()` reports it, including `/subtest` segments |
 | location | `file:line` of the top-level test function, relative to the module root; subtests share their parent's |
 | result | `pass`, `fail` or `skipped`; a test that was still running when its package died (panic in another test, `-timeout`) is `fail` |
-| duration | the `Elapsed` time `go test` reports for the test |
+| duration | the `Elapsed` time `go test` reports for the test; below its 10 ms resolution, the gap between the test's `run` and result events (at most 10 ms) |
 | failure | the test's own output lines; the first non-empty one is the reason, the whole text is the detail, and a panic trace is attached as a stack trace |
 
+Examples and fuzz seed corpus entries are executions like any other test.
 Benchmarks and a package's own `ok`/`FAIL` lines are not executions. A
 package whose test binary failed to build (or whose `TestMain` exited before
 running tests) gets one warning naming it, no executions, and exit code 1.

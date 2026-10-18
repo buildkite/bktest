@@ -268,6 +268,11 @@ func TestEndToEndPanicDeliversTheResultsBeforeTheProcessDies(t *testing.T) {
 	if got := otlptest.StringAttr(t, otlptest.FindSpan(t, spans, "TestBeforePanic").Attributes, "test.case.result.status"); got != "pass" {
 		t.Errorf("TestBeforePanic status = %q", got)
 	}
+	// Main never returns after a panic, so the export line comes from the
+	// cleanup that flushed, once per flushed test.
+	if !strings.Contains(out, collector.ExportedLine(3, fixtureModule+"/panicky")) {
+		t.Errorf("go test output lacks the export line for the panicking package:\n%s", out)
+	}
 	if n := len(r.SpansOn(otlptest.StreamChild)); n != 0 {
 		t.Errorf("OTEL_TRACES_SAMPLER=always_off should drop child spans, got %d", n)
 	}

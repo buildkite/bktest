@@ -188,8 +188,8 @@ func TestSubtestsKeepTheirFullNameAndOwnOutput(t *testing.T) {
 		ev(2, "output", "TestSub/a", "=== CONT  TestSub/a\n"),
 		ev(2, "cont", "TestSub/b", ""),
 		ev(2, "output", "TestSub/b", "=== CONT  TestSub/b\n"),
-		ev(2, "output", "TestSub/b", "        p_test.go:21: sub failed\n"),
-		ev(2, "output", "TestSub/b", "            continued\n"),
+		ev(2, "output", "TestSub/b", "    p_test.go:21: sub failed\n"),
+		ev(2, "output", "TestSub/b", "        continued\n"),
 		ev(2, "output", "TestSub/b", "--- FAIL: TestSub/b (0.00s)\n"),
 		ev(2.01, "fail", "TestSub/b", "", `"Elapsed":0`),
 		ev(2.01, "output", "TestSub/a", "--- PASS: TestSub/a (0.01s)\n"),
@@ -207,14 +207,13 @@ func TestSubtestsKeepTheirFullNameAndOwnOutput(t *testing.T) {
 		t.Errorf("reason = %q", b.Result.Reason)
 	}
 	if b.Result.Exception.Message != "p_test.go:21: sub failed\n    continued" {
-		t.Errorf("message = %q; want one indentation level removed", b.Result.Exception.Message)
+		t.Errorf("message = %q; want go test's indentation removed", b.Result.Exception.Message)
 	}
 
-	// A paused parallel test's Elapsed counts from when it resumed, so its
-	// span must start at the cont event, not the run event.
+	// A paused parallel test starts at its run event and lasts Elapsed.
 	a := r.byName(t, "TestSub/a")
-	if a.Start.Sub(time.Date(2026, 10, 18, 5, 0, 0, 0, time.UTC)) != 2*time.Second {
-		t.Errorf("start = %v, want the cont time", a.Start)
+	if !a.Start.Equal(time.Date(2026, 10, 18, 5, 0, 0, 0, time.UTC)) {
+		t.Errorf("start = %v, want the run time", a.Start)
 	}
 	if a.End.Sub(a.Start) != 10*time.Millisecond {
 		t.Errorf("duration = %v", a.End.Sub(a.Start))
@@ -230,6 +229,7 @@ func TestPanicIsAFailureWithThePanicLineAsReasonAndTheTraceAsStack(t *testing.T)
 	_, r := parse(t,
 		ev(0, "run", "TestPanics", ""),
 		ev(0, "output", "TestPanics", "=== RUN   TestPanics\n"),
+		ev(0, "output", "TestPanics", "    pn_test.go:4: opening database\n"),
 		ev(0, "output", "TestPanics", "--- FAIL: TestPanics (0.00s)\n"),
 		ev(0, "output", "TestPanics", "panic: assignment to entry in nil map [recovered, repanicked]\n"),
 		ev(0, "output", "TestPanics", "\n"),
@@ -244,8 +244,23 @@ func TestPanicIsAFailureWithThePanicLineAsReasonAndTheTraceAsStack(t *testing.T)
 		t.Errorf("result = %+v", e.Result)
 	}
 	if e.Result.Exception == nil || e.Result.Exception.Type != "panic" ||
+		e.Result.Exception.Message != "pn_test.go:4: opening database\npanic: assignment to entry in nil map [recovered, repanicked]" ||
 		!strings.HasPrefix(e.Result.Exception.Stacktrace, "\ngoroutine 34 [running]:\nexample.com/t2j/pn.TestPanics") {
 		t.Errorf("exception = %+v", e.Result.Exception)
+	}
+}
+
+func TestUserOutputThatLooksLikeFramingIsKeptWhenGoLabelsFrames(t *testing.T) {
+	_, r := parse(t,
+		ev(0, "run", "TestFail", ""),
+		ev(0, "output", "TestFail", "=== RUN   TestFail\n", `"OutputType":"frame"`),
+		ev(0, "output", "TestFail", "=== RUN database unavailable\n"),
+		ev(0, "output", "TestFail", "--- FAIL: TestFail (0.00s)\n", `"OutputType":"frame"`),
+		ev(0, "fail", "TestFail", "", `"Elapsed":0`),
+		ev(0, "fail", "", "", `"Elapsed":0`),
+	)
+	if got := r.byName(t, "TestFail").Result.Reason; got != "=== RUN database unavailable" {
+		t.Errorf("reason = %q", got)
 	}
 }
 
@@ -322,17 +337,41 @@ func TestPackageFailingWithoutRunningTestsIsReportedOnOlderGo(t *testing.T) {
 	}
 }
 
+// go test -bench gives a benchmark a run event and, when it succeeds, no
+// terminal event at all; it must not be counted as a test that never
+// finished.
 func TestBenchmarksAndPackagePassAreNotExecutions(t *testing.T) {
 	p, r := parse(t,
 		ev(0, "start", "", ""),
 		ev(0, "output", "", "goos: darwin\n"),
-		ev(0, "output", "", "BenchmarkX-8   \t1000000\t 1000 ns/op\n"),
-		ev(0, "bench", "BenchmarkX", "", `"Elapsed":0`),
+		ev(0, "run", "BenchmarkX", ""),
+		ev(0, "output", "BenchmarkX", "=== RUN   BenchmarkX\n"),
+		ev(0, "output", "BenchmarkX", "BenchmarkX\n"),
+		ev(0, "output", "BenchmarkX", "BenchmarkX-8   \t1000000\t 1000 ns/op\n"),
+		ev(0, "run", "BenchmarkX/sub", ""),
+		ev(0, "output", "BenchmarkX/sub", "BenchmarkX/sub-8   \t1000000\t 1000 ns/op\n"),
+		ev(0, "bench", "BenchmarkY", "", `"Elapsed":0`),
 		ev(0, "output", "", "ok  \texample.com/t2j/p\t1.0s\n"),
 		ev(0, "pass", "", "", `"Elapsed":1`),
 	)
 	if len(r.executions) != 0 || p.Failed() {
 		t.Errorf("executions=%+v failed=%v", r.executions, p.Failed())
+	}
+}
+
+func TestExamplesAndFuzzSeedsAreExecutions(t *testing.T) {
+	_, r := parse(t,
+		ev(0, "run", "FuzzD", ""),
+		ev(0, "run", "FuzzD/seed#0", ""),
+		ev(0, "pass", "FuzzD/seed#0", "", `"Elapsed":0`),
+		ev(0, "pass", "FuzzD", "", `"Elapsed":0`),
+		ev(0, "run", "ExampleHello", ""),
+		ev(0, "output", "ExampleHello", "x\n"),
+		ev(0, "pass", "ExampleHello", "", `"Elapsed":0`),
+		ev(0, "pass", "", "", `"Elapsed":1`),
+	)
+	if len(r.executions) != 3 {
+		t.Errorf("executions = %+v", r.executions)
 	}
 }
 
@@ -348,15 +387,36 @@ func TestLibraryExportLineIsDetectedOnThePackageStream(t *testing.T) {
 	}
 }
 
+// A panicking test makes the library export from the test's cleanup, so
+// the line arrives attributed to the test, possibly more than once; it is
+// reported once and kept out of the failure detail.
+func TestLibraryExportLineOnATestIsReportedOnceAndNotAsOutput(t *testing.T) {
+	_, r := parse(t,
+		ev(0, "run", "TestPanics", ""),
+		ev(0, "output", "TestPanics", "    pn_test.go:4: before\n"),
+		ev(0, "output", "TestPanics", "buildkite-test-collector: exported 1 test executions from example.com/t2j/p\n"),
+		ev(0, "output", "TestPanics", "buildkite-test-collector: exported 1 test executions from example.com/t2j/p\n"),
+		ev(0, "fail", "TestPanics", "", `"Elapsed":0`),
+		ev(0, "fail", "", "", `"Elapsed":0`),
+	)
+	if strings.Join(r.exported, ",") != pkg {
+		t.Errorf("exported = %v", r.exported)
+	}
+	if got := r.byName(t, "TestPanics").Result.Exception.Message; got != "pn_test.go:4: before" {
+		t.Errorf("message = %q", got)
+	}
+}
+
 func TestLinesThatAreNotEventsAreReportedNotParsed(t *testing.T) {
 	p, r := parse(t,
 		"=== RUN   TestPass",
 		"--- PASS: TestPass (0.00s)",
 		"",
 		`{"not":"an event"}`,
+		`{"Action":"deploy","Package":"api"}`,
 		"ok  \texample.com/t2j/p\t0.1s",
 	)
-	if p.Events() != 0 || r.nonEvents != 5 || len(r.executions) != 0 {
+	if p.Events() != 0 || r.nonEvents != 6 || len(r.executions) != 0 {
 		t.Errorf("events=%d nonEvents=%d executions=%v", p.Events(), r.nonEvents, r.executions)
 	}
 }

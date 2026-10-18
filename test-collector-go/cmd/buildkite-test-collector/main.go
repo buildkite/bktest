@@ -59,6 +59,10 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 	ctx := context.Background()
 	c := setUp(ctx, collector.Options{Tags: tags, LocationPrefix: os.Getenv("BUILDKITE_ANALYTICS_LOCATION_PREFIX")})
 
+	// Location lookups stop when the input ends, so a stuck go list cannot
+	// hold up the tests that still have to be failed and exported.
+	lookupCtx, stopLookups := context.WithCancel(ctx)
+	defer stopLookups()
 	resolver := &location.Resolver{}
 	if os.Getenv("BUILDKITE_ANALYTICS_DEBUG_ENABLED") != "" {
 		resolver.Debugf = func(format string, args ...any) {
@@ -69,14 +73,14 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 	parser := testjson.NewParser(testjson.Handler{
 		PackageStarted: func(pkg string) {
 			if c != nil {
-				resolver.Prefetch(ctx, pkg)
+				resolver.Prefetch(lookupCtx, pkg)
 			}
 		},
 		Execution: func(e testjson.Execution) {
 			if c == nil {
 				return
 			}
-			pos := resolver.Lookup(ctx, e.Package, e.Test)
+			pos := resolver.Lookup(lookupCtx, e.Package, e.Test)
 			if ex := c.Start(collector.Identity{Scope: e.Package, Name: e.Test, File: pos.File, Line: pos.Line}, e.Start); ex != nil {
 				ex.Finish(e.End, e.Result)
 			}
@@ -108,6 +112,7 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 			break
 		}
 	}
+	stopLookups()
 	parser.Finish()
 
 	if c != nil {

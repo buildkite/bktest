@@ -28,6 +28,12 @@ func TestAdd(t *testing.T) {
 }
 
 func helper() {}
+
+func ExampleAdd() {
+	// Output:
+}
+
+func FuzzAdd(f *testing.F) {}
 `,
 		"pkg/external_test.go": `package pkg_test
 
@@ -60,6 +66,12 @@ func TestLookupFindsTopLevelTestFunctionsRelativeToTheModule(t *testing.T) {
 	}
 	if got := r.Lookup(ctx, "example.com/mod/pkg", "TestExternal"); got != (Position{File: "pkg/external_test.go", Line: 5}) {
 		t.Errorf("external test package = %+v", got)
+	}
+	if got := r.Lookup(ctx, "example.com/mod/pkg", "ExampleAdd"); got != (Position{File: "pkg/pkg_test.go", Line: 15}) {
+		t.Errorf("ExampleAdd = %+v", got)
+	}
+	if got := r.Lookup(ctx, "example.com/mod/pkg", "FuzzAdd/seed#0"); got != (Position{File: "pkg/pkg_test.go", Line: 19}) {
+		t.Errorf("FuzzAdd/seed#0 = %+v", got)
 	}
 	if got := r.Lookup(ctx, "example.com/mod/pkg", "TestMethod"); got != (Position{}) {
 		t.Errorf("method named Test* = %+v, want none", got)

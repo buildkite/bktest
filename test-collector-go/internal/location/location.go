@@ -121,11 +121,11 @@ func (r *Resolver) resolve(ctx context.Context, pkg string) map[string]Position 
 			rel = path
 		}
 		for _, decl := range f.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv != nil || !strings.HasPrefix(fn.Name.Name, "Test") {
-				continue
+			// Tests, examples and fuzz targets are all top-level
+			// functions; the event's name picks the right one.
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil {
+				funcs[fn.Name.Name] = Position{File: filepath.ToSlash(rel), Line: fset.Position(fn.Pos()).Line}
 			}
-			funcs[fn.Name.Name] = Position{File: filepath.ToSlash(rel), Line: fset.Position(fn.Pos()).Line}
 		}
 	}
 	return funcs

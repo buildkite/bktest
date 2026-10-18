@@ -14,7 +14,8 @@ import (
 
 // Event is one line of go test -json output, as cmd/test2json defines it.
 // FailedBuild is set on a package's fail event when its build failed (Go
-// 1.24+).
+// 1.24+). OutputType marks the framing lines go test prints around a test's
+// own output (Go 1.27+).
 type Event struct {
 	Time        time.Time
 	Action      string
@@ -22,7 +23,16 @@ type Event struct {
 	Test        string
 	Elapsed     float64
 	Output      string
+	OutputType  string
 	FailedBuild string
+}
+
+// actions are the event kinds test2json emits; any other Action field
+// belongs to some other JSON stream.
+var actions = map[string]bool{
+	"start": true, "run": true, "pause": true, "cont": true, "output": true,
+	"bench": true, "pass": true, "fail": true, "skip": true,
+	"build-output": true, "build-fail": true,
 }
 
 // ErrNotEvent reports a line that is not a go test -json event.
@@ -62,11 +72,15 @@ type Parser struct {
 	packages map[string]*packageState
 	events   int
 	failed   bool
+	// labelledFrames is set once the stream has labelled a framing line
+	// (Go 1.27+); from then on only labelled lines are framing.
+	labelledFrames bool
 }
 
 type packageState struct {
-	running map[string]*testState
-	ran     bool
+	running         map[string]*testState
+	ran             bool
+	libraryExported bool
 }
 
 type testState struct {
@@ -93,7 +107,7 @@ func (p *Parser) Line(line []byte) (output string, err error) {
 		return "", ErrNotEvent
 	}
 	var ev Event
-	if err := json.Unmarshal(line, &ev); err != nil || ev.Action == "" {
+	if err := json.Unmarshal(line, &ev); err != nil || !actions[ev.Action] {
 		return "", ErrNotEvent
 	}
 	p.events++
@@ -120,21 +134,27 @@ func (p *Parser) handle(ev Event) {
 		ev.Time = time.Now()
 	}
 
+	if ev.Action == "output" {
+		if exported, ok := collector.ExportedPackage(ev.Output); ok {
+			p.libraryExported(pkg, exported)
+			return
+		}
+	}
 	if ev.Test == "" {
 		p.handlePackageEvent(pkgName, pkg, ev)
+		return
+	}
+	if isBenchmark(ev.Test) {
+		// Benchmarks get run events but no terminal event when they
+		// succeed; a failing one still fails its package.
 		return
 	}
 	switch ev.Action {
 	case "run":
 		pkg.ran = true
 		pkg.running[ev.Test] = &testState{start: ev.Time}
-	case "cont":
-		// A paused parallel test resumes here; its Elapsed counts from now.
-		if ts := pkg.running[ev.Test]; ts != nil {
-			ts.start = ev.Time
-		}
 	case "output":
-		if ts := pkg.running[ev.Test]; ts != nil && !isFraming(ev.Output) {
+		if ts := pkg.running[ev.Test]; ts != nil && !p.isFraming(ev) {
 			ts.output = append(ts.output, ev.Output)
 		}
 	case "pass", "fail", "skip":
@@ -148,6 +168,21 @@ func (p *Parser) handle(ev Event) {
 		}
 		p.emit(pkgName, ev.Test, ts, testEnd(ts.start, ev), ev.Action)
 	}
+}
+
+// libraryExported reports, once per package, the line the bktest library
+// prints after exporting a package itself. It arrives as test output when
+// a panicking test forced the export.
+func (p *Parser) libraryExported(pkg *packageState, exported string) {
+	if pkg.libraryExported || p.h.LibraryExported == nil {
+		return
+	}
+	pkg.libraryExported = true
+	p.h.LibraryExported(exported)
+}
+
+func isBenchmark(test string) bool {
+	return strings.HasPrefix(test, "Benchmark")
 }
 
 // elapsedResolution is the precision of the Elapsed field: go test prints
@@ -173,10 +208,6 @@ func testEnd(start time.Time, ev Event) time.Time {
 
 func (p *Parser) handlePackageEvent(pkgName string, pkg *packageState, ev Event) {
 	switch ev.Action {
-	case "output":
-		if pkg, ok := collector.ExportedPackage(ev.Output); ok && p.h.LibraryExported != nil {
-			p.h.LibraryExported(pkg)
-		}
 	case "fail":
 		p.failed = true
 		if ev.FailedBuild != "" || !pkg.ran {
@@ -220,16 +251,16 @@ func (p *Parser) emit(pkgName, test string, ts *testState, end time.Time, action
 	case "skip":
 		ex.Result = collector.Result{Status: collector.StatusSkipped}
 	default:
-		ex.Result = failure(test, ts.output)
+		ex.Result = failure(ts.output)
 	}
 	p.h.Execution(ex)
 }
 
 // failure builds the failed result from the test's own output: the panic
-// line and trace when it panicked, otherwise the first line as the reason
-// and everything as the detail.
-func failure(test string, output []string) collector.Result {
-	text := dedent(output, strings.Count(test, "/")+1)
+// line as the reason and the trace as the stack when it panicked, otherwise
+// the first line as the reason; everything before any trace is the detail.
+func failure(output []string) collector.Result {
+	text := dedent(output)
 	r := collector.Result{Status: collector.StatusFail, Reason: "test failed"}
 	if text == "" {
 		return r
@@ -238,7 +269,7 @@ func failure(test string, output []string) collector.Result {
 	for i, line := range lines {
 		if strings.HasPrefix(line, "panic: ") {
 			r.Reason = line
-			r.Exception = &collector.Exception{Type: "panic", Message: line, Stacktrace: strings.Join(lines[i+1:], "\n")}
+			r.Exception = &collector.Exception{Type: "panic", Message: strings.Join(lines[:i+1], "\n"), Stacktrace: strings.Join(lines[i+1:], "\n")}
 			return r
 		}
 	}
@@ -252,22 +283,28 @@ func failure(test string, output []string) collector.Result {
 	return r
 }
 
-// dedent removes the indentation go test adds for a test at the given
-// nesting depth, keeping any further indentation of continuation lines, and
-// trims trailing blank lines.
-func dedent(output []string, depth int) string {
-	indent := strings.Repeat(" ", 4*depth)
-	var b strings.Builder
-	for _, line := range output {
-		b.WriteString(strings.TrimPrefix(line, indent))
+// dedent removes the four spaces go test puts in front of a test's log
+// lines (continuation lines keep their extra indentation) and trims
+// trailing blank lines.
+func dedent(output []string) string {
+	lines := strings.Split(strings.Join(output, ""), "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimPrefix(line, "    ")
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return strings.TrimRight(strings.Join(lines, "\n"), "\n")
 }
 
 // isFraming reports the lines go test prints around a test's own output.
-func isFraming(line string) bool {
+// Go 1.27 labels them; before that only their prefix tells them apart.
+func (p *Parser) isFraming(ev Event) bool {
+	if ev.OutputType == "frame" {
+		p.labelledFrames = true
+	}
+	if p.labelledFrames {
+		return ev.OutputType == "frame"
+	}
 	for _, prefix := range []string{"=== RUN", "=== PAUSE", "=== CONT", "=== NAME", "--- PASS", "--- FAIL", "--- SKIP", "--- BENCH"} {
-		if strings.HasPrefix(line, prefix) {
+		if strings.HasPrefix(ev.Output, prefix) {
 			return true
 		}
 	}

@@ -2,6 +2,7 @@ package bktest
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -37,7 +38,8 @@ func startTest(c *collector.Collector, t testing.TB) context.Context {
 		return ex.Context()
 	}
 
-	ex := c.Start(identify(t), time.Now())
+	id := identify(t)
+	ex := c.Start(id, time.Now())
 	if ex == nil {
 		return context.Background()
 	}
@@ -48,7 +50,7 @@ func startTest(c *collector.Collector, t testing.TB) context.Context {
 		executionsMu.Lock()
 		delete(executions, t)
 		executionsMu.Unlock()
-		finish(c, ex, t, end, inPanic())
+		finish(c, ex, t, end, inPanic(), id.Scope)
 	})
 	return ex.Context()
 }
@@ -56,7 +58,7 @@ func startTest(c *collector.Collector, t testing.TB) context.Context {
 // finish maps the outcome of t onto the execution. go test runs Cleanup
 // before it marks a panicking test as failed, so t.Failed is not enough on
 // its own.
-func finish(c *collector.Collector, ex *collector.Execution, t testing.TB, end time.Time, panicked bool) {
+func finish(c *collector.Collector, ex *collector.Execution, t testing.TB, end time.Time, panicked bool, importPath string) {
 	r := collector.Result{Status: collector.StatusPass}
 	switch {
 	case panicked:
@@ -78,8 +80,10 @@ func finish(c *collector.Collector, ex *collector.Execution, t testing.TB, end t
 
 	if panicked {
 		// go test exits as soon as the panic resurfaces; Main never regains
-		// control, so this is the last chance to deliver the result.
+		// control, so this is the last chance to deliver the result and to
+		// report the export.
 		c.Abort()
+		fmt.Fprintln(os.Stderr, collector.ExportedLine(c.Exported(), importPath))
 	}
 }
 
