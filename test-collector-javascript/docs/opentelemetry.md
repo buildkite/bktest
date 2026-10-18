@@ -15,7 +15,9 @@ OpenTelemetry submission is off by default. Jest and Playwright support it.
 
 ## Playwright
 
-Enable `otelEnabled` on the reporter; no fixture or test changes are needed:
+Enable `otelEnabled` on the reporter; no fixture or test changes are needed.
+Only boolean `true` or a case-insensitive, whitespace-trimmed string `"true"`
+enables it; `"false"`, `"1"` and numeric `1` leave it off.
 
 ```js
 // playwright.config.js

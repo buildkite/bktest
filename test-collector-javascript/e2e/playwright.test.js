@@ -185,6 +185,7 @@ describe('examples/playwright in OTel mode', () => {
     BUILDKITE_ANALYTICS_LOCATION_PREFIX: undefined,
     BUILDKITE_AGENT_ID: 'agent-e2e',
     JEST_WORKER_ID: undefined,
+    PLAYWRIGHT_OTEL_ENABLED: undefined,
   };
 
   const run = async (args = [], env = {}) => {
@@ -312,6 +313,23 @@ describe('examples/playwright in OTel mode', () => {
       expect(request.decodeError).toBeNull();
     }
     expect(server.spans().every(span => span.attributes['buildkite.tag.hello'] === 'playwright')).toBe(true);
+  }, 30000);
+
+  test.each([['false', false], [1, false], ['TRUE', true]])('honors explicit OTel enablement %j', async (value, enabled) => {
+    server = await startOtlpServer();
+    const result = await run(['--grep', ' fails$'], {
+      PLAYWRIGHT_OTEL_ENABLED: JSON.stringify(value),
+      BUILDKITE_ANALYTICS_TOKEN: 'json-token',
+    });
+    expect(result.code).toBe(1);
+    expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]|Error in reporter/);
+    if (enabled) {
+      expect(server.spans()).toHaveLength(1);
+      expect(result.stdout).not.toMatch(/Test Engine Sending:/);
+    } else {
+      expect(server.requests).toHaveLength(0);
+      expect(jsonRecords(result.stdout)).toHaveLength(1);
+    }
   }, 30000);
 
   test('uses the JSON path without an OTel warning when no credential is available', async () => {
