@@ -225,7 +225,9 @@ describe('resolveSettings', () => {
       jest.dontMock('@opentelemetry/sdk-trace-base')
     }
     expect(warnings()).toEqual([
-      "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'",
+      "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'. " +
+      'Install the OpenTelemetry packages with: npm install --save-dev "@opentelemetry/api@^1.9.0" ' +
+      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <1"',
       expect.stringMatching(/could not be configured .*uploading results as JSON instead/),
     ])
     expect(readSettings()).toBeNull()

@@ -278,7 +278,9 @@ run key is invalid or `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` is not an http or
 https URL, the reporter warns `OpenTelemetry span export disabled: …` followed by
 `otelEnabled is set, but OpenTelemetry could not be configured …` and the
 whole run uploads JSON, exactly as it does with `otelEnabled` off. That
-decision is made once in the main process before any worker starts.
+decision is made once in the main process before any worker starts. For a
+missing package the warning names the module and the `npm install` command,
+with the supported version ranges, that installs all four.
 
 Export is decided per test file. Test files that run under a
 `testEnvironment` other than the collector's (or one built with its `extend`)
