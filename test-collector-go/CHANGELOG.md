@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.1.0 (2026-10-20)
+
 * Initial release.
 * `buildkite-test-collector` command: `go test -json ./... | buildkite-test-collector`
   reports every test to Buildkite Test Engine as OpenTelemetry `test.execution`
