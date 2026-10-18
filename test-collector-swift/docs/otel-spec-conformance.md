@@ -136,6 +136,19 @@ https://buildkite.com/buildkite/test-engine-client-examples/builds/885
   matching XCTest's `Executed 5 tests, with 1 test skipped and 1 failure`; same test ids. The
   no-token step printed only the `info:` line; the unreachable-endpoint step printed
   `TEST RESULTS MISSING` with no `requires an API token` line after it.
+- Build 943 (collector at `6213fff`, after bounded batches, the shared flush budget and the
+  credential precedence change):
+  https://buildkite.com/buildkite/test-engine-client-examples/builds/943, run
+  `857b7d80-34e1-8cb8-8bb1-8b26dfa62dca`: five executions, 2 passed, 2 failed, 1 skipped,
+  matching XCTest's `Executed 5 tests, with 1 test skipped and 2 failures` (random
+  `FlakyTests.testFlaky` failed); same test ids as the 0.6.0 JSON step and the baseline step in
+  the same build. The no-token step printed only the `info:` line. The unreachable-endpoint
+  step printed `error: OpenTelemetry export failed for testSubtractFails (socket_error); 1
+  execution(s) remain queued in this process`, then after the suite finished waited out the
+  10 s backoff, retried, and 20 s after the last test printed `warning: TEST RESULTS MISSING:
+  OpenTelemetry dropped 5 test.execution span(s) (unsent at flush, last OTLP failure:
+  socket_error): testSubtractFails … testSkipped. …`; exit 1 (XCTest's). That wait is new:
+  flush now retries within the 30 s budget instead of giving up immediately.
 
 ## Documented deviations — what closing each would take
 
