@@ -9,4 +9,4 @@ const describeError = (error) => {
   return String(error)
 }
 
-module.exports = { warn, describeError }
+module.exports = { warn, describeError, PREFIX }

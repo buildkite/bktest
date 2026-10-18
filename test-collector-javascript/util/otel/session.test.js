@@ -116,6 +116,24 @@ describe('createSession', () => {
     ])
   })
 
+  it('exports exception messages up to 16,384 characters but cuts span attributes at 10,243', async () => {
+    const name = 'n'.repeat(20000)
+    const message = 'm'.repeat(20000)
+    const { spans } = await runSession({
+      tests: [{
+        start: record({ name }),
+        finish: record({ name, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }] }),
+        line: 3,
+      }],
+    })
+
+    const [span] = spans
+    expect(span.attributes['buildkite.test.name']).toBe(`${'n'.repeat(10240)}...`)
+    expect(span.attributes['test.case.name']).toHaveLength(10243)
+    expect(span.events[0].attributes['exception.message']).toBe(`${'m'.repeat(16381)}...`)
+    expect(span.droppedAttributesCount).toBe(0)
+  })
+
   it('maps skipped results and leaves the placeholder when the result is unknown', async () => {
     const { spans } = await runSession({
       tests: [
@@ -248,7 +266,8 @@ describe('createSession', () => {
 
     expect(requests).toHaveLength(1)
     expect(flushed.warnings).toEqual([
-      expect.stringMatching(/^\[buildkite-test-collector\] TEST RESULTS MISSING: OpenTelemetry dropped 2 test\.execution span\(s\) \(export-failure, last OTLP failure: 401\)\./),
+      '[buildkite-test-collector] TEST RESULTS MISSING: OpenTelemetry dropped 2 test.execution span(s) (export-failure, last OTLP failure: 401).\n' +
+      '[buildkite-test-collector] OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.',
     ])
     expect(warnings).toEqual(flushed.warnings)
   })

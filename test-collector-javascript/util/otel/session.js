@@ -3,8 +3,8 @@ const { version } = require('../../package.json')
 const { loadSdk } = require('./sdk')
 const { createExporter, EXPORT_TIMEOUT_MILLISECONDS } = require('./exporter')
 const { resourceAttributes, runAttributes } = require('./attributes')
-const { describeTest } = require('./describeTest')
-const { warn, describeError } = require('./warn')
+const { describeTest, truncate } = require('./describeTest')
+const { warn, describeError, PREFIX } = require('./warn')
 
 const TRACER_NAME = 'buildkite-test-collector'
 const TEST_SPAN_NAME = 'test.execution'
@@ -12,11 +12,25 @@ const SPAN_STREAM = 'test'
 const FLUSH_BUDGET_MILLISECONDS = 30000
 const TIMED_OUT = Symbol('timed out')
 
+// The SDK applies one value-length limit to span and event attributes alike,
+// so it is set high enough for exception events (16,384) and the span's own
+// string attributes are cut to 10,243 here: the server truncates test names
+// to 10,240 before deriving the test ID, so a long name keeps the identity of
+// its JSON upload.
+const SPAN_ATTRIBUTE_VALUE_MAX_LENGTH = 10243
 const SPAN_LIMITS = {
   attributeCountLimit: 128,
-  attributeValueLengthLimit: 10243,
+  attributeValueLengthLimit: 16384,
   eventCountLimit: 100,
   attributePerEventCountLimit: 128,
+}
+
+const limitAttributes = (attributes) => {
+  const limited = {}
+  for (const [key, value] of Object.entries(attributes)) {
+    limited[key] = typeof value === 'string' ? truncate(value, SPAN_ATTRIBUTE_VALUE_MAX_LENGTH) : value
+  }
+  return limited
 }
 
 const PROCESSOR_DEFAULTS = { queue: 8192, batch: 120 }
@@ -75,7 +89,7 @@ const jobSpanLinks = (api) => {
 const missingResults = (count, detail) => {
   warn(
     `TEST RESULTS MISSING: OpenTelemetry dropped ${count} test.execution span(s) (${detail}).\n` +
-    'OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.'
+    `${PREFIX} OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.`
   )
 }
 
@@ -136,12 +150,12 @@ const createSession = (settings) => {
         kind: api.SpanKind.INTERNAL,
         startTime,
         links: jobSpanLinks(api),
-        attributes: {
+        attributes: limitAttributes({
           'buildkite.execution.via': 'otlp',
           'buildkite.run_key': runKey,
           'test.case.result.status': 'unset',
           ...attributes,
-        },
+        }),
       }, api.ROOT_CONTEXT)
       metrics.started += 1
       return { span, startTime: startTime ?? Date.now() }
@@ -174,7 +188,7 @@ const createSession = (settings) => {
     }
     try {
       if (description) {
-        for (const [key, value] of Object.entries({ ...description.attributes, ...run })) {
+        for (const [key, value] of Object.entries(limitAttributes({ ...description.attributes, ...run }))) {
           span.setAttribute(key, value)
         }
       }

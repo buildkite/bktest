@@ -195,7 +195,23 @@ describe('examples/jest in OTel mode', () => {
 
     expect(result.code).toBe(1)
     expect(result.stderr.match(/is not buildkite-test-collector\/jest\/environment/g)).toHaveLength(1)
+    expect(result.stderr).toMatch(/for test files using it, uploading results as JSON instead\./)
     expect(jsonUpload(result.stdout)).toHaveLength(EXPECTED_JSON_RESULTS)
+    expect(server.requests).toHaveLength(0)
+  }, 30000)
+
+  test('says results will not be uploaded when the fallback has no JSON token', async () => {
+    server = await startOtlpServer()
+    const result = await run('jest --config otel.config.js --testEnvironment node', {
+      ...baseEnv,
+      BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
+      BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+    })
+
+    expect(result.code).toBe(1)
+    expect(result.stderr).toMatch(/is not buildkite-test-collector\/jest\/environment .*for test files using it, results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set\./)
+    expect(result.stderr).not.toMatch(/as JSON/)
+    expect(jsonUpload(result.stdout)).toBeNull()
     expect(server.requests).toHaveLength(0)
   }, 30000)
 
