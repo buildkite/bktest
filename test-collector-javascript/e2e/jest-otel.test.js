@@ -234,6 +234,26 @@ describe('examples/jest in OTel mode', () => {
     }, 30000)
   })
 
+  test('exports once, and uploads no JSON, when the environment only loads through the project transformer', async () => {
+    server = await startOtlpServer()
+    // --no-cache keeps the environment out of the main process's module
+    // cache, so the reporter has to load it the way the workers do.
+    const result = await run('jest --config otel-transformed.config.js --no-cache --maxWorkers=2', {
+      ...baseEnv,
+      BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
+      BUILDKITE_ANALYTICS_TOKEN: 'xyz',
+      BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+    })
+
+    expect(result.code).toBe(0)
+    expect(result.stderr).not.toMatch(/is not buildkite-test-collector\/jest\/environment/)
+    expect(result.stdout).not.toMatch(/Test Engine Sending:/)
+    expect(server.spans().map((span) => span.attributes['buildkite.test.name']).sort()).toEqual([
+      'runs under the transformed environment (first file)',
+      'runs under the transformed environment (second file)',
+    ])
+  }, 30000)
+
   test('warns TEST RESULTS MISSING and keeps a passing exit code when the endpoint is unreachable', async () => {
     const closed = await startOtlpServer()
     await closed.close()

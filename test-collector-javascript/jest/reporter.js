@@ -19,13 +19,15 @@ const jestVersion = (rootDir) => {
   }
 }
 
+const jestRunnerDirs = (rootDir) => [rootDir, path.dirname(require.resolve('jest-runner/package.json', { paths: [rootDir] }))]
+
 // A test file's `@jest-environment` docblock overrides the project's
 // testEnvironment; jest-runner resolves it the same way just before the file
 // runs, so its own modules are used here to land on the same module.
 const environmentFor = (test) => {
   const { rootDir, testEnvironment } = test.context.config
   try {
-    const dirs = [rootDir, path.dirname(require.resolve('jest-runner/package.json', { paths: [rootDir] }))]
+    const dirs = jestRunnerDirs(rootDir)
     const docblock = requireFrom('jest-docblock', dirs)
     const pragma = docblock.parse(docblock.extract(fs.readFileSync(test.path, 'utf8')))['jest-environment']
     if (typeof pragma !== 'string') return testEnvironment
@@ -41,11 +43,16 @@ const environmentFor = (test) => {
 }
 
 // Workers export spans only when the file ran under our test environment, so
-// results from any other environment still have to go up as JSON.
-const isCollectorEnvironment = (environmentPath) => {
+// results from any other environment still have to go up as JSON. jest-runner
+// loads the environment through the project's transformer, so a Babel or
+// TypeScript environment that works in the worker must be loaded the same
+// way here, or it would be counted twice: once as spans, once as JSON.
+const isCollectorEnvironment = async (config, environmentPath) => {
   try {
-    const mod = require(environmentPath)
-    return Boolean((mod.default || mod).buildkiteTestEngine)
+    const { createScriptTransformer } = requireFrom('@jest/transform', jestRunnerDirs(config.rootDir))
+    const transformer = await createScriptTransformer(config)
+    const mod = await transformer.requireAndTranspileModule(environmentPath)
+    return Boolean(mod && (mod.default || mod).buildkiteTestEngine)
   } catch (error) {
     Debug.log(`Could not load test environment ${environmentPath}: ${describeError(error)}`)
     return false
@@ -93,8 +100,8 @@ class JestBuildkiteTestEngineReporter {
   onTestStart(test) {
   }
 
-  onTestResult(test, testResult) {
-    if (this._otel && this._exportedByEnvironment(test)) return
+  async onTestResult(test, testResult) {
+    if (this._otel && await this._exportedByEnvironment(test)) return
 
     const prefixedTestPath = this._paths.prefixTestPath(testResult.testFilePath);
 
@@ -114,7 +121,7 @@ class JestBuildkiteTestEngineReporter {
 
   // Only jest-circus calls the environment's handleTestEvent, so files run by
   // jest-jasmine2 cannot export either.
-  _exportedByEnvironment(test) {
+  async _exportedByEnvironment(test) {
     if (!circusRunner(test.context.config)) {
       this._warnOnce('runner', 'otelEnabled is set, but only the jest-circus test runner reports to OpenTelemetry; results will be uploaded as JSON instead.')
       return false
@@ -125,9 +132,9 @@ class JestBuildkiteTestEngineReporter {
       return false
     }
     if (!this._environments.has(environmentPath)) {
-      this._environments.set(environmentPath, isCollectorEnvironment(environmentPath))
+      this._environments.set(environmentPath, isCollectorEnvironment(test.context.config, environmentPath))
     }
-    const exportsSpans = this._environments.get(environmentPath)
+    const exportsSpans = await this._environments.get(environmentPath)
     if (!exportsSpans) {
       this._warnOnce(
         environmentPath,
