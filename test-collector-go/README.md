@@ -67,19 +67,28 @@ gotestsum first, when you want gotestsum's output format and JUnit for other
 tools:
 
 ```sh
-gotestsum --jsonfile results.json --junitfile junit.xml ./...
+gotestsum --jsonfile results.json --junitfile junit.xml ./... || status=$?
 buildkite-test-collector -quiet < results.json
+exit "${status:-0}"
 ```
 
 `-quiet` keeps the test output off stdout, since gotestsum already printed
 it; warnings still go to stderr and the exit code still mirrors the tests.
+The `|| status=$?` matters under `set -e`: a failing gotestsum would
+otherwise end the step before anything is reported.
 
 Collector first, when you want the `go test -v` log and still need JUnit:
 
 ```sh
-go test -json ./... | tee results.json | buildkite-test-collector
+set -o pipefail
+go test -json ./... | tee results.json | buildkite-test-collector || status=$?
 gotestsum --junitfile junit.xml --raw-command -- cat results.json
+exit "${status:-0}"
 ```
+
+The collector always runs here because it is the last command of the pipe,
+and with `pipefail` the pipe fails whenever `go test` or the collector does,
+so the status still mirrors the tests.
 
 Either way the command reports each test under the same Test Engine test ID
 as the JUnit and `go test -json` upload paths (bktec, the `test-collector`
@@ -109,7 +118,12 @@ running tests) gets one warning naming it, no executions, and exit code 1.
 Locations come from `go list` and the package's test files, so run the
 command from inside the module (where you ran `go test`). From anywhere
 else the executions have no location; set `BUILDKITE_ANALYTICS_DEBUG_ENABLED=1`
-to see why.
+to see why. If you gave `go test` build tags, give the command the same
+ones (`buildkite-test-collector -tags integration`, or `GOFLAGS=-tags=integration`
+for both) so it reads the files that were compiled.
+
+A cached package (`go test` printed `(cached)`) is replayed from the cache
+and reported again, like any other result in the stream.
 
 ## Child spans, tags and annotations
 
@@ -161,19 +175,33 @@ func TestCheckout(t *testing.T) {
 
 `Main` runs the tests through `m.Run` and returns its exit code unchanged;
 after export it prints `buildkite-test-collector: exported N test executions
-from <package>` on stderr. `Start` records the result in `t.Cleanup` from
-`t.Failed()` and `t.Skipped()`, so nothing else is needed in the test body;
-a panicking test is reported as failed with the stack trace, and its result
-is delivered before the process dies. Subtests call `Start(t)` with their
-own `*testing.T`, and `t.Parallel()` works as usual. The scope is the test
-function's package and the location is that function's declaration, shared
-by its subtests, even when `Start` is called through a helper in another
-package; tests in a `package main` get the package's import path as their
-scope. Subtest locations are read from the package's `_test.go` files in
-the directory `go test` runs the binary in; a test binary run from another
-directory reports the subtest closure's own line instead. A non-panic
-failure has no failure text in this mode: `go test` keeps `t.Error` output
-to itself.
+from <package>` on stderr. `Start` ends the execution in `t.Cleanup` and
+reads its result from `t.Failed()` and `t.Skipped()` once `go test` has
+finished the test, so nothing else is needed in the test body and a
+cleanup registered before `Start` that fails the test still counts. A
+panicking test is reported as failed, and its result is delivered before
+the process dies; the panic value itself is not available to a cleanup, so
+the failure reads `test panicked; see go test output`. A non-panic failure
+has no failure text in this mode: `go test` keeps `t.Error` output to
+itself. Subtests call `Start(t)` with their own `*testing.T`. Call `Start`
+after `t.Parallel()`: the span starts at `Start`, so calling it first
+counts the wait for the parent as duration (the command uses `go test`'s
+own elapsed time and has no such concern).
+
+The scope is the test function's package and the location is that
+function's declaration, shared by its subtests, even when `Start` is called
+through a helper in another package; tests in a `package main` get the
+package's import path as their scope. Subtest locations are read from the
+source file the closure was compiled from, so build tags are honoured; a
+subtest created by a helper in another package is looked up in the
+`_test.go` files of the directory `go test` runs the binary in, and a test
+binary run from another directory reports the closure's own line instead.
+
+`go test` caches a package's result, and a cached package runs nothing, so
+it is not reported again in this mode. Changing the token, run key or
+endpoint re-runs the package; pass `-count=1` to report every package on
+every build (the command, which reads the replayed output, has no such
+concern).
 
 Under the test span the collector opens a `test.body` phase span on the
 suite's tracer provider (the global one unless you pass `WithTracerProvider`)
@@ -237,7 +265,23 @@ second budget. If any `test.execution` span could not be delivered it prints
 `TEST RESULTS MISSING: OpenTelemetry dropped N test.execution span(s) (...)`
 with the reason and the last OTLP failure, and the exit code still mirrors
 the tests. Lost child spans are reported separately and never count as
-missing results.
+missing results. A burst of results larger than the queue (thousands of
+subtests finishing at once) is held back until the exporter has room,
+within the same budget, rather than dropped.
+
+Two cases lose results without that warning:
+
+- A process killed before its first batch is exported (SIGTERM, SIGINT, the
+  agent cancelling the job) loses what was queued, in both modes. The
+  collector installs no signal handlers.
+- `go test -timeout` kills the test binary before `Main` can flush, so the
+  `bktest` package loses the package's completed executions. The command
+  reads the stream `go test` printed up to the timeout and reports those
+  tests (the one that was running as `fail`); use it when `-timeout`
+  matters.
+
+Export failures are reported with the token and the run key redacted, even
+when the receiver echoes them back.
 
 ## What is not supported
 
