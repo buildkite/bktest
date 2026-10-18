@@ -91,7 +91,7 @@ const createSession = (settings) => {
       }
       span.setAttributes(limitAttributes({ ...description.attributes, ...run }))
       for (const [key, value] of Object.entries(record.tags || {})) {
-        if (value !== undefined && value !== null) span.setAttribute(`buildkite.tag.${key}`, String(value))
+        if (value !== undefined && value !== null) span.setAttribute(`buildkite.tag.${key}`, truncate(String(value), 10243))
       }
     } catch (error) {
       warn(`Could not describe OpenTelemetry test span: ${describeError(error)}`)

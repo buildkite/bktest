@@ -149,7 +149,7 @@ describe('createSession', () => {
       tests: [
         {
           start: record({ name }),
-          finish: record({ name, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }] }),
+          finish: record({ name, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }], tags: { detail: 't'.repeat(11000) } }),
           line: 3,
         },
         // A finish that cannot be described leaves the span with its start-time attributes.
@@ -160,6 +160,7 @@ describe('createSession', () => {
     const [span, startOnly] = spans
     expect(span.attributes['buildkite.test.name']).toBe(`${'n'.repeat(10240)}...`)
     expect(span.attributes['test.case.name']).toHaveLength(10243)
+    expect(span.attributes['buildkite.tag.detail']).toBe(`${'t'.repeat(10240)}...`)
     expect(span.events[0].attributes['exception.message']).toBe(`${'m'.repeat(10240)}...`)
     expect(span.droppedAttributesCount).toBe(0)
     expect(startOnly.attributes['buildkite.test.name']).toBe(`${'n'.repeat(10240)}...`)
