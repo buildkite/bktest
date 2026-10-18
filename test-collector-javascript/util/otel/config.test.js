@@ -134,7 +134,7 @@ describe('resolveSettings', () => {
     expect(resolve().endpoint).toBe(DEFAULT_ENDPOINT)
     expect(DEFAULT_ENDPOINT).toBe('https://tests-otlp.buildkite.com/v1/traces')
 
-    process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT = 'http://127.0.0.1:4318/v1/traces'
+    process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT = ' http://127.0.0.1:4318/v1/traces\n'
     expect(resolve().endpoint).toBe('http://127.0.0.1:4318/v1/traces')
   })
 

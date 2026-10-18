@@ -56,9 +56,10 @@ testEnvironment: './buildkite-jsdom-environment.js',
 ```
 
 The reporter options (`token`, `tags`, `otelEnabled`) are the same as before.
-`otelEnabled` is on only when it is `true` or the string `'true'` (any case),
-so a value passed through from a CLI or the environment, for example
-`otelEnabled: process.env.BUILDKITE_OTEL`, is off unless it says `true`.
+`otelEnabled` is on only for `true` and the case-insensitive string `'true'`;
+`'false'`, `'1'` and `1` are off, so a value passed through from a CLI or the
+environment, for example `otelEnabled: process.env.BUILDKITE_OTEL`, only turns
+OpenTelemetry on when it says `true`.
 
 Export needs the OpenTelemetry packages, which are optional peer dependencies
 of `buildkite-test-collector` and are not installed with it:

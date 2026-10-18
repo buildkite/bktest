@@ -120,18 +120,23 @@ describe('createSession', () => {
     const name = 'n'.repeat(20000)
     const message = 'm'.repeat(20000)
     const { spans } = await runSession({
-      tests: [{
-        start: record({ name }),
-        finish: record({ name, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }] }),
-        line: 3,
-      }],
+      tests: [
+        {
+          start: record({ name }),
+          finish: record({ name, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }] }),
+          line: 3,
+        },
+        // A finish that cannot be described leaves the span with its start-time attributes.
+        { start: record({ name }), finish: null, line: 3 },
+      ],
     })
 
-    const [span] = spans
+    const [span, startOnly] = spans
     expect(span.attributes['buildkite.test.name']).toBe(`${'n'.repeat(10240)}...`)
     expect(span.attributes['test.case.name']).toHaveLength(10243)
     expect(span.events[0].attributes['exception.message']).toBe(`${'m'.repeat(16381)}...`)
     expect(span.droppedAttributesCount).toBe(0)
+    expect(startOnly.attributes['buildkite.test.name']).toBe(`${'n'.repeat(10240)}...`)
   })
 
   it('maps skipped results and leaves the placeholder when the result is unknown', async () => {

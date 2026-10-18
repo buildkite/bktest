@@ -17,7 +17,7 @@ const isValidRunKey = (runKey) => typeof runKey === 'string' && RUN_KEY_FORMAT.t
 // only `true` and the string 'true' turn OTel on; anything else is off.
 const isOtelEnabled = (value) => value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true')
 
-const otlpEndpoint = () => process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT ?? DEFAULT_ENDPOINT
+const otlpEndpoint = () => (process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT ?? DEFAULT_ENDPOINT).trim()
 
 const isValidEndpoint = (endpoint) => {
   try {

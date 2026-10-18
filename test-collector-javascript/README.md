@@ -54,7 +54,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ];
     ```
 
-    To submit results as OpenTelemetry spans instead of a JSON upload (experimental), set `otelEnabled: true` in the reporter options and use the collector's test environment. Both settings are required: without the `testEnvironment` (or a custom environment not built with the collector's `extend()`), the reporter warns and uploads results as JSON. See [OpenTelemetry submission](docs/opentelemetry.md).
+    To submit results as OpenTelemetry spans instead of a JSON upload (experimental), set `otelEnabled: true` in the reporter options (only `true` and the case-insensitive string `'true'` turn it on; `'false'`, `'1'` and `1` are off) and use the collector's test environment. Both settings are required: without the `testEnvironment` (or a custom environment not built with the collector's `extend()`), the reporter warns and uploads results as JSON. See [OpenTelemetry submission](docs/opentelemetry.md).
 
     ```js
     // jest.config.js
