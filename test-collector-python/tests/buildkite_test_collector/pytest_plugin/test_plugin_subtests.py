@@ -274,7 +274,7 @@ class TestParentReportGuard:
         )
         plugin.pytest_runtest_logreport(teardown_report)
 
-        test_data = plugin.in_flight[NODEID]
+        [test_data] = plugin.payload.data
         assert isinstance(test_data.result, TestResultFailed)
 
     def test_teardown_failure_overrides_subtest_failure(self, plugin):
@@ -310,7 +310,7 @@ class TestParentReportGuard:
         )
         plugin.pytest_runtest_logreport(teardown_report)
 
-        test_data = plugin.in_flight[NODEID]
+        [test_data] = plugin.payload.data
         assert isinstance(test_data.result, TestResultFailed)
         assert test_data.result.failure_reason == "teardown also exploded"
 

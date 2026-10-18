@@ -159,6 +159,63 @@ def test_span_identity_matches_the_json_upload(tmp_path, receiver):
         assert span.attributes["test.suite.name"] == span.attributes["buildkite.test.scope"]
 
 
+def test_results_follow_pytests_final_verdict_including_teardown_and_reruns(tmp_path, receiver):
+    pytest.importorskip("pytest_rerunfailures")
+    env = otel_env(receiver, FLAKY_MARKER=str(tmp_path / "flaky-marker"))
+    run = run_pytest(tmp_path, env, "--reruns", "1",
+                     test_file=DATA_DIR / "test_sample_settled_results.py")
+    assert run.returncode == 1, run.stderr
+    assert "1 error, 2 rerun" in run.stdout, run.stdout
+
+    spans = sorted(receiver.spans("test"), key=lambda span: span.start_time_unix_nano)
+    executions = [
+        (span.attributes["buildkite.test.name"], span.attributes["test.case.result.status"])
+        for span in spans
+    ]
+    assert executions == [
+        ("test_passing_body_with_broken_cleanup", "fail"),  # rerun because teardown failed
+        ("test_passing_body_with_broken_cleanup", "fail"),
+        ("test_flaky", "fail"),
+        ("test_flaky", "pass"),
+        ("test_plain_pass", "pass"),
+        ("test_plain_skip", "skipped"),
+    ]
+    first_attempt, second_attempt = spans[2], spans[3]
+    for broken_cleanup in spans[:2]:
+        assert "cleanup failed after passing body" in broken_cleanup.status_message
+    assert "first attempt fails" in first_attempt.status_message
+    assert first_attempt.end_time_unix_nano <= second_attempt.start_time_unix_nano
+    assert first_attempt.trace_id != second_attempt.trace_id
+    assert first_attempt.attributes["buildkite.test.scope"] == second_attempt.attributes["buildkite.test.scope"]
+    assert first_attempt.attributes["code.line.number"] == second_attempt.attributes["code.line.number"]
+    assert [(test["name"], test["result"]) for test in json.loads(run.json_path.read_text())] == [
+        (name, {"pass": "passed", "fail": "failed", "skipped": "skipped"}[status])
+        for name, status in executions
+    ]
+    assert "no result set" not in run.stderr
+
+
+def test_an_interrupted_test_is_reported_as_skipped(tmp_path, receiver):
+    (tmp_path / "test_interrupt.py").write_text(
+        "def test_done():\n"
+        "    pass\n"
+        "\n"
+        "def test_interrupted():\n"
+        "    raise KeyboardInterrupt\n"
+        "\n"
+        "def test_never_started():\n"
+        "    pass\n"
+    )
+    run = run_pytest(tmp_path, otel_env(receiver), test_file=tmp_path / "test_interrupt.py")
+    assert run.returncode == 2, run.stderr
+
+    executions = {
+        span.attributes["buildkite.test.name"]: span.attributes["test.case.result.status"]
+        for span in receiver.spans("test")
+    }
+    assert executions == {"test_done": "pass", "test_interrupted": "skipped"}
+
+
 def test_retried_requests_keep_their_stream_header(tmp_path, receiver):
     receiver.next_statuses = [503]
     run = run_pytest(tmp_path, otel_env(receiver))

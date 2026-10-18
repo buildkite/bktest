@@ -153,14 +153,21 @@ class OTelPlugin:
 
     @pytest.hookimpl(hookwrapper=True, tryfirst=True)
     def pytest_runtest_protocol(self, item: pytest.Item) -> Generator[None, Any, None]:
-        """pytest_runtest_protocol hook wrapper to restore the context once the test is reported"""
+        """pytest_runtest_protocol hook wrapper to report a test the protocol did not finish"""
         yield
         if self._state is None:
             return
         self._spans.detach(self._tokens.pop(item.nodeid, None))
         span = self._test_spans.pop(item.nodeid, None)
-        if span is not None:
-            self._finish(span, self._collector.in_flight.get(item.nodeid), time.time_ns())
+        if span is None:
+            return
+        # Only an interrupted test (Ctrl-C) is still here: pytest never
+        # reported it, so it is exported as skipped, as the Playwright
+        # collector does.
+        test = self._collector.in_flight.get(item.nodeid)
+        if test is not None and test.result is None:
+            test = test.skipped()
+        self._finish(span, test, time.time_ns())
 
     @pytest.hookimpl(hookwrapper=True, tryfirst=True)
     def pytest_runtest_setup(self, item: pytest.Item) -> Generator[None, Any, None]:
@@ -191,6 +198,9 @@ class OTelPlugin:
         if nodeid not in self._test_spans:
             self.report(test)
             return
+        # Detach here too: pytest-rerunfailures starts the next attempt (a new
+        # span) inside the same runtest protocol.
+        self._spans.detach(self._tokens.pop(nodeid, None))
         span = self._test_spans.pop(nodeid)
         if span is not None:
             self._finish(span, test, time.time_ns())

@@ -78,6 +78,34 @@ def test_location_uses_one_based_line_numbers(tmp_path):
     }
 
 
+def test_results_follow_pytests_final_verdict_including_teardown_and_reruns(tmp_path):
+    """A failing fixture finalizer fails the test, and ``--reruns`` records one execution per attempt."""
+    pytest.importorskip("pytest_rerunfailures")
+    test_file = Path(__file__).parent / "data" / "test_sample_settled_results.py"
+    json_output_file = tmp_path / "results.json"
+    env = {**os.environ, "FLAKY_MARKER": str(tmp_path / "flaky-marker")}
+    cmd = [
+        sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "--reruns", "1",
+        str(test_file), f"--json={json_output_file}",
+    ]
+    result = subprocess.run(cmd, cwd=str(tmp_path), env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 error, 2 rerun" in result.stdout, result.stdout
+
+    executions = [(test["name"], test["result"]) for test in json.loads(json_output_file.read_text())]
+    assert executions == [
+        ("test_passing_body_with_broken_cleanup", "failed"),  # rerun because teardown failed
+        ("test_passing_body_with_broken_cleanup", "failed"),
+        ("test_flaky", "failed"),
+        ("test_flaky", "passed"),
+        ("test_plain_pass", "passed"),
+        ("test_plain_skip", "skipped"),
+    ]
+    broken_cleanup = json.loads(json_output_file.read_text())[0]
+    assert "cleanup failed after passing body" in broken_cleanup["failure_reason"]
+    assert "no result set" not in result.stderr
+
+
 class TestTagFiltering:
     import subprocess
     import sys
