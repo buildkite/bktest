@@ -107,6 +107,29 @@ You may also need to manually capture the data you wish to trace for your use ca
 
 Note: the Ruby test collector is the only Test Engine collector that automatically captures and transmits span data. This Python collector can transmit information, but data capture must be done manually at this time.
 
+## 🌏 Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `BUILDKITE_ANALYTICS_TOKEN` | Suite API token. Required for the JSON upload. |
+| `BUILDKITE_ANALYTICS_API_URL` | JSON upload endpoint. Default `https://analytics-api.buildkite.com/v1`. |
+| `BUILDKITE_ANALYTICS_OTEL_ENABLED` | `true` sends results over OpenTelemetry instead; see below. |
+| `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | `1` logs the collector's hooks and uploads. |
+
+The run's metadata (key, URL, branch, commit, number, job ID, message) is detected from Buildkite, GitHub Actions or CircleCI. A non-empty value of any of these overrides the detected one, on both the JSON and the OpenTelemetry path:
+
+| Variable | Run field |
+| --- | --- |
+| `BUILDKITE_ANALYTICS_KEY` | Run key; executions from processes sharing a key land in one run. Default: the build ID. |
+| `BUILDKITE_ANALYTICS_URL` | Link back to the build. |
+| `BUILDKITE_ANALYTICS_BRANCH` | Branch. |
+| `BUILDKITE_ANALYTICS_SHA` | Commit SHA. |
+| `BUILDKITE_ANALYTICS_NUMBER` | Build number. |
+| `BUILDKITE_ANALYTICS_JOB_ID` | Job ID. |
+| `BUILDKITE_ANALYTICS_MESSAGE` | Commit message. |
+
+A JSON upload with a custom `BUILDKITE_ANALYTICS_KEY` is not linked to its Buildkite build in Test Engine.
+
 ## 🔭 OpenTelemetry submission (experimental)
 
 The collector can send each test to Test Engine as an OpenTelemetry `test.execution` span over OTLP instead of the JSON upload, with your tests' own OpenTelemetry spans nested under it. Install the optional dependencies and switch it on:
