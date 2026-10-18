@@ -97,24 +97,24 @@ reports every test in the stream. The two modes give a test the same identity
 package checkout
 
 import (
-    "os"
-    "testing"
+	"os"
+	"testing"
 
-    bktest "github.com/buildkite/bktest/test-collector-go"
+	bktest "github.com/buildkite/bktest/test-collector-go"
 )
 
 func TestMain(m *testing.M) {
-    os.Exit(bktest.Main(m, bktest.WithTags(map[string]string{"team": "payments"})))
+	os.Exit(bktest.Main(m, bktest.WithTags(map[string]string{"team": "payments"})))
 }
 
 func TestCheckout(t *testing.T) {
-    ctx := bktest.Start(t)                    // the test's span; child spans attach to ctx
-    bktest.Tag(t, "tier", "critical")         // buildkite.tag.tier on this execution
-    bktest.Annotate(t, "cart id "+cart.ID)    // a test.annotation event
+	ctx := bktest.Start(t)                 // the test's span; child spans attach to ctx
+	bktest.Tag(t, "tier", "critical")      // buildkite.tag.tier on this execution
+	bktest.Annotate(t, "cart id "+cartID)  // a test.annotation event
 
-    if err := checkout(ctx, cart); err != nil {
-        t.Fatal(err)
-    }
+	if err := Checkout(ctx, cartID); err != nil { // instrumented code nests under the test
+		t.Fatal(err)
+	}
 }
 ```
 
@@ -140,13 +140,15 @@ Run-level tags, a location prefix, a child span filter and the suite's own
 tracer provider are `Main` options:
 
 ```go
+import sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 func TestMain(m *testing.M) {
-    os.Exit(bktest.Main(m,
-        bktest.WithTags(map[string]string{"team": "payments"}),
-        bktest.WithLocationPrefix("services/checkout/"),
-        bktest.WithSpanFilter(func(s sdktrace.ReadOnlySpan) bool { return s.Name() != "noisy" }),
-        bktest.WithTracerProvider(myProvider),
-    ))
+	os.Exit(bktest.Main(m,
+		bktest.WithTags(map[string]string{"team": "payments"}),
+		bktest.WithLocationPrefix("services/checkout/"),
+		bktest.WithSpanFilter(func(s sdktrace.ReadOnlySpan) bool { return s.Name() != "noisy" }),
+		bktest.WithTracerProvider(myProvider), // an *sdktrace.TracerProvider the suite already built
+	))
 }
 ```
 

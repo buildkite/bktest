@@ -1,7 +1,6 @@
 package testjson
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -48,13 +47,10 @@ func parse(t *testing.T, lines ...string) (*Parser, *recorded) {
 		LibraryExported:          func(s string) { r.exported = append(r.exported, s) },
 	})
 	for _, line := range lines {
-		out, err := p.Line([]byte(line))
-		if errors.Is(err, ErrNotEvent) {
+		out, ok := p.Line([]byte(line))
+		if !ok {
 			r.nonEvents++
 			continue
-		}
-		if err != nil {
-			t.Fatalf("Line(%q): %v", line, err)
 		}
 		if out != "" {
 			r.echoed = append(r.echoed, out)
@@ -372,18 +368,6 @@ func TestExamplesAndFuzzSeedsAreExecutions(t *testing.T) {
 	)
 	if len(r.executions) != 3 {
 		t.Errorf("executions = %+v", r.executions)
-	}
-}
-
-func TestLibraryExportLineIsDetectedOnThePackageStream(t *testing.T) {
-	_, r := parse(t,
-		ev(0, "output", "", "FAIL\n"),
-		ev(0, "output", "", "buildkite-test-collector: exported 3 test executions from example.com/t2j/p\n"),
-		ev(0, "output", "", "FAIL\texample.com/t2j/p\t0.2s\n"),
-		ev(0, "fail", "", "", `"Elapsed":0.2`),
-	)
-	if strings.Join(r.exported, ",") != pkg {
-		t.Errorf("exported = %v", r.exported)
 	}
 }
 

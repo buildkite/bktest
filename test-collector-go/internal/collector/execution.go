@@ -27,7 +27,9 @@ type Identity struct {
 	Line  int
 }
 
-// Status is a test execution's result as Test Engine understands it.
+// Status is a test execution's result as Test Engine understands it. The
+// values are the test.case.result.status attribute; "skipped" rather than
+// "skip" is what the receiver matches.
 type Status string
 
 const (

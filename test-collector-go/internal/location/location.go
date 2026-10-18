@@ -5,11 +5,13 @@ package location
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +39,9 @@ type Resolver struct {
 
 	mu       sync.Mutex
 	packages map[string]*packageLocations
+	// listSlots bounds how many go list processes run at once, since
+	// Prefetch is called for every package the stream mentions.
+	listSlots chan struct{}
 }
 
 type packageLocations struct {
@@ -66,6 +71,7 @@ func (r *Resolver) locations(pkg string) *packageLocations {
 	defer r.mu.Unlock()
 	if r.packages == nil {
 		r.packages = map[string]*packageLocations{}
+		r.listSlots = make(chan struct{}, runtime.GOMAXPROCS(0))
 	}
 	p := r.packages[pkg]
 	if p == nil {
@@ -84,13 +90,25 @@ type listedPackage struct {
 }
 
 func (r *Resolver) resolve(ctx context.Context, pkg string) map[string]Position {
+	select {
+	case r.listSlots <- struct{}{}:
+		defer func() { <-r.listSlots }()
+	case <-ctx.Done():
+		r.debugf("%s: %v before go list ran", pkg, ctx.Err())
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "list", "-json", "-e", pkg)
 	cmd.Dir = r.Dir
 	out, err := cmd.Output()
 	if err != nil {
-		r.debugf("%s: go list failed: %v", pkg, err)
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+			r.debugf("%s: go list failed: %v: %s", pkg, err, strings.TrimSpace(string(exit.Stderr)))
+		} else {
+			r.debugf("%s: go list failed: %v", pkg, err)
+		}
 		return nil
 	}
 	var lp listedPackage

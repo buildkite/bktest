@@ -4,8 +4,8 @@
 package testjson
 
 import (
+	"bytes"
 	"encoding/json"
-	"errors"
 	"strings"
 	"time"
 
@@ -35,9 +35,6 @@ var actions = map[string]bool{
 	"build-output": true, "build-fail": true,
 }
 
-// ErrNotEvent reports a line that is not a go test -json event.
-var ErrNotEvent = errors.New("not a go test -json event")
-
 // Execution is one test's run as reconstructed from the stream.
 type Execution struct {
 	Package string
@@ -49,7 +46,7 @@ type Execution struct {
 	Result collector.Result
 }
 
-// Handler receives what the parser finds. Every field is optional.
+// Handler receives what the parser finds.
 type Handler struct {
 	// Execution receives each finished test, in the order the stream
 	// reports their results.
@@ -99,20 +96,20 @@ func (p *Parser) Events() int { return p.events }
 // Failed reports whether any test or package failed.
 func (p *Parser) Failed() bool { return p.failed }
 
-// Line parses one line of input. It returns ErrNotEvent for a line that is
-// not an event, and the event's Output text, which the caller should write
-// through so the stream reads like go test -v.
-func (p *Parser) Line(line []byte) (output string, err error) {
-	if len(strings.TrimSpace(string(line))) == 0 {
-		return "", ErrNotEvent
+// Line parses one line of input. For an event it returns the event's Output
+// text, which the caller should write through so the stream reads like
+// go test -v; for anything else it returns false.
+func (p *Parser) Line(line []byte) (output string, ok bool) {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return "", false
 	}
 	var ev Event
 	if err := json.Unmarshal(line, &ev); err != nil || !actions[ev.Action] {
-		return "", ErrNotEvent
+		return "", false
 	}
 	p.events++
 	p.handle(ev)
-	return ev.Output, nil
+	return ev.Output, true
 }
 
 func (p *Parser) handle(ev Event) {
@@ -126,17 +123,20 @@ func (p *Parser) handle(ev Event) {
 	if pkg == nil {
 		pkg = &packageState{running: map[string]*testState{}}
 		p.packages[pkgName] = pkg
-		if p.h.PackageStarted != nil {
-			p.h.PackageStarted(pkgName)
-		}
+		p.h.PackageStarted(pkgName)
 	}
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
 	}
 
 	if ev.Action == "output" {
+		// The line bktest.Main prints after exporting a package itself. It
+		// arrives as test output when a panicking test forced the export.
 		if exported, ok := collector.ExportedPackage(ev.Output); ok {
-			p.libraryExported(pkg, exported)
+			if !pkg.libraryExported {
+				pkg.libraryExported = true
+				p.h.LibraryExported(exported)
+			}
 			return
 		}
 	}
@@ -170,17 +170,6 @@ func (p *Parser) handle(ev Event) {
 	}
 }
 
-// libraryExported reports, once per package, the line the bktest library
-// prints after exporting a package itself. It arrives as test output when
-// a panicking test forced the export.
-func (p *Parser) libraryExported(pkg *packageState, exported string) {
-	if pkg.libraryExported || p.h.LibraryExported == nil {
-		return
-	}
-	pkg.libraryExported = true
-	p.h.LibraryExported(exported)
-}
-
 func isBenchmark(test string) bool {
 	return strings.HasPrefix(test, "Benchmark")
 }
@@ -211,9 +200,7 @@ func (p *Parser) handlePackageEvent(pkgName string, pkg *packageState, ev Event)
 	case "fail":
 		p.failed = true
 		if ev.FailedBuild != "" || !pkg.ran {
-			if p.h.PackageFailedBeforeTests != nil {
-				p.h.PackageFailedBeforeTests(pkgName)
-			}
+			p.h.PackageFailedBeforeTests(pkgName)
 		}
 		p.finishRunning(pkgName, pkg, ev.Time)
 	case "pass", "skip":
@@ -241,9 +228,6 @@ func (p *Parser) Finish() {
 }
 
 func (p *Parser) emit(pkgName, test string, ts *testState, end time.Time, action string) {
-	if p.h.Execution == nil {
-		return
-	}
 	ex := Execution{Package: pkgName, Test: test, Start: ts.start, End: end}
 	switch action {
 	case "pass":

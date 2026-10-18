@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,9 @@ import (
 
 func writeModule(t *testing.T) string {
 	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go is not on PATH")
+	}
 	dir := t.TempDir()
 	files := map[string]string{
 		"go.mod":     "module example.com/mod\n\ngo 1.23\n",

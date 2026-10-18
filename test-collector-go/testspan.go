@@ -87,8 +87,6 @@ func finish(c *collector.Collector, ex *collector.Execution, t testing.TB, end t
 	}
 }
 
-type identity = collector.Identity
-
 type thisPackage struct{}
 
 var bktestPackagePath = reflect.TypeOf(thisPackage{}).PkgPath()
@@ -97,8 +95,8 @@ var bktestPackagePath = reflect.TypeOf(thisPackage{}).PkgPath()
 // test's identity from that function: scope is the package import path,
 // name is t.Name(), and the location is the file and first line of the
 // function that called Start, relative to the module root.
-func identify(t testing.TB) identity {
-	id := identity{Name: t.Name()}
+func identify(t testing.TB) collector.Identity {
+	id := collector.Identity{Name: t.Name()}
 	pcs := make([]uintptr, 32)
 	n := runtime.Callers(2, pcs)
 	frames := runtime.CallersFrames(pcs[:n])

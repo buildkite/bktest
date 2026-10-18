@@ -36,8 +36,9 @@ func WarnOnce(key string, format string, args ...any) {
 }
 
 // RedirectWarnings sends warnings to w and forgets which once-only
-// warnings have been printed, until the returned function is called.
-// Tests use it to assert on warnings.
+// warnings have been printed, until the returned function is called. The
+// command uses it to route warnings to its own stderr and tests use it to
+// assert on them.
 func RedirectWarnings(w io.Writer) (restore func()) {
 	warnings.mu.Lock()
 	defer warnings.mu.Unlock()

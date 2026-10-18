@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -144,8 +145,24 @@ func New(ctx context.Context, opts Options) (*Collector, error) {
 	return c, nil
 }
 
-// RunKey is the Test Engine run key every execution is reported under.
-func (c *Collector) RunKey() string { return c.env.key }
+// Setup is New for callers that must keep going whatever happens: a setup
+// error or panic becomes one "export disabled" warning and a nil Collector,
+// so a misconfigured collector never stops the tests or changes the exit
+// code.
+func Setup(ctx context.Context, opts Options) (c *Collector) {
+	defer func() {
+		if r := recover(); r != nil {
+			Warnf("OpenTelemetry span export disabled: %v\n%s", r, debug.Stack())
+			c = nil
+		}
+	}()
+	c, err := New(ctx, opts)
+	if err != nil {
+		Warnf("OpenTelemetry span export disabled: %v", err)
+		return nil
+	}
+	return c
+}
 
 // Exported is the number of test.execution spans the receiver has accepted
 // so far; call it after Shutdown for the final count.
@@ -249,9 +266,15 @@ func jobSpanLinks() []trace.Link {
 // Shutdown deactivates the forwarder so no new child spans enqueue, then
 // shuts down the test stream and the child stream against one shared 30 s
 // deadline and reports anything that was lost. It is safe to call more
-// than once.
+// than once, and a panic inside the SDK becomes a warning rather than
+// changing the process's exit code.
 func (c *Collector) Shutdown() {
 	c.shutdownOnce.Do(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				Warnf("Could not shut down OpenTelemetry span export: %v\n%s", r, debug.Stack())
+			}
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), processorTimeout)
 		defer cancel()
 		if c.forwarder != nil {

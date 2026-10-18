@@ -39,9 +39,9 @@ func enabled(t *testing.T, r *otlptest.Receiver, opts ...Option) *collector.Coll
 	prev := otel.GetTracerProvider()
 	t.Cleanup(func() { otel.SetTracerProvider(prev) })
 
-	c := setUp(newOptions(opts))
+	c := collector.Setup(context.Background(), newOptions(opts))
 	if c == nil {
-		t.Fatal("setUp returned no collector")
+		t.Fatal("Setup returned no collector")
 	}
 	current.Store(c)
 	mainCalled.Store(true)

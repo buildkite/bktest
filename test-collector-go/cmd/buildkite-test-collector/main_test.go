@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -260,7 +261,11 @@ func TestRealGoTestStreamResolvesLocations(t *testing.T) {
 	if err := os.Chdir(fixture); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chdir(wd) })
+	t.Cleanup(func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Error(err)
+		}
+	})
 
 	r := otlptest.NewReceiver(t)
 	// The fixture's own TestMain must not export, so the token is cleared
@@ -275,7 +280,8 @@ func TestRealGoTestStreamResolvesLocations(t *testing.T) {
 		}
 	}
 	stream, err := cmd.Output()
-	if _, isExit := err.(*exec.ExitError); err != nil && !isExit {
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
 		t.Fatalf("go test -json: %v", err)
 	}
 

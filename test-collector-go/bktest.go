@@ -32,7 +32,6 @@ import (
 	"maps"
 	"os"
 	"runtime"
-	"runtime/debug"
 	"sync/atomic"
 	"testing"
 
@@ -44,8 +43,10 @@ import (
 // Version is the collector version reported on every test execution.
 const Version = collector.Version
 
+type options = collector.Options
+
 // Option configures Main.
-type Option func(*collector.Options)
+type Option func(*options)
 
 // SpanFilter decides whether a finished child span is exported to Buildkite.
 // It never sees test.execution or phase spans.
@@ -53,7 +54,7 @@ type SpanFilter func(span sdktrace.ReadOnlySpan) bool
 
 // WithTags adds run-level tags to every test execution as buildkite.tag.<key>.
 func WithTags(tags map[string]string) Option {
-	return func(o *collector.Options) {
+	return func(o *options) {
 		if o.Tags == nil {
 			o.Tags = map[string]string{}
 		}
@@ -64,13 +65,13 @@ func WithTags(tags map[string]string) Option {
 // WithLocationPrefix prepends prefix to every test's file path, for suites
 // that run from a subdirectory of the repository.
 func WithLocationPrefix(prefix string) Option {
-	return func(o *collector.Options) { o.LocationPrefix = prefix }
+	return func(o *options) { o.LocationPrefix = prefix }
 }
 
 // WithSpanFilter drops child spans the filter rejects before they are sent to
 // Buildkite. Test spans are never filtered.
 func WithSpanFilter(filter SpanFilter) Option {
-	return func(o *collector.Options) { o.Filter = filter }
+	return func(o *options) { o.Filter = filter }
 }
 
 // WithTracerProvider names the suite's own tracer provider. The collector
@@ -79,12 +80,12 @@ func WithSpanFilter(filter SpanFilter) Option {
 // global provider when it is an SDK provider, installs its own when nobody
 // has configured one, and otherwise exports test spans only.
 func WithTracerProvider(tp trace.TracerProvider) Option {
-	return func(o *collector.Options) { o.TracerProvider = tp }
+	return func(o *options) { o.TracerProvider = tp }
 }
 
 // newOptions starts from the environment and lets explicit options override it.
-func newOptions(opts []Option) collector.Options {
-	o := collector.Options{LocationPrefix: os.Getenv("BUILDKITE_ANALYTICS_LOCATION_PREFIX"), ChildSpans: true}
+func newOptions(opts []Option) options {
+	o := options{LocationPrefix: os.Getenv("BUILDKITE_ANALYTICS_LOCATION_PREFIX"), ChildSpans: true}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&o)
@@ -110,20 +111,13 @@ var (
 // command uses to detect a suite that is reported twice.
 func Main(m *testing.M, opts ...Option) int {
 	mainCalled.Store(true)
-	c := setUp(newOptions(opts))
+	c := collector.Setup(context.Background(), newOptions(opts))
 	current.Store(c)
 
 	code := m.Run()
 
 	if c != nil {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					collector.Warnf("Could not shut down OpenTelemetry span export: %v\n%s", r, debug.Stack())
-				}
-			}()
-			c.Shutdown()
-		}()
+		c.Shutdown()
 		fmt.Fprintln(os.Stderr, collector.ExportedLine(c.Exported(), callerPackage()))
 	}
 	return code
@@ -143,23 +137,6 @@ func callerPackage() string {
 			return "unknown"
 		}
 	}
-}
-
-// setUp configures export, turning any failure into a warning and a nil
-// collector so a misconfigured collector never stops the tests.
-func setUp(o collector.Options) (c *collector.Collector) {
-	defer func() {
-		if r := recover(); r != nil {
-			collector.Warnf("OpenTelemetry span export disabled: %v\n%s", r, debug.Stack())
-			c = nil
-		}
-	}()
-	c, err := collector.New(context.Background(), o)
-	if err != nil {
-		collector.Warnf("OpenTelemetry span export disabled: %v", err)
-		return nil
-	}
-	return c
 }
 
 // Start records t as a test execution and returns the context its

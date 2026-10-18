@@ -22,16 +22,11 @@ const (
 	tagAttributePrefix  = "buildkite.tag."
 	workerIDTag         = "ci.worker.id"
 	executionVia        = "otlp"
-	resultUnset         = "unset"
-	resultPass          = "pass"
-	resultFail          = "fail"
-	resultSkipped       = "skipped"
 	testSpanName        = "test.execution"
 	bodyPhaseName       = "test.body"
 	setupPhaseName      = "test.setup"
 	teardownPhaseName   = "test.teardown"
 	annotationEventName = "test.annotation"
-	exceptionTypePanic  = "panic"
 )
 
 // producerResource identifies the process emitting spans: the suite, the CI
