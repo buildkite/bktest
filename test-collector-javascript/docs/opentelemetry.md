@@ -318,3 +318,12 @@ using bktec's relay) or restore the interceptors in `afterAll`.
 One worker process reports one run. Run identity is fixed when export starts in
 a worker: reconfiguring with a different run key warns and keeps attributing
 results to the original run.
+
+## Limitations
+
+A process killed by SIGTERM or SIGINT loses the test executions that were
+still queued; the exit warning cannot run. Node has no exit event when a
+signal ends the process, and the collector does not install signal handlers in
+Jest's workers, so a worker killed mid-file loses the spans it had not yet
+exported without a `TEST RESULTS MISSING` warning. The JSON upload loses the
+same results.

@@ -14,6 +14,7 @@
   "files": [
     "LICENSE.md",
     "README.md",
+    "docs/",
     "jasmine/",
     "jest/",
     "mocha/",
