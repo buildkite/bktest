@@ -275,6 +275,22 @@ describe('createSession', () => {
     expect(BigInt(span.endTimeUnixNano) >= before).toBe(true)
   })
 
+  it('reports a span-start failure only once across start, flush and shutdown', async () => {
+    const session = createSession(settings())
+    try {
+      const broken = { ...record(), get scope() { throw new Error('scope failed') } }
+      expect(session.startTestSpan(broken)).toBeNull()
+      expect(session.metrics.startFailures).toBe(1)
+      await session.forceFlush()
+      await session.shutdown()
+      expect(warnings()).toEqual([
+        expect.stringContaining('TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (could not start span: Error: scope failed)'),
+      ])
+    } finally {
+      await session.shutdown()
+    }
+  })
+
   it('still finishes the span when the result cannot be described', async () => {
     const { spans, warnings } = await runSession({ tests: [{ start: record(), finish: null, line: 3 }] })
 
