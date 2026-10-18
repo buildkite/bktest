@@ -598,6 +598,42 @@ final class TelemetryClientTests: XCTestCase {
     )
   }
 
+  func testFlushSharesOneBudgetAcrossStreamsAndReportsChildSpansLeftBehind() throws {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
+    let childExporter = SlowExporter(delay: 3)
+    let client = try XCTUnwrap(TelemetryClient.live(
+      environment: self.configuredEnvironment,
+      uploadTags: [:],
+      logger: logger,
+      rootExporter: InMemoryExporter(),
+      childExporter: childExporter,
+      flushBudget: 1
+    ))
+    var test = TestState(id: UUID(), className: "SlowChildTests", testName: "testChild")
+
+    let executionID = client.startExecution(test)
+    OpenTelemetry.instance.tracerProvider
+      .get(instrumentationName: "example-app")
+      .spanBuilder(spanName: "database.query")
+      .startSpan()
+      .end()
+    test.result = .passed
+    client.finishExecution(executionID, test: test, tags: nil)
+
+    let started = Date()
+    client.forceFlush()
+    let elapsed = Date().timeIntervalSince(started)
+    logger.waitForLogs()
+
+    XCTAssertLessThan(elapsed, 2)
+    XCTAssertEqual(messages.value, [
+      "[BuildkiteTestCollector] warning: 1 OpenTelemetry child span(s) were not exported within the 1 s flush budget or were rejected by the endpoint; test.execution results are unaffected.",
+    ])
+  }
+
   private var configuredEnvironment: EnvironmentValues {
     EnvironmentValues(
       values: [
@@ -674,6 +710,25 @@ private final class FailOnceExporter: SpanExporter, @unchecked Sendable {
   func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
     self.exports.append(spans)
     return self.exports.count == 1 ? .failure : .success
+  }
+
+  func flush(explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
+    .success
+  }
+
+  func shutdown(explicitTimeout: TimeInterval?) {}
+}
+
+private final class SlowExporter: SpanExporter, @unchecked Sendable {
+  private let delay: TimeInterval
+
+  init(delay: TimeInterval) {
+    self.delay = delay
+  }
+
+  func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
+    Thread.sleep(forTimeInterval: self.delay)
+    return .success
   }
 
   func flush(explicitTimeout: TimeInterval?) -> SpanExporterResultCode {

@@ -223,10 +223,41 @@ private final class SynchronousOtlpTraceExporter: FailureReportingSpanExporter, 
   }
 
   func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
-    self.httpClient.prepare()
+    self.httpClient.prepare(timeout: explicitTimeout)
     _ = self.exporter.export(spans: spans, explicitTimeout: explicitTimeout)
     if case .success = self.httpClient.outcome { return .success }
     return .failure
+  }
+
+  func flush(explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
+    self.exporter.flush(explicitTimeout: explicitTimeout)
+  }
+
+  func shutdown(explicitTimeout: TimeInterval?) {
+    self.exporter.shutdown(explicitTimeout: explicitTimeout)
+  }
+}
+
+/// Counts the child spans the endpoint accepted so a flush can report the
+/// ones it did not.
+private final class CountingSpanExporter: SpanExporter, @unchecked Sendable {
+  private let exporter: any SpanExporter
+  private let exported = LockIsolated(0)
+
+  init(exporter: any SpanExporter) {
+    self.exporter = exporter
+  }
+
+  var exportedSpanCount: Int {
+    self.exported.value
+  }
+
+  func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
+    let result = self.exporter.export(spans: spans, explicitTimeout: explicitTimeout)
+    if case .success = result {
+      self.exported.withValue { $0 += spans.count }
+    }
+    return result
   }
 
   func flush(explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
@@ -242,6 +273,7 @@ private final class SynchronousHTTPClient: HTTPClient {
   private let lock = NSLock()
   private let session: URLSession
   private var _outcome: Result<Void, SpanExportFailure>?
+  private var _timeout: TimeInterval?
 
   init(timeout: TimeInterval) {
     let configuration = URLSessionConfiguration.ephemeral
@@ -251,9 +283,13 @@ private final class SynchronousHTTPClient: HTTPClient {
     self.session = URLSession(configuration: configuration)
   }
 
-  func prepare() {
+  /// Clears the previous outcome and bounds the next request to `timeout`
+  /// when that is shorter than the session's own limit, so a flush deadline
+  /// is not overrun by one slow request.
+  func prepare(timeout: TimeInterval?) {
     self.lock.lock()
     self._outcome = nil
+    self._timeout = timeout
     self.lock.unlock()
   }
 
@@ -268,6 +304,13 @@ private final class SynchronousHTTPClient: HTTPClient {
     request: URLRequest,
     completion: @escaping (Result<HTTPURLResponse, Error>) -> Void
   ) {
+    var request = request
+    self.lock.lock()
+    if let timeout = self._timeout, timeout > 0 {
+      request.timeoutInterval = min(request.timeoutInterval, timeout)
+    }
+    self.lock.unlock()
+
     let semaphore = DispatchSemaphore(value: 0)
     let task = self.session.dataTask(with: request) { [weak self] _, response, error in
       let httpResponse = response as? HTTPURLResponse
@@ -312,7 +355,8 @@ extension TelemetryClient {
     logger: Logger?,
     rootExporter: (any SpanExporter)? = nil,
     childExporter: (any SpanExporter)? = nil,
-    rootSpanLimits: SpanLimits = TelemetryLimit.rootSpanLimits
+    rootSpanLimits: SpanLimits = TelemetryLimit.rootSpanLimits,
+    flushBudget: TimeInterval = 30
   ) -> TelemetryClient? {
     guard let configuration = CollectorOTLPConfiguration(
       environment: environment,
@@ -337,7 +381,8 @@ extension TelemetryClient {
       logger: logger,
       rootExporter: rootExporter ?? makeExporter(for: .test),
       childExporter: childExporter ?? makeExporter(for: .child),
-      rootSpanLimits: rootSpanLimits
+      rootSpanLimits: rootSpanLimits,
+      flushBudget: flushBudget
     )
 
     return TelemetryClient(
@@ -353,12 +398,15 @@ private final class LiveTelemetryClient {
   private static let providerEnvironmentLock = NSLock()
 
   private let attachedChildProviders = LockIsolated([TracerProviderSdk]())
+  private let childExporter: CountingSpanExporter
   private let childForwarder: ExecutionChildSpanProcessor
   private let childProviderResource: Resource
+  private let childSpansWrittenOff = LockIsolated(0)
   private let executionProvider: TracerProviderSdk
   private let executionNamePrefix: String?
   private let executionNameSuffix: String?
   private let executionAttributes: [String: AttributeValue]
+  private let flushBudget: TimeInterval
   private let runKey: String
   private let logger: Logger?
   private let registry = ExecutionTraceRegistry()
@@ -375,10 +423,12 @@ private final class LiveTelemetryClient {
     logger: Logger?,
     rootExporter: any SpanExporter,
     childExporter: any SpanExporter,
-    rootSpanLimits: SpanLimits
+    rootSpanLimits: SpanLimits,
+    flushBudget: TimeInterval
   ) {
     self.executionNamePrefix = configuration.runEnvironment.executionNamePrefix
     self.executionNameSuffix = configuration.runEnvironment.executionNameSuffix
+    self.flushBudget = flushBudget
     self.runKey = configuration.runEnvironment.key
     self.logger = logger
     self.jobSpanContext = Self.jobSpanContext(environment: environment)
@@ -404,8 +454,10 @@ private final class LiveTelemetryClient {
       instrumentationVersion: TestCollector.version
     )
 
+    let countingChildExporter = CountingSpanExporter(exporter: childExporter)
+    self.childExporter = countingChildExporter
     let childProcessor = BatchSpanProcessor(
-      spanExporter: childExporter,
+      spanExporter: countingChildExporter,
       scheduleDelay: 1,
       exportTimeout: 30,
       maxQueueSize: 8192,
@@ -549,9 +601,38 @@ private final class LiveTelemetryClient {
     span.end()
   }
 
+  /// Flushes both streams against one deadline: test executions first, then
+  /// child spans with whatever budget remains. The SDK's batch processor does
+  /// not honour its flush timeout, so the child flush runs on its own thread
+  /// and is abandoned at the deadline; it keeps exporting until the process
+  /// exits, but nothing waits for it.
   func forceFlush() {
-    self.executionProvider.forceFlush(timeout: 30)
-    self.childForwarder.forceFlush(timeout: 30)
+    let start = ProcessInfo.processInfo.systemUptime
+    self.executionProvider.forceFlush(timeout: self.flushBudget)
+
+    let remaining = max(self.flushBudget - (ProcessInfo.processInfo.systemUptime - start), 0)
+    let childFlushDone = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      self.childForwarder.forceFlush(timeout: remaining)
+      childFlushDone.signal()
+    }
+    _ = childFlushDone.wait(timeout: .now() + remaining)
+
+    // Spans still in flight after the deadline are reported once; a later
+    // flush in the same process counts only what arrived after this one.
+    let unexported = self.childSpansWrittenOff.withValue { writtenOff in
+      let unexported = max(
+        self.childForwarder.forwardedSpanCount - self.childExporter.exportedSpanCount - writtenOff,
+        0
+      )
+      writtenOff += unexported
+      return unexported
+    }
+    if unexported > 0 {
+      self.logger?.warning(
+        "\(unexported) OpenTelemetry child span(s) were not exported within the \(Int(self.flushBudget)) s flush budget or were rejected by the endpoint; test.execution results are unaffected."
+      )
+    }
   }
 
   private func attachChildForwarder() {

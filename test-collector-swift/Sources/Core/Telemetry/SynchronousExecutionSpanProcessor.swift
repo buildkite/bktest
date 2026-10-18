@@ -1,5 +1,6 @@
 import Foundation
 import OpenTelemetryApi
+import OpenTelemetryProtocolExporterCommon
 import OpenTelemetrySdk
 
 /// Why the most recent export attempt failed. Exporters that cannot tell
@@ -36,18 +37,35 @@ protocol FailureReportingSpanExporter: SpanExporter {
   var lastFailure: SpanExportFailure? { get }
 }
 
+/// Exports each finished `test.execution` span on the test thread, in bounded
+/// batches, so results reach the receiver before the process exits. Spans a
+/// transient failure leaves behind are retried after a backoff; a terminal
+/// failure drops only the batch it rejected.
 final class SynchronousExecutionSpanProcessor: SpanProcessor {
+  /// A batch never exceeds this many spans, nor this many encoded bytes
+  /// before compression, so a backlog accumulated during an outage cannot
+  /// become one request over the receiver's 900 KiB limit. A single span
+  /// larger than the byte cap is sent on its own.
+  static let maxBatchSpanCount = 120
+  static let maxBatchEncodedSize = 512 * 1024
+
   private static let retryDelays: [TimeInterval] = [10, 20, 30, 60]
 
   let isStartRequired = false
   let isEndRequired = true
+
+  private struct PendingSpan {
+    let data: SpanData
+    let encodedSize: Int
+  }
 
   private let exporter: any SpanExporter
   private let failureReporter: (any FailureReportingSpanExporter)?
   private let exporterLock = NSLock()
   private let logger: Logger?
   private let now: () -> TimeInterval
-  private var pending = [SpanData]()
+  private let sleep: (TimeInterval) -> Void
+  private var pending = [PendingSpan]()
   private var retryDelayIndex = 0
   private var retryNotBefore: TimeInterval?
   private var droppedCount = 0
@@ -56,12 +74,14 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
   init(
     exporter: any SpanExporter,
     logger: Logger?,
-    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+    sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
   ) {
     self.exporter = exporter
     self.failureReporter = exporter as? any FailureReportingSpanExporter
     self.logger = logger
     self.now = now
+    self.sleep = sleep
   }
 
   func onStart(parentContext: SpanContext?, span: any ReadableSpan) {}
@@ -70,8 +90,9 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
     self.exporterLock.lock()
     defer { self.exporterLock.unlock() }
 
-    let name = span.getAttributes()[BuildkiteTelemetryAttribute.testName]?.description ?? span.name
-    self.pending.append(span.toSpanData())
+    let data = span.toSpanData()
+    self.pending.append(PendingSpan(data: data, encodedSize: Self.encodedSize(of: data)))
+    let name = Self.testName(data)
     if let retryNotBefore = self.retryNotBefore, self.now() < retryNotBefore {
       self.logger?.debug(
         "Queued OpenTelemetry test execution during export backoff: \(name) (\(self.pending.count) pending)"
@@ -79,18 +100,16 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
       return
     }
 
-    if self.exportPending() {
+    switch self.exportPending() {
+    case .exported:
       self.logger?.debug("Exported OpenTelemetry test execution: \(name)")
-      return
-    }
-
-    let failure = self.failureReporter?.lastFailure
-    if failure?.isRetryable ?? true {
+    case .retryLater:
+      let failure = self.failureReporter?.lastFailure
       self.logger?.error(
-        "OpenTelemetry export failed for \(name)\(failure.map { " (\($0.reason))" } ?? ""); the execution remains queued in this process"
+        "OpenTelemetry export failed for \(name)\(failure.map { " (\($0.reason))" } ?? ""); \(self.pending.count) execution(s) remain queued in this process"
       )
-    } else {
-      self.reportDropped(count: self.dropPending(), failure: failure)
+    case .dropped:
+      break
     }
   }
 
@@ -107,11 +126,28 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
     self.exporter.shutdown(explicitTimeout: explicitTimeout)
   }
 
-  // The process exits after the bundle flush, so anything still unsent here
-  // is lost; count it as dropped.
+  // The flush is the last chance before the process exits: the first attempt
+  // ignores any backoff, later ones wait it out while the budget allows.
+  // Anything still unsent at the deadline is lost; count it as dropped.
   private func flush(timeout: TimeInterval?) {
-    if !self.pending.isEmpty, !self.exportPending(timeout: timeout) {
-      self.reportDropped(count: self.dropPending(), failure: self.failureReporter?.lastFailure)
+    let deadline = timeout.map { self.now() + $0 }
+    var attempted = false
+    while !self.pending.isEmpty {
+      if attempted, let retryNotBefore = self.retryNotBefore, self.now() < retryNotBefore {
+        guard let deadline, retryNotBefore < deadline else { break }
+        self.sleep(retryNotBefore - self.now())
+      }
+      if attempted, let deadline, self.now() >= deadline { break }
+      attempted = true
+      self.exportPending(deadline: deadline)
+    }
+    if !self.pending.isEmpty {
+      let batch = self.pending[...]
+      self.reportDropped(
+        count: self.drop(batch),
+        detail: "unsent at flush\(Self.detail(self.failureReporter?.lastFailure))",
+        batch: batch
+      )
     }
     if self.droppedCount > self.reportedDroppedCount {
       self.logger?.warning(
@@ -126,42 +162,90 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
     }
   }
 
-  private func exportPending(timeout: TimeInterval? = nil) -> Bool {
-    switch self.exporter.export(spans: self.pending, explicitTimeout: timeout) {
-    case .success:
-      self.pending.removeAll()
-      self.retryDelayIndex = 0
-      self.retryNotBefore = nil
-      return true
-    case .failure:
+  private enum ExportOutcome {
+    case exported
+    case retryLater
+    case dropped
+  }
+
+  /// Exports batches from the head of the queue until it is empty, the
+  /// deadline passes, or a batch fails. A failed batch starts a backoff
+  /// either way so a rejecting receiver is not hit once per test; a terminal
+  /// failure additionally drops that batch, and the rest stay queued for the
+  /// next attempt.
+  @discardableResult
+  private func exportPending(deadline: TimeInterval? = nil) -> ExportOutcome {
+    while !self.pending.isEmpty {
+      let batch = self.nextBatch()
+      let timeout = deadline.map { max($0 - self.now(), 0) }
+      if case .success = self.exporter.export(spans: batch.map(\.data), explicitTimeout: timeout) {
+        self.pending.removeFirst(batch.count)
+        self.retryDelayIndex = 0
+        self.retryNotBefore = nil
+        if let deadline, self.now() >= deadline { return .retryLater }
+        continue
+      }
+
       let delay = Self.retryDelays[self.retryDelayIndex]
       self.retryNotBefore = self.now() + delay
       self.retryDelayIndex = min(self.retryDelayIndex + 1, Self.retryDelays.count - 1)
-      return false
+      let failure = self.failureReporter?.lastFailure
+      guard let failure, !failure.isRetryable else { return .retryLater }
+      self.reportDropped(
+        count: self.drop(batch),
+        detail: "export-failure\(Self.detail(failure))",
+        batch: batch
+      )
+      return .dropped
     }
+    return .exported
   }
 
-  private func dropPending() -> Int {
-    let count = self.pending.count
-    self.pending.removeAll()
-    self.droppedCount += count
-    return count
+  private func nextBatch() -> ArraySlice<PendingSpan> {
+    var end = self.pending.startIndex
+    var size = 0
+    while end < self.pending.endIndex, end - self.pending.startIndex < Self.maxBatchSpanCount {
+      size += self.pending[end].encodedSize
+      if size > Self.maxBatchEncodedSize, end > self.pending.startIndex { break }
+      end += 1
+    }
+    return self.pending[self.pending.startIndex..<end]
+  }
+
+  private func drop(_ batch: ArraySlice<PendingSpan>) -> Int {
+    self.pending.removeSubrange(batch.indices)
+    self.droppedCount += batch.count
+    return batch.count
   }
 
   // The first drop is reported immediately so the cause is visible next to
   // the test that triggered it; the run total is reported at flush.
-  private func reportDropped(count: Int, failure: SpanExportFailure?) {
+  private func reportDropped(count: Int, detail: String, batch: ArraySlice<PendingSpan>) {
+    let range = batch.count == 1
+      ? Self.testName(batch[batch.startIndex].data)
+      : "\(Self.testName(batch[batch.startIndex].data)) … \(Self.testName(batch[batch.endIndex - 1].data))"
     guard self.reportedDroppedCount == 0 else {
-      self.logger?.debug("Dropped \(count) OpenTelemetry test execution(s)\(Self.detail(failure))")
+      self.logger?.debug("Dropped \(count) OpenTelemetry test execution(s) (\(detail)): \(range)")
       return
     }
     self.reportedDroppedCount = self.droppedCount
     self.logger?.warning(
-      "TEST RESULTS MISSING: OpenTelemetry dropped \(count) test.execution span(s) (export-failure\(Self.detail(failure))). OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine."
+      "TEST RESULTS MISSING: OpenTelemetry dropped \(count) test.execution span(s) (\(detail)): \(range). OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine."
     )
   }
 
   private static func detail(_ failure: SpanExportFailure?) -> String {
     failure.map { ", last OTLP failure: \($0.reason)" } ?? ""
+  }
+
+  private static func testName(_ span: SpanData) -> String {
+    span.attributes[BuildkiteTelemetryAttribute.testName]?.description ?? span.name
+  }
+
+  private static func encodedSize(of span: SpanData) -> Int {
+    let request = Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest.with {
+      $0.resourceSpans = SpanAdapter.toProtoResourceSpans(spanDataList: [span])
+    }
+    return (try? request.serializedData().count) ?? 0
   }
 }
