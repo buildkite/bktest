@@ -31,13 +31,14 @@ const failureCause = (error) => {
 
 // Builds one OTLP/HTTP protobuf exporter for a single span stream and counts
 // what passes through it, since the SDK exposes no hook for export outcomes.
-// `metrics` is mutated: handed, exported, failed and lastFailure.
+// `metrics` is mutated: handed, exported, failed and lastFailure. `onSettled`
+// runs after every batch's outcome has been counted.
 //
 // The exporter's own concurrency limit (default 30) fails batches outright
 // instead of queueing them; the batch processor already bounds what is in
 // flight (one batch at a time on its timer, the whole queue on a flush), so
 // the limit is lifted rather than turned into a reason to drop results.
-const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics }) => {
+const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, onSettled = () => {} }) => {
   const exporter = withoutExporterEnv(() => new sdk.exporter.OTLPTraceExporter({
     url: endpoint,
     headers: {
@@ -65,6 +66,7 @@ const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics }) => {
           metrics.failed += spans.length
           metrics.lastFailure = failureCause(result && result.error)
         }
+        onSettled()
         resultCallback(result)
       }
 

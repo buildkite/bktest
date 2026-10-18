@@ -117,7 +117,24 @@ const createSession = (settings) => {
   }
   const reported = { failed: 0, notExported: 0 }
 
+  // The batch processor drops a span when its queue is full, and a run of
+  // fast tests ends spans faster than one Node thread can export them, so
+  // spans that would overflow the queue are held here instead and handed
+  // over as exports complete. Memory is the only cap. The queue's length is
+  // tracked as spans handed to the processor minus spans it has handed on,
+  // which the processor does synchronously as it starts each export.
   const sizes = processorSizes()
+  const held = []
+  let queued = 0
+  const feedHeldSpans = () => {
+    let fed = 0
+    while (held.length > 0 && queued - metrics.handed < sizes.queue) {
+      queued += 1
+      fed += 1
+      processor.onEnd(held.shift())
+    }
+    return fed
+  }
   const exporter = createExporter({
     sdk,
     endpoint: settings.endpoint,
@@ -125,6 +142,7 @@ const createSession = (settings) => {
     runKey,
     stream: SPAN_STREAM,
     metrics,
+    onSettled: feedHeldSpans,
   })
   const processor = new trace.BatchSpanProcessor(exporter, {
     maxQueueSize: sizes.queue,
@@ -132,6 +150,15 @@ const createSession = (settings) => {
     scheduledDelayMillis: SCHEDULE_DELAY_MILLISECONDS,
     exportTimeoutMillis: EXPORT_TIMEOUT_MILLISECONDS,
   })
+  const holdingProcessor = {
+    onStart: (span, context) => processor.onStart(span, context),
+    onEnd: (span) => {
+      held.push(span)
+      feedHeldSpans()
+    },
+    forceFlush: () => processor.forceFlush(),
+    shutdown: () => processor.shutdown(),
+  }
   const resource = resources.defaultResource()
     .merge(resources.detectResources({ detectors: [resources.envDetector] }))
     .merge(resources.resourceFromAttributes(resourceAttributes(runEnv)))
@@ -140,7 +167,7 @@ const createSession = (settings) => {
     idGenerator,
     resource,
     spanLimits: SPAN_LIMITS,
-    spanProcessors: [processor],
+    spanProcessors: [holdingProcessor],
   })
   const tracer = provider.getTracer(TRACER_NAME, version)
   const run = runAttributes(settings)
@@ -268,16 +295,38 @@ const createSession = (settings) => {
   // its own warning.
   const unexplained = (error) => metrics.failed === reported.failed && describeError(error)
 
-  // The processor's flush only covers the queue; a batch its timer already
-  // handed to the exporter (retries included) is joined through the exporter.
-  const forceFlush = async () => {
-    let drained = false
-    try {
-      drained = await awaitWithinBudget(processor.forceFlush().finally(() => exporter.forceFlush()))
-    } catch (error) {
-      const cause = unexplained(error)
-      if (cause) warn(`Could not flush OpenTelemetry spans: ${cause}`)
+  // The processor's flush only covers its queue; a batch its timer already
+  // handed to the exporter (retries included) is joined through the exporter,
+  // and spans held back from a full queue are fed in and flushed again until
+  // none are left or the budget runs out. A failed batch has been counted by
+  // the exporter and does not stop the rest from being sent.
+  const drain = async () => {
+    let failure = null
+    for (;;) {
+      feedHeldSpans()
+      // Spans fed while this flush ran sit in the queue behind it, so the
+      // loop flushes once more until a flush fed nothing and held none back.
+      const queuedBefore = queued
+      try {
+        if (!await awaitWithinBudget(processor.forceFlush().finally(() => exporter.forceFlush()))) return { drained: false, failure }
+      } catch (error) {
+        failure = error
+      }
+      if (held.length === 0 && queued === queuedBefore) return { drained: true, failure }
+      // The flush emptied the queue, so held spans must fit now; if none do,
+      // the processor has shut down and nothing will drain it.
+      if (held.length > 0 && feedHeldSpans() === 0) return { drained: false, failure }
     }
+  }
+
+  const warnUnlessCounted = (action, failure) => {
+    const cause = failure && unexplained(failure)
+    if (cause) warn(`Could not ${action}: ${cause}`)
+  }
+
+  const forceFlush = async () => {
+    const { drained, failure } = await drain()
+    warnUnlessCounted('flush OpenTelemetry spans', failure)
     reportDrops({ drained })
   }
 
@@ -297,12 +346,12 @@ const createSession = (settings) => {
   const shutdown = async () => {
     if (shutDown) return
     shutDown = true
-    let drained = false
+    let { drained, failure } = await drain()
+    warnUnlessCounted('flush OpenTelemetry spans', failure)
     try {
-      drained = await awaitWithinBudget(provider.shutdown())
+      drained = await awaitWithinBudget(provider.shutdown()) && drained
     } catch (error) {
-      const cause = unexplained(error)
-      if (cause) warn(`Could not shut down OpenTelemetry span export: ${cause}`)
+      warnUnlessCounted('shut down OpenTelemetry span export', error)
     }
     reportDrops({ drained })
     if (drained) process.off('exit', onExit)

@@ -241,6 +241,11 @@ than the queue size warns and resets both to their defaults. The server rejects
 request bodies over 900 KiB, so lower the batch size rather than raise it if a
 suite produces very large failure output.
 
+A full queue never drops a result. A file of fast tests finishes spans faster
+than the worker can export them, so spans that would overflow the queue are
+held in memory and handed to the exporter as earlier batches complete, with
+memory as the only cap; the queue size only bounds what is in flight.
+
 Span attribute values are truncated to 10,243 characters, each span keeps at
 most 128 attributes and 100 events, and each event keeps at most 128
 attributes. The attribute limit matches the server, which truncates test names
@@ -250,12 +255,13 @@ at the same 10,243 characters, as the other collectors cut theirs. Both limits
 count Unicode code points.
 
 The worker flushes its queue at the end of every test file, because Jest
-exits workers without any later hook. Flushes in one worker share a 30-second
-budget: a healthy endpoint never consumes it, but once a failing endpoint has
-used it up, later flushes stop waiting and export continues in the background
-until the worker exits. The exporter retries on 429, 502, 503, 504, timeouts
-and connection errors with backoff; other responses (400, 401, 403, 404, 413)
-fail the batch immediately.
+exits workers without any later hook. Each file's flush waits up to 30 seconds
+for a slow endpoint. Flushes in one worker share a 30-second budget that only
+failures consume: a healthy endpoint never consumes it, but once a failing
+endpoint has used it up, later flushes stop waiting and export continues in
+the background until the worker exits. The exporter retries on 429, 502, 503,
+504, timeouts and connection errors with backoff; other responses (400, 401,
+403, 404, 413) fail the batch immediately.
 
 ## When something goes wrong
 

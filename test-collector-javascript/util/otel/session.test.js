@@ -41,7 +41,9 @@ const runSession = (scenario) => new Promise((resolve, reject) => {
   for (const key of Object.keys(env)) {
     if (/^(OTEL_|TRACEPARENT|TRACESTATE|BUILDKITE_TESTS_OTEL_)/.test(key)) delete env[key]
   }
-  execFile(process.execPath, [driver, JSON.stringify({ tests: [{ start: record(), line: 3 }], ...scenario })], { env }, (error, stdout, stderr) => {
+  // A 10,000-span burst prints well over the default 1 MiB.
+  const maxBuffer = 256 * 1024 * 1024
+  execFile(process.execPath, [driver, JSON.stringify({ tests: [{ start: record(), line: 3 }], ...scenario })], { env, maxBuffer }, (error, stdout, stderr) => {
     if (error) return reject(new Error(`${error.message}\n${stderr}`))
     resolve(JSON.parse(stdout))
   })
@@ -303,16 +305,40 @@ describe('createSession', () => {
     expect(warnings).toEqual(flushed.warnings)
   }, 15000)
 
-  it('counts spans the full queue rejected as not exported', async () => {
+  it('exports every span of a synchronous burst larger than the queue', async () => {
+    const { spans, flushed, warnings } = await runSession({
+      tests: [{ start: record(), line: 3, repeat: 10000 }],
+      forceFlush: true,
+    })
+
+    expect(spans).toHaveLength(10000)
+    expect(flushed.metrics).toMatchObject({ ended: 10000, exported: 10000, failed: 0 })
+    expect(warnings).toEqual([])
+  }, 60000)
+
+  it('holds spans past a small queue until the endpoint takes them, in order', async () => {
     const { spans, flushed, warnings } = await runSession({
       env: { BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE: '2', BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE: '2' },
+      tests: Array.from({ length: 5 }, (_, i) => ({ start: record({ id: `id-${i}` }), line: 3 })),
+      forceFlush: true,
+    })
+
+    expect(spans.map((span) => span.attributes['buildkite.test.execution.external_id'])).toEqual(['id-0', 'id-1', 'id-2', 'id-3', 'id-4'])
+    expect(flushed.metrics).toMatchObject({ exported: 5, failed: 0 })
+    expect(warnings).toEqual([])
+  })
+
+  it('counts held spans the endpoint rejected as dropped, once', async () => {
+    const { requests, flushed, warnings } = await runSession({
+      env: { BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE: '2', BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE: '2' },
+      respond: 401,
       tests: Array.from({ length: 5 }, () => ({ start: record(), line: 3 })),
       forceFlush: true,
     })
 
-    expect(spans).toHaveLength(4)
-    expect(flushed.warnings).toEqual([expect.stringMatching(/dropped 1 test\.execution span\(s\) \(not-exported\)/)])
-    expect(warnings).toEqual(flushed.warnings)
+    expect(requests).toHaveLength(3)
+    expect(flushed.metrics).toMatchObject({ ended: 5, handed: 5, exported: 0, failed: 5 })
+    expect(warnings).toEqual([expect.stringMatching(/dropped 5 test\.execution span\(s\) \(export-failure, last OTLP failure: 401\)/)])
   })
 
   it('validates the queue and batch size overrides', async () => {
