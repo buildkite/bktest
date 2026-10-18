@@ -273,6 +273,13 @@ func TestExportErrorsNeverCarryTheTokenOrRunKey(t *testing.T) {
 	if !strings.Contains(sdkErrors.String(), `Authorization: Token token="[REDACTED]", Buildkite-Tests-Run-Key: [REDACTED]`) {
 		t.Errorf("the SDK error was not redacted in place:\n%s", sdkErrors.String())
 	}
+
+	// A one-character run key is legal and would otherwise rewrite the
+	// status code and the URL of every error.
+	short := redact(errors.New(`400 Bad Request: Buildkite-Tests-Run-Key: 4`), []string{"s3cret-token", "4"})
+	if got := short.Error(); got != `400 Bad Request: Buildkite-Tests-Run-Key: 4` {
+		t.Errorf("a short run key must be left alone, got %q", got)
+	}
 }
 
 func TestUnreachableEndpointWarnsAndStaysBounded(t *testing.T) {

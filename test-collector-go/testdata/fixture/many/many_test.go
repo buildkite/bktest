@@ -10,7 +10,7 @@ import (
 	bktest "github.com/buildkite/bktest/test-collector-go"
 )
 
-const Subtests = 10000
+const subtests = 10000
 
 func TestMain(m *testing.M) {
 	os.Exit(bktest.Main(m))
@@ -18,7 +18,7 @@ func TestMain(m *testing.M) {
 
 func TestMany(t *testing.T) {
 	bktest.Start(t)
-	for i := range Subtests {
+	for i := range subtests {
 		t.Run(fmt.Sprintf("case-%05d", i), func(t *testing.T) {
 			bktest.Start(t)
 		})

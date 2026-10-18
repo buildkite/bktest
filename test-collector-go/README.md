@@ -194,8 +194,10 @@ through a helper in another package; tests in a `package main` get the
 package's import path as their scope. Subtest locations are read from the
 source file the closure was compiled from, so build tags are honoured; a
 subtest created by a helper in another package is looked up in the
-`_test.go` files of the directory `go test` runs the binary in, and a test
-binary run from another directory reports the closure's own line instead.
+`_test.go` files of the directory `go test` runs the binary in (under the
+`-tags` the binary was built with on Go 1.24 and later, under the default
+build constraints on Go 1.23), and a test binary run from another
+directory reports the closure's own line instead.
 
 `go test` caches a package's result, and a cached package runs nothing, so
 it is not reported again in this mode. Changing the token, run key or
@@ -274,11 +276,16 @@ Two cases lose results without that warning:
 - A process killed before its first batch is exported (SIGTERM, SIGINT, the
   agent cancelling the job) loses what was queued, in both modes. The
   collector installs no signal handlers.
-- `go test -timeout` kills the test binary before `Main` can flush, so the
-  `bktest` package loses the package's completed executions. The command
-  reads the stream `go test` printed up to the timeout and reports those
-  tests (the one that was running as `fail`); use it when `-timeout`
-  matters.
+- The `bktest` package queues a test's result once `go test` has settled
+  it, which it can only observe when the test's parent finishes (for a
+  subtest whose parent called `Start`) or when `m.Run` returns (for
+  top-level tests, and for subtests whose parent did not call `Start`). A
+  test binary that dies before then, from `go test -timeout`, `os.Exit`, or
+  a panic in a goroutine or in a test that did not call `Start`, loses the
+  package's completed executions; a panic in a test that called `Start`
+  is reported along with everything settled before it. The command reads
+  the stream `go test` printed up to that point and reports those tests
+  (the one that was running as `fail`); use it when that matters.
 
 Export failures are reported with the token and the run key redacted, even
 when the receiver echoes them back.

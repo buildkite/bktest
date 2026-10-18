@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"go/version"
 	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -26,12 +28,12 @@ const fixtureModule = "example.com/fixture"
 // testing package: TestMain, t.Cleanup ordering, panics and exit codes.
 func goTest(t *testing.T, pkg string, vars map[string]string, flags ...string) (string, int) {
 	t.Helper()
-	return goTestUncached(t, pkg, vars, append([]string{"-count=1"}, flags...)...)
+	return goTestCacheable(t, pkg, vars, append([]string{"-count=1"}, flags...)...)
 }
 
-// goTestUncached is goTest without -count=1, so go test may serve the
+// goTestCacheable is goTest without -count=1, so go test may serve the
 // package from its cache.
-func goTestUncached(t *testing.T, pkg string, vars map[string]string, flags ...string) (string, int) {
+func goTestCacheable(t *testing.T, pkg string, vars map[string]string, flags ...string) (string, int) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("runs go test in a subprocess")
@@ -231,7 +233,7 @@ func TestEndToEndWithGoTest(t *testing.T) {
 		}
 	}
 	if bodies != 6 { // TestFail, TestSubtests, TestSubtests/b, TestTagged, TestCleanupBeforeStart and its subtest
-		t.Errorf("got %d body phases, want 4: %v", bodies, r.ChildNames())
+		t.Errorf("got %d body phases, want 6: %v", bodies, r.ChildNames())
 	}
 
 	for _, req := range r.All() {
@@ -279,6 +281,12 @@ func TestEndToEndBuildTagsDoNotMoveLocations(t *testing.T) {
 	}
 	line := fixtureLine(t, filepath.Join("tagged", "tagged_test.go"), `^func TestTagged\(`)
 	for _, name := range []string{"TestTagged", "TestTagged/sub", "TestTagged/helper"} {
+		if name == "TestTagged/helper" && !buildInfoRecordsTags() {
+			// A subtest without a frame of its test function is looked
+			// up in the package's test files, which only Go 1.24 and
+			// later can read under the right build tags.
+			continue
+		}
 		s := otlptest.FindSpan(t, spans, name)
 		if got := otlptest.StringAttr(t, s.Attributes, "code.file.path"); got != "tagged/tagged_test.go" {
 			t.Errorf("%s file = %q", name, got)
@@ -287,6 +295,12 @@ func TestEndToEndBuildTagsDoNotMoveLocations(t *testing.T) {
 			t.Errorf("%s line = %d, want %d (the declaration of TestTagged)", name, got, line)
 		}
 	}
+}
+
+// buildInfoRecordsTags reports whether the toolchain running the fixtures
+// records -tags in a test binary's build info, which Go 1.24 introduced.
+func buildInfoRecordsTags() bool {
+	return version.Compare(runtime.Version(), "go1.24") >= 0
 }
 
 // go test caches a package's result keyed on the environment variables the
@@ -298,7 +312,7 @@ func TestEndToEndCachedPackageRerunsWhenTheRunChanges(t *testing.T) {
 	run := func(r *otlptest.Receiver, runKey string) string {
 		vars := exportedTo(r, runKey)
 		maps.Copy(vars, cache)
-		out, code := goTestUncached(t, "./cmd/tool", vars)
+		out, code := goTestCacheable(t, "./cmd/tool", vars)
 		if code != 0 {
 			t.Fatalf("exit code = %d:\n%s", code, out)
 		}

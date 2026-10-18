@@ -48,6 +48,11 @@ type Options struct {
 	// disables child export with a warning when the global provider cannot
 	// register span processors.
 	TracerProvider trace.TracerProvider
+	// GlobalTracerProvider is the global provider as it was when the suite
+	// started, for a collector set up later from inside a test: a provider
+	// a test installs for itself must not become the one the forwarder
+	// attaches to. Nil means read the global provider now.
+	GlobalTracerProvider trace.TracerProvider
 	// QuietWithoutToken makes Setup return nil silently when no token is
 	// configured, for the library: a developer running go test on a laptop
 	// has no credential and should see no output. The command warns,
@@ -192,8 +197,9 @@ func Setup(ctx context.Context, opts Options) (c *Collector) {
 func (c *Collector) awaitRoom() {
 	const poll = 2 * time.Millisecond
 	for c.testStats.inFlight()+c.testSizes.batch > c.testSizes.queue && time.Duration(c.waited.Load()) < processorTimeout {
+		start := time.Now()
 		time.Sleep(poll)
-		c.waited.Add(int64(poll))
+		c.waited.Add(int64(time.Since(start)))
 	}
 }
 
@@ -240,7 +246,10 @@ func (c *Collector) configureChildExport(ctx context.Context, opts Options, endp
 
 	tp := opts.TracerProvider
 	if tp == nil {
-		tp = otel.GetTracerProvider()
+		tp = opts.GlobalTracerProvider
+		if tp == nil {
+			tp = otel.GetTracerProvider()
+		}
 		if isUnconfiguredGlobal(tp) {
 			otel.SetTracerProvider(sdktrace.NewTracerProvider(
 				sdktrace.WithResource(res),

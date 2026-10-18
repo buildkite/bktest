@@ -1,22 +1,19 @@
 //go:build integration
 
-// Package tagged only builds with -tags=integration, so its test file is
-// excluded by the default build constraints the collector would otherwise
-// scan with.
+// This file only builds with -tags=integration; tagged_default_test.go
+// declares a TestTagged of its own for every other build, the way
+// per-platform test files do, so a scan under the wrong build constraints
+// finds the wrong declaration.
+
 package tagged
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"example.com/fixture/internal/testhelper"
 	bktest "github.com/buildkite/bktest/test-collector-go"
 )
-
-func TestMain(m *testing.M) {
-	os.Exit(bktest.Main(m))
-}
 
 func TestTagged(t *testing.T) {
 	bktest.Start(t)

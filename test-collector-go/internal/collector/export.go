@@ -177,12 +177,17 @@ func (e countingExporter) ExportSpans(ctx context.Context, spans []sdktrace.Read
 	return e.SpanExporter.ExportSpans(ctx, spans)
 }
 
+// minRedactedLength is the shortest secret redact replaces.
+const minRedactedLength = 8
+
 // redact replaces each secret in the error's text with [REDACTED].
 func redact(err error, secrets []string) error {
 	msg := err.Error()
 	redacted := msg
 	for _, secret := range secrets {
-		if secret != "" {
+		// A run key can be a single character; redacting "4" would rewrite
+		// every status code and URL in the message.
+		if len(secret) >= minRedactedLength {
 			redacted = strings.ReplaceAll(redacted, secret, "[REDACTED]")
 		}
 	}

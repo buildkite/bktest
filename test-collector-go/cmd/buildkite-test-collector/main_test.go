@@ -257,9 +257,6 @@ func TestBuildFailureWarnsNamingThePackageAndExitsOne(t *testing.T) {
 	}
 }
 
-// TestRealGoTestStreamResolvesLocations pipes a real go test -json run of
-// the fixture module through the wrapper from inside that module, so go
-// list can find the test files.
 // goTestJSON runs go test -json for a fixture package in a subprocess, from
 // the fixture's directory as a customer would, with the collector's
 // variables cleared so the fixture's own TestMain does not export.
@@ -303,6 +300,9 @@ func goTestJSON(t *testing.T, pkg string, flags ...string) string {
 	return string(stream)
 }
 
+// TestRealGoTestStreamResolvesLocations pipes a real go test -json run of
+// the fixture module through the wrapper from inside that module, so go
+// list can find the test files.
 func TestRealGoTestStreamResolvesLocations(t *testing.T) {
 	stream := goTestJSON(t, ".")
 	r := otlptest.NewReceiver(t)
@@ -366,11 +366,29 @@ func TestBuildTagsFlagGivesTaggedPackagesTheirLocations(t *testing.T) {
 	if got := otlptest.TestNames(spans); !equalSets(got, []string{"TestTagged", "TestTagged/sub", "TestTagged/helper"}) {
 		t.Fatalf("exported %v", got)
 	}
+	line := declarationLine(t, filepath.Join("..", "..", "testdata", "fixture", "tagged", "tagged_test.go"), "TestTagged")
 	for _, s := range spans {
-		if otlptest.StringAttr(t, s.Attributes, string(semconv.CodeFilePathKey)) != "tagged/tagged_test.go" || otlptest.IntAttr(t, s.Attributes, string(semconv.CodeLineNumberKey)) != 21 {
-			t.Errorf("location = %v, want tagged/tagged_test.go:21", s.Attributes)
+		if otlptest.StringAttr(t, s.Attributes, string(semconv.CodeFilePathKey)) != "tagged/tagged_test.go" || otlptest.IntAttr(t, s.Attributes, string(semconv.CodeLineNumberKey)) != line {
+			t.Errorf("location = %v, want tagged/tagged_test.go:%d", s.Attributes, line)
 		}
 	}
+}
+
+// declarationLine is the line "func <name>(" is declared on in the file,
+// read independently of the collector's own parsing.
+func declarationLine(t *testing.T, file, name string) int {
+	t.Helper()
+	src, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, l := range strings.Split(string(src), "\n") {
+		if strings.HasPrefix(l, "func "+name+"(") {
+			return i + 1
+		}
+	}
+	t.Fatalf("func %s not declared in %s", name, file)
+	return 0
 }
 
 func equalSets(a, b []string) bool {

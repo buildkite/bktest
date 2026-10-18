@@ -303,6 +303,28 @@ func TestSuiteOwnedProviderIsAttachedNotReplaced(t *testing.T) {
 			t.Fatalf("forwarder not attached to the suite's global provider: %v", got)
 		}
 	})
+
+	// The library sets the collector up from inside the first test, which
+	// may have installed a provider of its own by then; the one the suite
+	// started with is the one that gets the forwarder.
+	t.Run("via the global provider the suite started with", func(t *testing.T) {
+		r := otlptest.NewReceiver(t)
+		suites, tests := sdktrace.NewTracerProvider(), sdktrace.NewTracerProvider()
+		t.Cleanup(func() { suites.Shutdown(context.Background()); tests.Shutdown(context.Background()) })
+		restoreGlobalProvider(t)
+		otel.SetTracerProvider(tests)
+		c := configured(t, r, nil, func(o *Options) { o.GlobalTracerProvider = suites })
+		run(c, "TestSnapshot", passes(func(ex *Execution) {
+			_, s := suites.Tracer("suite").Start(ex.Context(), "from-the-suite")
+			s.End()
+			_, s = tests.Tracer("test").Start(ex.Context(), "from-the-test")
+			s.End()
+		}))
+		c.Shutdown()
+		if got := r.ChildNames(); got["from-the-suite"] != 1 || got["from-the-test"] != 0 {
+			t.Fatalf("child stream = %v, want only the span from the suite's provider", got)
+		}
+	})
 }
 
 func TestCollectorManagedProviderIsInstalledOnlyWhenNobodyConfiguredOne(t *testing.T) {

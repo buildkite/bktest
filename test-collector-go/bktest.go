@@ -39,6 +39,7 @@ import (
 	"testing"
 
 	"github.com/buildkite/bktest/test-collector-go/internal/collector"
+	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -100,6 +101,10 @@ func newOptions(opts []Option) options {
 var (
 	mainCalled  atomic.Bool
 	mainOptions []Option
+	// globalProvider is the global tracer provider as Main found it, so
+	// the collector set up from inside the first test attaches to the
+	// provider the suite configured and not to one that test installed.
+	globalProvider trace.TracerProvider
 	// current is the collector configured for this process, nil until the
 	// first Start, Tag or Annotate and when export is disabled.
 	current   atomic.Pointer[collector.Collector]
@@ -120,6 +125,7 @@ var (
 func Main(m *testing.M, opts ...Option) int {
 	mainCalled.Store(true)
 	mainOptions = opts
+	globalProvider = otel.GetTracerProvider()
 	testPackage = callerPackage()
 
 	code := m.Run()
@@ -150,7 +156,9 @@ func configured() *collector.Collector {
 	defer setupMu.Unlock()
 	if !setupDone {
 		setupDone = true
-		current.Store(collector.Setup(context.Background(), newOptions(mainOptions)))
+		o := newOptions(mainOptions)
+		o.GlobalTracerProvider = globalProvider
+		current.Store(collector.Setup(context.Background(), o))
 	}
 	return current.Load()
 }

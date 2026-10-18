@@ -202,8 +202,10 @@ func identify(t testing.TB) collector.Identity {
 		id.File = moduleRelative(id.File)
 		return id
 	}
-	var pos declaration
-	ok := false
+	var (
+		pos declaration
+		ok  bool
+	)
 	if found {
 		pos, ok = declaredIn(frame.File)[top]
 	}
@@ -273,27 +275,31 @@ type declaration struct {
 
 var (
 	declaredMu sync.Mutex
-	declared   = map[string]map[string]declaration{}
+	declared   = map[string]func() map[string]declaration{}
 )
 
 // declaredIn maps every top-level function declared in the named source
-// file to its position, parsing each file once. A file name recorded by
+// file to its position, parsing each file once, outside the lock so
+// parallel tests do not queue behind a parse. A file name recorded by
 // -trimpath is not a path on disk; go test runs the binary in the package's
 // source directory, so the file is then looked for there.
 func declaredIn(file string) map[string]declaration {
 	declaredMu.Lock()
-	defer declaredMu.Unlock()
-	if decls, ok := declared[file]; ok {
-		return decls
+	parse, ok := declared[file]
+	if !ok {
+		parse = sync.OnceValue(func() map[string]declaration {
+			decls := parseDeclarations(file)
+			if decls == nil && !filepath.IsAbs(file) {
+				if cwd, err := os.Getwd(); err == nil {
+					decls = parseDeclarations(filepath.Join(cwd, filepath.Base(file)))
+				}
+			}
+			return decls
+		})
+		declared[file] = parse
 	}
-	decls := parseDeclarations(file)
-	if decls == nil && !filepath.IsAbs(file) {
-		if cwd, err := os.Getwd(); err == nil {
-			decls = parseDeclarations(filepath.Join(cwd, filepath.Base(file)))
-		}
-	}
-	declared[file] = decls
-	return decls
+	declaredMu.Unlock()
+	return parse()
 }
 
 // parseDeclarations returns the top-level functions in the file, or nil
@@ -313,13 +319,27 @@ func parseDeclarations(path string) map[string]declaration {
 	return decls
 }
 
+// buildContext is the host's default build context with the -tags the test
+// binary was built with, which Go 1.24 and later record in its build info.
+// An earlier toolchain records nothing, so the default constraints stand.
+var buildContext = sync.OnceValue(func() *build.Context {
+	ctx := build.Default
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "-tags" {
+				ctx.BuildTags = strings.Split(setting.Value, ",")
+			}
+		}
+	}
+	return &ctx
+})
+
 // declarations maps every top-level function declared in the test files of
 // the working directory, which go test makes the package's source
-// directory, to its position. The binary does not know which build tags
-// it was built with, so a function declared in several files, such as
-// per-platform ones, is taken from the first file the host's default build
-// constraints select, and otherwise from whichever file declares it; a
-// binary run elsewhere finds none.
+// directory, to its position. A function declared in several files, such
+// as per-platform ones, is taken from the first file the build constraints
+// select, and otherwise from whichever file declares it; a binary run
+// elsewhere finds none.
 var declarations = sync.OnceValue(func() map[string]declaration {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -336,7 +356,7 @@ var declarations = sync.OnceValue(func() map[string]declaration {
 		if entry.IsDir() || !strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		selected, _ := build.Default.MatchFile(cwd, name)
+		selected, _ := buildContext().MatchFile(cwd, name)
 		for fn, pos := range parseDeclarations(filepath.Join(cwd, name)) {
 			if _, seen := decls[fn]; !seen || (selected && !matched[fn]) {
 				decls[fn], matched[fn] = pos, selected
