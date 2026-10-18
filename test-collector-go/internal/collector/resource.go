@@ -1,4 +1,4 @@
-package bktest
+package collector
 
 import (
 	"maps"

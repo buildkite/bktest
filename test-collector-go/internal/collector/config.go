@@ -1,4 +1,4 @@
-package bktest
+package collector
 
 import (
 	"fmt"
@@ -41,6 +41,7 @@ const (
 	testSpanAttributeLengthLimit    = 10243 // the limit the other collectors use
 	testSpanEventCountLimit         = 100
 	testSpanEventAttributeLength    = 16384
+	exceptionMessageLength          = 10243
 	testSpanEventAttributeCountMax  = 128
 	defaultTestSpanProcessorEnvName = "BUILDKITE_TESTS_OTEL_TEST_SPAN"
 	childSpanProcessorEnvName       = "BUILDKITE_TESTS_OTEL_CHILD_SPAN"
@@ -192,7 +193,7 @@ func spanProcessorSizes(prefix string, defaults processorSizes) processorSizes {
 		batch: spanProcessorSize(batchName, defaults.batch),
 	}
 	if sizes.batch > sizes.queue {
-		warnf("%s must be <= %s; using defaults (batch %d, queue %d)", batchName, queueName, defaults.batch, defaults.queue)
+		Warnf("%s must be <= %s; using defaults (batch %d, queue %d)", batchName, queueName, defaults.batch, defaults.queue)
 		return defaults
 	}
 	return sizes
@@ -206,6 +207,6 @@ func spanProcessorSize(name string, def int) int {
 	if n, err := strconv.ParseUint(value, 10, 31); err == nil && n >= 1 {
 		return int(n)
 	}
-	warnf("%s must be a positive integer up to %d, using default %d", name, spanProcessorSizeMax, def)
+	Warnf("%s must be a positive integer up to %d, using default %d", name, spanProcessorSizeMax, def)
 	return def
 }

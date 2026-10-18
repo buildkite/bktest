@@ -1,4 +1,4 @@
-package bktest
+package collector
 
 import (
 	"context"
@@ -6,24 +6,23 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/buildkite/bktest/test-collector-go/internal/otlptest"
 )
 
 func TestDisabledWithoutToken(t *testing.T) {
 	out := captureWarnings(t)
-	baseEnv(t, map[string]string{"BUILDKITE_ANALYTICS_KEY": "run-1", "BUILDKITE_TESTS_OTLP_TOKEN": "   "})
+	otlptest.ClearEnv(t, map[string]string{"BUILDKITE_ANALYTICS_KEY": "run-1", "BUILDKITE_TESTS_OTLP_TOKEN": "   "})
 
-	c, err := configure(context.Background(), options{})
-	if !errors.Is(err, errNoToken) || c != nil {
-		t.Fatalf("configure = (%v, %v), want (nil, errNoToken)", c, err)
+	c, err := New(context.Background(), Options{})
+	if !errors.Is(err, ErrNoToken) || c != nil {
+		t.Fatalf("New = (%v, %v), want (nil, ErrNoToken)", c, err)
 	}
-	if setUp(options{}) != nil {
-		t.Fatal("setUp returned a collector without a token")
+	if !strings.Contains(err.Error(), "not be uploaded") {
+		t.Fatalf("error = %q", err)
 	}
-	if got := out.String(); !strings.Contains(got, "OpenTelemetry span export disabled: no token configured") || !strings.Contains(got, "not be uploaded") {
-		t.Fatalf("warning = %q", got)
-	}
-	if n := strings.Count(out.String(), "\n"); n != 1 {
-		t.Fatalf("expected exactly one warning line, got %d:\n%s", n, out.String())
+	if out.Len() != 0 {
+		t.Fatalf("New must leave warning to the caller, got:\n%s", out.String())
 	}
 }
 
@@ -41,7 +40,7 @@ func TestTokenPrecedence(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			baseEnv(t, map[string]string{"BUILDKITE_TESTS_OTLP_TOKEN": tc.otlp, "BUILDKITE_ANALYTICS_TOKEN": tc.json})
+			otlptest.ClearEnv(t, map[string]string{"BUILDKITE_TESTS_OTLP_TOKEN": tc.otlp, "BUILDKITE_ANALYTICS_TOKEN": tc.json})
 			if got := apiToken(); got != tc.want {
 				t.Fatalf("apiToken() = %q, want %q", got, tc.want)
 			}
@@ -50,7 +49,7 @@ func TestTokenPrecedence(t *testing.T) {
 }
 
 func TestEndpointResolution(t *testing.T) {
-	baseEnv(t, nil)
+	otlptest.ClearEnv(t, nil)
 	if got := endpoint(); got != "https://tests-otlp.buildkite.com/v1/traces" {
 		t.Fatalf("default endpoint = %q", got)
 	}
@@ -67,18 +66,17 @@ func TestEndpointResolution(t *testing.T) {
 }
 
 func TestInvalidEndpointDisablesExport(t *testing.T) {
-	out := captureWarnings(t)
-	baseEnv(t, map[string]string{
+	otlptest.ClearEnv(t, map[string]string{
 		"BUILDKITE_TESTS_OTLP_TOKEN":        "tok",
 		"BUILDKITE_ANALYTICS_KEY":           "run-1",
 		"BUILDKITE_ANALYTICS_OTLP_ENDPOINT": "",
 	})
-	c := setUp(options{})
-	if c != nil {
+	c, err := New(context.Background(), Options{})
+	if c != nil || err == nil {
 		t.Fatal("expected no collector for an empty endpoint")
 	}
-	if !strings.Contains(out.String(), "OpenTelemetry span export disabled: endpoint \"\"") {
-		t.Fatalf("warning = %q", out.String())
+	if !strings.Contains(err.Error(), "endpoint \"\"") {
+		t.Fatalf("error = %q", err)
 	}
 }
 
@@ -103,28 +101,21 @@ func TestRunKeyValidation(t *testing.T) {
 }
 
 func TestInvalidRunKeyDisablesExportBeforeBuildingExporters(t *testing.T) {
-	out := captureWarnings(t)
-	r := newReceiver(t)
-	baseEnv(t, map[string]string{
+	r := otlptest.NewReceiver(t)
+	otlptest.ClearEnv(t, map[string]string{
 		"BUILDKITE_TESTS_OTLP_TOKEN":        "tok",
 		"BUILDKITE_ANALYTICS_KEY":           "has space",
 		"BUILDKITE_ANALYTICS_OTLP_ENDPOINT": "://not-even-parsable",
 	})
-	c, err := configure(context.Background(), options{})
+	c, err := New(context.Background(), Options{})
 	if c != nil || err == nil {
-		t.Fatalf("configure = (%v, %v), want (nil, error)", c, err)
+		t.Fatalf("New = (%v, %v), want (nil, error)", c, err)
 	}
 	want := `run key "has space" is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); it must be 1-255 printable ASCII characters without spaces`
 	if err.Error() != want {
 		t.Fatalf("error = %q\nwant  %q", err, want)
 	}
-	if setUp(options{}) != nil {
-		t.Fatal("setUp returned a collector for an invalid run key")
-	}
-	if !strings.Contains(out.String(), "OpenTelemetry span export disabled: run key \"has space\" is invalid") {
-		t.Fatalf("warning = %q", out.String())
-	}
-	if len(r.all()) != 0 {
+	if len(r.All()) != 0 {
 		t.Fatal("a request was sent despite the invalid run key")
 	}
 }
@@ -153,7 +144,7 @@ func TestSpanProcessorSizes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			out := captureWarnings(t)
-			baseEnv(t, nil)
+			otlptest.ClearEnv(t, nil)
 			if tc.queue != "" {
 				t.Setenv("BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE", tc.queue)
 			}
@@ -175,7 +166,7 @@ func TestSpanProcessorSizes(t *testing.T) {
 }
 
 func TestSpanProcessorSizesAreIndependentPerStream(t *testing.T) {
-	baseEnv(t, map[string]string{
+	otlptest.ClearEnv(t, map[string]string{
 		"BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE": "3",
 		"BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE": "2",
 	})
@@ -191,7 +182,7 @@ func TestSpanProcessorSizesAreIndependentPerStream(t *testing.T) {
 
 func TestRunEnvDetectionAndOverrides(t *testing.T) {
 	t.Run("buildkite", func(t *testing.T) {
-		baseEnv(t, map[string]string{
+		otlptest.ClearEnv(t, map[string]string{
 			"BUILDKITE_BUILD_ID":     "build-uuid",
 			"BUILDKITE_BUILD_URL":    "https://buildkite.com/o/p/builds/1",
 			"BUILDKITE_BRANCH":       "main",
@@ -207,7 +198,7 @@ func TestRunEnvDetectionAndOverrides(t *testing.T) {
 		}
 	})
 	t.Run("analytics overrides win when non-empty", func(t *testing.T) {
-		baseEnv(t, map[string]string{
+		otlptest.ClearEnv(t, map[string]string{
 			"BUILDKITE_BUILD_ID":         "build-uuid",
 			"BUILDKITE_BRANCH":           "main",
 			"BUILDKITE_ANALYTICS_KEY":    "build-uuid-otel",
@@ -220,7 +211,7 @@ func TestRunEnvDetectionAndOverrides(t *testing.T) {
 		}
 	})
 	t.Run("github actions", func(t *testing.T) {
-		baseEnv(t, map[string]string{
+		otlptest.ClearEnv(t, map[string]string{
 			"GITHUB_RUN_NUMBER":  "7",
 			"GITHUB_ACTION":      "__run",
 			"GITHUB_RUN_ATTEMPT": "2",
@@ -235,14 +226,14 @@ func TestRunEnvDetectionAndOverrides(t *testing.T) {
 		}
 	})
 	t.Run("circleci", func(t *testing.T) {
-		baseEnv(t, map[string]string{"CIRCLE_BUILD_NUM": "9", "CIRCLE_WORKFLOW_ID": "wf", "CIRCLE_BRANCH": "b", "CIRCLE_SHA1": "s", "CIRCLE_BUILD_URL": "u"})
+		otlptest.ClearEnv(t, map[string]string{"CIRCLE_BUILD_NUM": "9", "CIRCLE_WORKFLOW_ID": "wf", "CIRCLE_BRANCH": "b", "CIRCLE_SHA1": "s", "CIRCLE_BUILD_URL": "u"})
 		got := detectRunEnv()
 		if got.ci != "circleci" || got.key != "wf-9" || got.url != "u" {
 			t.Fatalf("detectRunEnv() = %+v", got)
 		}
 	})
 	t.Run("codeship", func(t *testing.T) {
-		baseEnv(t, map[string]string{"CI_NAME": "codeship", "CI_BUILD_ID": "cs", "CI_BRANCH": "b", "CI_COMMIT_ID": "c", "CI_COMMIT_MESSAGE": "m"})
+		otlptest.ClearEnv(t, map[string]string{"CI_NAME": "codeship", "CI_BUILD_ID": "cs", "CI_BRANCH": "b", "CI_COMMIT_ID": "c", "CI_COMMIT_MESSAGE": "m"})
 		got := detectRunEnv()
 		if got.ci != "codeship" || got.key != "cs" || got.message != "m" {
 			t.Fatalf("detectRunEnv() = %+v", got)
@@ -250,14 +241,14 @@ func TestRunEnvDetectionAndOverrides(t *testing.T) {
 	})
 	uuid := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	t.Run("generic ci", func(t *testing.T) {
-		baseEnv(t, map[string]string{"CI": "true"})
+		otlptest.ClearEnv(t, map[string]string{"CI": "true"})
 		got := detectRunEnv()
 		if got.ci != "generic" || !uuid.MatchString(got.key) {
 			t.Fatalf("detectRunEnv() = %+v", got)
 		}
 	})
 	t.Run("local", func(t *testing.T) {
-		baseEnv(t, nil)
+		otlptest.ClearEnv(t, nil)
 		got := detectRunEnv()
 		if got.ci != "" || !uuid.MatchString(got.key) {
 			t.Fatalf("detectRunEnv() = %+v", got)

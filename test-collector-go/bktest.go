@@ -1,4 +1,9 @@
-// Package bktest reports go test results to Buildkite Test Engine over OTLP.
+// Package bktest reports go test results to Buildkite Test Engine over OTLP
+// from inside the test binary, with child spans for the test's own
+// instrumentation. Most suites do not need it: pipe go test -json through
+// the buildkite-test-collector command instead, which reports every test
+// without touching the source. Use this package when you want child spans,
+// tags or annotations.
 //
 // Wire it up once per package in TestMain and once per test:
 //
@@ -12,23 +17,87 @@
 //		...
 //	}
 //
-// Export needs a token (BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_TOKEN)
-// and a valid run key. Without them Main prints one warning and every other
-// function is a no-op, so go test runs exactly as it would without this
-// package.
+// Only tests that call Start are reported. Export needs a token
+// (BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_TOKEN) and a valid run
+// key. Without them Main prints one warning and every other function is a
+// no-op, so go test runs exactly as it would without this package.
+//
+// Do not combine this package with the buildkite-test-collector command on
+// the same package: every test would be reported twice.
 package bktest
 
 import (
 	"context"
+	"fmt"
+	"maps"
+	"os"
+	"runtime"
 	"runtime/debug"
 	"sync/atomic"
 	"testing"
+
+	"github.com/buildkite/bktest/test-collector-go/internal/collector"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Version is the collector version reported on every test execution.
-const Version = "0.1.0"
+const Version = collector.Version
 
-var mainCalled atomic.Bool
+// Option configures Main.
+type Option func(*collector.Options)
+
+// SpanFilter decides whether a finished child span is exported to Buildkite.
+// It never sees test.execution or phase spans.
+type SpanFilter func(span sdktrace.ReadOnlySpan) bool
+
+// WithTags adds run-level tags to every test execution as buildkite.tag.<key>.
+func WithTags(tags map[string]string) Option {
+	return func(o *collector.Options) {
+		if o.Tags == nil {
+			o.Tags = map[string]string{}
+		}
+		maps.Copy(o.Tags, tags)
+	}
+}
+
+// WithLocationPrefix prepends prefix to every test's file path, for suites
+// that run from a subdirectory of the repository.
+func WithLocationPrefix(prefix string) Option {
+	return func(o *collector.Options) { o.LocationPrefix = prefix }
+}
+
+// WithSpanFilter drops child spans the filter rejects before they are sent to
+// Buildkite. Test spans are never filtered.
+func WithSpanFilter(filter SpanFilter) Option {
+	return func(o *collector.Options) { o.Filter = filter }
+}
+
+// WithTracerProvider names the suite's own tracer provider. The collector
+// attaches its child span forwarder to it and leaves its sampler, resource
+// and processors alone. Without this option the collector attaches to the
+// global provider when it is an SDK provider, installs its own when nobody
+// has configured one, and otherwise exports test spans only.
+func WithTracerProvider(tp trace.TracerProvider) Option {
+	return func(o *collector.Options) { o.TracerProvider = tp }
+}
+
+// newOptions starts from the environment and lets explicit options override it.
+func newOptions(opts []Option) collector.Options {
+	o := collector.Options{LocationPrefix: os.Getenv("BUILDKITE_ANALYTICS_LOCATION_PREFIX"), ChildSpans: true}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	return o
+}
+
+var (
+	mainCalled atomic.Bool
+	// current is the collector Main configured for this process.
+	current atomic.Pointer[collector.Collector]
+)
 
 // Main runs the package's tests through m.Run, exports their results and
 // returns m.Run's exit code unchanged. Call it from TestMain:
@@ -36,7 +105,9 @@ var mainCalled atomic.Bool
 //	func TestMain(m *testing.M) { os.Exit(bktest.Main(m)) }
 //
 // Setup failures and export failures are reported on stderr and never change
-// the exit code.
+// the exit code. After export Main prints one line on stderr saying how many
+// executions it exported for the package, which the buildkite-test-collector
+// command uses to detect a suite that is reported twice.
 func Main(m *testing.M, opts ...Option) int {
 	mainCalled.Store(true)
 	c := setUp(newOptions(opts))
@@ -48,27 +119,50 @@ func Main(m *testing.M, opts ...Option) int {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
-					warnf("Could not shut down OpenTelemetry span export: %v\n%s", r, debug.Stack())
+					collector.Warnf("Could not shut down OpenTelemetry span export: %v\n%s", r, debug.Stack())
 				}
 			}()
-			c.shutdown()
+			c.Shutdown()
 		}()
+		fmt.Fprintln(os.Stderr, ExportedLine(c.Exported(), callerPackage()))
 	}
 	return code
 }
 
+// ExportedLine is the line Main prints after export; the
+// buildkite-test-collector command recognises it in go test output.
+func ExportedLine(count int, importPath string) string {
+	return fmt.Sprintf("buildkite-test-collector: exported %d test executions from %s", count, importPath)
+}
+
+// callerPackage is the import path of the package that called Main.
+func callerPackage() string {
+	pcs := make([]uintptr, 8)
+	n := runtime.Callers(3, pcs)
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		frame, more := frames.Next()
+		if frame.Function != "" {
+			return packagePath(frame.Function)
+		}
+		if !more {
+			return "unknown"
+		}
+	}
+}
+
 // setUp configures export, turning any failure into a warning and a nil
 // collector so a misconfigured collector never stops the tests.
-func setUp(o options) (c *collector) {
+func setUp(o collector.Options) (c *collector.Collector) {
 	defer func() {
 		if r := recover(); r != nil {
-			warnf("OpenTelemetry span export disabled: %v\n%s", r, debug.Stack())
+			collector.Warnf("OpenTelemetry span export disabled: %v\n%s", r, debug.Stack())
 			c = nil
 		}
 	}()
-	c, err := configure(context.Background(), o)
+	c, err := collector.New(context.Background(), o)
 	if err != nil {
-		warnf("OpenTelemetry span export disabled: %v", err)
+		collector.Warnf("OpenTelemetry span export disabled: %v", err)
 		return nil
 	}
 	return c
@@ -84,40 +178,40 @@ func Start(t testing.TB) context.Context {
 	c := current.Load()
 	if c == nil {
 		if !mainCalled.Load() {
-			warnOnce("start-without-main", "bktest.Start was called but bktest.Main did not run; call os.Exit(bktest.Main(m)) from TestMain so test results are exported.")
+			collector.WarnOnce("start-without-main", "bktest.Start was called but bktest.Main did not run; call os.Exit(bktest.Main(m)) from TestMain so test results are exported.")
 		}
 		return context.Background()
 	}
-	return c.startTest(t)
+	return startTest(c, t)
 }
 
 // Tag adds a per-test tag that becomes buildkite.tag.<key> on the execution.
 // It overrides a run-level tag with the same key. When export is disabled it
-// does nothing; with a context from outside a test it drops the tag and warns
-// once.
-func Tag(ctx context.Context, key, value string) {
-	ex := executionFromContext(ctx)
+// does nothing; for a test that has not called Start it drops the tag and
+// warns once.
+func Tag(t testing.TB, key, value string) {
+	ex := lookup(t)
 	if ex == nil {
 		if current.Load() == nil {
 			return
 		}
-		warnOnce("tag-outside-test", "bktest.Tag was called with a context that does not belong to a running test; the tag %q was ignored. Further calls will not be reported.", key)
+		collector.WarnOnce("tag-without-start", "bktest.Tag was called for %s before bktest.Start; the tag %q was ignored. Further calls will not be reported.", t.Name(), key)
 		return
 	}
-	ex.tag(key, value)
+	ex.Tag(key, value)
 }
 
 // Annotate adds a test.annotation event to the test execution. When export
-// is disabled it does nothing; with a context from outside a test it drops
+// is disabled it does nothing; for a test that has not called Start it drops
 // the annotation and warns once.
-func Annotate(ctx context.Context, content string) {
-	ex := executionFromContext(ctx)
+func Annotate(t testing.TB, content string) {
+	ex := lookup(t)
 	if ex == nil {
 		if current.Load() == nil {
 			return
 		}
-		warnOnce("annotate-outside-test", "bktest.Annotate was called with a context that does not belong to a running test; the annotation was ignored. Further calls will not be reported.")
+		collector.WarnOnce("annotate-without-start", "bktest.Annotate was called for %s before bktest.Start; the annotation was ignored. Further calls will not be reported.", t.Name())
 		return
 	}
-	ex.annotate(content)
+	ex.Annotate(content)
 }

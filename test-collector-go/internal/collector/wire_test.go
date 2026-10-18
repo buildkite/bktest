@@ -1,30 +1,30 @@
-package bktest
+package collector
 
 import (
 	"context"
 	"errors"
-	"net"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/buildkite/bktest/test-collector-go/internal/otlptest"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func TestRequestsCarryHeadersPerStreamIncludingRetries(t *testing.T) {
-	r := newReceiver(t)
-	r.failNext.Store(1) // the first request is answered 503 and must be retried with the same headers
+	r := otlptest.NewReceiver(t)
+	r.FailNext.Store(1) // the first request is answered 503 and must be retried with the same headers
 	c := configured(t, r, nil)
 
-	runTest(c, "TestWithChild", func(ctx context.Context, ft *fakeT) {
-		_, child := otel.Tracer("suite").Start(ctx, "db.query")
+	run(c, "TestWithChild", passes(func(ex *Execution) {
+		_, child := otel.Tracer("suite").Start(ex.Context(), "db.query")
 		child.End()
-	})
-	c.shutdown()
+	}))
+	c.Shutdown()
 
-	reqs := r.all()
+	reqs := r.All()
 	if len(reqs) < 3 {
 		t.Fatalf("expected the retried test request, its retry, and a child request; got %d requests", len(reqs))
 	}
@@ -47,7 +47,7 @@ func TestRequestsCarryHeadersPerStreamIncludingRetries(t *testing.T) {
 			t.Errorf("request %d Content-Encoding = %q", i, got)
 		}
 		stream := req.Header.Get(spanStreamHeader)
-		for _, s := range req.spans() {
+		for _, s := range req.Spans() {
 			wantStream := streamChild
 			if s.Name == testSpanName {
 				wantStream = streamTest
@@ -57,13 +57,13 @@ func TestRequestsCarryHeadersPerStreamIncludingRetries(t *testing.T) {
 			}
 		}
 	}
-	if got := len(r.stream(streamTest)); got != 2 {
+	if got := len(r.Stream(streamTest)); got != 2 {
 		t.Fatalf("expected the test request and its retry, got %d test requests", got)
 	}
-	if len(r.testSpans()) != 2 {
-		t.Fatalf("expected the same test span in both attempts, got %d", len(r.testSpans()))
+	if len(r.TestSpans()) != 2 {
+		t.Fatalf("expected the same test span in both attempts, got %d", len(r.TestSpans()))
 	}
-	childSpans := r.spansOn(streamChild)
+	childSpans := r.SpansOn(streamChild)
 	names := map[string]bool{}
 	for _, s := range childSpans {
 		names[s.Name] = true
@@ -74,7 +74,7 @@ func TestRequestsCarryHeadersPerStreamIncludingRetries(t *testing.T) {
 }
 
 func TestIgnoresStandardOTelEnvironment(t *testing.T) {
-	r := newReceiver(t)
+	r := otlptest.NewReceiver(t)
 	c := configured(t, r, map[string]string{
 		"OTEL_EXPORTER_OTLP_ENDPOINT":            "http://127.0.0.1:1/wrong",
 		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":     "http://127.0.0.1:1/wrong",
@@ -95,20 +95,19 @@ func TestIgnoresStandardOTelEnvironment(t *testing.T) {
 	})
 
 	for _, name := range []string{"TestA", "TestB", "TestC"} {
-		runTest(c, name, func(ctx context.Context, ft *fakeT) {
-			ft.Fail()
-			ctx, child := otel.Tracer("suite").Start(ctx, "child")
+		run(c, name, fails(func(ex *Execution) {
+			_, child := otel.Tracer("suite").Start(ex.Context(), "child")
 			child.End()
-			Annotate(ctx, "note")
-		})
+			ex.Annotate("note")
+		}))
 	}
-	c.shutdown()
+	c.Shutdown()
 
-	spans := r.testSpans()
+	spans := r.TestSpans()
 	if len(spans) != 3 {
 		t.Fatalf("got %d test spans, want 3 (sampler/env must not apply)", len(spans))
 	}
-	for _, req := range r.all() {
+	for _, req := range r.All() {
 		for k := range req.Header {
 			if strings.HasPrefix(strings.ToLower(k), "x-env") {
 				t.Errorf("header %s leaked from OTEL_EXPORTER_OTLP_*HEADERS", k)
@@ -125,7 +124,7 @@ func TestIgnoresStandardOTelEnvironment(t *testing.T) {
 		if len(s.Attributes) < 10 {
 			t.Errorf("span has only %d attributes; OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT leaked", len(s.Attributes))
 		}
-		if got := stringAttr(t, s.Attributes, attrTestScope); len(got) <= 3 {
+		if got := otlptest.StringAttr(t, s.Attributes, attrTestScope); len(got) <= 3 {
 			t.Errorf("scope %q truncated; OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT leaked", got)
 		}
 		if len(s.Events) != 1 || s.Events[0].Name != annotationEventName {
@@ -136,9 +135,9 @@ func TestIgnoresStandardOTelEnvironment(t *testing.T) {
 
 func TestEveryTestSpanIsExportedOrCountedAsDropped(t *testing.T) {
 	out := captureWarnings(t)
-	r := newReceiver(t)
+	r := otlptest.NewReceiver(t)
 	release := make(chan struct{})
-	r.blockUntil = release
+	r.BlockUntil = release
 	c := configured(t, r, map[string]string{
 		"BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE": "2",
 		"BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE": "2",
@@ -146,13 +145,13 @@ func TestEveryTestSpanIsExportedOrCountedAsDropped(t *testing.T) {
 
 	const total = 6
 	for i := 0; i < total; i++ {
-		runTest(c, "TestOverflow", nil)
+		run(c, "TestOverflow", nil)
 	}
 	time.Sleep(50 * time.Millisecond)
 	close(release)
-	c.shutdown()
+	c.Shutdown()
 
-	exported := len(r.testSpans())
+	exported := len(r.TestSpans())
 	if exported >= total {
 		t.Fatalf("all %d spans were exported through a queue of 2; the overflow case was not exercised", total)
 	}
@@ -178,15 +177,15 @@ func TestEveryTestSpanIsExportedOrCountedAsDropped(t *testing.T) {
 
 func TestExportFailureIsReportedWithItsStatus(t *testing.T) {
 	out := captureWarnings(t)
-	r := newReceiver(t)
-	r.failWith.Store(http.StatusForbidden)
-	r.failNext.Store(10)
+	r := otlptest.NewReceiver(t)
+	r.FailWith.Store(http.StatusForbidden)
+	r.FailNext.Store(10)
 	c := configured(t, r, nil)
 
-	runTest(c, "TestForbidden", nil)
-	c.shutdown()
+	run(c, "TestForbidden", nil)
+	c.Shutdown()
 
-	if got := len(r.stream(streamTest)); got != 1 {
+	if got := len(r.Stream(streamTest)); got != 1 {
 		t.Fatalf("403 must not be retried; got %d requests", got)
 	}
 	want := "TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 403)."
@@ -197,12 +196,12 @@ func TestExportFailureIsReportedWithItsStatus(t *testing.T) {
 
 func TestUnreachableEndpointWarnsAndStaysBounded(t *testing.T) {
 	out := captureWarnings(t)
-	r := newReceiver(t)
-	c := configured(t, r, map[string]string{"BUILDKITE_ANALYTICS_OTLP_ENDPOINT": closedPort(t) + "/v1/traces"})
+	r := otlptest.NewReceiver(t)
+	c := configured(t, r, map[string]string{"BUILDKITE_ANALYTICS_OTLP_ENDPOINT": otlptest.ClosedPort(t) + "/v1/traces"})
 
-	runTest(c, "TestNowhere", nil)
+	run(c, "TestNowhere", nil)
 	started := time.Now()
-	c.shutdown()
+	c.Shutdown()
 	if took := time.Since(started); took > processorTimeout {
 		t.Fatalf("shutdown took %s, over the %s budget", took, processorTimeout)
 	}
@@ -250,11 +249,11 @@ func TestExportDoesNotUseTheProcessDefaultTransport(t *testing.T) {
 	})
 	t.Cleanup(func() { http.DefaultTransport = prev })
 
-	r := newReceiver(t)
+	r := otlptest.NewReceiver(t)
 	c := configured(t, r, nil)
-	runTest(c, "TestOwnTransport", nil)
-	c.shutdown()
-	if n := len(r.testSpans()); n != 1 {
+	run(c, "TestOwnTransport", nil)
+	c.Shutdown()
+	if n := len(r.TestSpans()); n != 1 {
 		t.Fatalf("got %d test spans through the collector's own transport, want 1", n)
 	}
 }
@@ -283,7 +282,7 @@ func TestDropAccountingSeparatesLostFromPending(t *testing.T) {
 }
 
 func TestProducerResourceAndRunAttributes(t *testing.T) {
-	r := newReceiver(t)
+	r := otlptest.NewReceiver(t)
 	c := configured(t, r, map[string]string{
 		"BUILDKITE_BUILD_ID":               "build-uuid",
 		"BUILDKITE_BUILD_URL":              "https://buildkite.com/o/p/builds/1",
@@ -298,12 +297,12 @@ func TestProducerResourceAndRunAttributes(t *testing.T) {
 		"BUILDKITE_ORGANIZATION_SLUG":      "org",
 		"BUILDKITE_TAG":                    "v1",
 		"BUILDKITE_ANALYTICS_KEY":          "build-uuid-go",
-	}, WithLocationPrefix("services/api/"), WithTags(map[string]string{"team": "core"}))
+	}, withLocationPrefix("services/api/"), withTags(map[string]string{"team": "core"}))
 
-	runTest(c, "TestAttrs", nil)
-	c.shutdown()
+	run(c, "TestAttrs", nil)
+	c.Shutdown()
 
-	req := r.stream(streamTest)[0]
+	req := r.Stream(streamTest)[0]
 	res := req.Body.ResourceSpans[0].Resource.GetAttributes()
 	wantRes := map[string]string{
 		"service.name":               "suite",
@@ -316,18 +315,18 @@ func TestProducerResourceAndRunAttributes(t *testing.T) {
 		"vcs.ref.type":               "tag",
 	}
 	for k, v := range wantRes {
-		if got := stringAttr(t, res, k); got != v {
+		if got := otlptest.StringAttr(t, res, k); got != v {
 			t.Errorf("resource %s = %q, want %q", k, got, v)
 		}
 	}
-	if _, ok := attr(res, attrRunKey); ok {
+	if _, ok := otlptest.Attr(res, attrRunKey); ok {
 		t.Error("run key must not be on the resource")
 	}
-	if got := stringAttr(t, res, "process.runtime.version"); !strings.HasPrefix(got, "go") {
+	if got := otlptest.StringAttr(t, res, "process.runtime.version"); !strings.HasPrefix(got, "go") {
 		t.Errorf("process.runtime.version = %q", got)
 	}
 
-	span := r.testSpans()[0]
+	span := r.TestSpans()[0]
 	wantSpan := map[string]string{
 		attrRunKey:                      "build-uuid-go",
 		"buildkite.build_number":        "1",
@@ -342,64 +341,52 @@ func TestProducerResourceAndRunAttributes(t *testing.T) {
 		"buildkite.tag.ci.worker.id":    " agent-1 ",
 	}
 	for k, v := range wantSpan {
-		if got := stringAttr(t, span.Attributes, k); got != v {
+		if got := otlptest.StringAttr(t, span.Attributes, k); got != v {
 			t.Errorf("span %s = %q, want %q", k, got, v)
 		}
 	}
-	if got := stringAttr(t, span.Attributes, "code.file.path"); !strings.HasPrefix(got, "services/api/") || !strings.HasSuffix(got, ".go") {
-		t.Errorf("code.file.path = %q, want the location prefix prepended to a .go file", got)
+	if got := otlptest.StringAttr(t, span.Attributes, "code.file.path"); got != "services/api/"+fixtureFile {
+		t.Errorf("code.file.path = %q, want the location prefix prepended to %s", got, fixtureFile)
 	}
-	if _, ok := attr(span.Attributes, "buildkite.run_url"); ok {
+	if _, ok := otlptest.Attr(span.Attributes, "buildkite.run_url"); ok {
 		t.Error("buildkite.run_url must be omitted when it equals the CI build URL")
 	}
 	for _, key := range []string{"service.name", "cicd.pipeline.run.id", "vcs.ref.head.name"} {
-		if _, ok := attr(span.Attributes, key); ok {
+		if _, ok := otlptest.Attr(span.Attributes, key); ok {
 			t.Errorf("producer attribute %s leaked onto the test span", key)
 		}
 	}
 }
 
 func TestRunURLOnlyWhenItDiffersFromTheCIURL(t *testing.T) {
-	r := newReceiver(t)
+	r := otlptest.NewReceiver(t)
 	c := configured(t, r, map[string]string{
 		"BUILDKITE_BUILD_ID":      "build-uuid",
 		"BUILDKITE_BUILD_URL":     "https://buildkite.com/o/p/builds/1",
 		"BUILDKITE_ANALYTICS_URL": "https://example.com/custom",
 	})
-	runTest(c, "TestURL", nil)
-	c.shutdown()
-	span := r.testSpans()[0]
-	if got := stringAttr(t, span.Attributes, "buildkite.run_url"); got != "https://example.com/custom" {
+	run(c, "TestURL", nil)
+	c.Shutdown()
+	span := r.TestSpans()[0]
+	if got := otlptest.StringAttr(t, span.Attributes, "buildkite.run_url"); got != "https://example.com/custom" {
 		t.Fatalf("buildkite.run_url = %q", got)
 	}
 }
 
 func TestWorkerIDTagOmittedWhenBlankAndOverridable(t *testing.T) {
-	r := newReceiver(t)
+	r := otlptest.NewReceiver(t)
 	c := configured(t, r, map[string]string{"BUILDKITE_AGENT_ID": "  "})
-	runTest(c, "TestBlankAgent", nil)
-	c.shutdown()
-	if _, ok := attr(r.testSpans()[0].Attributes, "buildkite.tag.ci.worker.id"); ok {
+	run(c, "TestBlankAgent", nil)
+	c.Shutdown()
+	if _, ok := otlptest.Attr(r.TestSpans()[0].Attributes, "buildkite.tag.ci.worker.id"); ok {
 		t.Fatal("blank BUILDKITE_AGENT_ID must not produce a tag")
 	}
 
-	r2 := newReceiver(t)
-	c2 := configured(t, r2, map[string]string{"BUILDKITE_AGENT_ID": "agent-9"}, WithTags(map[string]string{"ci.worker.id": "pool-3"}))
-	runTest(c2, "TestExplicitAgent", nil)
-	c2.shutdown()
-	if got := stringAttr(t, r2.testSpans()[0].Attributes, "buildkite.tag.ci.worker.id"); got != "pool-3" {
+	r2 := otlptest.NewReceiver(t)
+	c2 := configured(t, r2, map[string]string{"BUILDKITE_AGENT_ID": "agent-9"}, withTags(map[string]string{"ci.worker.id": "pool-3"}))
+	run(c2, "TestExplicitAgent", nil)
+	c2.Shutdown()
+	if got := otlptest.StringAttr(t, r2.TestSpans()[0].Attributes, "buildkite.tag.ci.worker.id"); got != "pool-3" {
 		t.Fatalf("explicit tag must win over the automatic worker id, got %q", got)
 	}
-}
-
-// closedPort returns a loopback URL nothing listens on.
-func closedPort(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	l.Close()
-	return "http://" + addr
 }

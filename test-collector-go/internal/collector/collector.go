@@ -1,17 +1,19 @@
-package bktest
+// Package collector exports test executions to Buildkite Test Engine over
+// OTLP. The bktest package feeds it from inside a go test process and the
+// buildkite-test-collector command feeds it from go test -json output; both
+// produce the same spans.
+package collector
 
 import (
 	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"maps"
 	"net/url"
 	"os"
 	"reflect"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -22,68 +24,32 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Option configures Main.
-type Option func(*options)
+// Version is the collector version reported on every test execution.
+const Version = "0.1.0"
 
-type options struct {
-	tags           map[string]string
-	locationPrefix string
-	filter         SpanFilter
-	tracerProvider trace.TracerProvider
-}
-
-// newOptions starts from the environment and lets explicit options override it.
-func newOptions(opts []Option) options {
-	o := options{locationPrefix: os.Getenv("BUILDKITE_ANALYTICS_LOCATION_PREFIX")}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&o)
-		}
-	}
-	return o
-}
-
-// SpanFilter decides whether a finished child span is exported to Buildkite.
-// It never sees test.execution or phase spans.
-type SpanFilter func(span sdktrace.ReadOnlySpan) bool
-
-// WithTags adds run-level tags to every test execution as buildkite.tag.<key>.
-func WithTags(tags map[string]string) Option {
-	return func(o *options) {
-		if o.tags == nil {
-			o.tags = map[string]string{}
-		}
-		maps.Copy(o.tags, tags)
-	}
-}
-
-// WithLocationPrefix prepends prefix to every test's file path, for suites
-// that run from a subdirectory of the repository.
-func WithLocationPrefix(prefix string) Option {
-	return func(o *options) { o.locationPrefix = prefix }
-}
-
-// WithSpanFilter drops child spans the filter rejects before they are sent to
-// Buildkite. Test spans are never filtered.
-func WithSpanFilter(filter SpanFilter) Option {
-	return func(o *options) { o.filter = filter }
-}
-
-// WithTracerProvider names the suite's own tracer provider. The collector
-// attaches its child span forwarder to it and leaves its sampler, resource
-// and processors alone. Without this option the collector attaches to the
-// global provider when it is an SDK provider, installs its own when nobody
-// has configured one, and otherwise exports test spans only.
-func WithTracerProvider(tp trace.TracerProvider) Option {
-	return func(o *options) { o.tracerProvider = tp }
+// Options configure a Collector.
+type Options struct {
+	// Tags are run-level tags, exported on every execution as buildkite.tag.<key>.
+	Tags map[string]string
+	// LocationPrefix is prepended to every execution's file path.
+	LocationPrefix string
+	// ChildSpans enables the child stream: a test.body phase under every
+	// execution and a forwarder for the suite's own instrumentation spans.
+	ChildSpans bool
+	// Filter drops child spans it rejects. It never sees test.execution or
+	// phase spans.
+	Filter func(sdktrace.ReadOnlySpan) bool
+	// TracerProvider is the suite's own provider to attach the forwarder to.
+	// Nil means the global provider, installing one when nobody has.
+	TracerProvider trace.TracerProvider
 }
 
 type spanProcessorRegistrar interface {
 	RegisterSpanProcessor(sdktrace.SpanProcessor)
 }
 
-// collector is the configured state for one run in this process.
-type collector struct {
+// Collector is the configured export pipeline for one run in this process.
+type Collector struct {
 	env            runEnv
 	locationPrefix string
 	tags           map[string]string
@@ -94,10 +60,10 @@ type collector struct {
 	testTracer   trace.Tracer
 	testStats    *streamStats
 
-	// childProvider is the suite's own provider from WithTracerProvider;
+	childSpans bool
+	// childProvider is the suite's own provider from Options.TracerProvider;
 	// nil means the global provider at the time each test starts.
-	childProvider trace.TracerProvider
-
+	childProvider  trace.TracerProvider
 	childProcessor sdktrace.SpanProcessor
 	childStats     *streamStats
 	forwarder      *forwarder
@@ -106,18 +72,18 @@ type collector struct {
 	abortDeadline func() time.Time
 }
 
-// current is the collector Main configured for this process.
-var current atomic.Pointer[collector]
+// ErrNoToken is the error New returns when no token is configured. Callers
+// warn about it once and run without export.
+var ErrNoToken = errors.New("no token configured. Set BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_TOKEN; test results will not be uploaded to Buildkite Test Engine")
 
-var errNoToken = errors.New("no token configured. Set BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_TOKEN; test results will not be uploaded to Buildkite Test Engine")
-
-// configure performs the mandatory test-span setup and, if that succeeds,
-// the optional child-span setup.
-func configure(ctx context.Context, opts options) (*collector, error) {
+// New performs the mandatory test-span setup and, when opts.ChildSpans is
+// set, the optional child-span setup. The environment supplies the token,
+// run key, endpoint and CI metadata.
+func New(ctx context.Context, opts Options) (*Collector, error) {
 	token := apiToken()
 	env := detectRunEnv()
 	if token == "" {
-		return nil, errNoToken
+		return nil, ErrNoToken
 	}
 	if !validRunKey(env.key) {
 		// Wording shared with the other collectors.
@@ -128,17 +94,18 @@ func configure(ctx context.Context, opts options) (*collector, error) {
 		return nil, err
 	}
 
-	c := &collector{
+	c := &Collector{
 		env:            env,
-		locationPrefix: opts.locationPrefix,
-		childProvider:  opts.tracerProvider,
-		tags:           runTags(opts.tags),
+		locationPrefix: opts.LocationPrefix,
+		childSpans:     opts.ChildSpans,
+		childProvider:  opts.TracerProvider,
+		tags:           runTags(opts.Tags),
 		links:          jobSpanLinks(),
 		testStats:      &streamStats{},
 		childStats:     &streamStats{},
-		abortDeadline:  sync.OnceValue(func() time.Time { return now().Add(processorTimeout) }),
+		abortDeadline:  sync.OnceValue(func() time.Time { return time.Now().Add(processorTimeout) }),
 	}
-	c.runAttrs = runAttributes(env, opts.locationPrefix)
+	c.runAttrs = runAttributes(env, opts.LocationPrefix)
 	res := producerResource(env)
 
 	testSizes := spanProcessorSizes(defaultTestSpanProcessorEnvName, processorSizes{queue: testSpanQueueSize, batch: testSpanBatchSize})
@@ -169,16 +136,30 @@ func configure(ctx context.Context, opts options) (*collector, error) {
 	)
 	c.testTracer = c.testProvider.Tracer(tracerName, trace.WithInstrumentationVersion(Version))
 
-	if err := c.configureChildExport(ctx, opts, endpointURL, token, res); err != nil {
-		warnf("OpenTelemetry child span export disabled: %v; test.execution export remains enabled", err)
+	if opts.ChildSpans {
+		if err := c.configureChildExport(ctx, opts, endpointURL, token, res); err != nil {
+			Warnf("OpenTelemetry child span export disabled: %v; test.execution export remains enabled", err)
+		}
 	}
 	return c, nil
 }
 
+// RunKey is the Test Engine run key every execution is reported under.
+func (c *Collector) RunKey() string { return c.env.key }
+
+// Exported is the number of test.execution spans the receiver has accepted
+// so far; call it after Shutdown for the final count.
+func (c *Collector) Exported() int {
+	c.testStats.mu.Lock()
+	defer c.testStats.mu.Unlock()
+	return c.testStats.succeeded
+}
+
 // configureChildExport attaches the forwarder to the provider that owns the
-// suite's instrumentation spans, per the ownership rules on WithTracerProvider.
-// Child export is optional, so a provider that panics only costs child spans.
-func (c *collector) configureChildExport(ctx context.Context, opts options, endpointURL *url.URL, token string, res *resource.Resource) error {
+// suite's instrumentation spans, per the ownership rules on
+// Options.TracerProvider. Child export is optional, so a provider that
+// panics only costs child spans.
+func (c *Collector) configureChildExport(ctx context.Context, opts Options, endpointURL *url.URL, token string, res *resource.Resource) error {
 	childSizes := spanProcessorSizes(childSpanProcessorEnvName, processorSizes{queue: childSpanQueueSize, batch: childSpanBatchSize})
 	childExporter, err := newExporter(ctx, endpointURL, token, c.env.key, streamChild)
 	if err != nil {
@@ -191,7 +172,7 @@ func (c *collector) configureChildExport(ctx context.Context, opts options, endp
 		sdktrace.WithBatchTimeout(childSpanDelay),
 		sdktrace.WithExportTimeout(exportTimeout),
 	)
-	fwd := newForwarder(countingProcessor{SpanProcessor: processor, stats: c.childStats}, opts.filter)
+	fwd := newForwarder(countingProcessor{SpanProcessor: processor, stats: c.childStats}, opts.Filter)
 
 	attach := func(tp trace.TracerProvider) (err error) {
 		defer func() {
@@ -207,7 +188,7 @@ func (c *collector) configureChildExport(ctx context.Context, opts options, endp
 		return nil
 	}
 
-	tp := opts.tracerProvider
+	tp := opts.TracerProvider
 	if tp == nil {
 		tp = otel.GetTracerProvider()
 		if isUnconfiguredGlobal(tp) {
@@ -226,7 +207,7 @@ func (c *collector) configureChildExport(ctx context.Context, opts options, endp
 	if attachErr != nil {
 		fwd.Shutdown(ctx)
 		if err := processor.Shutdown(ctx); err != nil {
-			warnf("Could not shut down the child span processor: %v", err)
+			Warnf("Could not shut down the child span processor: %v", err)
 		}
 		return attachErr
 	}
@@ -265,10 +246,11 @@ func jobSpanLinks() []trace.Link {
 	return []trace.Link{{SpanContext: sc}}
 }
 
-// shutdown deactivates the forwarder so no new child spans enqueue, then
-// shuts down the test stream and the child stream against one shared
-// deadline.
-func (c *collector) shutdown() {
+// Shutdown deactivates the forwarder so no new child spans enqueue, then
+// shuts down the test stream and the child stream against one shared 30 s
+// deadline and reports anything that was lost. It is safe to call more
+// than once.
+func (c *Collector) Shutdown() {
 	c.shutdownOnce.Do(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), processorTimeout)
 		defer cancel()
@@ -284,11 +266,11 @@ func (c *collector) shutdown() {
 	})
 }
 
-// abort flushes both streams while a panic unwinds the test binary. It is
+// Abort flushes both streams while a panic unwinds the test binary. It is
 // a flush, not a shutdown, because go test runs the cleanups of the
 // panicking test's ancestors afterwards and their results still need a
 // working pipeline. Every abort shares the deadline the first one set.
-func (c *collector) abort() {
+func (c *Collector) Abort() {
 	ctx, cancel := context.WithDeadline(context.Background(), c.abortDeadline())
 	defer cancel()
 	testDrained := c.drain(ctx, "flush OpenTelemetry span export", c.testProvider.ForceFlush)
@@ -302,12 +284,12 @@ func (c *collector) abort() {
 // drain runs a flush or shutdown and reports whether it finished before the
 // deadline, so the caller knows whether unexported spans are lost or may
 // still be in flight.
-func (c *collector) drain(ctx context.Context, what string, op func(context.Context) error) bool {
+func (c *Collector) drain(ctx context.Context, what string, op func(context.Context) error) bool {
 	err := op(ctx)
 	if err == nil {
 		return true
 	}
-	warnf("Could not %s: %v", what, err)
+	Warnf("Could not %s: %v", what, err)
 	return !errors.Is(err, context.DeadlineExceeded)
 }
 
@@ -315,18 +297,18 @@ func (c *collector) drain(ctx context.Context, what string, op func(context.Cont
 // and about child spans that were lost (best effort). Drops are reported
 // once per increase; spans still in flight at the deadline are reported as
 // pending each time.
-func (c *collector) reportDrops(testDrained, childDrained bool) {
+func (c *Collector) reportDrops(testDrained, childDrained bool) {
 	if test, unreported := c.testStats.unreported(testDrained); unreported {
-		warnf("TEST RESULTS MISSING: OpenTelemetry dropped %d test.execution span(s) (%s).", test.dropped, test.reason)
-		warnf("OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.")
+		Warnf("TEST RESULTS MISSING: OpenTelemetry dropped %d test.execution span(s) (%s).", test.dropped, test.reason)
+		Warnf("OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.")
 	} else if test.pending > 0 {
-		warnf("TEST RESULTS MISSING: %d test.execution span(s) were still exporting when the %s deadline passed and may not have reached Buildkite Test Engine.", test.pending, processorTimeout)
+		Warnf("TEST RESULTS MISSING: %d test.execution span(s) were still exporting when the %s deadline passed and may not have reached Buildkite Test Engine.", test.pending, processorTimeout)
 	}
 
 	if child, unreported := c.childStats.unreported(childDrained); unreported {
-		warnf("OpenTelemetry dropped %d child span(s) (%s); test.execution results are unaffected.", child.dropped, child.reason)
+		Warnf("OpenTelemetry dropped %d child span(s) (%s); test.execution results are unaffected.", child.dropped, child.reason)
 	} else if child.pending > 0 {
-		warnf("OpenTelemetry child span export did not finish within %s; %d child span(s) may be missing. test.execution results are unaffected.", processorTimeout, child.pending)
+		Warnf("OpenTelemetry child span export did not finish within %s; %d child span(s) may be missing. test.execution results are unaffected.", processorTimeout, child.pending)
 	}
 }
 
@@ -362,6 +344,3 @@ func mustRandom(b []byte) {
 }
 
 var _ sdktrace.IDGenerator = secureIDGenerator{}
-
-// now is the realtime clock for span timestamps; tests replace it.
-var now = time.Now

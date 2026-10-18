@@ -1,4 +1,4 @@
-package bktest
+package collector
 
 import (
 	"context"
@@ -148,7 +148,7 @@ func (e countingExporter) ExportSpans(ctx context.Context, spans []sdktrace.Read
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("exporter panicked: %v", r)
-			warnOnce("export-panic:"+fmt.Sprintf("%T", r), "Could not export OpenTelemetry spans: %v. Further %T export failures will not be reported.\n%s", r, r, debug.Stack())
+			WarnOnce("export-panic:"+fmt.Sprintf("%T", r), "Could not export OpenTelemetry spans: %v. Further %T export failures will not be reported.\n%s", r, r, debug.Stack())
 		}
 		e.stats.mu.Lock()
 		defer e.stats.mu.Unlock()

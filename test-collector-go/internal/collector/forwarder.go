@@ -1,4 +1,4 @@
-package bktest
+package collector
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 // ignores everything else the suite's instrumentation produces.
 type forwarder struct {
 	next   sdktrace.SpanProcessor
-	filter SpanFilter
+	filter func(sdktrace.ReadOnlySpan) bool
 
 	mu      sync.Mutex
 	active  bool
@@ -31,7 +31,7 @@ type trackedSpan struct {
 	populated bool
 }
 
-func newForwarder(next sdktrace.SpanProcessor, filter SpanFilter) *forwarder {
+func newForwarder(next sdktrace.SpanProcessor, filter func(sdktrace.ReadOnlySpan) bool) *forwarder {
 	return &forwarder{next: next, filter: filter, active: true, tracked: map[trace.SpanID]*trackedSpan{}}
 }
 
@@ -45,10 +45,10 @@ func isPhaseName(name string) bool {
 func (f *forwarder) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
 	defer func() {
 		if r := recover(); r != nil {
-			warnf("Could not track OpenTelemetry child span: %v", r)
+			Warnf("Could not track OpenTelemetry child span: %v", r)
 		}
 	}()
-	ex := executionFromContext(parent)
+	ex := ExecutionFromContext(parent)
 	if ex == nil || s.SpanContext().TraceID() != ex.traceID {
 		return
 	}
@@ -72,7 +72,7 @@ func (f *forwarder) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
 func (f *forwarder) OnEnd(s sdktrace.ReadOnlySpan) {
 	defer func() {
 		if r := recover(); r != nil {
-			warnf("Could not export OpenTelemetry child span: %v", r)
+			Warnf("Could not export OpenTelemetry child span: %v", r)
 		}
 	}()
 
@@ -118,7 +118,7 @@ func (f *forwarder) keep(s sdktrace.ReadOnlySpan) (keep bool) {
 		if r := recover(); r != nil {
 			keep = true
 			f.filterWarned.Do(func() {
-				warnf("Could not filter OpenTelemetry child span, retaining it: %v. Further filter failures will not be reported.\n%s", r, debug.Stack())
+				Warnf("Could not filter OpenTelemetry child span, retaining it: %v. Further filter failures will not be reported.\n%s", r, debug.Stack())
 			})
 		}
 	}()

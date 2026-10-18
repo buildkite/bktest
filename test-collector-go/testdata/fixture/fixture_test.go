@@ -56,9 +56,9 @@ func TestParallel(t *testing.T) {
 
 func TestTagged(t *testing.T) {
 	ctx := bktest.Start(t)
-	bktest.Tag(ctx, "team", "overridden")
-	bktest.Tag(ctx, "flavour", "vanilla")
-	bktest.Annotate(ctx, "hello from the fixture")
+	bktest.Tag(t, "team", "overridden")
+	bktest.Tag(t, "flavour", "vanilla")
+	bktest.Annotate(t, "hello from the fixture")
 	work(ctx)
 }
 
