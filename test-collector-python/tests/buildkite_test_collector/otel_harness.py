@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional
 
@@ -95,7 +95,8 @@ class OTLPReceiver:
     requests: List[ReceivedRequest] = field(default_factory=list)
     next_statuses: List[int] = field(default_factory=list)
     first_request_delay: float = 0.0
-    _server: Optional[HTTPServer] = field(default=None, init=False, repr=False, compare=False)
+    request_delay: float = 0.0
+    _server: Optional[ThreadingHTTPServer] = field(default=None, init=False, repr=False, compare=False)
 
     def start(self) -> None:
         """Bind to an ephemeral port and serve on a daemon thread."""
@@ -112,13 +113,14 @@ class OTLPReceiver:
             def log_message(self, *args) -> None:
                 """Silence the default access log."""
 
-        self._server = HTTPServer(("127.0.0.1", 0), Handler)
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
 
     def record(self, handler: BaseHTTPRequestHandler, body: bytes) -> None:
         """Decode and remember one request; reply with the scripted status."""
         if not self.requests and self.first_request_delay:
             time.sleep(self.first_request_delay)
+        time.sleep(self.request_delay)
         encoding = handler.headers.get("Content-Encoding")
         content_type = handler.headers.get("Content-Type", "")
         spans: List[ReceivedSpan] = []

@@ -1,6 +1,7 @@
 """End-to-end OTel mode: run the sample suite in a subprocess against a loopback receiver."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -243,6 +244,21 @@ def test_export_failure_names_the_http_status(tmp_path, receiver):
     # The warning must start its own line, not be glued onto pytest's progress line.
     assert "[100%]\n" in run.stdout
     assert "[100%]buildkite-test-collector" not in run.stdout
+    assert receiver.upload_requests() == []
+
+
+def test_xdist_workers_report_missing_results_before_the_controller_stops_them(tmp_path, receiver):
+    # Each worker exports for itself. The controller kills a worker 10 seconds
+    # after it reports its session finished, so a flush that outlives that
+    # (here: every request takes 15 seconds, then fails) must warn first.
+    pytest.importorskip("xdist")
+    receiver.request_delay = 15.0
+    receiver.next_statuses = [400] * 20
+    run = run_pytest(tmp_path, otel_env(receiver), "-n", "2")
+    assert run.returncode == SAMPLE_EXIT_CODE, run.stderr
+
+    dropped = re.findall(r"TEST RESULTS MISSING: OpenTelemetry dropped (\d+) test\.execution", run.stderr)
+    assert sum(int(count) for count in dropped) == len(EXPECTED_RESULTS), run.stderr
     assert receiver.upload_requests() == []
 
 

@@ -99,10 +99,22 @@ class OTelPlugin:
             return True if result is None else result
         return predicate
 
+    def pytest_sessionfinish(self, session: pytest.Session) -> None:
+        """pytest_sessionfinish hook callback to push every finished span from an xdist worker"""
+        # The xdist controller tears a worker down (SIGKILL after 10 seconds)
+        # as soon as the worker's own sessionfinish wrapper reports it done,
+        # which is before pytest_unconfigure and atexit and well inside the
+        # flush budget; the worker's TEST RESULTS MISSING warning would die
+        # with it. Flushing here, inside that wrapper, makes the controller
+        # wait for it. The worker's stderr is inherited, so the warning lands
+        # in the controller's output.
+        if self._state is not None and _is_xdist_worker(session.config):
+            self._export.force_flush()
+
     @pytest.hookimpl(tryfirst=True)
     def pytest_unconfigure(self, config: pytest.Config) -> None:
         """pytest_unconfigure hook callback to push every finished span before pytest exits"""
-        if self._state is None:
+        if self._state is None or _is_xdist_worker(config):
             return
         # pytest has printed its summary by now; flushing it first keeps the
         # export warnings on their own lines after it instead of glued onto
@@ -192,6 +204,10 @@ class OTelPlugin:
         """Add a ``test.annotation`` event to the running test's span."""
         if self._state is not None:
             self._spans.annotate(content)
+
+
+def _is_xdist_worker(config: pytest.Config) -> bool:
+    return hasattr(config, "workerinput")
 
 
 def build(
