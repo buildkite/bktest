@@ -62,7 +62,7 @@ describe('describeTest', () => {
     ])
   })
 
-  it('includes optional backtrace lines, capped without splitting a surrogate pair', () => {
+  it('includes optional backtrace lines, capped by Unicode code point', () => {
     const described = describeTest(record({
       result: 'failed',
       failure_expanded: [
@@ -77,7 +77,7 @@ describe('describeTest', () => {
     expect(described.exceptionEvents).toEqual([
       { name: 'exception', attributes: { 'exception.message': 'failure', 'exception.stacktrace': 'at first\nat second' } },
       { name: 'exception', attributes: { 'exception.stacktrace': `${'s'.repeat(16381)}...` } },
-      { name: 'exception', attributes: { 'exception.stacktrace': `${'s'.repeat(16380)}...` } },
+      { name: 'exception', attributes: { 'exception.stacktrace': `${'s'.repeat(16380)}😀...` } },
       { name: 'exception', attributes: { 'exception.message': 'Jest message' } },
     ])
   })

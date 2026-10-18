@@ -265,7 +265,7 @@ runs that share a suite, or keep `otelEnabled` off if you rely on them.
 
 ## Cypress
 
-The reporter uses Cypress's attempt-completion events and is tested on Cypress 15.
+The reporter uses Cypress's attempt-completion events and is tested on Cypress 13, 14 and 15.
 Install the same optional OpenTelemetry packages listed above, then enable
 the reporter in `cypress.config.js` (component and end-to-end tests work):
 
@@ -292,8 +292,9 @@ not configure the reporter.
 The relay token takes precedence over the environment variable named by
 `token_name`, then `BUILDKITE_ANALYTICS_TOKEN`. Missing credentials select the
 existing JSON path without an OTel warning or upload; the legacy uploader
-still prints `Missing BUILDKITE_ANALYTICS_TOKEN`. Cypress filters Electron stderr, so OTel
-warnings use stdout to keep `TEST RESULTS MISSING` visible in the build log.
+still prints `Missing BUILDKITE_ANALYTICS_TOKEN`. Cypress filters Electron
+stderr, so OTel warnings use stdout to keep `TEST RESULTS MISSING` visible in
+the build log.
 
 Cypress creates a reporter for every spec in the same Node process. The first
 OTel-enabled reporter decides the mode and fixes the session's run key, tags
@@ -301,10 +302,9 @@ and credential for that process. Every spec awaits a flush in the reporter's
 `done` callback; the session stays alive for later specs and shuts down on a
 natural Node exit. Forced exits rely on the per-spec flush and report any
 remaining results as missing. Export failures do not change Cypress's exit
-code or fall back to JSON after tests have started.
-Successful flushes, even slow ones, do not consume the shared failure budget;
-each flush is bounded at 30 seconds, so a slow but working endpoint can make
-the total wait across specs exceed 30 seconds without discarding results.
+code or fall back to JSON after tests have started. Each file's flush waits up
+to 30 seconds for a slow endpoint, and only failures consume the shared
+budget, so successful flushes across many specs can take longer than 30 seconds.
 
 Without a configured run key or recognized CI environment, JSON generates a
 key per spec; OTel keeps the first generated key for the process. If a crash
@@ -317,7 +317,7 @@ Completed spans flush with a later spec or on natural Node exit; a forced
 exit after the final crashed spec may lose queued completed spans too, with
 a separate queued-span warning. These synchronous exit warnings cannot run
 when the process is killed by SIGTERM or SIGINT; the collector installs no
-signal handlers and executions still queued are lost.
+signal handlers and executions still queued are lost (see [Limitations](#limitations)).
 
 Each `test:after:run` event produces a span, including every retry attempt and
 pending test. Tests Cypress abandons after a hook failure get skipped spans
@@ -335,9 +335,9 @@ the browser does not change those timestamps. Tests without timing information
 get zero-duration spans at report time. The JSON identity uses file paths without
 line numbers, so `code.line.number` is omitted. Failures include the JSON
 record's expanded message and separate backtrace as exception event fields.
-Messages and backtraces are capped at 16,384 UTF-16 code units, with `...`
-and without splitting surrogate pairs. Span attributes retain their separate
-10,243-code-unit limit.
+Messages are capped at 10,243 Unicode code points and backtraces at 16,384,
+including a trailing `...` when truncated; surrogate pairs are never split.
+Span attributes retain their separate 10,243-code-point limit.
 
 The reporter runs in Node while tests run in the browser. Child spans, phase
 spans and active test context are not exported; per-test annotations and tags

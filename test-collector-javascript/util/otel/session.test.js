@@ -197,7 +197,7 @@ describe('createSession', () => {
     expect(spans.map((span) => span.attributes['test.case.result.status'])).toEqual(['skipped', 'unset'])
   })
 
-  it('exports long backtraces with a truncation marker and no split surrogate pairs', async () => {
+  it('exports long backtraces with a code-point limit and truncation marker', async () => {
     const { spans } = await runSession({ tests: [{
       start: record(),
       finish: record({
@@ -211,7 +211,8 @@ describe('createSession', () => {
 
     const stacks = spans[0].events.map((event) => event.attributes['exception.stacktrace'])
     expect(stacks[0]).toHaveLength(16384)
-    expect(stacks).toEqual([`${'s'.repeat(16381)}...`, `${'s'.repeat(16380)}...`])
+    expect(Array.from(stacks[1])).toHaveLength(16384)
+    expect(stacks).toEqual([`${'s'.repeat(16381)}...`, `${'s'.repeat(16380)}😀...`])
   })
 
   it('keeps the identity attributes when OTEL_* limits, sampler and exporter env are hostile', async () => {
