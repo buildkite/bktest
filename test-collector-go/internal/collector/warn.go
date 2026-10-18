@@ -15,7 +15,8 @@ var warnings = struct {
 	once map[string]bool
 }{out: os.Stderr, once: map[string]bool{}}
 
-// Warnf prints one collector warning line to stderr.
+// Warnf prints one collector warning line, to stderr unless RedirectWarnings
+// is in effect.
 func Warnf(format string, args ...any) {
 	warnings.mu.Lock()
 	defer warnings.mu.Unlock()

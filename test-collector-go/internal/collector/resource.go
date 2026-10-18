@@ -30,9 +30,10 @@ const (
 )
 
 // producerResource identifies the process emitting spans: the suite, the CI
-// pipeline run, the worker and the VCS ref. It is the test stream's resource
-// (and the child stream's only when the collector installs the global
-// provider), so the per-execution Test Engine run metadata stays off it.
+// pipeline run, the worker and the VCS ref. The test provider always uses
+// it; the child stream uses it only when the collector installs the global
+// provider. Test Engine run metadata goes on each test span instead (see
+// runAttributes).
 func producerResource(env runEnv) *resource.Resource {
 	attrs := []attribute.KeyValue{}
 	add := func(key attribute.Key, value string) {
@@ -95,8 +96,8 @@ func runAttributes(env runEnv, locationPrefix string) []attribute.KeyValue {
 	return attrs
 }
 
-// runTags are the WithTags tags plus the automatic ci.worker.id; an explicit
-// tag with the same key wins.
+// runTags are Options.Tags plus the automatic ci.worker.id; a configured tag
+// with the same key wins.
 func runTags(configured map[string]string) map[string]string {
 	tags := map[string]string{}
 	if worker := os.Getenv("BUILDKITE_AGENT_ID"); strings.TrimSpace(worker) != "" {

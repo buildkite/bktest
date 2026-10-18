@@ -46,10 +46,12 @@ type Execution struct {
 	Result collector.Result
 }
 
-// Handler receives what the parser finds.
+// Handler receives what the parser finds. Every field must be set; the
+// parser calls them without nil checks.
 type Handler struct {
-	// Execution receives each finished test, in the order the stream
-	// reports their results.
+	// Execution receives each finished test as its result arrives. Tests
+	// still running when their package or the stream ends are failed then,
+	// in no particular order.
 	Execution func(Execution)
 	// PackageStarted is called once per package as soon as the stream
 	// mentions it, so a caller can start looking up test locations early.
@@ -130,8 +132,10 @@ func (p *Parser) handle(ev Event) {
 	}
 
 	if ev.Action == "output" {
-		// The line bktest.Main prints after exporting a package itself. It
-		// arrives as test output when a panicking test forced the export.
+		// bktest.Main prints this line after exporting the package. It is
+		// usually package output, but arrives as the test's output when a
+		// panicking test's cleanup forced the export, so it is matched
+		// before the event is routed by Test.
 		if exported, ok := collector.ExportedPackage(ev.Output); ok {
 			if !pkg.libraryExported {
 				pkg.libraryExported = true

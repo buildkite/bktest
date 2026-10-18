@@ -1,7 +1,8 @@
 // Package collector exports test executions to Buildkite Test Engine over
 // OTLP. The bktest package feeds it from inside a go test process and the
 // buildkite-test-collector command feeds it from go test -json output; both
-// produce the same spans.
+// produce the same test.execution spans, and only the library adds the
+// test.body phase and child spans.
 package collector
 
 import (
@@ -40,8 +41,11 @@ type Options struct {
 	// Filter drops child spans it rejects. It never sees test.execution or
 	// phase spans.
 	Filter func(sdktrace.ReadOnlySpan) bool
-	// TracerProvider is the suite's own provider to attach the forwarder to.
-	// Nil means the global provider, installing one when nobody has.
+	// TracerProvider is the suite's own provider to attach the forwarder
+	// to; it must implement RegisterSpanProcessor. Nil means the global
+	// provider: the collector installs its own when nobody has set one, and
+	// disables child export with a warning when the global provider cannot
+	// register span processors.
 	TracerProvider trace.TracerProvider
 }
 
