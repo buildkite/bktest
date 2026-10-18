@@ -3,9 +3,9 @@ const path = require('path')
 const { startOtlpServer } = require('./support/otlpServer')
 
 // examples/jest/otel.config.js runs: example.test.js (2), passed.test.js (1),
-// otel/outcomes.js (8) and otel/retries.js (1 test, 2 attempts).
-const EXPECTED_SPANS = 13
-const EXPECTED_JSON_RESULTS = 12
+// otel/outcomes.js (9) and otel/retries.js (1 test, 2 attempts).
+const EXPECTED_SPANS = 14
+const EXPECTED_JSON_RESULTS = 13
 
 const run = (command, env) => new Promise((resolve) => {
   const cwd = path.join(__dirname, '../examples/jest')

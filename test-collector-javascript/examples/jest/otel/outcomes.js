@@ -23,6 +23,11 @@ describe('outcomes', () => {
   })
 })
 
+// jest-circus names this test ROOT_DESCRIBE_BLOCK with no ancestors.
+describe('ordinary', () => {
+  test('ROOT_DESCRIBE_BLOCK', () => {})
+})
+
 describe('with a failing beforeAll', () => {
   beforeAll(() => { throw new Error('beforeAll failed') })
   test('never runs', () => {})

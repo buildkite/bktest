@@ -53,8 +53,12 @@ const failureMessage = (errors, format) => {
 const assertionResult = (test, status, { includeLocation, format }) => {
   const names = []
   for (let block = test; block; block = block.parent) names.unshift(block.name)
+  // jest-circus filters the root marker out of the whole path before it
+  // pops the title, so a test titled ROOT_DESCRIBE_BLOCK keeps its title but
+  // loses its describe blocks; the JSON upload has the same identity.
   const ancestorTitles = names.filter((name) => name !== ROOT_DESCRIBE_BLOCK_NAME)
-  const title = ancestorTitles.pop()
+  ancestorTitles.pop()
+  const title = names[names.length - 1]
 
   const failureMessages = status === 'failed' ? test.errors.map((errors) => failureMessage(errors, format)) : []
   const location = includeLocation && status ? testLocation(test) : null
