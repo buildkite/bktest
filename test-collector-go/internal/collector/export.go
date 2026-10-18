@@ -39,12 +39,11 @@ func newExporter(ctx context.Context, endpoint *url.URL, token, runKey, stream s
 	return otlptracehttp.New(ctx,
 		otlptracehttp.WithEndpointURL(endpoint.String()),
 		otlptracehttp.WithHeaders(map[string]string{
-			"Authorization":  fmt.Sprintf("Token token=%q", token),
+			"Authorization":  "Token token=\"" + token + "\"",
 			runKeyHeader:     runKey,
 			spanStreamHeader: stream,
 		}),
 		otlptracehttp.WithCompression(otlptracehttp.GzipCompression),
-		otlptracehttp.WithTimeout(exportTimeout),
 		otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
 			Enabled:         true,
 			InitialInterval: 5 * time.Second,

@@ -13,6 +13,25 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
+func TestAuthorizationHeaderCarriesTheTokenVerbatim(t *testing.T) {
+	// The other collectors send the token as-is between the quotes; a token
+	// with a quote or backslash must not be Go-escaped.
+	r := otlptest.NewReceiver(t)
+	c := configured(t, r, map[string]string{"BUILDKITE_TESTS_OTLP_TOKEN": `odd"to\ken`})
+	run(c, "TestOne", nil)
+	c.Shutdown()
+
+	reqs := r.All()
+	if len(reqs) == 0 {
+		t.Fatal("no requests")
+	}
+	for i, req := range reqs {
+		if got := req.Header.Get("Authorization"); got != `Token token="odd"to\ken"` {
+			t.Errorf("request %d Authorization = %q", i, got)
+		}
+	}
+}
+
 func TestRequestsCarryHeadersPerStreamIncludingRetries(t *testing.T) {
 	r := otlptest.NewReceiver(t)
 	r.FailNext.Store(1) // the first request is answered 503 and must be retried with the same headers
