@@ -165,10 +165,10 @@ func Setup(ctx context.Context, opts Options) (c *Collector) {
 		}
 	}()
 	c, err := New(ctx, opts)
-	if errors.Is(err, ErrNoToken) && opts.QuietWithoutToken {
-		return nil
-	}
 	if err != nil {
+		if opts.QuietWithoutToken && errors.Is(err, ErrNoToken) {
+			return nil
+		}
 		Warnf("OpenTelemetry span export disabled: %v", err)
 		return nil
 	}

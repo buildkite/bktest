@@ -114,8 +114,7 @@ var (
 // to detect a suite that is reported twice.
 func Main(m *testing.M, opts ...Option) int {
 	mainCalled.Store(true)
-	pkg := callerPackage()
-	testPackage.Store(&pkg)
+	testPackage = callerPackage()
 	c := collector.Setup(context.Background(), newOptions(opts))
 	current.Store(c)
 
@@ -123,7 +122,7 @@ func Main(m *testing.M, opts ...Option) int {
 
 	if c != nil {
 		c.Shutdown()
-		fmt.Fprintln(os.Stderr, collector.ExportedLine(c.Exported(), pkg))
+		fmt.Fprintln(os.Stderr, collector.ExportedLine(c.Exported(), testPackage))
 	}
 	return code
 }

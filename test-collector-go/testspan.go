@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"net/url"
@@ -14,7 +15,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -95,9 +95,9 @@ type thisPackage struct{}
 
 var bktestPackagePath = reflect.TypeOf(thisPackage{}).PkgPath()
 
-// testPackage is the import path of the package under test, recorded by
-// Main, for tests whose own function is not on the stack when Start runs.
-var testPackage atomic.Pointer[string]
+// testPackage is the import path of the package Main ran in. Main sets it
+// before publishing the collector, which orders it before any Start.
+var testPackage string
 
 // identify derives the test's identity the way the buildkite-test-collector
 // command derives it from the go test -json stream, so a test keeps its
@@ -111,59 +111,40 @@ var testPackage atomic.Pointer[string]
 // the scope; helpers in other packages that call Start on a test's behalf
 // therefore never become the scope. The location is read from the frame
 // when it is the function itself, otherwise from the declaration in the
-// package's test files, which go test runs the binary in. A subtest created
-// by a helper in another package has no such frame on its stack, so its
-// scope is the package Main ran in.
+// package's test files. A subtest created by a helper in another package
+// has no such frame on its stack, so its scope is the package Main ran in.
 func identify(t testing.TB) collector.Identity {
-	id := collector.Identity{Name: t.Name()}
+	id := collector.Identity{Name: t.Name(), Scope: testPackage}
 	top, _, _ := strings.Cut(id.Name, "/")
 	pcs := make([]uintptr, 64)
 	n := runtime.Callers(2, pcs)
 	frames := runtime.CallersFrames(pcs[:n])
-	var chosen, fallback *runtime.Frame
-	for chosen == nil {
-		frame, more := frames.Next()
-		if frame.Function != "" {
-			if _, fn := splitFunction(frame.Function); fn == top || strings.HasPrefix(fn, top+".") {
-				chosen = &frame
-			} else if fallback == nil && !strings.HasPrefix(frame.Function, bktestPackagePath+".") {
-				fallback = &frame
-			}
-		}
-		if !more {
-			break
+	var frame runtime.Frame
+	found, exact := false, false
+	for more := true; more && !found; {
+		var f runtime.Frame
+		f, more = frames.Next()
+		if _, fn := splitFunction(f.Function); fn == top || strings.HasPrefix(fn, top+".") {
+			frame, found, exact = f, true, fn == top
+		} else if frame.Function == "" && f.Function != "" && !strings.HasPrefix(f.Function, bktestPackagePath+".") {
+			frame = f // the first caller outside this package, for the location only
 		}
 	}
-
-	switch {
-	case chosen != nil:
-		id.Scope = importPath(chosen.Function)
-	case testPackage.Load() != nil:
-		id.Scope = *testPackage.Load()
-	case fallback != nil:
-		id.Scope = importPath(fallback.Function)
-	default:
-		id.Scope = "unknown"
+	if found {
+		id.Scope = importPath(frame.Function)
 	}
 
-	exact := false
-	if chosen != nil {
-		_, fn := splitFunction(chosen.Function)
-		exact = fn == top
-	} else {
-		chosen = fallback
-	}
 	if !exact {
 		if pos, ok := declarations()[top]; ok {
 			id.File, id.Line = moduleRelative(pos.file), pos.line
 			return id
 		}
 	}
-	if chosen == nil {
+	if frame.Function == "" {
 		return id
 	}
-	id.File, id.Line = chosen.File, chosen.Line
-	if f := runtime.FuncForPC(chosen.Entry); f != nil {
+	id.File, id.Line = frame.File, frame.Line
+	if f := runtime.FuncForPC(frame.Entry); f != nil {
 		id.File, id.Line = f.FileLine(f.Entry())
 	}
 	id.File = moduleRelative(id.File)
@@ -182,42 +163,35 @@ func splitFunction(function string) (pkg, fn string) {
 	return function[:i+j], function[i+j+1:]
 }
 
-// packagePath extracts the package part of a runtime function name,
-// dropping the _test suffix of an external test package so both halves of
-// a package share one scope. The linker escapes dots and other characters
-// in the last path element as %xx ("gopkg.in/yaml%2ev3"), which is undone
-// here.
-func packagePath(function string) string {
+// importPath is the import path of the package a runtime function name
+// belongs to. The _test suffix of an external test package is dropped so
+// both halves of a package share one scope, the %xx escapes the linker
+// applies to the last path element ("gopkg.in/yaml%2ev3") are undone, and
+// "main", which is how functions in a main package are named, is resolved
+// through the build info of the test binary.
+func importPath(function string) string {
 	pkg, _ := splitFunction(function)
 	pkg = strings.TrimSuffix(pkg, "_test")
 	if unescaped, err := url.PathUnescape(pkg); err == nil {
 		pkg = unescaped
 	}
-	return pkg
-}
-
-// importPath is packagePath with the one case where the runtime name is not
-// the import path resolved: functions in package main are named "main.F",
-// and the test binary's build info records the import path of a main
-// package under test.
-func importPath(function string) string {
-	pkg := packagePath(function)
-	if pkg != "main" {
-		return pkg
-	}
-	if path := mainPackagePath(); path != "" {
-		return path
+	if pkg == "main" {
+		if path := mainPackagePath(); path != "" {
+			return path
+		}
 	}
 	return pkg
 }
 
+// mainPackagePath is the import path of the package the test binary was
+// built for, or "" when the build info does not record it: Go 1.24 records
+// "<import path>.test" for every test binary, earlier releases only the
+// import path of a main package.
 var mainPackagePath = sync.OnceValue(func() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return ""
 	}
-	// Go 1.24 fills Path in for every test binary as "<import path>.test";
-	// for a main package every supported release records the import path.
 	return strings.TrimSuffix(info.Path, ".test")
 })
 
@@ -230,16 +204,28 @@ type declaration struct {
 // test files to its position. go test runs the binary in the package's
 // source directory, so the files are read from the working directory; a
 // binary run elsewhere finds none, and subtests then report the line of
-// their closure.
+// their closure. Files are filtered by the build constraints of the host,
+// not by -tags, and files that fail to parse are skipped.
 var declarations = sync.OnceValue(func() map[string]declaration {
 	decls := map[string]declaration{}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return decls
 	}
-	files, _ := filepath.Glob(filepath.Join(cwd, "*_test.go"))
+	entries, err := os.ReadDir(cwd)
+	if err != nil {
+		return decls
+	}
 	fset := token.NewFileSet()
-	for _, path := range files {
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		if ok, _ := build.Default.MatchFile(cwd, name); !ok {
+			continue
+		}
+		path := filepath.Join(cwd, name)
 		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			continue

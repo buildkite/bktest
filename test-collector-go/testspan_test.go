@@ -194,21 +194,20 @@ func TestStartWithoutMainWarnsOnceAndReturnsAPlainContext(t *testing.T) {
 	}
 }
 
-func TestPackagePath(t *testing.T) {
+func TestImportPath(t *testing.T) {
 	cases := map[string]string{
-		"github.com/acme/widgets/calculator.TestAdd":              "github.com/acme/widgets/calculator",
-		"github.com/acme/widgets/calculator_test.TestAdd.func1":   "github.com/acme/widgets/calculator",
-		"github.com/acme/widgets/v2.TestX":                        "github.com/acme/widgets/v2",
-		"github.com/acme/go-collector/pkg.TestGeneric[...].func2": "github.com/acme/go-collector/pkg",
-		"main.TestMain": "main",
+		"github.com/acme/widgets/calculator.TestAdd":                  "github.com/acme/widgets/calculator",
+		"github.com/acme/widgets/calculator_test.TestAdd.func1":       "github.com/acme/widgets/calculator",
+		"github.com/acme/widgets/v2.TestX":                            "github.com/acme/widgets/v2",
+		"github.com/acme/go-collector/pkg.TestGeneric[...].func2":     "github.com/acme/go-collector/pkg",
 		"github.com/acme/widgets/calculator.(*Suite).TestMethod":      "github.com/acme/widgets/calculator",
 		"github.com/acme/dotted.name/pkg_test.TestDottedModule.func1": "github.com/acme/dotted.name/pkg",
 		"gopkg.in/yaml%2ev3.TestUnmarshal":                            "gopkg.in/yaml.v3",
 		"gopkg.in/yaml%2ev3_test.TestUnmarshal.func2":                 "gopkg.in/yaml.v3",
 	}
 	for in, want := range cases {
-		if got := packagePath(in); got != want {
-			t.Errorf("packagePath(%q) = %q, want %q", in, got, want)
+		if got := importPath(in); got != want {
+			t.Errorf("importPath(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

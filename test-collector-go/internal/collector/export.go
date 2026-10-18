@@ -39,7 +39,7 @@ func newExporter(ctx context.Context, endpoint *url.URL, token, runKey, stream s
 	return otlptracehttp.New(ctx,
 		otlptracehttp.WithEndpointURL(endpoint.String()),
 		otlptracehttp.WithHeaders(map[string]string{
-			"Authorization":  "Token token=\"" + token + "\"",
+			"Authorization":  `Token token="` + token + `"`,
 			runKeyHeader:     runKey,
 			spanStreamHeader: stream,
 		}),

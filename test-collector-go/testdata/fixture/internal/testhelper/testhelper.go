@@ -27,6 +27,8 @@ func RunCase(t *testing.T, name string, fn func(ctx context.Context, t *testing.
 // RunInline is RunCase without t.Helper, which leaves it small enough for
 // the compiler to inline into the test; Go 1.23 then names the subtest's
 // closure after the test function even though it lives in this file.
+// Inlining cannot be forced, so under -gcflags=-l this case merely repeats
+// RunCase.
 func RunInline(t *testing.T, name string, fn func(ctx context.Context, t *testing.T)) {
 	t.Run(name, func(t *testing.T) {
 		fn(bktest.Start(t), t)

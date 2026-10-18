@@ -133,7 +133,7 @@ func TestEndToEndWithGoTest(t *testing.T) {
 		"TestTagged":         "pass",
 		"TestViaHelper":      "pass",
 		"TestViaHelper/case": "pass",
-
+		// TestHelperSubtests never calls Start, so only its subtests are reported.
 		"TestHelperSubtests/case":   "pass",
 		"TestHelperSubtests/inline": "pass",
 	}
@@ -306,19 +306,21 @@ func TestEndToEndWithoutATokenIsANoOp(t *testing.T) {
 // warning, unlike the silent no-token case.
 func TestEndToEndMisconfigurationWarnsOnce(t *testing.T) {
 	r := otlptest.NewReceiver(t)
-	for name, vars := range map[string]map[string]string{
-		"run key":  exportedTo(r, "has a space"),
-		"endpoint": exportedTo(r, "fixture-endpoint"),
+	invalidEndpoint := exportedTo(r, "fixture-endpoint")
+	invalidEndpoint["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] = "not a url"
+	for _, tc := range []struct {
+		name, warning string
+		vars          map[string]string
+	}{
+		{"run key", "OpenTelemetry span export disabled: run key", exportedTo(r, "has a space")},
+		{"endpoint", "OpenTelemetry span export disabled: endpoint", invalidEndpoint},
 	} {
-		t.Run(name, func(t *testing.T) {
-			if name == "endpoint" {
-				vars["BUILDKITE_ANALYTICS_OTLP_ENDPOINT"] = "not a url"
-			}
-			out, code := goTest(t, ".", vars)
+		t.Run(tc.name, func(t *testing.T) {
+			out, code := goTest(t, ".", tc.vars)
 			if code != 1 {
 				t.Fatalf("exit code = %d, want go test's own 1:\n%s", code, out)
 			}
-			if n := strings.Count(out, "OpenTelemetry span export disabled: "+name); n != 1 {
+			if n := strings.Count(out, tc.warning); n != 1 {
 				t.Errorf("disabled warning appeared %d times, want once:\n%s", n, out)
 			}
 			if n := len(r.All()); n != 0 {
