@@ -76,24 +76,26 @@ const BaseEnvironment = (() => {
 const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   static buildkiteTestEngine = true
 
+  // Jest 28 passes { globalConfig, projectConfig }; Jest 27 passes the
+  // project config alone. Nothing after super() may stop the tests from
+  // running: a failure here is a lost upload, not a failed test file.
   constructor(config, context) {
     super(config, context)
-    this._buildkite = {
-      session: null,
-      spans: new Map(),
-      includeLocation: false,
-      format: prettyFormatter(config.projectConfig.rootDir),
-      testPath: context.testPath,
-    }
+    this._buildkite = { session: null, spans: new Map(), includeLocation: false, format: String, testPath: context?.testPath }
     try {
       const settings = readSettings()
       if (!settings) return
-      this._buildkite.testPath = new Paths(config.globalConfig, settings.runEnv.location_prefix).prefixTestPath(context.testPath)
+      const projectConfig = config.projectConfig || config
+      this._buildkite.format = prettyFormatter(projectConfig.rootDir)
+      // The reporter makes paths relative to the global rootDir; Jest 27
+      // offers only the project's, which is the same outside multi-project runs.
+      const paths = new Paths(config.globalConfig || { rootDir: projectConfig.rootDir }, settings.runEnv.location_prefix)
+      this._buildkite.testPath = paths.prefixTestPath(context.testPath)
       this._buildkite.session = sessionFor(settings)
     } catch (error) {
       warn(
         `TEST RESULTS MISSING: OpenTelemetry could not be set up in this test worker (${describeError(error)}); ` +
-        `test executions from ${context.testPath} were not uploaded to Buildkite Test Engine.`
+        `test executions from ${this._buildkite.testPath} were not uploaded to Buildkite Test Engine.`
       )
     }
   }

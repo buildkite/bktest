@@ -55,6 +55,35 @@ module.exports = extend(require('jest-environment-jsdom').default)
 testEnvironment: './buildkite-jsdom-environment.js',
 ```
 
+The package ships no TypeScript declarations, so a TypeScript environment
+loads the module with `require` and gives `extend` the base class's type:
+
+```ts
+// buildkite-environment.ts
+import NodeEnvironment from 'jest-environment-node'
+
+const { extend } = require('buildkite-test-collector/jest/environment') as {
+  extend: (Base: typeof NodeEnvironment) => typeof NodeEnvironment
+}
+
+export default class BuildkiteEnvironment extends extend(NodeEnvironment) {
+  async setup() {
+    await super.setup()
+    this.global.answer = 42
+  }
+}
+```
+
+```js
+// jest.config.js
+testEnvironment: './buildkite-environment.ts',
+```
+
+OpenTelemetry submission supports Jest 27 and newer (the environment accepts
+both the Jest 27 and the Jest 28+ constructor arguments). Under Jest 27, test
+file paths are made relative to the project's `rootDir` rather than the global
+one, which only differs in a multi-project setup.
+
 The reporter options (`token`, `tags`, `otelEnabled`) are the same as before.
 `otelEnabled` is on only for `true` and the case-insensitive string `'true'`;
 `'false'`, `'1'` and `1` are off, so a value passed through from a CLI or the
@@ -256,7 +285,8 @@ the results: `uploading results as JSON instead`, or, when only
 BUILDKITE_ANALYTICS_TOKEN is not set`.
 
 OpenTelemetry errors never fail a test or change Jest's exit code. If a worker
-cannot build its export session, or a span cannot be started, the collector
+cannot set up export (the environment still constructs and the file's tests
+still run), or a span cannot be started, the collector
 warns `TEST RESULTS MISSING` for the affected tests and the run continues. When
 the endpoint rejects a batch, the end-of-file flush warns
 `TEST RESULTS MISSING: OpenTelemetry dropped N test.execution span(s) (export-failure, last OTLP failure: …)`,
