@@ -290,8 +290,9 @@ string `"true"`) and `--env otelEnabled=false` (disabled); `--env` alone does
 not configure the reporter.
 
 The relay token takes precedence over the environment variable named by
-`token_name`, then `BUILDKITE_ANALYTICS_TOKEN`. Missing credentials silently
-select the existing JSON path. Cypress filters Electron stderr, so OTel
+`token_name`, then `BUILDKITE_ANALYTICS_TOKEN`. Missing credentials select the
+existing JSON path without an OTel warning or upload; the legacy uploader
+still prints `Missing BUILDKITE_ANALYTICS_TOKEN`. Cypress filters Electron stderr, so OTel
 warnings use stdout to keep `TEST RESULTS MISSING` visible in the build log.
 
 Cypress creates a reporter for every spec in the same Node process. The first
@@ -301,12 +302,22 @@ and credential for that process. Every spec awaits a flush in the reporter's
 natural Node exit. Forced exits rely on the per-spec flush and report any
 remaining results as missing. Export failures do not change Cypress's exit
 code or fall back to JSON after tests have started.
+Successful flushes, even slow ones, do not consume the shared failure budget;
+each flush is bounded at 30 seconds, so a slow but working endpoint can make
+the total wait across specs exceed 30 seconds without discarding results.
 
 Without a configured run key or recognized CI environment, JSON generates a
 key per spec; OTel keeps the first generated key for the process. If a crash
-prevents `done` from running, tests without completion events cannot be
-recovered. Already-ended spans may have exported; exit warnings cover queued
-spans, not tests that never reached the reporter.
+prevents `done` from running, Cypress does not send its synthetic crash failure
+to the Mocha reporter. The collector tracks `test:before:run` attempts until
+`test:after:run` and prints `TEST RESULTS MISSING` naming each unfinished test
+and spec when Node exits, even if a later spec flushed all completed spans.
+It cannot recover the crash failure message or tests that never started.
+Completed spans flush with a later spec or on natural Node exit; a forced
+exit after the final crashed spec may lose queued completed spans too, with
+a separate queued-span warning. These synchronous exit warnings cannot run
+when the process is killed by SIGTERM or SIGINT; the collector installs no
+signal handlers and executions still queued are lost.
 
 Each `test:after:run` event produces a span, including every retry attempt and
 pending test. Tests Cypress abandons after a hook failure get skipped spans

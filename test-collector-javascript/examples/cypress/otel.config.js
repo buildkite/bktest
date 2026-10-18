@@ -8,6 +8,11 @@ module.exports = defineConfig({
     tags: { hello: 'cypress' },
   },
   e2e: { supportFile: false, specPattern: 'otel/*.spec.js' },
+  component: {
+    supportFile: false,
+    specPattern: 'crash/*.spec.js',
+    devServer: { framework: 'react', bundler: 'webpack' },
+  },
   screenshotOnRunFailure: false,
   video: false,
 })

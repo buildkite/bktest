@@ -8,6 +8,7 @@ const { warn, describeError, setWarningHandler } = require('../util/otel/warn')
 // Cypress recreates the reporter per spec, but keeps this module loaded.
 // undefined = not decided yet; null = JSON for the rest of this process.
 let session
+const unfinished = new Map()
 
 // Cypress uses mocha under the hood for assertions, so there is some overlap
 // between this reporter and the mocha reporter. They differ in how they
@@ -29,12 +30,27 @@ class CypressBuildkiteTestEngineReporter extends MochaBuildkiteTestEngineReporte
         tags: this._tags,
         probe: (settings) => { session = sessionFor(settings) },
       })
-      if (session) process.once('beforeExit', () => session.shutdown())
+      if (session) {
+        process.once('beforeExit', () => session.shutdown())
+        // Renderer crashes bypass both test:after:run and done. A later spec
+        // may flush all completed spans, so the session's queue count alone
+        // cannot reveal the missing crash outcome. Node exit is synchronous;
+        // report the unfinished attempt without inventing a result or error.
+        process.once('exit', () => {
+          for (const description of unfinished.values()) {
+            warn(`TEST RESULTS MISSING: Cypress exited without completing ${description}; its test execution was not uploaded.`)
+          }
+        })
+      }
     }
     this._otel = session
     if (this._otel) {
       this._runner = runner
       this._reported = new Set()
+      // This event also arrives for retries and tests whose before hook fails.
+      runner.on('test:before:run', (test) => {
+        unfinished.set(test, `test ${JSON.stringify(test.fullTitle())} in spec ${JSON.stringify(this.getRootParentFile(test))}`)
+      })
       // Unlike Mocha's test end, this includes pending tests and each retry,
       // with the final verdict after hooks and Cypress's wall-clock timing.
       runner.on('test:after:run', (test) => this.exportTest(test))
@@ -48,6 +64,7 @@ class CypressBuildkiteTestEngineReporter extends MochaBuildkiteTestEngineReporte
 
   exportTest(test) {
     this._reported.add(test)
+    unfinished.delete(test)
     try {
       // Interrupted runs can leave tests active/processing, or without a state.
       const result = test.state == null || ['processing', 'active'].includes(test.state) ? 'skipped' : test.state

@@ -5,6 +5,13 @@ const { setWarningHandler } = require('../util/otel/warn')
 
 jest.mock('../util/otel/session', () => ({ sessionFor: jest.fn() }))
 
+const exitListeners = process.listeners('exit')
+afterEach(() => {
+  for (const listener of process.listeners('exit')) {
+    if (!exitListeners.includes(listener)) process.off('exit', listener)
+  }
+})
+
 // Accept true and trimmed, case-insensitive "true"; reject "false", "1" and 1.
 test.each([
   [true, true], ['true', true], [' TRUE ', true],

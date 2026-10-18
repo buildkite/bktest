@@ -150,6 +150,33 @@ describe('examples/cypress in OTel mode', () => {
   let server
   afterEach(async () => { if (server) await server.close() })
 
+  test.each([
+    ['e2e', 'first'], ['e2e', 'last'],
+    ['component', 'first'], ['component', 'last'],
+  ])('names the unfinished test after a renderer crash (%s, crash %s)', async (mode, order) => {
+    server = await startOtlpServer()
+    const specs = ['crash/crash.spec.js', 'crash/completed.spec.js']
+    if (order === 'last') specs.reverse()
+    const config = mode === 'e2e' ? '--config specPattern="crash/*.spec.js"' : ''
+    const result = await run({
+      BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+      BUILDKITE_TESTS_OTLP_TOKEN: 'test',
+    }, `--${mode} ${config} --spec ${specs.join(',')}`)
+    expect(result.code).toBe(1)
+    expect(result.stdout).toContain('Renderer process just crashed')
+    const warnings = result.stdout.split('\n').filter((line) => line.includes('TEST RESULTS MISSING') && line.includes('crashes renderer'))
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('crash/crash.spec.js')
+    const spans = server.spans()
+    expect(spans.map((span) => span.attributes['buildkite.test.name'])).toEqual(expect.arrayContaining(['passes', 'pending']))
+    expect(spans.some((span) => span.attributes['buildkite.test.name'] === 'crashes renderer')).toBe(false)
+    const completed = spans.filter((span) => span.attributes['buildkite.test.name'] === 'completed before crash')
+    // A later spec flushes completed attempts from the crashed spec. If the
+    // crash is last, Cypress may force exit before the batch can be sent.
+    if (order === 'first') expect(completed).toHaveLength(1)
+    else if (!completed.length) expect(result.stdout).toContain('1 test.execution span(s) were still queued')
+  }, 60000)
+
   test.each([false, true])('keeps JSON available with an absent SDK (otelEnabled=%s)', async (enabled) => {
     server = await startOtlpServer()
     const script = `
@@ -290,7 +317,7 @@ describe('examples/cypress in OTel mode', () => {
     }
   }, 60000)
 
-  test('uses the silent JSON path without a credential and preserves failed tests', async () => {
+  test('uses the legacy JSON path without a credential and preserves failed tests', async () => {
     server = await startOtlpServer()
     const result = await run({ BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url })
     expect(result.code).toBe(3)
