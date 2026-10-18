@@ -329,3 +329,20 @@ def test_span_filter_hook_drops_child_spans_but_not_phases_or_tests(tmp_path, re
     child_names = [span.name for span in receiver.spans("child")]
     assert "db.query" not in child_names
     assert child_names.count("test.body") == 3
+
+
+def test_span_filter_hook_from_a_conftest_loaded_during_collection(tmp_path, receiver):
+    # Only conftests at or above the command-line paths load before the session
+    # starts; this one is found while collecting.
+    nested = tmp_path / "tests" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "conftest.py").write_text(
+        "def pytest_buildkite_otel_span_filter(span):\n"
+        "    return span.name != 'db.query'\n"
+    )
+    (nested / "test_sample_otel.py").write_text(Path(DATA_DIR / "test_sample_otel.py").read_text())
+    run = run_pytest(tmp_path, otel_env(receiver), test_file=tmp_path)
+    assert run.returncode == SAMPLE_EXIT_CODE, run.stderr
+
+    assert len(receiver.spans("test")) == len(EXPECTED_RESULTS)
+    assert "db.query" not in [span.name for span in receiver.spans("child")]

@@ -134,7 +134,7 @@ class BuildkitePlugin:
 
         self.payload = self.payload.push_test_data(test_data)
         if self.otel is not None:
-            self.otel.finalized(report.nodeid, test_data)
+            self.otel.report(test_data)
 
     def pytest_runtest_logstart(self, nodeid, location):
         """pytest_runtest_logstart hook callback"""

@@ -13,7 +13,7 @@ from typing import Dict, List, Mapping, Optional
 
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
 
-DATA_DIR = Path(__file__).parent.parent.parent / "data"
+DATA_DIR = Path(__file__).parent / "data"
 SAMPLE_FILE = DATA_DIR / "test_sample_otel.py"
 
 

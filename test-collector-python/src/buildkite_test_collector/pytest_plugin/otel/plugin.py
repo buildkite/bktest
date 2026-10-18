@@ -89,10 +89,10 @@ class OTelPlugin:
         self._collector.otel = self
 
     @staticmethod
-    def _span_filter(pytest_config: pytest.Config) -> Optional[Callable[[Any], object]]:
+    def _span_filter(pytest_config: pytest.Config) -> Callable[[Any], object]:
+        # Resolve the hook on every call: conftests found during collection
+        # register their implementations after the session has started.
         hook = getattr(pytest_config.hook, SPAN_FILTER_HOOK)
-        if not hook.get_hookimpls():
-            return None
 
         def predicate(span: Any) -> object:
             result = hook(span=span)
@@ -167,16 +167,18 @@ class OTelPlugin:
 
     def finalized(self, nodeid: str, test: TestData) -> None:
         """Finish the test's span now that the JSON collector has settled its result."""
-        if nodeid in self._test_spans:
-            span = self._test_spans.pop(nodeid)
-            end_time_ns: Optional[int] = time.time_ns()
-        else:
-            # Collection errors and other tests that never entered the runtest
-            # protocol get a span timed at report time.
-            span = self._spans.start_test_span(self._state, test)
-            end_time_ns = None
+        if nodeid not in self._test_spans:
+            self.report(test)
+            return
+        span = self._test_spans.pop(nodeid)
         if span is not None:
-            self._finish(span, test, end_time_ns)
+            self._finish(span, test, time.time_ns())
+
+    def report(self, test: TestData) -> None:
+        """Send a span, timed now, for a test that never entered the runtest protocol."""
+        span = self._spans.start_test_span(self._state, test)
+        if span is not None:
+            self._finish(span, test, None)
 
     def _finish(self, span: "Span", test: TestData, end_time_ns: Optional[int]) -> None:
         try:

@@ -2,6 +2,7 @@
 from dataclasses import replace
 from datetime import timedelta
 from random import randint
+from typing import TYPE_CHECKING, Iterator
 from uuid import uuid4
 
 import pytest
@@ -9,6 +10,9 @@ import pytest
 from buildkite_test_collector.collector.payload import TestData, TestResultPassed, TestHistory, Payload, TestResultFailed, TestResultSkipped
 from buildkite_test_collector.collector.run_env import RunEnv
 from buildkite_test_collector.collector.instant import Instant
+
+if TYPE_CHECKING:
+    from otel_harness import OTLPReceiver
 
 
 @pytest.fixture
@@ -90,3 +94,14 @@ def fake_env() -> RunEnv:
 @pytest.fixture
 def payload(fake_env) -> Payload:
     return Payload.started(Payload.init(fake_env))
+
+
+@pytest.fixture
+def receiver() -> Iterator["OTLPReceiver"]:
+    """A running loopback OTLP receiver."""
+    # Imported here: subprocess runs that shim opentelemetry out load this conftest too.
+    from otel_harness import OTLPReceiver  # pylint: disable=import-outside-toplevel
+    server = OTLPReceiver()
+    server.start()
+    yield server
+    server.stop()
