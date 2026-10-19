@@ -1,8 +1,12 @@
 const { SETTINGS_ENV, publishSettings } = require('../util/otel/config')
 
-jest.mock('../util/otel/session', () => ({ sessionFor: jest.fn(() => ({ fake: true })) }))
+jest.mock('../util/otel/session', () => ({
+  sessionFor: jest.fn(() => ({ fake: true })),
+  createSession: jest.fn(() => ({ shutdown: () => Promise.resolve() })),
+}))
 const { sessionFor } = require('../util/otel/session')
 const { extend } = require('./environment')
+const Reporter = require('./reporter')
 
 const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
 const warnings = () => consoleWarnSpy.mock.calls.map(([message]) => message)
@@ -15,7 +19,7 @@ class Base {
 }
 const Environment = extend(Base)
 
-const settings = { endpoint: 'http://127.0.0.1:9/v1/traces', token: 'secret', runEnv: { key: 'run-1', location_prefix: 'app' }, tags: {} }
+const settings = { endpoint: 'http://127.0.0.1:9/v1/traces', token: 'secret', runEnv: { key: 'run-1', location_prefix: 'app' }, tags: {}, rootDir: '/proj' }
 const context = { testPath: '/proj/pkg/sum.test.js' }
 
 const OLD_ENV = process.env
@@ -41,6 +45,16 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     expect(environment._buildkite.testPath).toBe('app/pkg/sum.test.js')
     expect(sessionFor).toHaveBeenCalledWith(settings)
     expect(environment._buildkite.session).toEqual({ fake: true })
+    expect(warnings()).toEqual([])
+  })
+
+  it('makes paths relative to the reporter\'s rootDir in a Jest 27 multi-project run, as the JSON upload does', () => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'secret'
+    new Reporter({ rootDir: '/repo' }, { otelEnabled: true })
+    const projectConfig = { rootDir: '/repo/packages/a', cwd: '/repo/packages/a' }
+    const environment = new Environment(projectConfig, { testPath: '/repo/packages/a/same.test.js' })
+
+    expect(environment._buildkite.testPath).toBe('packages/a/same.test.js')
     expect(warnings()).toEqual([])
   })
 

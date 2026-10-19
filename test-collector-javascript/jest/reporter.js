@@ -5,7 +5,7 @@ const CI = require('../util/ci')
 const Debug = require('../util/debug')
 const uploadTestResults = require('../util/uploadTestResults')
 const Paths = require('../util/paths')
-const { resolveSettings, fallbackOutcome } = require('../util/otel/config')
+const { resolveSettings, publishSettings, fallbackOutcome } = require('../util/otel/config')
 const { warn, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
 
@@ -77,6 +77,9 @@ class JestBuildkiteTestEngineReporter {
       runEnv: this._testEnv,
       tags: this._tags,
     })
+    // Jest 27 gives a test environment only its own project's config, so the
+    // workers learn the rootDir the JSON upload's locations are relative to here.
+    if (this._otel) publishSettings({ ...this._otel, rootDir: globalConfig.rootDir })
     this._fallback = fallbackOutcome({ token: options?.token })
     this._environments = new Map()
     this._warned = new Set()

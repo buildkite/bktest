@@ -91,9 +91,7 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
       if (!settings) return
       const projectConfig = config.projectConfig || config
       this._buildkite.format = prettyFormatter(projectConfig.rootDir)
-      // The reporter makes paths relative to the global rootDir; Jest 27
-      // offers only the project's, which is the same outside multi-project runs.
-      const paths = new Paths(config.globalConfig || { rootDir: projectConfig.rootDir }, settings.runEnv.location_prefix)
+      const paths = new Paths({ rootDir: settings.rootDir }, settings.runEnv.location_prefix)
       this._buildkite.testPath = paths.prefixTestPath(context.testPath)
       this._buildkite.session = sessionFor(settings)
     } catch (error) {

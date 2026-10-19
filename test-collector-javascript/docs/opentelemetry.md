@@ -79,10 +79,7 @@ export default class BuildkiteEnvironment extends extend(NodeEnvironment) {
 testEnvironment: './buildkite-environment.ts',
 ```
 
-OpenTelemetry submission supports Jest 27 and newer (the environment accepts
-both the Jest 27 and the Jest 28+ constructor arguments). Under Jest 27, test
-file paths are made relative to the project's `rootDir` rather than the global
-one, which only differs in a multi-project setup.
+OpenTelemetry submission supports Jest 27 and newer.
 
 The reporter options (`token`, `tags`, `otelEnabled`) are the same as before.
 `otelEnabled` is on only for `true` and the case-insensitive string `'true'`;
