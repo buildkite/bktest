@@ -115,6 +115,13 @@ fails, so under `swift test --parallel` the collector's warnings, including
 skipped. `BUILDKITE_ANALYTICS_DEBUG_ENABLED` does not change that. To see them,
 add `--verbose` or run without `--parallel`.
 
+Each worker process also sends and flushes its results on its own. When the
+endpoint refuses connections or returns errors, that costs one extra immediate
+request per process. When it accepts connections but never answers, each
+process waits up to 10 s as its test finishes and up to 10 s more at the flush.
+During such an outage, set `BUILDKITE_ANALYTICS_ENABLED=false` to run the suite
+without the collector.
+
 ### Step 3
 
 If you're testing an Xcode project there's an extra step, Xcode doesn't pass environment variables from the process to the test runner so we need to manually map them. Open your test scheme or test plan(whichever you are using) and under the environment variable section add the following entry:
@@ -124,6 +131,9 @@ key:
 
 value:
 `$(BUILDKITE_ANALYTICS_TOKEN)`
+
+To reach the bktec relay from an Xcode test run, map
+`BUILDKITE_TESTS_OTLP_TOKEN` and `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` the same way.
 
 If you configure a standard OTLP endpoint, map that endpoint and its associated
 `OTEL_EXPORTER_OTLP_TRACES_*` header or protocol variables into the test runner
@@ -262,14 +272,14 @@ While the endpoint is healthy, finishing a test waits for its root span to be
 accepted by the configured OTLP endpoint. After a transient failure (a network
 error, timeout, or an HTTP 408, 429, 502, 503 or 504 response), subsequent
 roots stay in the collector's in-memory queue while export attempts back off
-for 10, 20, 30, and then at most 60 seconds. The bundle-end flush always makes
-an immediate final attempt, then keeps retrying within a 30 s budget, so an
-unreachable endpoint can hold the process for up to 30 s after the last test.
-Any other HTTP error (for example 401 or 403 for a bad token, or 413 for an
-oversized request) is not retried: the queued executions are dropped and a
-`TEST RESULTS MISSING` warning names the status. When the endpoint is the Test
-Engine Client relay, acceptance transfers the span to the longer-lived parent
-process, which protects completed executions from an XCTest runner restart.
+for 10, 20, 30, and then at most 60 seconds. The bundle-end flush makes one
+immediate final attempt without waiting out the backoff; each request times
+out after 10 s, and the whole flush is capped at 30 s. Any other HTTP error
+(for example 401 or 403 for a bad token, or 413 for an oversized request) is not
+retried: the queued executions are dropped and a `TEST RESULTS MISSING` warning
+names the status. When the endpoint is the Test Engine Client relay, acceptance
+transfers the span to the longer-lived parent process, which protects completed
+executions from an XCTest runner restart.
 
 This is not disk-backed delivery. A hard exit before a test finishes, a process
 exit while the endpoint remains unavailable, or a machine restart can still

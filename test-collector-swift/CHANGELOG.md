@@ -13,7 +13,9 @@
 - Log endpoints, including in debug output, as scheme, host, port and path only, so credentials in an endpoint's user info, query or fragment never reach the logs
 - Read `BUILDKITE_TESTS_OTLP_TOKEN` (blank = unset) ahead of `BUILDKITE_ANALYTICS_TOKEN`, so tests run by bktec still upload when bktec leaves the upload token blank; no `OTEL_EXPORTER_OTLP_*` warning when those variables point at the endpoint in use, as bktec's do
 - Send the file name as `code.file.path`, as the 0.x JSON collector sent `file_name`, instead of the absolute path
-- Document that `swift test --parallel` hides collector warnings, including `TEST RESULTS MISSING`, for workers without a failing test, and that the bundle-end flush can hold the process for up to 30 s
+- Document that `swift test --parallel` hides collector warnings, including `TEST RESULTS MISSING`, for workers without a failing test
+- Make the bundle-end flush one immediate pass that never waits out the retry backoff, and bound each flush request to the 10 s request timeout, so an unreachable or failing endpoint no longer holds every `swift test --parallel` worker process for about 20 s
+- Name `BUILDKITE_TESTS_OTLP_TOKEN` in the ignored-`OTEL_EXPORTER_OTLP_*` warning, and document mapping it and `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` into Xcode schemes for the bktec relay
 - Document that only XCTest (including Quick and Nimble) is collected, that run-level tags are set through `BUILDKITE_ANALYTICS_TAGS` only, and how to keep a local `swift test --parallel` in one run
 
 ## 2.0.0-beta.1
