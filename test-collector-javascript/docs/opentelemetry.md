@@ -150,12 +150,27 @@ derives them, so switching `otelEnabled` on keeps each test's history:
 Jest results map to `test.case.result.status` as `passed` → `pass`,
 `failed` → `fail`, and `pending`, `skipped` and `todo` → `skipped`.
 
+Names follow jest-circus, which leaves its internal `ROOT_DESCRIBE_BLOCK`
+marker out of the whole name path, so a test titled `ROOT_DESCRIBE_BLOCK`
+inside `describe('ordinary')` is named `ROOT_DESCRIBE_BLOCK` with an empty
+scope in both uploads.
+
 A failed test sets the span's status to error with the failure's first line as
-its description (at most 1,024 characters). Each failure is an `exception`
-event whose `exception.message` carries the rest of Jest's failure message,
-including the stack trace, truncated to 10,243 characters. Lengths count
-Unicode code points, as the server and the other collectors do, so an emoji
-counts once and is never cut in half.
+its description, cut at 1,024 characters as the server cuts the JSON upload's.
+Each failure is an `exception` event whose `exception.message` carries the
+rest of Jest's failure message, including the stack trace, truncated to 10,243
+characters. Lengths count Unicode code points, as the server and the other
+collectors do, so an emoji counts once and is never cut in half.
+
+Failure text matches the JSON upload with two exceptions. On Jest 30.5 and
+later, a test that throws something other than an `Error` (`throw 'oops'`, and
+every test timeout, which Jest 30.5 throws as a string) has its value wrapped
+in a new `Error` by Jest after the test's last hook, so the JSON upload's
+message carries about ten Jest-internal stack frames that the span's message
+does not; the failure reason and the test's own frames are the same. On Jest
+29 to 30.4, an error whose `cause` chain is circular makes Jest fail the whole
+file, so the JSON upload sends nothing for it, while the span still reports
+the test as failed.
 
 ### Resource and run attributes
 
@@ -262,7 +277,9 @@ can take more than 30 seconds to flush. Flushes in one worker share a
 30-second budget that failures consume, as does a single wait that outlasts
 what is left of it: a healthy endpoint never consumes it, but once it is used
 up, later flushes stop waiting and export continues in the background until
-the worker exits. The exporter retries on 429, 502, 503,
+the worker exits. A flush that stops waiting warns about the spans still
+exporting at that moment (see below), so that warning is printed even when
+Jest later force-exits the worker. The exporter retries on 429, 502, 503,
 504, timeouts and connection errors with backoff; other responses (400, 401,
 403, 404, 413) fail the batch immediately.
 
@@ -276,14 +293,16 @@ is loaded, and the run falls back to the JSON upload. That upload still needs
 `BUILDKITE_TESTS_OTLP_TOKEN` (as with bktec's relay), the warning says that
 results will not be uploaded instead.
 
-If the OpenTelemetry packages are missing, the exporter cannot be built, the
-run key is invalid or `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` is not an http or
-https URL, the reporter warns `OpenTelemetry span export disabled: …` followed by
+If the OpenTelemetry packages are missing or come from releases that cannot
+export together, the exporter cannot be built, the run key is invalid or
+`BUILDKITE_ANALYTICS_OTLP_ENDPOINT` is not an http or https URL, the reporter
+warns `OpenTelemetry span export disabled: …` followed by
 `otelEnabled is set, but OpenTelemetry could not be configured …` and the
 whole run uploads JSON, exactly as it does with `otelEnabled` off. That
 decision is made once in the main process before any worker starts. For a
-missing package the warning names the module and the `npm install` command,
-with the supported version ranges, that installs all four.
+missing package the warning names the module, and for mismatched packages the
+error a test span would have hit; both give the `npm install` command, with
+the supported version ranges, that installs all four.
 
 Export is decided per test file. Test files that run under a
 `testEnvironment` other than the collector's (or one built with its `extend`)
@@ -297,7 +316,9 @@ configuration apart from `testEnvironmentOptions` (Jest accepts a repeated
 explicit project `name` or `id`): if only one of them exported a file, the
 reporter cannot tell which, so it warns and uploads both projects' results for
 that file as JSON as well, and some appear twice rather than any going
-missing. Check the warning if a project uses per-file `@jest-environment`
+missing. A custom test runner that rewrites the project config before the
+environment sees it can make the worker's record miss the reporter's lookup
+in the same way, so that file's tests would be sent twice, never lost. Check the warning if a project uses per-file `@jest-environment`
 docblocks. The whole run falls back under the legacy `jest-jasmine2` test
 runner, which does not send test events to the environment; export needs the
 default `jest-circus` runner. Every fallback warning ends with what happens to
@@ -312,12 +333,16 @@ worker` with what happens to that file's results instead (normally `uploading
 results as JSON instead`). If a span cannot be started, the collector warns
 `TEST RESULTS MISSING` for the affected tests and the run continues. When
 the endpoint rejects a batch, the end-of-file flush warns
-`TEST RESULTS MISSING: OpenTelemetry dropped N test.execution span(s) (export-failure, last OTLP failure: …)`,
-naming the HTTP status or connection error (for example `403` when OTLP ingest
-is not enabled for the organization, `404` for a wrong endpoint, or
-`ECONNREFUSED`). Spans still queued when the worker exits are reported the same
-way. Because `test.execution` spans are the submission, a dropped span is a
-test execution Test Engine never sees.
+`TEST RESULTS MISSING: OpenTelemetry dropped N test.execution span(s) (export-failure: N, last OTLP failure: …)`,
+naming the HTTP status, `timeout`, or the connection error (for example `403`
+when OTLP ingest is not enabled for the organization, `404` for a wrong
+endpoint, `503` once retries run out, or `ECONNREFUSED`). Spans that never
+reached the exporter are counted as `not-exported: N`. When a flush stops
+waiting because the 30-second budget is used up, it warns
+`TEST RESULTS MISSING: N test.execution span(s) were still exporting when the collector stopped waiting for them and may not have reached Buildkite Test Engine.`
+Export continues in the background, so some of those may still arrive. Each
+span is counted in one warning at most. Because `test.execution` spans are the
+submission, a dropped span is a test execution Test Engine never sees.
 
 Suites that block outgoing HTTP in tests need to allow the endpoint. `nock` and
 `msw` patch Node's `http` module, which the worker's exporter shares with the
@@ -333,9 +358,8 @@ results to the original run.
 
 ## Limitations
 
-A process killed by SIGTERM or SIGINT loses the test executions that were
-still queued; the exit warning cannot run. Node has no exit event when a
-signal ends the process, and the collector does not install signal handlers in
-Jest's workers, so a worker killed mid-file loses the spans it had not yet
-exported without a `TEST RESULTS MISSING` warning. The JSON upload loses the
-same results.
+A worker killed by SIGTERM or SIGINT in the middle of a test file loses that
+file's spans without a `TEST RESULTS MISSING` warning. Node has no exit event
+when a signal ends the process, and the collector does not install signal
+handlers in Jest's workers, so only spans counted by an earlier end-of-file
+flush are warned about. The JSON upload loses the same results.
