@@ -17,6 +17,20 @@ The collector requires Swift 5.10 or newer. Its macOS deployment target is macOS
 
 ## 👉 Installing
 
+> **OTLP ingestion must be enabled for your Buildkite organization.** The
+> collector sends results only over OTLP. Until ingestion is enabled, every
+> upload is rejected (a `403` when OTLP ingest is not enabled for the
+> organization), no results appear in Test Engine, and the collector reports
+> them as missing. Your tests still run and keep XCTest's exit code. The first
+> rejected test prints:
+>
+> ```
+> [BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 403): testSubtractFails. OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.
+> ```
+>
+> and the end of the run prints the total, for example `TEST RESULTS MISSING:
+> OpenTelemetry dropped 5 test.execution span(s) so far this run`.
+
 ### Step 1
 
 [Create a test suite](https://buildkite.com/docs/test-analytics), and copy the API token that it gives you.
