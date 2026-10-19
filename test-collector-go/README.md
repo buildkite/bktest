@@ -9,6 +9,22 @@ via the `BUILDKITE_ANALYTICS_*` environment variables.
 
 ## 👉 Installing
 
+> OTLP ingestion must be enabled for your Buildkite organization before
+> results appear in Test Engine. Uploads are rejected with a 403 when OTLP
+> ingest is not enabled for the organization, and the collector reports the
+> results as missing:
+>
+> ```
+> [buildkite-test-collector] TEST RESULTS MISSING: OpenTelemetry dropped N test.execution span(s) (export-failure, last OTLP failure: 403).
+> [buildkite-test-collector] OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.
+> ```
+>
+> The OpenTelemetry SDK's own log line, printed before these, includes the
+> receiver's reason, `OTLP trace ingest is not enabled for this organization`.
+> The tests still run and the exit code is unchanged. With the `bktest`
+> package, `go test` shows these lines only with `-v` or for a failing
+> package.
+
 1. [Create a test suite](https://buildkite.com/docs/test-engine) and copy its
    API token, or set up [OIDC](https://buildkite.com/docs/pipelines/configure/tests/test-collection/oidc)
    so each job mints a short-lived one.
