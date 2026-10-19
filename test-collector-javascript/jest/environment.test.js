@@ -9,6 +9,8 @@ jest.mock('../util/otel/session', () => ({
   createSession: jest.fn(() => ({ shutdown: () => Promise.resolve() })),
 }))
 const { sessionFor } = require('../util/otel/session')
+jest.mock('../util/uploadTestResults', () => jest.fn(() => Promise.resolve()))
+const uploadTestResults = require('../util/uploadTestResults')
 const { extend } = require('./environment')
 const Reporter = require('./reporter')
 const { isExported } = require('./exportRecords')
@@ -38,6 +40,7 @@ beforeEach(() => {
   delete process.env[SETTINGS_ENV]
   consoleWarnSpy.mockClear()
   sessionFor.mockClear()
+  uploadTestResults.mockClear()
 })
 
 afterAll(() => {
@@ -105,10 +108,10 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     sessionFor.mockReturnValueOnce(session)
     const environment = new Environment({ rootDir: '/proj', id: 'project-a' }, context)
 
-    expect(isExported(exportRecords, 'project-a', context.testPath)).toBe(false)
+    expect(isExported(exportRecords, { id: 'project-a' }, context.testPath)).toBe(false)
     await environment.handleTestEvent({ name: 'setup' }, {})
-    expect(isExported(exportRecords, 'project-a', context.testPath)).toBe(true)
-    expect(isExported(exportRecords, 'project-b', context.testPath)).toBe(false)
+    expect(isExported(exportRecords, { id: 'project-a' }, context.testPath)).toBe(true)
+    expect(isExported(exportRecords, { id: 'project-b' }, context.testPath)).toBe(false)
   })
 
   it('exports nothing from a file it cannot record, leaving it to the JSON upload', async () => {
@@ -125,6 +128,34 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     expect(warnings()).toEqual([
       expect.stringMatching(/^\[buildkite-test-collector\] OpenTelemetry could not record app\/pkg\/sum\.test\.js as exported \(.*ENOENT.*\); uploading results as JSON instead\.$/),
     ])
+  })
+})
+
+describe('JestBuildkiteTestEngineReporter with export records', () => {
+  const testPath = '/proj/same.test.js'
+  const testResult = {
+    testFilePath: testPath,
+    perfStats: { start: 1, end: 2 },
+    testResults: [{ title: 'adds', ancestorTitles: [], status: 'passed', duration: 1, failureMessages: [], location: null }],
+  }
+  const jsonNames = () => uploadTestResults.mock.calls.flatMap(([, , results]) => results.map((result) => result.name))
+
+  beforeEach(() => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'secret'
+  })
+
+  it('uploads JSON for a Jest 27 project running a file another project exported', async () => {
+    const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
+    // Jest 27 identifies a project by `name`; Jest 28 renamed it `id`.
+    const collectorProject = { rootDir: '/proj', name: 'collector' }
+    const plainProject = { rootDir: '/proj', name: 'plain' }
+    await new Environment(collectorProject, { testPath }).handleTestEvent({ name: 'setup' }, {})
+
+    await reporter.onTestResult({ path: testPath, context: { config: collectorProject } }, testResult)
+    await reporter.onTestResult({ path: testPath, context: { config: plainProject } }, testResult)
+    await reporter.onRunComplete()
+
+    expect(jsonNames()).toEqual(['adds'])
   })
 })
 
@@ -174,7 +205,7 @@ describe('BuildkiteTestEngineEnvironment test locations', () => {
     publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
     const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
-    const environment = new Environment({ rootDir: '/repo' }, { testPath: '/repo/each.test.js' })
+    const environment = new Environment({ rootDir: '/repo', id: 'project' }, { testPath: '/repo/each.test.js' })
     const test = { name: 'each 1', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: { stack: asyncErrorStack } }
 
     await environment.handleTestEvent({ name: 'include_test_location_in_result' }, {})
@@ -201,7 +232,7 @@ const projectWithJestCircus = (version, messageUtil) => {
   fs.writeFileSync(path.join(circus, 'build', 'runner.js'), '')
   fs.writeFileSync(path.join(util, 'package.json'), JSON.stringify({ name: 'jest-message-util', version }))
   fs.writeFileSync(path.join(util, 'index.js'), messageUtil)
-  return { rootDir, testRunner: path.join(circus, 'build', 'runner.js') }
+  return { rootDir, id: rootDir, testRunner: path.join(circus, 'build', 'runner.js') }
 }
 afterAll(() => projects.forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })))
 

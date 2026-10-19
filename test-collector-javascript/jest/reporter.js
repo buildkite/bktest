@@ -115,7 +115,7 @@ class JestBuildkiteTestEngineReporter {
 
   async onTestResult(test, testResult) {
     if (this._otel) {
-      if (isExported(this._exportRecords, test.context.config.id, testResult.testFilePath)) return
+      if (isExported(this._exportRecords, test.context.config, testResult.testFilePath)) return
       await this._warnNotExported(test)
     }
 

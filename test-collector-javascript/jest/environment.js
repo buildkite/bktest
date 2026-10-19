@@ -157,7 +157,7 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
       fallback = settings.fallback
       const paths = new Paths({ rootDir: settings.rootDir }, settings.runEnv.location_prefix)
       this._buildkite.testPath = paths.prefixTestPath(context.testPath)
-      this._buildkite.record = () => recordExport(settings.exportRecords, projectConfig.id, context.testPath)
+      this._buildkite.record = () => recordExport(settings.exportRecords, projectConfig, context.testPath)
       this._buildkite.fallback = fallback
       this._buildkite.session = sessionFor(settings)
     } catch (error) {
