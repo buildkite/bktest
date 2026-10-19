@@ -8,7 +8,7 @@ const Paths = require('../util/paths')
 const { resolveSettings, publishSettings, fallbackOutcome } = require('../util/otel/config')
 const { warn, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
-const { createRecords, isExported, removeRecords } = require('./exportRecords')
+const { createRecords, recordKey, exportCount, removeRecords } = require('./exportRecords')
 
 const jestVersion = (rootDir) => {
   try {
@@ -91,6 +91,7 @@ class JestBuildkiteTestEngineReporter {
     }
     this._environments = new Map()
     this._warned = new Set()
+    this._exported = new Map()
   }
 
   onRunStart(results, options) {
@@ -106,6 +107,7 @@ class JestBuildkiteTestEngineReporter {
 
   async onRunComplete(_test, _results, _options) {
     try {
+      this._uploadAmbiguousExports()
       if (this._otel && this._testResults.length === 0) return
       await uploadTestResults(this._testEnv, this._tags, this._testResults, this._options)
     } finally {
@@ -128,10 +130,13 @@ class JestBuildkiteTestEngineReporter {
 
   async onTestResult(test, testResult) {
     if (this._otel) {
-      if (isExported(this._exportRecords, test.context.config, testResult.testFilePath)) return
+      if (this._holdIfExported(test, testResult)) return
       await this._warnNotExported(test)
     }
+    this._addJson(testResult)
+  }
 
+  _addJson(testResult) {
     const prefixedTestPath = this._paths.prefixTestPath(testResult.testFilePath);
 
     testResult.testResults.forEach((result) => {
@@ -146,6 +151,35 @@ class JestBuildkiteTestEngineReporter {
         }
       })
     })
+  }
+
+  // A result with a record is not uploaded as JSON, but it is kept until the
+  // run ends: projects whose configs differ only in testEnvironmentOptions
+  // share a record key, and one of them may not have exported.
+  _holdIfExported(test, testResult) {
+    let key
+    try {
+      key = recordKey(test.context.config, testResult.testFilePath)
+    } catch {
+      return false
+    }
+    if (exportCount(this._exportRecords, key) === 0) return false
+    this._exported.set(key, [...(this._exported.get(key) || []), testResult])
+    return true
+  }
+
+  // Fewer records than held results means a project that did not export was
+  // held back along with one that did; which one is unknown, so all of them
+  // go up as JSON, and the exported ones appear twice rather than any being lost.
+  _uploadAmbiguousExports() {
+    for (const [key, testResults] of this._exported) {
+      if (exportCount(this._exportRecords, key) >= testResults.length) continue
+      warn(
+        `Jest projects with the same configuration apart from testEnvironmentOptions ran ${testResults[0].testFilePath}, ` +
+        `and not all of them exported it to OpenTelemetry; uploading their results as JSON as well, so some may appear twice.`
+      )
+      testResults.forEach((testResult) => this._addJson(testResult))
+    }
   }
 
   // Says why a file was not exported. Only jest-circus calls the environment's

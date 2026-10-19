@@ -13,7 +13,7 @@ jest.mock('../util/uploadTestResults', () => jest.fn(() => Promise.resolve()))
 const uploadTestResults = require('../util/uploadTestResults')
 const { extend } = require('./environment')
 const Reporter = require('./reporter')
-const { isExported } = require('./exportRecords')
+const { recordKey, exportCount } = require('./exportRecords')
 
 const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
 const warnings = () => consoleWarnSpy.mock.calls.map(([message]) => message)
@@ -109,10 +109,10 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     const project = { rootDir: '/proj', id: 'project-a' }
     const environment = new Environment(project, context)
 
-    expect(isExported(exportRecords, project, context.testPath)).toBe(false)
+    expect(exportCount(exportRecords, recordKey(project, context.testPath))).toBe(0)
     await environment.handleTestEvent({ name: 'setup' }, {})
-    expect(isExported(exportRecords, project, context.testPath)).toBe(true)
-    expect(isExported(exportRecords, { ...project, id: 'project-b' }, context.testPath)).toBe(false)
+    expect(exportCount(exportRecords, recordKey(project, context.testPath))).toBe(1)
+    expect(exportCount(exportRecords, recordKey({ ...project, id: 'project-b' }, context.testPath))).toBe(0)
   })
 
   it('exports nothing from a file it cannot record, leaving it to the JSON upload', async () => {
@@ -170,6 +170,41 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
     await reporter.onRunComplete()
 
     expect(jsonNames()).toEqual([])
+  })
+
+  describe('for projects with the same id whose configs differ only in testEnvironmentOptions', () => {
+    const projects = ['one', 'two'].map((which) => ({ id: 'same', rootDir: '/proj', testEnvironmentOptions: { which } }))
+    const run = async (reporter) => {
+      for (const project of projects) {
+        await new Environment(project, { testPath }).handleTestEvent({ name: 'setup' }, {})
+      }
+      for (const project of projects) {
+        await reporter.onTestResult({ path: testPath, context: { config: project } }, testResult)
+      }
+      await reporter.onRunComplete()
+    }
+
+    it('uploads both as JSON when only one exported, rather than losing the other', async () => {
+      const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
+      sessionFor.mockReturnValueOnce({ fake: true }).mockImplementationOnce(() => { throw new Error('the SDK is unavailable in this worker') })
+
+      await run(reporter)
+
+      expect(jsonNames()).toEqual(['adds', 'adds'])
+      expect(warnings()).toContainEqual(
+        `[buildkite-test-collector] Jest projects with the same configuration apart from testEnvironmentOptions ran ${testPath}, ` +
+        'and not all of them exported it to OpenTelemetry; uploading their results as JSON as well, so some may appear twice.'
+      )
+    })
+
+    it('uploads no JSON when both exported', async () => {
+      const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
+
+      await run(reporter)
+
+      expect(jsonNames()).toEqual([])
+      expect(warnings()).toEqual([])
+    })
   })
 
   it('uploads the JSON, and keeps the run passing, when it cannot remove its records afterwards', async () => {

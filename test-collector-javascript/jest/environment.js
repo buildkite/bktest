@@ -6,7 +6,7 @@ const { readSettings } = require('../util/otel/config')
 const { sessionFor } = require('../util/otel/session')
 const { warn, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
-const { recordExport } = require('./exportRecords')
+const { recordKey, recordExport } = require('./exportRecords')
 
 const ROOT_DESCRIBE_BLOCK_NAME = 'ROOT_DESCRIBE_BLOCK'
 const STACK_LINE = /^(?:\s*at )?(?:new )?(?:.*? \()?(?:eval at [^ ]+ \(.+?:\d+:\d+\), )?(.+?):(\d+):(\d+)\)?$/
@@ -157,7 +157,7 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
       fallback = settings.fallback
       const paths = new Paths({ rootDir: settings.rootDir }, settings.runEnv.location_prefix)
       this._buildkite.testPath = paths.prefixTestPath(context.testPath)
-      this._buildkite.record = () => recordExport(settings.exportRecords, projectConfig, context.testPath)
+      this._buildkite.record = () => recordExport(settings.exportRecords, recordKey(projectConfig, context.testPath))
       this._buildkite.fallback = fallback
       this._buildkite.session = sessionFor(settings)
     } catch (error) {
