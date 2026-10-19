@@ -290,7 +290,7 @@ final class TelemetryClientTests: XCTestCase {
       #"Authorization: Token token="collector-token""#,
     ])
     XCTAssertEqual(messages.value, [
-      "[BuildkiteTestCollector] warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(TestCollector.endpoint) with Buildkite credentials.",
+      "[BuildkiteTestCollector] warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN, BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(TestCollector.endpoint) with Buildkite credentials.",
     ])
   }
 
@@ -359,7 +359,7 @@ final class TelemetryClientTests: XCTestCase {
           "BUILDKITE_ANALYTICS_OTLP_ENDPOINT": endpoint,
           "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
         ],
-        "warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to http://127.0.0.1:4318/v1/traces with Buildkite credentials."
+        "warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN, BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to http://127.0.0.1:4318/v1/traces with Buildkite credentials."
       ),
     ]
 
@@ -435,7 +435,7 @@ final class TelemetryClientTests: XCTestCase {
     XCTAssertNil(configuration.header(named: "x-test"))
     XCTAssertTrue(messages.withValue { messages in
       messages.contains(
-        "[BuildkiteTestCollector] warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(TestCollector.endpoint) with Buildkite credentials."
+        "[BuildkiteTestCollector] warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN, BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(TestCollector.endpoint) with Buildkite credentials."
       )
     })
   }

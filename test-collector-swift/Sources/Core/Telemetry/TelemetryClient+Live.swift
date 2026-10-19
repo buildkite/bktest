@@ -128,7 +128,7 @@ struct CollectorOTLPConfiguration {
       // they only need a warning when they name somewhere else.
       if standardURL != endpoint, standardEndpoint != nil || rawHeaders != nil {
         logger?.warning(
-          "Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(endpoint.redactedForLogs) with Buildkite credentials."
+          "Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN, BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(endpoint.redactedForLogs) with Buildkite credentials."
         )
       }
     } else if standardEndpoint != nil {
@@ -274,6 +274,7 @@ private final class SynchronousHTTPClient: HTTPClient {
   private let lock = NSLock()
   private let session: URLSession
   private var _outcome: Result<Void, SpanExportFailure>?
+  private let requestTimeout: TimeInterval
   private var _timeout: TimeInterval?
 
   init(timeout: TimeInterval) {
@@ -282,15 +283,17 @@ private final class SynchronousHTTPClient: HTTPClient {
     configuration.timeoutIntervalForResource = timeout
     configuration.urlCache = nil
     self.session = URLSession(configuration: configuration)
+    self.requestTimeout = timeout
   }
 
-  /// Clears the previous outcome and bounds the next request to `timeout`
-  /// when that is shorter than the session's own limit, so a flush deadline
-  /// is not overrun by one slow request.
+  /// Clears the previous outcome and bounds the next request to the
+  /// session's limit, or to `timeout` when that is shorter, so a flush
+  /// deadline is not overrun by one slow request. The explicit bound matters
+  /// on Linux, where a flush request otherwise ran until the flush deadline.
   func prepare(timeout: TimeInterval?) {
     self.lock.lock()
     self._outcome = nil
-    self._timeout = timeout
+    self._timeout = min(timeout ?? self.requestTimeout, self.requestTimeout)
     self.lock.unlock()
   }
 

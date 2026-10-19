@@ -64,7 +64,6 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
   private let exporterLock = NSLock()
   private let logger: Logger?
   private let now: () -> TimeInterval
-  private let sleep: (TimeInterval) -> Void
   private var pending = [PendingSpan]()
   private var retryDelayIndex = 0
   private var retryNotBefore: TimeInterval?
@@ -74,14 +73,12 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
   init(
     exporter: any SpanExporter,
     logger: Logger?,
-    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-    sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
   ) {
     self.exporter = exporter
     self.failureReporter = exporter as? any FailureReportingSpanExporter
     self.logger = logger
     self.now = now
-    self.sleep = sleep
   }
 
   func onStart(parentContext: SpanContext?, span: any ReadableSpan) {}
@@ -126,21 +123,19 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
     self.exporter.shutdown(explicitTimeout: explicitTimeout)
   }
 
-  // The flush is the last chance before the process exits: the first attempt
-  // ignores any backoff, and after a transient failure later ones wait it out
-  // while the budget allows. A terminal failure rejected only its own batch,
-  // so the next batch goes at once. Anything still unsent at the deadline is
-  // lost; count it as dropped.
+  // The flush is the last chance before the process exits, and under
+  // `swift test --parallel` every worker process pays for it, so it makes one
+  // immediate pass over the queue and never waits out a backoff. A terminal
+  // failure rejected only its own batch, so the pass goes on; a transient
+  // failure or the deadline ends it. Anything still unsent is lost; count it
+  // as dropped.
   private func flush(timeout: TimeInterval?) {
     let deadline = timeout.map { self.now() + $0 }
-    var lastOutcome: ExportOutcome?
+    var attempted = false
     while !self.pending.isEmpty {
-      if lastOutcome == .retryLater, let retryNotBefore = self.retryNotBefore, self.now() < retryNotBefore {
-        guard let deadline, retryNotBefore < deadline else { break }
-        self.sleep(retryNotBefore - self.now())
-      }
-      if lastOutcome != nil, let deadline, self.now() >= deadline { break }
-      lastOutcome = self.exportPending(deadline: deadline)
+      if attempted, let deadline, self.now() >= deadline { break }
+      attempted = true
+      guard self.exportPending(deadline: deadline) == .dropped else { break }
     }
     if !self.pending.isEmpty {
       let batch = self.pending[...]
