@@ -1,5 +1,6 @@
 """The export pipeline: child-span forwarding, lifecycle, reconfiguration and drop accounting."""
 
+import random
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -275,6 +276,17 @@ def test_reconfigure_refreshes_the_token_and_keeps_the_run_key(
     request = receiver.trace_requests("test")[0]
     assert request.header("Authorization") == 'Token token="second"'
     assert request.header("Buildkite-Tests-Run-Key") == "build-1"
+
+
+def test_span_ids_do_not_repeat_when_a_suite_seeds_random(fresh_otel, run_env, receiver):
+    state = export.configure({}, run_env, otel_config(receiver), None)
+    trace_ids = []
+    for tracer in (state.test_tracer, state.test_tracer, state.phase_tracer, state.phase_tracer):
+        random.seed(1234)
+        span = tracer.start_span("seeded")
+        trace_ids.append(span.get_span_context().trace_id)
+        span.end()
+    assert len(set(trace_ids)) == len(trace_ids)
 
 
 def test_configure_after_shutdown_starts_fresh(fresh_otel, run_env, receiver, monkeypatch, capfd):

@@ -32,6 +32,14 @@ def state(monkeypatch):
     provider.shutdown()
 
 
+def test_test_span_is_a_root_even_when_another_span_is_current(state, successful_test):
+    export_state, _ = state
+    with trace.get_tracer("suite").start_as_current_span("outer"):
+        span = spans.start_test_span(export_state, successful_test)
+    span.end()
+    assert span.parent is None
+
+
 def test_links_to_the_job_span_only_with_a_valid_traceparent():
     links = export.job_span_links({"TRACEPARENT": VALID_TRACEPARENT, "TRACESTATE": "a=b"})
     assert len(links) == 1
