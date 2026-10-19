@@ -16,11 +16,11 @@ const STATUSES = {
 // Limits count Unicode code points, as the server and the other collectors
 // do, so a name full of emoji keeps the identity of its JSON upload; the SDK's
 // own UTF-16 limits are set wide enough never to cut these values again.
-const truncate = (text, max) => {
+const truncate = (text, max, omission = '...') => {
   if (text.length <= max) return text
   const codePoints = Array.from(text)
   if (codePoints.length <= max) return text
-  return `${codePoints.slice(0, max - 3).join('')}...`
+  return `${codePoints.slice(0, max - omission.length).join('')}${omission}`
 }
 
 // The SDK skips undefined attribute values, so a missing line is left as is.
@@ -50,7 +50,8 @@ const exceptionEvents = (record) => {
 const describeTest = (record, { line } = {}) => {
   const status = STATUSES[record.result]
   const failed = status === 'fail'
-  const reason = failed && record.failure_reason ? truncate(record.failure_reason, FAILURE_REASON_MAX_LENGTH) : undefined
+  // Cut without a marker, as the server cuts the JSON upload's reason.
+  const reason = failed && record.failure_reason ? truncate(record.failure_reason, FAILURE_REASON_MAX_LENGTH, '') : undefined
 
   return {
     attributes: testAttributes(record, line),
