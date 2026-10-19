@@ -140,8 +140,9 @@ func (c *Collector) Start(id Identity, start time.Time) (ex *Execution) {
 func (ex *Execution) Context() context.Context { return ex.ctx }
 
 // Finish records the result on the body and test spans and ends them at
-// end. Every step recovers on its own: a half-described execution beats a
-// missing one.
+// end, the test span once the test stream has room for it; it never waits
+// for the exporter. Every step recovers on its own: a half-described
+// execution beats a missing one.
 func (ex *Execution) Finish(end time.Time, r Result) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -181,10 +182,7 @@ func (ex *Execution) Finish(end time.Time, r Result) {
 		ex.span.SetAttributes(ex.c.runAttrs...)
 		ex.span.SetAttributes(tagAttributes(ex.mergedTags())...)
 	})
-	attempt("Could not finish OpenTelemetry test span", func() {
-		ex.c.awaitRoom()
-		ex.endSpan(ex.span, end)
-	})
+	ex.c.endLater(ex, end)
 }
 
 // endSpan applies the captured end time unless the clock stepped backwards,

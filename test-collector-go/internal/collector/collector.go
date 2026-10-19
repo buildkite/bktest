@@ -80,6 +80,12 @@ type Collector struct {
 	// waited is the time spent holding back test spans for queue room, out
 	// of a budget of processorTimeout for the whole run.
 	waited atomic.Int64
+	// ending holds finished test spans until endSpans hands them to the
+	// batch processor; unended counts those not handed over yet.
+	endingMu sync.Mutex
+	ending   []endingSpan
+	unended  int
+	endWake  chan struct{}
 
 	// childProvider is the provider the forwarder is attached to, which
 	// also starts the phase spans; nil while child export is off.
@@ -121,6 +127,7 @@ func New(ctx context.Context, opts Options) (*Collector, error) {
 		testStats:      &streamStats{},
 		childStats:     &streamStats{},
 		abortDeadline:  sync.OnceValue(func() time.Time { return time.Now().Add(processorTimeout) }),
+		endWake:        make(chan struct{}, 1),
 	}
 	c.runAttrs = runAttributes(env, opts.LocationPrefix)
 	res := producerResource(env)
@@ -153,6 +160,7 @@ func New(ctx context.Context, opts Options) (*Collector, error) {
 		sdktrace.WithSpanProcessor(countingProcessor{SpanProcessor: testProcessor, stats: c.testStats}),
 	)
 	c.testTracer = c.testProvider.Tracer(tracerName, trace.WithInstrumentationVersion(Version))
+	go c.endSpans()
 
 	if opts.ChildSpans {
 		if err := c.configureChildExport(ctx, opts, endpointURL, token, res); err != nil {
@@ -184,14 +192,81 @@ func Setup(ctx context.Context, opts Options) (c *Collector) {
 	return c
 }
 
-// awaitRoom holds the caller back while the test stream's queue is within
-// one batch of full, so a burst of results ending at once (ten thousand
-// subtests whose parent just finished, a cached package replayed through
-// the command) is exported rather than discarded by the batch processor,
-// which drops the spans it cannot queue. The waiting is bounded: once
-// processorTimeout has been spent waiting over the whole run, as it is when
-// the endpoint is down, results are queued without waiting and the drops
-// are reported at shutdown.
+// endingSpan is a finished execution whose test span is still to end.
+type endingSpan struct {
+	ex  *Execution
+	end time.Time
+}
+
+// endLater queues ex's test span for endSpans and returns at once: the
+// caller may be a test's cleanup, whose time counts against go test
+// -timeout, so it never waits for the exporter.
+func (c *Collector) endLater(ex *Execution, end time.Time) {
+	c.endingMu.Lock()
+	c.ending = append(c.ending, endingSpan{ex: ex, end: end})
+	c.unended++
+	c.endingMu.Unlock()
+	select {
+	case c.endWake <- struct{}{}:
+	default:
+	}
+}
+
+// endSpans ends queued test spans in order, waiting for queue room before
+// each one so a burst of results ending at once (ten thousand subtests
+// whose parent just finished, a cached package replayed through the
+// command) is exported rather than discarded by the batch processor,
+// which drops the spans it cannot queue. It runs on its own goroutine for
+// the life of the process.
+func (c *Collector) endSpans() {
+	for range c.endWake {
+		for {
+			c.endingMu.Lock()
+			if len(c.ending) == 0 {
+				c.endingMu.Unlock()
+				break
+			}
+			next := c.ending[0]
+			c.ending[0] = endingSpan{}
+			c.ending = c.ending[1:]
+			c.endingMu.Unlock()
+
+			c.awaitRoom()
+			attempt("Could not finish OpenTelemetry test span", func() {
+				next.ex.endSpan(next.ex.span, next.end)
+			})
+			c.endingMu.Lock()
+			c.unended--
+			c.endingMu.Unlock()
+		}
+	}
+}
+
+// flushEnds waits until endSpans has handed every queued test span to the
+// batch processor. When ctx ends first it spends the rest of the waiting
+// budget, so the remaining spans are handed over at once and any the
+// queue cannot take are counted as dropped.
+func (c *Collector) flushEnds(ctx context.Context) {
+	const poll = 2 * time.Millisecond
+	for {
+		c.endingMu.Lock()
+		unended := c.unended
+		c.endingMu.Unlock()
+		if unended == 0 {
+			return
+		}
+		if ctx.Err() != nil {
+			c.waited.Store(int64(processorTimeout))
+		}
+		time.Sleep(poll)
+	}
+}
+
+// awaitRoom holds endSpans back while the test stream's queue is within
+// one batch of full. The waiting is bounded: once processorTimeout has
+// been spent waiting over the whole run, as it is when the endpoint is
+// down, results are queued without waiting and the drops are reported at
+// shutdown.
 func (c *Collector) awaitRoom() {
 	const poll = 2 * time.Millisecond
 	for c.testStats.inFlight()+c.testSizes.batch > c.testSizes.queue && time.Duration(c.waited.Load()) < processorTimeout {
@@ -322,6 +397,7 @@ func (c *Collector) Shutdown() {
 		if c.forwarder != nil {
 			c.forwarder.deactivate()
 		}
+		c.flushEnds(ctx)
 		testDrained := c.drain(ctx, "shut down OpenTelemetry span export", c.testProvider.Shutdown)
 		childDrained := true
 		if c.childProcessor != nil {
@@ -338,6 +414,7 @@ func (c *Collector) Shutdown() {
 func (c *Collector) Abort() {
 	ctx, cancel := context.WithDeadline(context.Background(), c.abortDeadline())
 	defer cancel()
+	c.flushEnds(ctx)
 	testDrained := c.drain(ctx, "flush OpenTelemetry span export", c.testProvider.ForceFlush)
 	childDrained := true
 	if c.childProcessor != nil {

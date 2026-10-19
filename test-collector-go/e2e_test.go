@@ -266,6 +266,43 @@ func TestEndToEndTenThousandSubtestsAllArrive(t *testing.T) {
 	}
 }
 
+// Waiting for the exporter, whether its queue is small or its endpoint is
+// slow, never happens on a test goroutine, so it never counts against
+// go test -timeout and never changes a result.
+func TestEndToEndWaitingForTheExporterNeverTimesOutATest(t *testing.T) {
+	t.Run("small queue", func(t *testing.T) {
+		t.Parallel()
+		r := otlptest.NewReceiver(t)
+		vars := exportedTo(r, "fixture-burst")
+		vars["BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE"] = "2"
+		vars["BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE"] = "2"
+		out, code := goTest(t, "./burst", vars, "-timeout=500ms")
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0:\n%s", code, out)
+		}
+		if n := len(r.TestSpans()); n != 4 {
+			t.Errorf("got %d test spans, want 4:\n%s", n, out)
+		}
+	})
+	t.Run("stalled endpoint", func(t *testing.T) {
+		t.Parallel()
+		r := otlptest.NewReceiver(t)
+		const stall = 6 * time.Second
+		r.Delay.Store(int64(stall))
+		time.AfterFunc(stall, func() { r.Delay.Store(0) })
+		out, code := goTest(t, "./many", exportedTo(r, "fixture-many-stalled"), "-timeout=3s")
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0:\n%s", code, out)
+		}
+		if strings.Contains(out, "TEST RESULTS MISSING") {
+			t.Errorf("results were dropped:\n%s", out)
+		}
+		if n := len(r.TestSpans()); n != 10001 {
+			t.Errorf("got %d test spans, want 10001", n)
+		}
+	})
+}
+
 // A test file behind a build tag is compiled all the same, so its
 // subtests, including one created by a helper in another package, are
 // located at the test function's declaration.

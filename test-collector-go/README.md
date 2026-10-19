@@ -288,7 +288,8 @@ with the reason and the last OTLP failure, and the exit code still mirrors
 the tests. Lost child spans are reported separately and never count as
 missing results. A burst of results larger than the queue (thousands of
 subtests finishing at once) is held back until the exporter has room,
-within the same budget, rather than dropped.
+within the same budget, rather than dropped. The holding back happens off
+the test goroutines, so it never counts against `go test -timeout`.
 
 Two cases lose results without that warning:
 
@@ -302,9 +303,12 @@ Two cases lose results without that warning:
   test binary that dies before then, from `go test -timeout`, `os.Exit`, or
   a panic in a goroutine or in a test that did not call `Start`, loses the
   package's completed executions; a panic in a test that called `Start`
-  is reported along with everything settled before it. The command reads
-  the stream `go test` printed up to that point and reports those tests
-  (the one that was running as `fail`); use it when that matters.
+  is reported along with everything settled before it, unless it comes
+  from a cleanup the test registered before calling `Start`: `Start`'s own
+  cleanup has already run by then, so that panic loses the package's
+  results too. The command reads the stream `go test` printed up to that
+  point and reports those tests (the one that was running as `fail`); use
+  it when that matters.
 
 Export failures are reported with the token and the run key redacted, even
 when the receiver echoes them back.
