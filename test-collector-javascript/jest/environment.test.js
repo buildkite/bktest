@@ -1,6 +1,7 @@
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const vm = require('vm')
 const { SETTINGS_ENV, publishSettings } = require('../util/otel/config')
 
 jest.mock('../util/otel/session', () => ({
@@ -204,6 +205,12 @@ const projectWithJestCircus = (version, messageUtil) => {
 }
 afterAll(() => projects.forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })))
 
+// Calls the environment's handler from a frame in `project`'s jest-circus, as
+// that jest-circus dispatches events when it runs a test file.
+const dispatcherIn = (project) => vm.runInThisContext('(handler, event) => handler(event, {})', {
+  filename: path.join(path.dirname(project.testRunner), 'jestAdapterInit.js'),
+})
+
 // Stands in for Jest 30.5's flattenErrorStack, which appends each cause.
 const FLATTEN_ERROR_STACK = `
 const flattenErrorStack = (error) => typeof error === 'string' ? error : error.stack + (error.cause ? '\\n\\n[cause]: ' + flattenErrorStack(error.cause) : '')
@@ -233,13 +240,36 @@ describe('BuildkiteTestEngineEnvironment failure text', () => {
     publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
     const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
-    const environment = new Environment(projectWithJestCircus(version, messageUtil), { testPath: '/repo/fail.test.js' })
+    const project = projectWithJestCircus(version, messageUtil)
+    const environment = new Environment(project, { testPath: '/repo/fail.test.js' })
     const test = { name: 'fails', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [errors], asyncError: errors[1] }
+    const dispatch = dispatcherIn(project)
+    const handler = environment.handleTestEvent.bind(environment)
 
-    await environment.handleTestEvent({ name: 'test_start', test }, {})
-    await environment.handleTestEvent({ name: 'test_done', test }, {})
+    await dispatch(handler, { name: 'test_start', test })
+    await dispatch(handler, { name: 'test_done', test })
 
     const [, record] = session.finishTestSpan.mock.calls[0]
     expect([record.failure_reason, ...record.failure_expanded[0].expanded].join('\n')).toBe(text)
+  })
+
+  it('formats failures as the jest-circus dispatching events does, not the one beside a custom testRunner', async () => {
+    publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
+    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn() }
+    sessionFor.mockReturnValueOnce(session)
+    const host = projectWithJestCircus('30.5.2', FLATTEN_ERROR_STACK)
+    const delegate = projectWithJestCircus('30.4.1', '')
+    const dispatch = dispatcherIn(delegate)
+    const environment = new Environment(host, { testPath: '/repo/fail.test.js' })
+    const errors = ['oops', asyncError()]
+    const test = { name: 'fails', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [errors], asyncError: errors[1] }
+    const handler = environment.handleTestEvent.bind(environment)
+
+    await dispatch(handler, { name: 'test_start', test })
+    await dispatch(handler, { name: 'test_done', test })
+
+    // Jest 30.4 reports a thrown string at the test's call site; 30.5 would wrap it in an Error.
+    const [, record] = session.finishTestSpan.mock.calls[0]
+    expect([record.failure_reason, ...record.failure_expanded[0].expanded].join('\n')).toBe('Error\n    at Object.test (/repo/fail.test.js:3:1)')
   })
 })

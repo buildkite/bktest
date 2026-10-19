@@ -37,16 +37,17 @@ const stackWithCauses = (isError) => {
   return (error) => format(error, new Set())
 }
 
-// Failures are formatted the way the project's own jest-circus formats them,
-// with the modules it loads. How it turns an error into text changed in
+// Failures are formatted the way the jest-circus running the file formats
+// them, with the modules it loads. How it turns an error into text changed in
 // Jest 30.1 (an empty stack falls back to the message), 30.4 (causes are
 // appended) and 30.5 (jest-message-util's flattenErrorStack, which also
 // appends an AggregateError's errors, and non-Error throws are wrapped).
-const failureFormatting = (projectConfig) => {
-  const dirs = [projectConfig.testRunner && path.dirname(projectConfig.testRunner), projectConfig.rootDir, __dirname].filter(Boolean)
+const failureFormatting = (projectConfig, circusDir) => {
+  const dirs = [circusDir, projectConfig.testRunner && path.dirname(projectConfig.testRunner), projectConfig.rootDir, __dirname].filter(Boolean)
   const prettyFormat = tryRequireFrom('pretty-format', dirs)
   const flattenErrorStack = tryRequireFrom('jest-message-util', dirs)?.flattenErrorStack
-  const [major, minor] = (tryRequireFrom('jest-circus/package.json', dirs)?.version || '0.0').split('.').map(Number)
+  const circus = tryRequireFrom(circusDir ? path.join(circusDir, 'package.json') : 'jest-circus/package.json', dirs)
+  const [major, minor] = (circus?.version || '0.0').split('.').map(Number)
   const since30 = (minimum) => major > 30 || (major === 30 && minor >= minimum)
   let errorText = stackOrMessage
   if (flattenErrorStack) errorText = flattenErrorStack
@@ -57,6 +58,17 @@ const failureFormatting = (projectConfig) => {
     errorText,
     wrapsThrownValues: Boolean(flattenErrorStack),
   }
+}
+
+// The jest-circus dispatching an event is the one running the file, even when
+// a custom testRunner delegates to a copy other than the one beside it.
+const JEST_CIRCUS_BUILD_FILE = /^(.*[\\/]jest-circus)[\\/]build[\\/]/
+const dispatchingJestCircus = (stack) => {
+  for (const line of stack.split('\n').slice(1)) {
+    const match = JEST_CIRCUS_BUILD_FILE.exec(parseStackLine(line)?.file || '')
+    if (match) return match[1]
+  }
+  return null
 }
 
 // parseStackLine through assertionResult mirror how jest-circus turns a
@@ -154,7 +166,7 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   }
 
   async handleTestEvent(event, state) {
-    if (this._buildkite.session && !this._buildkite.started) this._start()
+    if (this._buildkite.session && !this._buildkite.started) this._start(new Error().stack)
     if (super.handleTestEvent) await super.handleTestEvent(event, state)
     const { session, spans } = this._buildkite
     if (!session) return
@@ -183,8 +195,9 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   }
 
   // Runs on the first event, before any span: records the file as exported so
-  // the reporter skips its JSON.
-  _start() {
+  // the reporter skips its JSON, and picks the failure formatting of the
+  // jest-circus on the stack that dispatched the event.
+  _start(stack) {
     this._buildkite.started = true
     try {
       this._buildkite.record()
@@ -193,7 +206,7 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
       this._buildkite.session = null
       return
     }
-    this._buildkite.formatting = failureFormatting(this._buildkite.projectConfig)
+    this._buildkite.formatting = failureFormatting(this._buildkite.projectConfig, dispatchingJestCircus(stack))
   }
 
   _assertionResult(test, status) {
