@@ -637,10 +637,20 @@ def _within_deadline(operation: Callable[[], object], deadline: float) -> bool:
             outcome.append(error)
 
     thread = threading.Thread(target=run, name="buildkite-otel-drain", daemon=True)
-    thread.start()
-    thread.join(max(0.0, deadline - time.monotonic()))
-    if thread.is_alive():
-        return False
+    try:
+        thread.start()
+    except RuntimeError:
+        # The process-exit shutdown runs in an exit handler, where Python may
+        # refuse new threads (3.12.0-3.12.2 do). Run it here instead, as the
+        # SDK's own exit handler does: the processor's shutdown timeout then
+        # bounds it rather than the deadline.
+        if time.monotonic() >= deadline:
+            return False
+        run()
+    else:
+        thread.join(max(0.0, deadline - time.monotonic()))
+        if thread.is_alive():
+            return False
     if isinstance(outcome[0], BaseException):
         raise outcome[0]
     return outcome[0] is not False

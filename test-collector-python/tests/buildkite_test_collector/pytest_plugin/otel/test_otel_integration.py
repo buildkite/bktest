@@ -326,6 +326,41 @@ def test_xdist_workers_report_missing_results_before_the_controller_stops_them(t
     assert receiver.upload_requests() == []
 
 
+EXIT_HANDLERS_REFUSE_THREADS = '''
+import atexit
+import sys
+import threading
+
+
+def _refuse_threads():
+    def start(self):
+        print("thread refused at exit", file=sys.stderr)
+        raise RuntimeError("can't create new thread at interpreter shutdown")
+    threading.Thread.start = start
+
+
+def pytest_sessionfinish():
+    # Exit handlers run last-registered first, so this runs before the collector's.
+    atexit.register(_refuse_threads)
+'''
+
+
+def test_exit_shutdown_runs_where_exit_handlers_cannot_start_threads(tmp_path, receiver):
+    # CPython 3.12.0-3.12.2 raise RuntimeError when an exit handler starts a thread.
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    (plugins / "refuse_exit_threads.py").write_text(EXIT_HANDLERS_REFUSE_THREADS)
+    env = otel_env(receiver, PYTHONPATH=str(plugins), BUILDKITE_ANALYTICS_DEBUG_ENABLED="1")
+    run = run_pytest(tmp_path, env, "-p", "refuse_exit_threads")
+    assert run.returncode == SAMPLE_EXIT_CODE, run.stderr
+
+    assert "thread refused at exit" in run.stderr
+    assert "shutdown failed" not in run.stderr
+    assert "OpenTelemetry test stream after shutdown (completed=True)" in run.stderr
+    assert "OpenTelemetry child stream after shutdown (completed=True)" in run.stderr
+    assert len(receiver.spans("test")) == len(EXPECTED_RESULTS)
+
+
 def test_invalid_run_key_falls_back_to_json_before_touching_the_sdk(tmp_path, receiver):
     env = otel_env(receiver, BUILDKITE_BUILD_ID="bad key")
     run = run_pytest(tmp_path, env)

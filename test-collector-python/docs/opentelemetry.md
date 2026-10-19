@@ -234,7 +234,10 @@ child request cannot displace or poison test spans. When the session finishes,
 both queues share one 30-second flush budget, test spans first. The process
 exit handler then shuts the exporters down with a further 30-second budget, so
 a receiver that accepts connections but never answers can hold the process for
-up to 60 seconds in total before it exits with pytest's own status.
+up to 60 seconds in total before it exits with pytest's own status. Python
+3.12.0 to 3.12.2 do not let an exit handler start a thread, so there each
+exporter's shutdown runs on the exiting thread with its own 30-second limit,
+and the exit can take up to 30 seconds longer.
 
 ## Test span sizes and batching
 
