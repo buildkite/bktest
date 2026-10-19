@@ -304,7 +304,7 @@ private final class SynchronousHTTPClient: HTTPClient {
     self.lock.unlock()
 
     let semaphore = DispatchSemaphore(value: 0)
-    let task = self.session.dataTask(with: request) { [weak self] _, response, error in
+    let task = self.session.dataTask(with: request) { [weak self, request] _, response, error in
       let httpResponse = response as? HTTPURLResponse
       let outcome = Self.classify(response: httpResponse, error: error)
 
