@@ -71,6 +71,8 @@ phase spans.
 
 Under pytest-xdist each worker process exports its own spans and the
 controller exports nothing, so one run still contains every test. Each worker
+decides on its own: a worker that cannot configure OpenTelemetry (for example
+without the SDK) warns and uploads its own tests as JSON. Each worker
 flushes before it reports its session finished, so the controller waits for
 it. A worker's `TEST RESULTS MISSING` warning appears in the controller's
 output like any other worker stderr, and the controller repeats what each
@@ -80,6 +82,15 @@ OpenTelemetry on xdist worker gw1 did not upload 4 test.execution span(s)
 run without a warning, as with the JSON upload. Under
 pytest-forked the test span is recorded by the parent process; phase and child
 spans recorded inside the forked child are lost with it.
+
+Test and phase spans are timed with `clock_gettime(CLOCK_REALTIME)`, which
+freezegun does not patch, so a test that freezes time does not move its span.
+Windows has no such clock; there a frozen clock still moves the span.
+
+OTel mode costs about 0.1 ms per test, nearly all of it the SDK creating and
+batching each test's spans. On a suite of 5,000 empty tests that is roughly 45%
+more wall time (1.3 s with the JSON upload, 1.8 s with OTel mode); on real
+tests it is usually lost in the noise.
 
 ## OTLP execution attributes
 
@@ -285,6 +296,9 @@ the phase and child spans are not sent.
 
 OTel errors never fail the test process: pytest's exit status is always its
 own. The collector warns on stderr with the `buildkite-test-collector` prefix.
+Warnings raised during the session, including inside a test while pytest
+captures its output, are held and printed after pytest's summary, so output
+capture cannot hide them.
 
 The run key must be 1–255 printable ASCII characters without spaces. An invalid
 key disables OpenTelemetry export with a warning and the collector falls back
