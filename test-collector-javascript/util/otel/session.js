@@ -1,6 +1,6 @@
 const { randomBytes } = require('crypto')
 const { version } = require('../../package.json')
-const { loadSdk } = require('./sdk')
+const { loadSdk, assertCanExport } = require('./sdk')
 const { createExporter, EXPORT_TIMEOUT_MILLISECONDS } = require('./exporter')
 const { resourceAttributes, runAttributes } = require('./attributes')
 const { describeTest, truncate } = require('./describeTest')
@@ -111,6 +111,15 @@ const createSession = (settings) => {
   const { api, trace, resources } = sdk
   const { runEnv } = settings
   const runKey = runEnv.key
+  const providerConfig = {
+    sampler: new trace.AlwaysOnSampler(),
+    idGenerator,
+    resource: resources.defaultResource()
+      .merge(resources.detectResources({ detectors: [resources.envDetector] }))
+      .merge(resources.resourceFromAttributes(resourceAttributes(runEnv))),
+    spanLimits: SPAN_LIMITS,
+  }
+  assertCanExport(sdk, providerConfig)
 
   const metrics = {
     started: 0,
@@ -181,16 +190,7 @@ const createSession = (settings) => {
     forceFlush: () => processor.forceFlush(),
     shutdown: () => processor.shutdown(),
   }
-  const resource = resources.defaultResource()
-    .merge(resources.detectResources({ detectors: [resources.envDetector] }))
-    .merge(resources.resourceFromAttributes(resourceAttributes(runEnv)))
-  const provider = new trace.BasicTracerProvider({
-    sampler: new trace.AlwaysOnSampler(),
-    idGenerator,
-    resource,
-    spanLimits: SPAN_LIMITS,
-    spanProcessors: [holdingProcessor],
-  })
+  const provider = new trace.BasicTracerProvider({ ...providerConfig, spanProcessors: [holdingProcessor] })
   const tracer = provider.getTracer(TRACER_NAME, version)
   const run = runAttributes(settings)
 

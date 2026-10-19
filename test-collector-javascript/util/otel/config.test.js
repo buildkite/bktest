@@ -233,6 +233,28 @@ describe('resolveSettings', () => {
     expect(readSettings()).toBeNull()
   })
 
+  it('falls back to JSON with the default probe when the exporter cannot serialize the SDK spans', () => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    // Exporter 0.57's transformer reads the scope from instrumentationLibrary,
+    // which sdk-trace-base 2.x spans no longer have.
+    jest.doMock('@opentelemetry/otlp-transformer', () => ({
+      ProtobufTraceSerializer: { serializeRequest: (spans) => spans.map((span) => span.instrumentationLibrary.name) },
+    }))
+
+    try {
+      expect(resolve({ probe: undefined })).toBeNull()
+    } finally {
+      jest.dontMock('@opentelemetry/otlp-transformer')
+    }
+    expect(warnings()).toEqual([
+      "[buildkite-test-collector] OpenTelemetry span export disabled: Error: the installed OpenTelemetry packages cannot export spans together (TypeError: Cannot read properties of undefined (reading 'name')). " +
+      'Install matching versions with: npm install --save-dev "@opentelemetry/api@^1.9.0" ' +
+      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <1"',
+      expect.stringMatching(/could not be configured .*uploading results as JSON instead/),
+    ])
+    expect(readSettings()).toBeNull()
+  })
+
   it('says results will not be uploaded when only the relay token held the credential', () => {
     process.env.BUILDKITE_TESTS_OTLP_TOKEN = 'relay-token'
     const probe = () => { throw new Error('boom') }
