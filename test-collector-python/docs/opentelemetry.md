@@ -161,6 +161,15 @@ exporter of your own attached to it also receives the `test.setup`,
 A provider that cannot accept span processors disables child export with a
 warning; test spans are still exported.
 
+"Before the session starts" means when a `conftest.py` that pytest loads at
+startup is imported (the one in the rootdir, or in a test path you pass on the
+command line), in a plugin, or before pytest runs. A provider set later, in a
+fixture or in a `conftest.py` pytest only finds while collecting, is refused by
+OpenTelemetry because the collector's provider is already installed: your
+exporters then receive no spans, and the collector warns
+`trace.set_tracer_provider() was called after the collector installed its own
+tracer provider` when the session ends.
+
 ## Filtering child spans
 
 Implement the `pytest_buildkite_otel_span_filter` hook in `conftest.py` to

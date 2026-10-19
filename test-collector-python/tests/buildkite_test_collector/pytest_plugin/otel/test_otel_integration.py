@@ -408,6 +408,26 @@ def test_exit_shutdown_runs_where_exit_handlers_cannot_start_threads(tmp_path, r
     assert len(receiver.spans("test")) == len(EXPECTED_RESULTS)
 
 
+def test_a_suite_provider_installed_after_session_start_is_reported(tmp_path, receiver):
+    # A conftest below the command-line path loads during collection, after
+    # the collector installed its provider at session start.
+    nested = tmp_path / "tests" / "nested"
+    nested.mkdir(parents=True)
+    (nested / "conftest.py").write_text(
+        "from opentelemetry import trace\n"
+        "from opentelemetry.sdk.trace import TracerProvider\n"
+        "trace.set_tracer_provider(TracerProvider())\n"
+    )
+    (nested / "test_late.py").write_text("def test_late():\n    pass\n")
+    run = run_pytest(tmp_path, otel_env(receiver), test_file=tmp_path)
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    assert run.stderr.count(
+        "trace.set_tracer_provider() was called after the collector installed its own"
+    ) == 1
+    assert len(receiver.spans("test")) == 1
+
+
 def test_invalid_run_key_falls_back_to_json_before_touching_the_sdk(tmp_path, receiver):
     env = otel_env(receiver, BUILDKITE_BUILD_ID="bad key")
     run = run_pytest(tmp_path, env)

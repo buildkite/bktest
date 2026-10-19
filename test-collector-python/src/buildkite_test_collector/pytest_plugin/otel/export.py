@@ -5,6 +5,7 @@ session has decided to use OTel mode.
 """
 
 import atexit
+import logging
 import os
 import re
 import secrets
@@ -505,6 +506,44 @@ def _build_child_stream(
     return replace(state, child_processor=processor, child_session=session, forwarder=forwarder)
 
 
+class ProviderRefusalWatch(logging.Filter):  # pylint: disable=too-few-public-methods
+    """Notice the API refusing a suite's tracer provider because the collector's is installed.
+
+    The API only logs a warning, which pytest's log capture hides, and a
+    logging filter cannot log itself, so the collector warns later.
+    """
+
+    REFUSAL = "Overriding of current TracerProvider is not allowed"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.refused = False
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Note the refusal and pass the record on."""
+        if record.getMessage() == self.REFUSAL:
+            self.refused = True
+        return True
+
+
+_provider_refusal = ProviderRefusalWatch()
+
+
+def warn_if_provider_refused() -> None:
+    """Warn, once, if a suite's own tracer provider was refused because ours was installed."""
+    if not _provider_refusal.refused:
+        return
+    _provider_refusal.refused = False
+    logger.warning(
+        "OpenTelemetry: trace.set_tracer_provider() was called after the collector installed "
+        "its own tracer provider at session start, so that provider was not installed and its "
+        "exporters receive no spans (spans inside a test still reach Buildkite as child spans). "
+        "Set your tracer provider when a conftest.py that pytest loads at startup is imported "
+        "(in the rootdir or a test path given on the command line), in a plugin, or before "
+        "pytest starts; a fixture or a conftest.py found during collection is too late."
+    )
+
+
 def _attach_to_global_provider(forwarder: ChildSpanForwarder, resource: Resource) -> None:
     provider = trace.get_tracer_provider()
     if isinstance(provider, trace.ProxyTracerProvider):
@@ -515,6 +554,7 @@ def _attach_to_global_provider(forwarder: ChildSpanForwarder, resource: Resource
         trace.set_tracer_provider(managed)
         if trace.get_tracer_provider() is not managed:
             raise RuntimeError("could not install the collector-managed tracer provider")
+        logging.getLogger(trace.__name__).addFilter(_provider_refusal)
         return
     if not callable(getattr(provider, "add_span_processor", None)):
         raise TypeError(f"{type(provider).__name__} does not accept span processors")

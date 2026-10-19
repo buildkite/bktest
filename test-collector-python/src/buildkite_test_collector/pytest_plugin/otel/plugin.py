@@ -152,6 +152,7 @@ class OTelPlugin:
         # reach the log.
         if self._state is None or not _is_xdist_worker(session.config):
             return
+        self._export.warn_if_provider_refused()
         self._held_warnings.release()
         self._export.force_flush()
         try:
@@ -169,6 +170,7 @@ class OTelPlugin:
         if self._state is None or _is_xdist_worker(config):
             return
         _flush_terminal(config)
+        self._export.warn_if_provider_refused()
         self._held_warnings.release()
         self._export.force_flush()
 
