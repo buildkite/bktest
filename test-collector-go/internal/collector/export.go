@@ -7,8 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,12 +18,10 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-var httpStatusInError = regexp.MustCompile(`: (\d{3}) [A-Za-z]`)
-
 // newExporter builds the OTLP/HTTP exporter for one span stream with every
 // setting passed explicitly, so the OTEL_EXPORTER_OTLP_* variables bktec and
 // vendor exporters set for other destinations are never consulted.
-func newExporter(ctx context.Context, endpoint *url.URL, token, runKey, stream string) (*otlptrace.Exporter, error) {
+func newExporter(ctx context.Context, endpoint *url.URL, token, runKey, stream string, stats *streamStats) (*otlptrace.Exporter, error) {
 	// A transport of our own, not a clone of http.DefaultTransport: a suite
 	// that relaxes TLS verification or swaps in a fake transport for its own
 	// tests must not change how results reach Buildkite.
@@ -36,7 +34,7 @@ func newExporter(ctx context.Context, endpoint *url.URL, token, runKey, stream s
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	client := &http.Client{Transport: transport}
+	client := &http.Client{Transport: statusRecorder{RoundTripper: transport, stats: stats}}
 	return otlptracehttp.New(ctx,
 		otlptracehttp.WithEndpointURL(endpoint.String()),
 		otlptracehttp.WithHeaders(map[string]string{
@@ -66,6 +64,9 @@ type streamStats struct {
 	succeeded   int
 	failed      int
 	startFailed int
+	// lastStatus is the HTTP status of the current export's last response,
+	// 0 until it gets one.
+	lastStatus  int
 	lastFailure string
 	reported    int
 }
@@ -166,14 +167,18 @@ func (e countingExporter) ExportSpans(ctx context.Context, spans []sdktrace.Read
 		}
 		e.stats.mu.Lock()
 		defer e.stats.mu.Unlock()
+		// A later successful batch leaves lastFailure alone: it names the
+		// cause of the spans already lost, which are reported at the end.
 		if err != nil {
 			e.stats.failed += len(spans)
-			e.stats.lastFailure = failureCause(err)
+			e.stats.lastFailure = failureCause(err, e.stats.lastStatus)
 		} else {
 			e.stats.succeeded += len(spans)
-			e.stats.lastFailure = ""
 		}
 	}()
+	e.stats.mu.Lock()
+	e.stats.lastStatus = 0
+	e.stats.mu.Unlock()
 	return e.SpanExporter.ExportSpans(ctx, spans)
 }
 
@@ -197,13 +202,34 @@ func redact(err error, secrets []string) error {
 	return errors.New(redacted)
 }
 
-// failureCause reduces an export error to the HTTP status when there is one,
-// otherwise to the first line of the error.
-func failureCause(err error) string {
-	msg := err.Error()
-	if m := httpStatusInError.FindStringSubmatch(msg); m != nil {
-		return m[1]
+// statusRecorder records the status of each response on the stream's
+// stats: the exporter's error for a status it retries (429, 502, 503, 504)
+// carries the response body but not the status.
+type statusRecorder struct {
+	http.RoundTripper
+	stats *streamStats
+}
+
+func (t statusRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.RoundTripper.RoundTrip(req)
+	status := 0
+	if err == nil {
+		status = resp.StatusCode
 	}
+	t.stats.mu.Lock()
+	t.stats.lastStatus = status
+	t.stats.mu.Unlock()
+	return resp, err
+}
+
+// failureCause reduces an export error to the HTTP status of the last
+// response when that was an error status, otherwise to the first line of
+// the error.
+func failureCause(err error, lastStatus int) string {
+	if lastStatus >= http.StatusMultipleChoices {
+		return strconv.Itoa(lastStatus)
+	}
+	msg := err.Error()
 	if i := strings.IndexByte(msg, '\n'); i >= 0 {
 		msg = msg[:i]
 	}

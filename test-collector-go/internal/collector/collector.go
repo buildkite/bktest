@@ -133,7 +133,7 @@ func New(ctx context.Context, opts Options) (*Collector, error) {
 	res := producerResource(env)
 
 	testSizes := spanProcessorSizes(defaultTestSpanProcessorEnvName, processorSizes{queue: testSpanQueueSize, batch: testSpanBatchSize})
-	testExporter, err := newExporter(ctx, endpointURL, token, env.key, streamTest)
+	testExporter, err := newExporter(ctx, endpointURL, token, env.key, streamTest, c.testStats)
 	if err != nil {
 		return nil, fmt.Errorf("could not create the test span exporter: %w", err)
 	}
@@ -290,7 +290,7 @@ func (c *Collector) Exported() int {
 // panics only costs child spans.
 func (c *Collector) configureChildExport(ctx context.Context, opts Options, endpointURL *url.URL, token string, res *resource.Resource) error {
 	childSizes := spanProcessorSizes(childSpanProcessorEnvName, processorSizes{queue: childSpanQueueSize, batch: childSpanBatchSize})
-	childExporter, err := newExporter(ctx, endpointURL, token, c.env.key, streamChild)
+	childExporter, err := newExporter(ctx, endpointURL, token, c.env.key, streamChild, c.childStats)
 	if err != nil {
 		return fmt.Errorf("could not create the child span exporter: %w", err)
 	}
@@ -438,18 +438,22 @@ func (c *Collector) drain(ctx context.Context, what string, op func(context.Cont
 // reportDrops warns about test spans that were lost (TEST RESULTS MISSING)
 // and about child spans that were lost (best effort). Drops are reported
 // once per increase; spans still in flight at the deadline are reported as
-// pending each time.
+// pending each time, alongside any drops.
 func (c *Collector) reportDrops(testDrained, childDrained bool) {
-	if test, unreported := c.testStats.unreported(testDrained); unreported {
+	test, unreported := c.testStats.unreported(testDrained)
+	if unreported {
 		Warnf("TEST RESULTS MISSING: OpenTelemetry dropped %d test.execution span(s) (%s).", test.dropped, test.reason)
 		Warnf("OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.")
-	} else if test.pending > 0 {
+	}
+	if test.pending > 0 {
 		Warnf("TEST RESULTS MISSING: %d test.execution span(s) were still exporting when the %s deadline passed and may not have reached Buildkite Test Engine.", test.pending, processorTimeout)
 	}
 
-	if child, unreported := c.childStats.unreported(childDrained); unreported {
+	child, unreported := c.childStats.unreported(childDrained)
+	if unreported {
 		Warnf("OpenTelemetry dropped %d child span(s) (%s); test.execution results are unaffected.", child.dropped, child.reason)
-	} else if child.pending > 0 {
+	}
+	if child.pending > 0 {
 		Warnf("OpenTelemetry child span export did not finish within %s; %d child span(s) may be missing. test.execution results are unaffected.", processorTimeout, child.pending)
 	}
 }

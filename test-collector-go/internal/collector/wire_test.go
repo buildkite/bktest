@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/buildkite/bktest/test-collector-go/internal/otlptest"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestAuthorizationHeaderCarriesTheTokenVerbatim(t *testing.T) {
@@ -218,6 +220,57 @@ func TestExportFailureIsReportedWithItsStatus(t *testing.T) {
 	}
 }
 
+// A later successful batch must not erase why an earlier one was lost.
+func TestExportFailureCauseOutlivesALaterSuccess(t *testing.T) {
+	out := captureWarnings(t)
+	r := otlptest.NewReceiver(t)
+	r.FailWith.Store(http.StatusRequestEntityTooLarge)
+	r.FailNext.Store(1)
+	c := configured(t, r, map[string]string{"BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE": "1"})
+
+	run(c, "TestTooLarge", nil)
+	run(c, "TestFits", nil)
+	c.Shutdown()
+
+	if got := len(r.Stream(streamTest)); got != 2 {
+		t.Fatalf("got %d requests, want one per span", got)
+	}
+	want := "TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 413)."
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("warning = %q\nwant it to contain %q", out.String(), want)
+	}
+}
+
+// The exporter's error for a status it retries carries the response body
+// but not the status, which the warning must still name.
+func TestRetriedExportFailureIsReportedWithItsStatus(t *testing.T) {
+	r := otlptest.NewReceiver(t)
+	r.FailWith.Store(http.StatusServiceUnavailable)
+	r.FailNext.Store(100)
+	endpoint, err := url.Parse(r.Endpoint())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats := &streamStats{}
+	exporter, err := newExporter(context.Background(), endpoint, "secret-token", "run-key", streamTest, stats)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The first retry waits longer than this, so the export gives up on
+	// the 503 it got.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	stats.offer(1)
+	err = countingExporter{SpanExporter: exporter, stats: stats}.ExportSpans(ctx, tracetest.SpanStubs{{Name: "test.execution"}}.Snapshots())
+	if err == nil || strings.Contains(err.Error(), "503") {
+		t.Fatalf("err = %v; want the exporter's retried failure, which does not name the status", err)
+	}
+	if got, _ := stats.unreported(true); got.reason != "export-failure, last OTLP failure: 503" {
+		t.Fatalf("reason = %q", got.reason)
+	}
+}
+
 // Results that end faster than they export must wait for queue room rather
 // than overflow the batch processor's queue.
 func TestBurstOfResultsIsHeldBackRatherThanDropped(t *testing.T) {
@@ -366,6 +419,25 @@ func TestDropAccountingSeparatesLostFromPending(t *testing.T) {
 	late, _ := s.unreported(false)
 	if late.dropped != 2 || late.pending != 3 || late.reason != "export-failure, last OTLP failure: 503" {
 		t.Fatalf("not drained = %+v; want 1 failed + 1 start failure dropped and 3 pending", late)
+	}
+
+	// A fresh loss does not hide the spans still in flight: every result is
+	// either dropped or pending in the warnings.
+	out := captureWarnings(t)
+	c := &Collector{
+		testStats:  &streamStats{offered: 12, failed: 10, lastFailure: "503"},
+		childStats: &streamStats{offered: 5, failed: 2, lastFailure: "503"},
+	}
+	c.reportDrops(false, false)
+	for _, want := range []string{
+		"TEST RESULTS MISSING: OpenTelemetry dropped 10 test.execution span(s) (export-failure, last OTLP failure: 503).",
+		"TEST RESULTS MISSING: 2 test.execution span(s) were still exporting when the 30s deadline passed",
+		"OpenTelemetry dropped 2 child span(s) (export-failure, last OTLP failure: 503)",
+		"3 child span(s) may be missing",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("warnings lack %q:\n%s", want, out.String())
+		}
 	}
 }
 
