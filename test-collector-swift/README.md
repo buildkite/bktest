@@ -119,8 +119,10 @@ Each worker process also sends and flushes its results on its own. When the
 endpoint refuses connections or returns errors, that costs one extra immediate
 request per process. When it accepts connections but never answers, each
 process waits up to 10 s as its test finishes and up to 10 s more at the flush.
-During such an outage, set `BUILDKITE_ANALYTICS_ENABLED=false` to run the suite
-without the collector.
+Each batch of up to 512 OpenTelemetry child spans also waits up to 10 s, so a
+test that created thousands of child spans can hold its process for the whole
+30 s flush budget, about 40 s in total. During such an outage, set
+`BUILDKITE_ANALYTICS_ENABLED=false` to run the suite without the collector.
 
 ### Step 3
 
