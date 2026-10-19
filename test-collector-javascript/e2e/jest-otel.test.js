@@ -304,7 +304,30 @@ describe('examples/jest in OTel mode', () => {
 
     expect(result.code).toBe(0)
     expect(result.stdout).not.toMatch(/Test Engine Sending:/)
-    expect(result.stderr).toMatch(/TEST RESULTS MISSING: OpenTelemetry dropped 1 test\.execution span\(s\) \(export-failure, last OTLP failure: ECONNREFUSED\)/)
+    expect(result.stderr).toMatch(/TEST RESULTS MISSING: OpenTelemetry dropped 1 test\.execution span\(s\) \(export-failure: 1, last OTLP failure: ECONNREFUSED\)/)
+  }, 90000)
+
+  test('accounts for every span when the endpoint refuses connections for longer than the flush budget', async () => {
+    const closed = await startOtlpServer()
+    await closed.close()
+    const cacheDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'jest-cache-'))
+    // Each worker spends its 30 s budget on the retries of its first files;
+    // Jest then force-exits the workers, whose later exports never finish.
+    const result = await run(`jest --config otel-many-files.config.js --maxWorkers=2 --cacheDirectory ${cacheDirectory}`, {
+      ...baseEnv,
+      BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
+      BUILDKITE_ANALYTICS_TOKEN: 'xyz',
+      BUILDKITE_ANALYTICS_OTLP_ENDPOINT: closed.url,
+    })
+    fs.rmSync(cacheDirectory, { recursive: true, force: true })
+
+    const total = (pattern) => [...result.stderr.matchAll(pattern)].reduce((sum, match) => sum + Number(match[1]), 0)
+    const dropped = total(/TEST RESULTS MISSING: OpenTelemetry dropped (\d+) test\.execution span\(s\) \(export-failure: \1, last OTLP failure: ECONNREFUSED\)/g)
+    const pending = total(/TEST RESULTS MISSING: (\d+) test\.execution span\(s\) were still exporting/g)
+    expect(result.code).toBe(0)
+    expect(result.stderr).toMatch(/Tests: +30 passed, 30 total/)
+    expect(result.stdout).not.toMatch(/Test Engine Sending:/)
+    expect(dropped + pending).toBe(30)
   }, 90000)
 
   test('does not load the OpenTelemetry SDK when otelEnabled is off', async () => {

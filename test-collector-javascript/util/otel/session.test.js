@@ -292,7 +292,7 @@ describe('createSession', () => {
 
     expect(requests).toHaveLength(1)
     expect(flushed.warnings).toEqual([
-      '[buildkite-test-collector] TEST RESULTS MISSING: OpenTelemetry dropped 2 test.execution span(s) (export-failure, last OTLP failure: 401).\n' +
+      '[buildkite-test-collector] TEST RESULTS MISSING: OpenTelemetry dropped 2 test.execution span(s) (export-failure: 2, last OTLP failure: 401).\n' +
       '[buildkite-test-collector] OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.',
     ])
     expect(warnings).toEqual(flushed.warnings)
@@ -302,9 +302,16 @@ describe('createSession', () => {
     const { requests, flushed, warnings } = await runSession({ unreachable: true, forceFlush: true })
 
     expect(requests).toHaveLength(0)
-    expect(flushed.warnings).toEqual([expect.stringMatching(/dropped 1 test\.execution span\(s\) \(export-failure, last OTLP failure: ECONNREFUSED\)/)])
+    expect(flushed.warnings).toEqual([expect.stringMatching(/dropped 1 test\.execution span\(s\) \(export-failure: 1, last OTLP failure: ECONNREFUSED\)/)])
     expect(warnings).toEqual(flushed.warnings)
   }, 15000)
+
+  it('names the HTTP status when the exporter gives up retrying a 503', async () => {
+    const { requests, flushed } = await runSession({ respond: '503-always', forceFlush: true })
+
+    expect(requests.map((request) => request.status)).toEqual([503, 503, 503, 503, 503, 503])
+    expect(flushed.warnings).toEqual([expect.stringMatching(/dropped 1 test\.execution span\(s\) \(export-failure: 1, last OTLP failure: 503\)\./)])
+  })
 
   it('exports every span of a synchronous burst larger than the queue', async () => {
     const { spans, flushed, warnings } = await runSession({
@@ -339,7 +346,7 @@ describe('createSession', () => {
 
     expect(requests).toHaveLength(3)
     expect(flushed.metrics).toMatchObject({ ended: 5, handed: 5, exported: 0, failed: 5 })
-    expect(warnings).toEqual([expect.stringMatching(/dropped 5 test\.execution span\(s\) \(export-failure, last OTLP failure: 401\)/)])
+    expect(warnings).toEqual([expect.stringMatching(/dropped 5 test\.execution span\(s\) \(export-failure: 5, last OTLP failure: 401\)/)])
   })
 
   it('validates the queue and batch size overrides', async () => {

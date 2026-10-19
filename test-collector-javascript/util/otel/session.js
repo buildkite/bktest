@@ -96,6 +96,13 @@ const missingResults = (count, detail) => {
   )
 }
 
+const pendingResults = (count) => {
+  warn(
+    `TEST RESULTS MISSING: ${count} test.execution span(s) were still exporting when the collector stopped waiting for them ` +
+    'and may not have reached Buildkite Test Engine.'
+  )
+}
+
 // Owns the private tracer provider for one run in this process: every test
 // span is a trace root exported on the `test` stream with explicit settings,
 // so customer OTEL_* configuration cannot sample, trim or redirect results.
@@ -115,7 +122,21 @@ const createSession = (settings) => {
     lastFailure: null,
     flushBudget: FLUSH_BUDGET_MILLISECONDS,
   }
-  const reported = { failed: 0, notExported: 0 }
+  let reportedFailures = 0
+
+  // Every ended span stays here until its export settles or a warning has
+  // counted it, so each span is reported once at most: as an export failure,
+  // as never exported, or as pending when a flush stops waiting for it. A
+  // worker that Jest force-exits has then already warned about every span it
+  // could not deliver.
+  const unsettled = new Set()
+  let unreportedFailures = 0
+  const settle = (spans, succeeded) => {
+    for (const span of spans) {
+      if (unsettled.delete(span) && !succeeded) unreportedFailures += 1
+    }
+    feedHeldSpans()
+  }
 
   // The batch processor drops a span when its queue is full, and a run of
   // fast tests ends spans faster than one Node thread can export them, so
@@ -142,7 +163,7 @@ const createSession = (settings) => {
     runKey,
     stream: SPAN_STREAM,
     metrics,
-    onSettled: feedHeldSpans,
+    onSettled: settle,
   })
   const processor = new trace.BatchSpanProcessor(exporter, {
     maxQueueSize: sizes.queue,
@@ -153,6 +174,7 @@ const createSession = (settings) => {
   const holdingProcessor = {
     onStart: (span, context) => processor.onStart(span, context),
     onEnd: (span) => {
+      unsettled.add(span)
       held.push(span)
       feedHeldSpans()
     },
@@ -274,26 +296,28 @@ const createSession = (settings) => {
     }
   }
 
-  const reportDrops = ({ drained }) => {
-    const failed = metrics.failed - reported.failed
-    if (failed > 0) {
-      reported.failed = metrics.failed
+  // After a completed drain, a span that never settled never reached the
+  // exporter; otherwise it may still be exporting and is reported as pending.
+  const reportUndelivered = ({ drained }) => {
+    reportedFailures = metrics.failed
+    const leftover = unsettled.size
+    unsettled.clear()
+    const notExported = drained ? leftover : 0
+    const reasons = []
+    if (notExported > 0) reasons.push(`not-exported: ${notExported}`)
+    if (unreportedFailures > 0) {
       const cause = metrics.lastFailure ? `, last OTLP failure: ${metrics.lastFailure}` : ''
-      missingResults(failed, `export-failure${cause}`)
+      reasons.push(`export-failure: ${unreportedFailures}${cause}`)
     }
-    if (drained) {
-      const notExported = metrics.ended - metrics.handed - reported.notExported
-      if (notExported > 0) {
-        reported.notExported += notExported
-        missingResults(notExported, 'not-exported')
-      }
-    }
+    if (reasons.length > 0) missingResults(notExported + unreportedFailures, reasons.join(', '))
+    unreportedFailures = 0
+    if (!drained && leftover > 0) pendingResults(leftover)
   }
 
   // The processor rejects a flush when any batch in it failed, which the
   // exporter wrapper has already counted; only an unexpected failure is worth
   // its own warning.
-  const unexplained = (error) => metrics.failed === reported.failed && describeError(error)
+  const unexplained = (error) => metrics.failed === reportedFailures && describeError(error)
 
   // The processor's flush only covers its queue; a batch its timer already
   // handed to the exporter (retries included) is joined through the exporter,
@@ -327,19 +351,10 @@ const createSession = (settings) => {
   const forceFlush = async () => {
     const { drained, failure } = await drain()
     warnUnlessCounted('flush OpenTelemetry spans', failure)
-    reportDrops({ drained })
+    reportUndelivered({ drained })
   }
 
-  const onExit = () => {
-    reportDrops({ drained: false })
-    const pending = metrics.ended - metrics.exported - metrics.failed - reported.notExported
-    if (pending > 0) {
-      warn(
-        `TEST RESULTS MISSING: ${pending} test.execution span(s) were still queued or being exported when the process exited; ` +
-        'those test executions were not uploaded to Buildkite Test Engine.'
-      )
-    }
-  }
+  const onExit = () => reportUndelivered({ drained: false })
   process.on('exit', onExit)
 
   let shutDown = false
@@ -353,7 +368,7 @@ const createSession = (settings) => {
     } catch (error) {
       warnUnlessCounted('shut down OpenTelemetry span export', error)
     }
-    reportDrops({ drained })
+    reportUndelivered({ drained })
     if (drained) process.off('exit', onExit)
   }
 

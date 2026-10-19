@@ -16,6 +16,8 @@ console.warn = (message) => warnings.push(message)
 
 const responders = {
   '503-once': (index) => (index === 0 ? 503 : 200),
+  // Retry-After: 0 makes the exporter retry at once, so its retries run out quickly.
+  '503-always': () => ({ status: 503, headers: { 'Retry-After': '0' } }),
   401: () => 401,
   '401-slow': () => ({ status: 401, delay: 1500 }),
 }
