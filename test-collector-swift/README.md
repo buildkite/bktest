@@ -90,7 +90,9 @@ precedence over `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, and
 appended; and the collector logs the endpoint it sends to. Standard endpoints
 receive only the explicitly configured OTLP headers, never the suite token.
 Header and protocol variables alone do not enable the collector or select an
-endpoint.
+endpoint. Logged endpoints, including debug output, show only the scheme, host,
+port and path; user info, query and fragment are left out because they can
+carry credentials.
 
 Each test process is one Test Engine run, identified by `BUILDKITE_ANALYTICS_KEY`
 or, on a supported CI system, the build and job. Outside recognised CI,

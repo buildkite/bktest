@@ -294,6 +294,51 @@ final class TelemetryClientTests: XCTestCase {
     ])
   }
 
+  func testLogsEndpointsWithoutCredentials() throws {
+    let endpoint = "http://url-user:url-secret@127.0.0.1:4318/v1/traces?api_key=query-secret#fragment-secret"
+    let cases: [(values: [String: String], line: String)] = [
+      (
+        ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": endpoint],
+        "info: Sending test executions to http://127.0.0.1:4318/v1/traces from OTEL_EXPORTER_OTLP_* without Buildkite credentials; they reach Buildkite Test Engine only if that endpoint forwards them."
+      ),
+      (
+        [
+          "BUILDKITE_ANALYTICS_TOKEN": "collector-token",
+          "BUILDKITE_ANALYTICS_OTLP_ENDPOINT": endpoint,
+          "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
+        ],
+        "warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to http://127.0.0.1:4318/v1/traces with Buildkite credentials."
+      ),
+    ]
+
+    for (values, line) in cases {
+      let messages = LockIsolated([String]())
+      let logger = Logger(logLevel: .debug, printer: { message in
+        messages.withValue { $0.append(message) }
+      })
+      let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
+        environment: EnvironmentValues(
+          values: values.merging(["BUILDKITE_ANALYTICS_KEY": "run-key"]) { $1 },
+          getFromEnvironment: { _ in nil },
+          getFromInfoDictionary: { _ in nil },
+          logger: logger
+        ),
+        logger: logger
+      ))
+      logger.waitForLogs()
+
+      XCTAssertEqual(configuration.endpoint.absoluteString, endpoint)
+      XCTAssertTrue(messages.value.contains("[BuildkiteTestCollector] \(line)"), "\(messages.value)")
+      XCTAssertTrue(
+        messages.value.contains(where: { $0.hasSuffix("_ENDPOINT=http://127.0.0.1:4318/v1/traces (from values)") }),
+        "\(messages.value)"
+      )
+      for secret in ["url-user", "url-secret", "query-secret", "fragment-secret"] {
+        XCTAssertFalse(messages.value.contains(where: { $0.contains(secret) }), "\(secret) in \(messages.value)")
+      }
+    }
+  }
+
   func testHeadersAloneDoNotEnableCollector() {
     let configuration = CollectorOTLPConfiguration(
       environment: EnvironmentValues(

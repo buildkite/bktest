@@ -119,7 +119,7 @@ struct CollectorOTLPConfiguration {
       }
       if standardEndpoint != nil || rawHeaders != nil {
         logger?.warning(
-          "Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(endpoint.absoluteString) with Buildkite credentials."
+          "Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(endpoint.redactedForLogs) with Buildkite credentials."
         )
       }
     } else if let standardEndpoint {
@@ -144,7 +144,7 @@ struct CollectorOTLPConfiguration {
         headers = parsedHeaders
       }
       logger?.info(
-        "Sending test executions to \(endpoint.absoluteString) from OTEL_EXPORTER_OTLP_* without Buildkite credentials; they reach Buildkite Test Engine only if that endpoint forwards them."
+        "Sending test executions to \(endpoint.redactedForLogs) from OTEL_EXPORTER_OTLP_* without Buildkite credentials; they reach Buildkite Test Engine only if that endpoint forwards them."
       )
     }
 

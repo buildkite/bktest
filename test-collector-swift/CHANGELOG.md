@@ -10,6 +10,7 @@
 - Send a backlog of queued executions in batches of at most 120 spans and 512 KiB, retried per batch, so a rejected or oversized request drops only its own batch instead of every queued execution
 - Give the bundle-end flush one 30 s budget shared by test executions (first) and child spans, instead of 30 s each, and warn when child spans are left unexported at the deadline
 - Ignore `OTEL_EXPORTER_OTLP_*` while `BUILDKITE_ANALYTICS_TOKEN` or `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` is set, with a warning, so an application's OpenTelemetry configuration cannot redirect test results away from Test Engine; log the endpoint when the standard variables are used without Buildkite credentials
+- Log endpoints, including in debug output, as scheme, host, port and path only, so credentials in an endpoint's user info, query or fragment never reach the logs
 - Document that only XCTest (including Quick and Nimble) is collected, that run-level tags are set through `BUILDKITE_ANALYTICS_TAGS` only, and how to keep a local `swift test --parallel` in one run
 
 ## 2.0.0-beta.1
