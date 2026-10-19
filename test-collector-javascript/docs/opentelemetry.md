@@ -318,8 +318,8 @@ reporter cannot tell which, so it warns and uploads both projects' results for
 that file as JSON as well, and some appear twice rather than any going
 missing. A custom test runner that rewrites the project config before the
 environment sees it can make the worker's record miss the reporter's lookup
-in the same way, so that file's tests would be sent twice, never lost. Check the warning if a project uses per-file `@jest-environment`
-docblocks. The whole run falls back under the legacy `jest-jasmine2` test
+in the same way, so that file's tests would be sent twice, never lost. Check
+the warning if a project uses per-file `@jest-environment` docblocks. The whole run falls back under the legacy `jest-jasmine2` test
 runner, which does not send test events to the environment; export needs the
 default `jest-circus` runner. Every fallback warning ends with what happens to
 the results: `uploading results as JSON instead`, or, when only
