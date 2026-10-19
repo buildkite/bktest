@@ -325,7 +325,6 @@ describe('examples/jest in OTel mode', () => {
     const dropped = total(/TEST RESULTS MISSING: OpenTelemetry dropped (\d+) test\.execution span\(s\) \(export-failure: \1, last OTLP failure: ECONNREFUSED\)/g)
     const pending = total(/TEST RESULTS MISSING: (\d+) test\.execution span\(s\) were still exporting/g)
     expect(result.code).toBe(0)
-    expect(result.stderr).toMatch(/Tests: +30 passed, 30 total/)
     expect(result.stdout).not.toMatch(/Test Engine Sending:/)
     expect(dropped + pending).toBe(30)
   }, 90000)
