@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -214,6 +215,24 @@ def test_an_interrupted_test_is_reported_as_skipped(tmp_path, receiver):
         for span in receiver.spans("test")
     }
     assert executions == {"test_done": "pass", "test_interrupted": "skipped"}
+
+
+def test_frozen_time_does_not_move_test_spans(tmp_path, receiver):
+    before = time.time_ns()
+    run = run_pytest(
+        tmp_path, otel_env(receiver), str(DATA_DIR / "test_sample_frozen_class_and_test.py"),
+        test_file=DATA_DIR / "test_sample_frozen_module.py",
+    )
+    after = time.time_ns()
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    by_name = _by_name(receiver.spans("test"))
+    assert set(by_name) == {
+        "test_module_first", "test_module_second", "test_module_third",
+        "test_class_first", "test_class_second", "test_frozen_test",
+    }
+    for name, span in by_name.items():
+        assert before <= span.start_time_unix_nano <= span.end_time_unix_nano <= after, name
 
 
 def test_retried_requests_keep_their_stream_header(tmp_path, receiver):

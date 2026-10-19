@@ -53,7 +53,7 @@ def test_test_span_is_a_root_with_synthesis_attributes_first(state, successful_t
     assert span.attributes["test.case.result.status"] == "unset"
     assert span.attributes["buildkite.run_key"] == "run-1"
     assert len(span.links) == 1
-    spans.finish_test_span(span, successful_test, {"buildkite.run_key": "run-1"}, {}, None)
+    spans.finish_test_span(span, successful_test, {"buildkite.run_key": "run-1"}, {})
     finished = exporter.get_finished_spans()[0]
     assert finished.attributes["test.case.result.status"] == "pass"
     assert finished.status.status_code is trace.StatusCode.UNSET
@@ -62,7 +62,7 @@ def test_test_span_is_a_root_with_synthesis_attributes_first(state, successful_t
 def test_failure_becomes_status_and_exception_events(state, failed_test):
     export_state, exporter = state
     span = spans.start_test_span(export_state, failed_test)
-    spans.finish_test_span(span, failed_test, {"buildkite.run_key": "run-1"}, {}, None)
+    spans.finish_test_span(span, failed_test, {"buildkite.run_key": "run-1"}, {})
     finished = exporter.get_finished_spans()[0]
     assert finished.attributes["test.case.result.status"] == "fail"
     assert finished.status.status_code is trace.StatusCode.ERROR
@@ -77,7 +77,7 @@ def test_identity_survives_129_attributes(state, successful_test):
     export_state, exporter = state
     noisy = replace(successful_test, tags={f"tag{i}": "v" for i in range(129)})
     span = spans.start_test_span(export_state, noisy)
-    spans.finish_test_span(span, noisy, {"buildkite.run_key": "run-1"}, {}, None)
+    spans.finish_test_span(span, noisy, {"buildkite.run_key": "run-1"}, {})
     finished = exporter.get_finished_spans()[0]
     assert len(finished.attributes) == 128
     assert finished.dropped_attributes > 0
@@ -94,7 +94,7 @@ def test_exception_events_keep_the_newest_100(state, successful_test):
         "r", [{"expanded": [f"failure {i}"]} for i in range(105)]
     ))
     span = spans.start_test_span(export_state, many)
-    spans.finish_test_span(span, many, {"buildkite.run_key": "run-1"}, {}, None)
+    spans.finish_test_span(span, many, {"buildkite.run_key": "run-1"}, {})
     finished = exporter.get_finished_spans()[0]
     assert len(finished.events) == 100
     assert finished.events[-1].attributes["exception.message"] == "failure 104"
@@ -107,23 +107,22 @@ def test_per_test_tags_win_over_run_tags(state, successful_test):
     span = spans.start_test_span(export_state, tagged)
     spans.finish_test_span(
         span, tagged, {"buildkite.run_key": "run-1"},
-        {"buildkite.tag.team": "theirs", "buildkite.tag.ci.worker.id": "w"}, None,
+        {"buildkite.tag.team": "theirs", "buildkite.tag.ci.worker.id": "w"},
     )
     finished = exporter.get_finished_spans()[0]
     assert finished.attributes["buildkite.tag.team"] == "mine"
     assert finished.attributes["buildkite.tag.ci.worker.id"] == "w"
 
 
-def test_sdk_clock_is_used_when_the_captured_end_precedes_the_start(state, successful_test):
+def test_a_clock_that_steps_back_gives_a_zero_duration_not_a_negative_one(
+    state, successful_test, monkeypatch
+):
     export_state, exporter = state
     span = spans.start_test_span(export_state, successful_test)
-    spans.finish_test_span(span, successful_test, {"buildkite.run_key": "run-1"}, {}, span.start_time - 1)
+    monkeypatch.setattr(spans, "wall_clock_ns", lambda: span.start_time - 1_000_000)
+    spans.finish_test_span(span, successful_test, {"buildkite.run_key": "run-1"}, {})
     finished = exporter.get_finished_spans()[0]
-    assert finished.end_time >= finished.start_time
-
-    span = spans.start_test_span(export_state, successful_test)
-    spans.finish_test_span(span, successful_test, {"buildkite.run_key": "run-1"}, {}, span.start_time + 5)
-    assert exporter.get_finished_spans()[1].end_time == span.start_time + 5
+    assert finished.end_time == finished.start_time
 
 
 def test_span_is_finished_even_when_it_cannot_be_described(state, successful_test, monkeypatch, capfd):
@@ -133,7 +132,7 @@ def test_span_is_finished_even_when_it_cannot_be_described(state, successful_tes
     def broken(test):
         raise RuntimeError("describe broke")
     monkeypatch.setattr(attrs, "test_attributes", broken)
-    spans.finish_test_span(span, successful_test, {"buildkite.run_key": "run-1"}, {}, None)
+    spans.finish_test_span(span, successful_test, {"buildkite.run_key": "run-1"}, {})
     finished = exporter.get_finished_spans()
     assert len(finished) == 1
     assert finished[0].attributes["test.case.result.status"] == "pass"

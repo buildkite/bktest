@@ -23,6 +23,7 @@ dev = [
     "pytest-forked; sys_platform != 'win32'",
     "pytest-xdist",
     "pytest-rerunfailures",
+    "freezegun",
     "opentelemetry-sdk>=1.45",
     "opentelemetry-exporter-otlp-proto-http>=1.45",
 ]

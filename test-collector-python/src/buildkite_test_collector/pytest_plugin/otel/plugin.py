@@ -6,7 +6,6 @@ configuring there runs after conftest code has installed any suite-wide
 tracer provider.
 """
 
-import time
 from contextvars import Token
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Mapping, Optional, Tuple
@@ -172,7 +171,7 @@ class OTelPlugin:
         test = self._collector.in_flight.get(item.nodeid)
         if test is not None and test.result is None:
             test = test.skipped()
-        self._finish(span, test, time.time_ns())
+        self._finish(span, test)
 
     @pytest.hookimpl(hookwrapper=True, tryfirst=True)
     def pytest_runtest_setup(self, item: pytest.Item) -> Generator[None, Any, None]:
@@ -208,19 +207,17 @@ class OTelPlugin:
         self._spans.detach(self._tokens.pop(nodeid, None))
         span = self._test_spans.pop(nodeid)
         if span is not None:
-            self._finish(span, test, time.time_ns())
+            self._finish(span, test)
 
     def report(self, test: TestData) -> None:
         """Send a span, timed now, for a test that never entered the runtest protocol."""
         span = self._spans.start_test_span(self._state, test)
         if span is not None:
-            self._finish(span, test, None)
+            self._finish(span, test)
 
-    def _finish(self, span: "Span", test: TestData, end_time_ns: Optional[int]) -> None:
+    def _finish(self, span: "Span", test: TestData) -> None:
         try:
-            self._spans.finish_test_span(
-                span, test, self._run_attributes, self._run_tags, end_time_ns
-            )
+            self._spans.finish_test_span(span, test, self._run_attributes, self._run_tags)
         except Exception as error:  # pylint: disable=broad-except
             warn_failure("Could not finish the OpenTelemetry test span", error)
 

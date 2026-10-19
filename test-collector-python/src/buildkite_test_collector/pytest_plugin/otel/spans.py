@@ -3,6 +3,7 @@
 Imports the OpenTelemetry API, so it is only imported once OTel mode is on.
 """
 
+import time
 import traceback
 import unittest
 from contextvars import Token
@@ -27,6 +28,20 @@ _SKIP_EXCEPTIONS: Tuple[Type[BaseException], ...] = (
     pytest.skip.Exception, pytest.xfail.Exception, unittest.SkipTest,
 )
 
+_HAS_CLOCK_GETTIME = hasattr(time, "clock_gettime_ns")
+
+
+def wall_clock_ns() -> int:
+    """Return the current wall-clock time in nanoseconds, even while a test freezes time.
+
+    freezegun patches ``time.time_ns`` (and the SDK's reference to it) but not
+    ``clock_gettime_ns``, so spans are timed with the latter where it exists.
+    Windows has no ``clock_gettime_ns``; a frozen clock there still moves spans.
+    """
+    if _HAS_CLOCK_GETTIME:
+        return time.clock_gettime_ns(time.CLOCK_REALTIME)
+    return time.time_ns()
+
 
 def start_test_span(state: ExportState, test: TestData) -> Optional[Span]:
     """Start the root ``test.execution`` span for ``test``; ``None`` (and a warning) on failure."""
@@ -43,6 +58,7 @@ def start_test_span(state: ExportState, test: TestData) -> Optional[Span]:
             kind=SpanKind.INTERNAL,
             attributes=span_attrs,
             links=state.job_links,
+            start_time=wall_clock_ns(),
         )
     except Exception as error:  # pylint: disable=broad-except
         record_start_failure(error)
@@ -77,11 +93,13 @@ def finish_test_span(
     test: TestData,
     run_attributes: attrs.Attributes,
     run_tags: attrs.Attributes,
-    end_time_ns: Optional[int],
 ) -> None:
-    """Record the result, re-describe the span and end it; each step fails independently."""
+    """Record the result, re-describe the span and end it now; each step fails independently."""
+    # The wall clock can step backwards between start and finish; the SDK
+    # would then record a negative duration.
+    end_time = max(wall_clock_ns(), getattr(span, "start_time", None) or 0)
     try:
-        _record_result(span, test)
+        _record_result(span, test, end_time)
     except Exception as error:  # pylint: disable=broad-except
         warn_failure("Could not record the OpenTelemetry test result", error)
     try:
@@ -89,17 +107,12 @@ def finish_test_span(
     except Exception as error:  # pylint: disable=broad-except
         warn_failure("Could not describe OpenTelemetry test span", error)
     try:
-        # The wall clock can step backwards between start and finalize; the SDK
-        # would then record a negative duration.
-        start_time = getattr(span, "start_time", None)
-        if end_time_ns is not None and start_time is not None and end_time_ns < start_time:
-            end_time_ns = None
-        span.end(end_time=end_time_ns)
+        span.end(end_time=end_time)
     except Exception as error:  # pylint: disable=broad-except
         warn_failure("Could not finish OpenTelemetry test span", error)
 
 
-def _record_result(span: Span, test: TestData) -> None:
+def _record_result(span: Span, test: TestData, timestamp: int) -> None:
     status = attrs.result_status(test)
     if status is None:
         return
@@ -108,7 +121,7 @@ def _record_result(span: Span, test: TestData) -> None:
         return
     span.set_status(Status(StatusCode.ERROR, attrs.failure_reason(test)))
     for event in attrs.exception_events(test):
-        span.add_event("exception", event)
+        span.add_event("exception", event, timestamp=timestamp)
 
 
 def _describe_test(
@@ -163,7 +176,8 @@ def start_phase_span(
         if tracer is None:
             return None, None
         span = tracer.start_span(
-            name, context=trace.set_span_in_context(test_span), kind=SpanKind.INTERNAL
+            name, context=trace.set_span_in_context(test_span), kind=SpanKind.INTERNAL,
+            start_time=wall_clock_ns(),
         )
         token = context.attach(trace.set_span_in_context(span))
         return span, token
@@ -182,7 +196,7 @@ def finish_phase_span(
     try:
         if excinfo is not None and not isinstance(excinfo[1], _SKIP_EXCEPTIONS):
             _record_phase_failure(span, excinfo)
-        span.end()
+        span.end(end_time=wall_clock_ns())
     except Exception as error:  # pylint: disable=broad-except
         warn_failure("Could not finish OpenTelemetry phase span", error)
 
@@ -195,4 +209,4 @@ def _record_phase_failure(span: Span, excinfo: ExcInfo) -> None:
     span.record_exception(error, attributes={
         "exception.message": attrs.truncate(message, attrs.EXCEPTION_MESSAGE_MAX_LENGTH),
         "exception.stacktrace": stacktrace[: attrs.EXCEPTION_STACKTRACE_MAX_LENGTH],
-    })
+    }, timestamp=wall_clock_ns())
