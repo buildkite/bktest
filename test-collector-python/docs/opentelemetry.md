@@ -86,6 +86,9 @@ spans recorded inside the forked child are lost with it.
 Test and phase spans are timed with `clock_gettime(CLOCK_REALTIME)`, which
 freezegun does not patch, so a test that freezes time does not move its span.
 Windows has no such clock; there a frozen clock still moves the span.
+time-machine does patch that clock, so under `time_machine.travel` test spans
+carry the travelled time; Test Engine still accepts them, because an end before
+the start is recorded as a zero duration.
 
 OTel mode costs about 0.1 ms per test, nearly all of it the SDK creating and
 batching each test's spans. On a suite of 5,000 empty tests that is roughly 45%
@@ -320,8 +323,10 @@ Because `test.execution` spans are the submission, the collector warns
 a queue overflow (`not-exported`), an export failure with the HTTP status or
 connection error (for example a `403` when OTLP ingest is not enabled for the
 organization, or a `404` for a wrong endpoint), or a span that could not be
-started. A span that could not be started is reported as soon as it happens;
-every other drop is reported after the session-end flush and again after the
+started. A span that could not be started is reported with the other warnings
+held until after pytest's summary, so a process that dies before pytest
+finishes never reports it; every other drop is reported after the session-end
+flush and again after the
 process-exit shutdown, each time with the cumulative total for the run and only
 when that total has grown. Export is confirmed within the 30-second session-end
 flush; spans still pending when it runs out are reported as unconfirmed, and

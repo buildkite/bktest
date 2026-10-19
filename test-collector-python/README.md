@@ -138,7 +138,7 @@ A JSON upload with a custom `BUILDKITE_ANALYTICS_KEY` is not linked to its Build
 
 These apply whether or not OpenTelemetry submission is on:
 
-- A test whose fixture teardown raises is uploaded as failed (pytest already reported the error, but the upload said passed). If the test had already failed, that failure stays the reason and the teardown error is added as a further `failure_expanded` entry.
+- A test whose fixture teardown raises is uploaded as failed, with the teardown error as the reason. It used to be uploaded with the result from before teardown (passed or skipped), except under pytest-forked, which already uploaded it as failed. If the test had already failed, that failure now stays the reason and the teardown error is added as a further `failure_expanded` entry; under pytest-forked the teardown error used to replace the reason.
 - With pytest-rerunfailures (`--reruns`), each attempt is uploaded as its own execution: an attempt pytest reports as `rerun` is failed, and the last attempt has its own result. Previously no result was uploaded for any test in a `--reruns` run, with a `has no result set` warning.
 - Test locations use 1-based line numbers (`tests/test_x.py:1` for a test on the first line). They were one line early. Test identity is unchanged.
 - The `BUILDKITE_ANALYTICS_KEY`, `_URL`, `_BRANCH`, `_SHA`, `_NUMBER`, `_JOB_ID` and `_MESSAGE` overrides in the table above now take effect, as they do in the Ruby and JavaScript collectors.
