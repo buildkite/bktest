@@ -104,10 +104,23 @@ class JestBuildkiteTestEngineReporter {
     }
   }
 
-  onRunComplete(_test, _results, _options) {
-    if (this._exportRecords) removeRecords(this._exportRecords)
-    if (this._otel && this._testResults.length === 0) return
-    return uploadTestResults(this._testEnv, this._tags, this._testResults, this._options)
+  async onRunComplete(_test, _results, _options) {
+    try {
+      if (this._otel && this._testResults.length === 0) return
+      await uploadTestResults(this._testEnv, this._tags, this._testResults, this._options)
+    } finally {
+      this._removeExportRecords()
+    }
+  }
+
+  // Leaving the directory behind only costs disk space; it must not fail the run.
+  _removeExportRecords() {
+    if (!this._exportRecords) return
+    try {
+      removeRecords(this._exportRecords)
+    } catch (error) {
+      warn(`OpenTelemetry could not remove its temporary directory ${this._exportRecords} (${describeError(error)}).`)
+    }
   }
 
   onTestStart(test) {

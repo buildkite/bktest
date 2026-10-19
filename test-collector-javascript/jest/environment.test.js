@@ -2,7 +2,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const vm = require('vm')
-const { SETTINGS_ENV, publishSettings } = require('../util/otel/config')
+const { SETTINGS_ENV, publishSettings, readSettings } = require('../util/otel/config')
 
 jest.mock('../util/otel/session', () => ({
   sessionFor: jest.fn(() => ({ fake: true })),
@@ -156,6 +156,27 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
     await reporter.onRunComplete()
 
     expect(jsonNames()).toEqual(['adds'])
+  })
+
+  it('uploads the JSON, and keeps the run passing, when it cannot remove its records afterwards', async () => {
+    const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
+    const { exportRecords: dir } = readSettings()
+    await reporter.onTestResult({ path: testPath, context: { config: { rootDir: '/proj', id: 'plain' } } }, testResult)
+    let uploadsBeforeCleanup
+    const rmSync = jest.spyOn(fs, 'rmSync').mockImplementationOnce(() => {
+      uploadsBeforeCleanup = uploadTestResults.mock.calls.length
+      throw Object.assign(new Error(`EACCES, Permission denied: '${dir}'`), { code: 'EACCES' })
+    })
+
+    await expect(reporter.onRunComplete()).resolves.toBeUndefined()
+    rmSync.mockRestore()
+    fs.rmSync(dir, { recursive: true, force: true })
+
+    expect(uploadsBeforeCleanup).toBe(1)
+    expect(jsonNames()).toEqual(['adds'])
+    expect(warnings()).toContainEqual(
+      `[buildkite-test-collector] OpenTelemetry could not remove its temporary directory ${dir} (Error: EACCES, Permission denied: '${dir}').`
+    )
   })
 })
 
