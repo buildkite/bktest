@@ -230,12 +230,15 @@ func TestMain(m *testing.M) {
 ```
 
 Without `WithTracerProvider`, the collector attaches to the global provider
-when it is an SDK provider, installs its own SDK provider (with the CI resource
-and secure random ids) when nobody has configured one, and otherwise keeps
-exporting test spans only. It never replaces a provider somebody chose. A
-suite-owned provider keeps its sampler and resource, so `OTEL_TRACES_SAMPLER`
-applies to child spans; test spans always come from the collector's own
-provider and are never sampled out.
+as `Main` found it when it is an SDK provider, installs its own SDK provider
+(with the CI resource and secure random ids) when nobody has configured one,
+and otherwise keeps exporting test spans only. It never replaces a provider
+somebody chose, and leaves one installed after `Main` started (say, by a test
+asserting on its own spans) entirely alone: set the suite's provider before
+calling `Main` if its spans should reach Test Engine. A suite-owned provider
+keeps its sampler and resource, so `OTEL_TRACES_SAMPLER` applies to child
+spans; test spans always come from the collector's own provider and are
+never sampled out.
 
 ## Environment variables
 

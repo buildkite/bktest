@@ -367,39 +367,51 @@ func TestWithoutChildSpansNothingUsesTheGlobalProvider(t *testing.T) {
 	}
 }
 
-// A suite provider that panics costs the body phase, never the result.
-func TestPhaseStartFailureKeepsTheTestResult(t *testing.T) {
-	out := captureWarnings(t)
-	r := otlptest.NewReceiver(t)
-	c := configured(t, r, nil, withTracerProvider(explodingProvider{}))
-	if !strings.Contains(out.String(), "OpenTelemetry child span export disabled: tracer provider collector.explodingProvider panicked while registering the span processor: no processors here; test.execution export remains enabled") {
-		t.Fatalf("setup warning = %q", out.String())
-	}
+// A suite provider that panics costs child spans, never the result.
+func TestProviderPanicsKeepTheTestResult(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		tp      trace.TracerProvider
+		warning string
+	}{
+		{"registering the forwarder", registerPanics{}, "OpenTelemetry child span export disabled: tracer provider collector.registerPanics panicked while registering the span processor: no processors here; test.execution export remains enabled"},
+		{"starting the phase", tracerPanics{}, "Could not start the OpenTelemetry test.body phase span: no tracer either"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := captureWarnings(t)
+			r := otlptest.NewReceiver(t)
+			c := configured(t, r, nil, withTracerProvider(tc.tp))
 
-	run(c, "TestNoPhase", func(ex *Execution) Result {
-		if ExecutionFromContext(ex.Context()) != ex {
-			t.Error("Start must still hand back the execution context")
-		}
-		return failed
-	})
-	c.Shutdown()
+			run(c, "TestNoPhase", func(ex *Execution) Result {
+				if ExecutionFromContext(ex.Context()) != ex {
+					t.Error("Start must still hand back the execution context")
+				}
+				return failed
+			})
+			c.Shutdown()
 
-	if !strings.Contains(out.String(), "Could not start the OpenTelemetry test.body phase span: no tracer either") {
-		t.Fatalf("phase warning = %q", out.String())
-	}
-	spans := r.TestSpans()
-	if len(spans) != 1 || otlptest.StringAttr(t, spans[0].Attributes, "test.case.result.status") != string(StatusFail) {
-		t.Fatalf("test spans = %v", otlptest.TestNames(spans))
-	}
-	if strings.Contains(out.String(), "TEST RESULTS MISSING") {
-		t.Fatalf("the result was delivered, nothing is missing:\n%s", out.String())
+			if !strings.Contains(out.String(), tc.warning) {
+				t.Fatalf("warnings = %q, want %q", out.String(), tc.warning)
+			}
+			spans := r.TestSpans()
+			if len(spans) != 1 || otlptest.StringAttr(t, spans[0].Attributes, "test.case.result.status") != string(StatusFail) {
+				t.Fatalf("test spans = %v", otlptest.TestNames(spans))
+			}
+			if strings.Contains(out.String(), "TEST RESULTS MISSING") {
+				t.Fatalf("the result was delivered, nothing is missing:\n%s", out.String())
+			}
+		})
 	}
 }
 
-type explodingProvider struct{ trace.TracerProvider }
+type registerPanics struct{ trace.TracerProvider }
 
-func (explodingProvider) RegisterSpanProcessor(sdktrace.SpanProcessor) { panic("no processors here") }
-func (explodingProvider) Tracer(string, ...trace.TracerOption) trace.Tracer {
+func (registerPanics) RegisterSpanProcessor(sdktrace.SpanProcessor) { panic("no processors here") }
+
+type tracerPanics struct{ trace.TracerProvider }
+
+func (tracerPanics) RegisterSpanProcessor(sdktrace.SpanProcessor) {}
+func (tracerPanics) Tracer(string, ...trace.TracerOption) trace.Tracer {
 	panic("no tracer either")
 }
 

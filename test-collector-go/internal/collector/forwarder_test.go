@@ -11,8 +11,8 @@ import (
 	"github.com/buildkite/bktest/test-collector-go/internal/otlptest"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
-	"go.opentelemetry.io/otel/trace/noop"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
@@ -324,7 +324,59 @@ func TestSuiteOwnedProviderIsAttachedNotReplaced(t *testing.T) {
 		if got := r.ChildNames(); got["from-the-suite"] != 1 || got["from-the-test"] != 0 {
 			t.Fatalf("child stream = %v, want only the span from the suite's provider", got)
 		}
+		children := map[string]*tracepb.Span{}
+		for _, s := range r.SpansOn(streamChild) {
+			children[s.Name] = s
+		}
+		body := children[bodyPhaseName]
+		if body == nil {
+			t.Fatalf("child stream = %v, want the %s phase from the suite's provider", r.ChildNames(), bodyPhaseName)
+		}
+		if hexOf(body.ParentSpanId) != hexOf(r.TestSpans()[0].SpanId) {
+			t.Errorf("body phase parent = %x, want the test span %x", body.ParentSpanId, r.TestSpans()[0].SpanId)
+		}
+		if suite := children["from-the-suite"]; hexOf(suite.ParentSpanId) != hexOf(body.SpanId) {
+			t.Errorf("from-the-suite parent = %x, want the exported body phase %x", suite.ParentSpanId, body.SpanId)
+		}
 	})
+}
+
+// When the suite started without a provider and the first test to call
+// Start installed one of its own before doing so, that provider stays
+// global and sees only the test's spans; the phase, exported here because
+// the test fails, comes from a provider the collector keeps to itself.
+func TestProviderATestInstalledBeforeTheFirstStartIsLeftAlone(t *testing.T) {
+	r := otlptest.NewReceiver(t)
+	restoreGlobalProvider(t)
+	suites := otel.GetTracerProvider()
+	if !isUnconfiguredGlobal(suites) {
+		t.Skipf("global provider already configured in this process: %T", suites)
+	}
+	recorder := tracetest.NewSpanRecorder()
+	tests := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { tests.Shutdown(context.Background()) })
+	otel.SetTracerProvider(tests)
+
+	c := configured(t, r, nil, func(o *Options) { o.GlobalTracerProvider = suites })
+	if otel.GetTracerProvider() != trace.TracerProvider(tests) {
+		t.Fatalf("the test's provider was replaced with %T", otel.GetTracerProvider())
+	}
+	run(c, "TestOwnProvider", fails(func(ex *Execution) {
+		_, s := otel.Tracer("test").Start(ex.Context(), "from-the-test")
+		s.End()
+	}))
+	c.Shutdown()
+
+	var seen []string
+	for _, s := range recorder.Ended() {
+		seen = append(seen, s.Name())
+	}
+	if len(seen) != 1 || seen[0] != "from-the-test" {
+		t.Errorf("the test's provider saw %v, want only its own span", seen)
+	}
+	if got := r.ChildNames(); got[bodyPhaseName] != 1 || got["from-the-test"] != 0 {
+		t.Errorf("child stream = %v, want the failed body phase and not the test's own span", got)
+	}
 }
 
 func TestCollectorManagedProviderIsInstalledOnlyWhenNobodyConfiguredOne(t *testing.T) {
@@ -347,11 +399,18 @@ func TestCollectorManagedProviderIsInstalledOnlyWhenNobodyConfiguredOne(t *testi
 	}
 }
 
+// unregistrable is a provider that cannot take span processors, such as a
+// vendor's own implementation of the API.
+type unregistrable struct{ trace.TracerProvider }
+
 func TestUnknownGlobalProviderKeepsTestSpansOnly(t *testing.T) {
 	out := captureWarnings(t)
 	r := otlptest.NewReceiver(t)
 	restoreGlobalProvider(t)
-	custom := noop.NewTracerProvider()
+	recorder := tracetest.NewSpanRecorder()
+	sdk := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	t.Cleanup(func() { sdk.Shutdown(context.Background()) })
+	custom := unregistrable{sdk}
 	otel.SetTracerProvider(custom)
 
 	c := configured(t, r, nil)
@@ -361,7 +420,7 @@ func TestUnknownGlobalProviderKeepsTestSpansOnly(t *testing.T) {
 	if c.forwarder != nil || c.childProcessor != nil {
 		t.Fatal("child export should be disabled")
 	}
-	if !strings.Contains(out.String(), "OpenTelemetry child span export disabled: the tracer provider noop.TracerProvider cannot register span processors") || !strings.Contains(out.String(), "test.execution export remains enabled") {
+	if !strings.Contains(out.String(), "OpenTelemetry child span export disabled: the tracer provider collector.unregistrable cannot register span processors") || !strings.Contains(out.String(), "test.execution export remains enabled") {
 		t.Fatalf("warning = %q", out.String())
 	}
 	run(c, "TestNoChildren", fails(func(*Execution) {}))
@@ -371,5 +430,8 @@ func TestUnknownGlobalProviderKeepsTestSpansOnly(t *testing.T) {
 	}
 	if n := len(r.Stream(streamChild)); n != 0 {
 		t.Fatalf("%d child requests sent with child export disabled", n)
+	}
+	if n := len(recorder.Ended()); n != 0 {
+		t.Fatalf("the collector started %d span(s) on a provider it could not attach to", n)
 	}
 }

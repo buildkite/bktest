@@ -81,8 +81,9 @@ func WithSpanFilter(filter SpanFilter) Option {
 // WithTracerProvider names the suite's own tracer provider. The collector
 // attaches its child span forwarder to it and leaves its sampler, resource
 // and processors alone. Without this option the collector attaches to the
-// global provider when it is an SDK provider, installs its own when nobody
-// has configured one, and otherwise exports test spans only.
+// global provider as Main found it when that is an SDK provider, installs
+// its own when nobody has configured one, and otherwise exports test spans
+// only. A provider a test installs later is never replaced or attached to.
 func WithTracerProvider(tp trace.TracerProvider) Option {
 	return func(o *options) { o.TracerProvider = tp }
 }

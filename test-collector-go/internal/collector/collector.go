@@ -44,9 +44,10 @@ type Options struct {
 	Filter func(sdktrace.ReadOnlySpan) bool
 	// TracerProvider is the suite's own provider to attach the forwarder
 	// to; it must implement RegisterSpanProcessor. Nil means the global
-	// provider: the collector installs its own when nobody has set one, and
-	// disables child export with a warning when the global provider cannot
-	// register span processors.
+	// provider: the collector creates its own when nobody has set one,
+	// installing it globally unless a test has installed a provider since
+	// the suite started, and disables child export with a warning when the
+	// global provider cannot register span processors.
 	TracerProvider trace.TracerProvider
 	// GlobalTracerProvider is the global provider as it was when the suite
 	// started, for a collector set up later from inside a test: a provider
@@ -80,9 +81,8 @@ type Collector struct {
 	// of a budget of processorTimeout for the whole run.
 	waited atomic.Int64
 
-	childSpans bool
-	// childProvider is the suite's own provider from Options.TracerProvider;
-	// nil means the global provider at the time each test starts.
+	// childProvider is the provider the forwarder is attached to, which
+	// also starts the phase spans; nil while child export is off.
 	childProvider  trace.TracerProvider
 	childProcessor sdktrace.SpanProcessor
 	childStats     *streamStats
@@ -116,8 +116,6 @@ func New(ctx context.Context, opts Options) (*Collector, error) {
 	c := &Collector{
 		env:            env,
 		locationPrefix: opts.LocationPrefix,
-		childSpans:     opts.ChildSpans,
-		childProvider:  opts.TracerProvider,
 		tags:           runTags(opts.Tags),
 		links:          jobSpanLinks(),
 		testStats:      &streamStats{},
@@ -245,31 +243,33 @@ func (c *Collector) configureChildExport(ctx context.Context, opts Options, endp
 	}
 
 	tp := opts.TracerProvider
+	install := false
 	if tp == nil {
 		tp = opts.GlobalTracerProvider
 		if tp == nil {
 			tp = otel.GetTracerProvider()
 		}
 		if isUnconfiguredGlobal(tp) {
-			otel.SetTracerProvider(sdktrace.NewTracerProvider(
+			tp = sdktrace.NewTracerProvider(
 				sdktrace.WithResource(res),
 				sdktrace.WithIDGenerator(secureIDGenerator{}),
-				sdktrace.WithSpanProcessor(fwd),
-			))
-			tp = nil
+			)
+			// The suite started without a provider, but a test may have
+			// installed its own since; that one stays where it is.
+			install = isUnconfiguredGlobal(otel.GetTracerProvider())
 		}
 	}
-	var attachErr error
-	if tp != nil {
-		attachErr = attach(tp)
-	}
-	if attachErr != nil {
+	if err := attach(tp); err != nil {
 		fwd.Shutdown(ctx)
 		if err := processor.Shutdown(ctx); err != nil {
 			Warnf("Could not shut down the child span processor: %v", err)
 		}
-		return attachErr
+		return err
 	}
+	if install {
+		otel.SetTracerProvider(tp)
+	}
+	c.childProvider = tp
 	c.childProcessor = processor
 	c.forwarder = fwd
 	return nil

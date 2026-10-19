@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
@@ -124,12 +123,13 @@ func (c *Collector) Start(id Identity, start time.Time) (ex *Execution) {
 	ex.traceID = span.SpanContext().TraceID()
 	ex.ctx = context.WithValue(rootCtx, executionKey{}, ex)
 
-	if c.childSpans {
-		// The body phase lives on the suite's provider, which the collector
-		// does not control; if it cannot start one the test still has its
-		// result.
+	if c.childProvider != nil {
+		// The body phase lives on the provider carrying the forwarder, which
+		// may be the suite's own and is not the collector's to trust; if it
+		// cannot start one the test still has its result.
 		attempt("Could not start the OpenTelemetry test.body phase span", func() {
-			ex.ctx, ex.body = c.phaseTracer().Start(ex.ctx, bodyPhaseName, trace.WithSpanKind(trace.SpanKindInternal), trace.WithTimestamp(start))
+			tracer := c.childProvider.Tracer(tracerName, trace.WithInstrumentationVersion(Version))
+			ex.ctx, ex.body = tracer.Start(ex.ctx, bodyPhaseName, trace.WithSpanKind(trace.SpanKindInternal), trace.WithTimestamp(start))
 		})
 	}
 	return ex
@@ -139,16 +139,6 @@ func (c *Collector) Start(id Identity, start time.Time) (ex *Execution) {
 // its test.body phase the current span, so instrumentation started from it
 // nests under the test.
 func (ex *Execution) Context() context.Context { return ex.ctx }
-
-// phaseTracer comes from the provider that carries the forwarder, so phase
-// and instrumentation spans share one pipeline.
-func (c *Collector) phaseTracer() trace.Tracer {
-	tp := c.childProvider
-	if tp == nil {
-		tp = otel.GetTracerProvider()
-	}
-	return tp.Tracer(tracerName, trace.WithInstrumentationVersion(Version))
-}
 
 // Finish records the result on the body and test spans and ends them at
 // end. Every step recovers on its own: a half-described execution beats a
