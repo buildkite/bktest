@@ -42,7 +42,9 @@ buildkite-test-collector/jest/environment …` once per environment and uploads
 those files' results as JSON.
 
 `buildkite-test-collector/jest/environment` extends `jest-environment-node`.
-If your suite needs another environment, build one with `extend`:
+With Yarn Plug'n'Play, add `jest-environment-node` (the same version as
+`jest`) to your devDependencies so the collector can load it. If your suite
+needs another environment, build one with `extend`:
 
 ```js
 // buildkite-jsdom-environment.js
@@ -287,19 +289,24 @@ Export is decided per test file. Test files that run under a
 `testEnvironment` other than the collector's (or one built with its `extend`)
 cannot export spans: the reporter warns once per environment and uploads those
 files' results as JSON, while files under the collector's environment in the
-same run still export spans. A run never sends the same test over both paths,
-but check the warning if a project uses per-file `@jest-environment`
-docblocks. The whole run falls back under the legacy `jest-jasmine2` test
-runner, which does not send test events to the environment; export needs the
-default `jest-circus` runner. Every fallback warning ends with what happens to
-the results: `uploading results as JSON instead`, or, when only
+same run still export spans. A run never sends the same test over both paths:
+the worker that runs a file records, in a temporary directory the reporter
+creates for the run, that it is exporting the file, and the reporter uploads
+JSON only for files without that record. Check the warning if a project uses
+per-file `@jest-environment` docblocks. The whole run falls back under the
+legacy `jest-jasmine2` test runner, which does not send test events to the
+environment; export needs the default `jest-circus` runner. Every fallback
+warning ends with what happens to the results: `uploading results as JSON
+instead`, or, when only
 `BUILDKITE_TESTS_OTLP_TOKEN` is set, `results will not be uploaded because
 BUILDKITE_ANALYTICS_TOKEN is not set`.
 
 OpenTelemetry errors never fail a test or change Jest's exit code. If a worker
-cannot set up export (the environment still constructs and the file's tests
-still run), or a span cannot be started, the collector
-warns `TEST RESULTS MISSING` for the affected tests and the run continues. When
+cannot set up export, the environment still constructs, the file's tests still
+run, and the worker warns `OpenTelemetry could not be set up in this test
+worker` with what happens to that file's results instead (normally `uploading
+results as JSON instead`). If a span cannot be started, the collector warns
+`TEST RESULTS MISSING` for the affected tests and the run continues. When
 the endpoint rejects a batch, the end-of-file flush warns
 `TEST RESULTS MISSING: OpenTelemetry dropped N test.execution span(s) (export-failure, last OTLP failure: …)`,
 naming the HTTP status or connection error (for example `403` when OTLP ingest

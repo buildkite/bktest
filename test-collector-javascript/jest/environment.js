@@ -6,6 +6,7 @@ const { readSettings } = require('../util/otel/config')
 const { sessionFor } = require('../util/otel/session')
 const { warn, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
+const { recordExport } = require('./exportRecords')
 
 const ROOT_DESCRIBE_BLOCK_NAME = 'ROOT_DESCRIBE_BLOCK'
 const STACK_LINE = /^(?:\s*at )?(?:new )?(?:.*? \()?(?:eval at [^ ]+ \(.+?:\d+:\d+\), )?(.+?):(\d+):(\d+)\)?$/
@@ -131,27 +132,29 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
 
   // Jest 28 passes { globalConfig, projectConfig }; Jest 27 passes the
   // project config alone. Nothing after super() may stop the tests from
-  // running: a failure here is a lost upload, not a failed test file.
+  // running: without a session the file is simply not recorded as exported,
+  // and the reporter uploads its results as JSON.
   constructor(config, context) {
     super(config, context)
-    this._buildkite = { session: null, spans: new Map(), includeLocation: false, formatting: null, testPath: context?.testPath }
+    const projectConfig = config.projectConfig || config
+    this._buildkite = { session: null, started: false, spans: new Map(), includeLocation: false, formatting: null, projectConfig, testPath: context?.testPath }
+    let fallback = 'its results go to the JSON upload instead'
     try {
       const settings = readSettings()
       if (!settings) return
-      const projectConfig = config.projectConfig || config
-      this._buildkite.formatting = failureFormatting(projectConfig)
+      fallback = settings.fallback
       const paths = new Paths({ rootDir: settings.rootDir }, settings.runEnv.location_prefix)
       this._buildkite.testPath = paths.prefixTestPath(context.testPath)
+      this._buildkite.record = () => recordExport(settings.exportRecords, projectConfig.id, context.testPath)
+      this._buildkite.fallback = fallback
       this._buildkite.session = sessionFor(settings)
     } catch (error) {
-      warn(
-        `TEST RESULTS MISSING: OpenTelemetry could not be set up in this test worker (${describeError(error)}); ` +
-        `test executions from ${this._buildkite.testPath} were not uploaded to Buildkite Test Engine.`
-      )
+      warn(`OpenTelemetry could not be set up in this test worker (${describeError(error)}); for ${this._buildkite.testPath}, ${fallback}.`)
     }
   }
 
   async handleTestEvent(event, state) {
+    if (this._buildkite.session && !this._buildkite.started) this._start()
     if (super.handleTestEvent) await super.handleTestEvent(event, state)
     const { session, spans } = this._buildkite
     if (!session) return
@@ -177,6 +180,20 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
         this._finish(event.test, event.test.errors.length ? 'failed' : 'passed')
         break
     }
+  }
+
+  // Runs on the first event, before any span: records the file as exported so
+  // the reporter skips its JSON.
+  _start() {
+    this._buildkite.started = true
+    try {
+      this._buildkite.record()
+    } catch (error) {
+      warn(`OpenTelemetry could not record ${this._buildkite.testPath} as exported (${describeError(error)}); ${this._buildkite.fallback}.`)
+      this._buildkite.session = null
+      return
+    }
+    this._buildkite.formatting = failureFormatting(this._buildkite.projectConfig)
   }
 
   _assertionResult(test, status) {

@@ -10,6 +10,7 @@ jest.mock('../util/otel/session', () => ({
 const { sessionFor } = require('../util/otel/session')
 const { extend } = require('./environment')
 const Reporter = require('./reporter')
+const { isExported } = require('./exportRecords')
 
 const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
 const warnings = () => consoleWarnSpy.mock.calls.map(([message]) => message)
@@ -22,7 +23,11 @@ class Base {
 }
 const Environment = extend(Base)
 
-const settings = { endpoint: 'http://127.0.0.1:9/v1/traces', token: 'secret', runEnv: { key: 'run-1', location_prefix: 'app' }, tags: {}, rootDir: '/proj' }
+const exportRecords = fs.mkdtempSync(path.join(os.tmpdir(), 'bk-export-records-'))
+const settings = {
+  endpoint: 'http://127.0.0.1:9/v1/traces', token: 'secret', runEnv: { key: 'run-1', location_prefix: 'app' }, tags: {},
+  rootDir: '/proj', exportRecords, fallback: 'uploading results as JSON instead',
+}
 const context = { testPath: '/proj/pkg/sum.test.js' }
 
 const OLD_ENV = process.env
@@ -36,6 +41,7 @@ beforeEach(() => {
 
 afterAll(() => {
   process.env = OLD_ENV
+  fs.rmSync(exportRecords, { recursive: true, force: true })
 })
 
 describe('BuildkiteTestEngineEnvironment constructor', () => {
@@ -51,11 +57,12 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     expect(warnings()).toEqual([])
   })
 
-  it('makes paths relative to the reporter\'s rootDir in a Jest 27 multi-project run, as the JSON upload does', () => {
+  it('makes paths relative to the reporter\'s rootDir in a Jest 27 multi-project run, as the JSON upload does', async () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'secret'
-    new Reporter({ rootDir: '/repo' }, { otelEnabled: true })
+    const reporter = new Reporter({ rootDir: '/repo' }, { otelEnabled: true })
     const projectConfig = { rootDir: '/repo/packages/a', cwd: '/repo/packages/a' }
     const environment = new Environment(projectConfig, { testPath: '/repo/packages/a/same.test.js' })
+    await reporter.onRunComplete()
 
     expect(environment._buildkite.testPath).toBe('packages/a/same.test.js')
     expect(warnings()).toEqual([])
@@ -87,7 +94,35 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     expect(environment._buildkite.session).toBeNull()
     await expect(environment.handleTestEvent({ name: 'test_start', test: {} }, {})).resolves.toBeUndefined()
     expect(warnings()).toEqual([
-      expect.stringMatching(/^\[buildkite-test-collector\] TEST RESULTS MISSING: OpenTelemetry could not be set up in this test worker \(SyntaxError: .*\); test executions from \/proj\/pkg\/sum\.test\.js were not uploaded/),
+      expect.stringMatching(/^\[buildkite-test-collector\] OpenTelemetry could not be set up in this test worker \(SyntaxError: .*\); for \/proj\/pkg\/sum\.test\.js, its results go to the JSON upload instead\.$/),
+    ])
+  })
+
+  it('records the file as exported before its first span, so the reporter skips its JSON', async () => {
+    publishSettings(settings)
+    const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn() }
+    sessionFor.mockReturnValueOnce(session)
+    const environment = new Environment({ rootDir: '/proj', id: 'project-a' }, context)
+
+    expect(isExported(exportRecords, 'project-a', context.testPath)).toBe(false)
+    await environment.handleTestEvent({ name: 'setup' }, {})
+    expect(isExported(exportRecords, 'project-a', context.testPath)).toBe(true)
+    expect(isExported(exportRecords, 'project-b', context.testPath)).toBe(false)
+  })
+
+  it('exports nothing from a file it cannot record, leaving it to the JSON upload', async () => {
+    publishSettings({ ...settings, exportRecords: path.join(exportRecords, 'missing', 'dir') })
+    const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn() }
+    sessionFor.mockReturnValueOnce(session)
+    const environment = new Environment({ rootDir: '/proj', id: 'project-a' }, context)
+    const test = { name: 'sums', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: new Error() }
+
+    await environment.handleTestEvent({ name: 'test_start', test }, {})
+    await environment.handleTestEvent({ name: 'test_done', test }, {})
+
+    expect(session.startTestSpan).not.toHaveBeenCalled()
+    expect(warnings()).toEqual([
+      expect.stringMatching(/^\[buildkite-test-collector\] OpenTelemetry could not record app\/pkg\/sum\.test\.js as exported \(.*ENOENT.*\); uploading results as JSON instead\.$/),
     ])
   })
 })

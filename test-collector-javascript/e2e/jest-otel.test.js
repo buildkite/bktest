@@ -1,4 +1,6 @@
 const { exec, execFile } = require('child_process')
+const fs = require('fs')
+const os = require('os')
 const path = require('path')
 const { startOtlpServer } = require('./support/otlpServer')
 
@@ -267,6 +269,26 @@ describe('examples/jest in OTel mode', () => {
     expect(server.spans().map((span) => span.attributes['buildkite.test.name']).sort()).toEqual([
       'runs under the transformed environment (first file)',
       'runs under the transformed environment (second file)',
+    ])
+  }, 30000)
+
+  test('sends each test once when the reporter cannot load the environment its workers ran', async () => {
+    server = await startOtlpServer()
+    const cacheDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'jest-cache-'))
+    // A fresh cache has no timings, so Jest runs the two files in worker processes.
+    const result = await run(`jest --config otel-worker-only.config.js --maxWorkers=2 --cacheDirectory ${cacheDirectory}`, {
+      ...baseEnv,
+      BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
+      BUILDKITE_ANALYTICS_TOKEN: 'xyz',
+      BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+    })
+    fs.rmSync(cacheDirectory, { recursive: true, force: true })
+
+    expect(result.code).toBe(0)
+    expect(result.stdout).not.toMatch(/Test Engine Sending:/)
+    expect(server.spans().map((span) => span.attributes['buildkite.test.name']).sort()).toEqual([
+      'runs in a worker (first file)',
+      'runs in a worker (second file)',
     ])
   }, 30000)
 

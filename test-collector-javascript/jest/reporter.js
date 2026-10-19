@@ -1,6 +1,6 @@
 const { randomUUID } = require('crypto')
 const fs = require('fs')
-const path = require('path')
+const { createRequire } = require('module')
 const CI = require('../util/ci')
 const Debug = require('../util/debug')
 const uploadTestResults = require('../util/uploadTestResults')
@@ -8,18 +8,19 @@ const Paths = require('../util/paths')
 const { resolveSettings, publishSettings, fallbackOutcome } = require('../util/otel/config')
 const { warn, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
-
-const requireFrom = (request, dirs) => require(require.resolve(request, { paths: dirs }))
+const { createRecords, isExported, removeRecords } = require('./exportRecords')
 
 const jestVersion = (rootDir) => {
   try {
-    return requireFrom('jest/package.json', [rootDir]).version
+    return require(require.resolve('jest/package.json', { paths: [rootDir] })).version
   } catch {
     return undefined
   }
 }
 
-const jestRunnerDirs = (rootDir) => [rootDir, path.dirname(require.resolve('jest-runner/package.json', { paths: [rootDir] }))]
+// Loads modules the way the project's jest-runner does, from its own
+// dependencies; under Yarn Plug'n'Play the project cannot load them itself.
+const runnerRequire = (config) => createRequire(config.runner)
 
 // A test file's `@jest-environment` docblock overrides the project's
 // testEnvironment; jest-runner resolves it the same way just before the file
@@ -27,14 +28,14 @@ const jestRunnerDirs = (rootDir) => [rootDir, path.dirname(require.resolve('jest
 const environmentFor = (test) => {
   const { rootDir, testEnvironment } = test.context.config
   try {
-    const dirs = jestRunnerDirs(rootDir)
-    const docblock = requireFrom('jest-docblock', dirs)
+    const runner = runnerRequire(test.context.config)
+    const docblock = runner('jest-docblock')
     const pragma = docblock.parse(docblock.extract(fs.readFileSync(test.path, 'utf8')))['jest-environment']
     if (typeof pragma !== 'string') return testEnvironment
-    return requireFrom('jest-resolve', dirs).resolveTestEnvironment({
+    return runner('jest-resolve').resolveTestEnvironment({
       rootDir,
       testEnvironment: pragma,
-      requireResolveFunction: require.resolve,
+      requireResolveFunction: runner.resolve,
     })
   } catch (error) {
     Debug.log(`Could not resolve the test environment for ${test.path}: ${describeError(error)}`)
@@ -42,14 +43,12 @@ const environmentFor = (test) => {
   }
 }
 
-// Workers export spans only when the file ran under our test environment, so
-// results from any other environment still have to go up as JSON. jest-runner
-// loads the environment through the project's transformer, so a Babel or
-// TypeScript environment that works in the worker must be loaded the same
-// way here, or it would be counted twice: once as spans, once as JSON.
+// Only explains a JSON fallback; whether a file was exported comes from its
+// worker's record. jest-runner loads the environment through the project's
+// transformer, so a Babel or TypeScript environment is loaded the same way.
 const isCollectorEnvironment = async (config, environmentPath) => {
   try {
-    const { createScriptTransformer } = requireFrom('@jest/transform', jestRunnerDirs(config.rootDir))
+    const { createScriptTransformer } = runnerRequire(config)('@jest/transform')
     const transformer = await createScriptTransformer(config)
     const mod = await transformer.requireAndTranspileModule(environmentPath)
     return Boolean(mod && (mod.default || mod).buildkiteTestEngine)
@@ -69,6 +68,7 @@ class JestBuildkiteTestEngineReporter {
     this._testEnv = (new CI()).env('jest');
     this._tags = options?.tags;
     this._paths = new Paths(globalConfig, this._testEnv.location_prefix)
+    this._fallback = fallbackOutcome({ token: options?.token })
     this._otel = resolveSettings({
       otelEnabled: options?.otelEnabled,
       token: options?.token,
@@ -77,10 +77,18 @@ class JestBuildkiteTestEngineReporter {
       runEnv: this._testEnv,
       tags: this._tags,
     })
-    // Jest 27 gives a test environment only its own project's config, so the
-    // workers learn the rootDir the JSON upload's locations are relative to here.
-    if (this._otel) publishSettings({ ...this._otel, rootDir: globalConfig.rootDir })
-    this._fallback = fallbackOutcome({ token: options?.token })
+    if (this._otel) {
+      try {
+        this._exportRecords = createRecords()
+        // Jest 27 gives a test environment only its own project's config, so the
+        // workers learn the rootDir the JSON upload's locations are relative to here.
+        publishSettings({ ...this._otel, rootDir: globalConfig.rootDir, exportRecords: this._exportRecords, fallback: this._fallback })
+      } catch (error) {
+        warn(`OpenTelemetry span export disabled: could not create a temporary directory (${describeError(error)}); ${this._fallback}.`)
+        publishSettings(null)
+        this._otel = null
+      }
+    }
     this._environments = new Map()
     this._warned = new Set()
   }
@@ -97,6 +105,7 @@ class JestBuildkiteTestEngineReporter {
   }
 
   onRunComplete(_test, _results, _options) {
+    if (this._exportRecords) removeRecords(this._exportRecords)
     if (this._otel && this._testResults.length === 0) return
     return uploadTestResults(this._testEnv, this._tags, this._testResults, this._options)
   }
@@ -105,7 +114,10 @@ class JestBuildkiteTestEngineReporter {
   }
 
   async onTestResult(test, testResult) {
-    if (this._otel && await this._exportedByEnvironment(test)) return
+    if (this._otel) {
+      if (isExported(this._exportRecords, test.context.config.id, testResult.testFilePath)) return
+      await this._warnNotExported(test)
+    }
 
     const prefixedTestPath = this._paths.prefixTestPath(testResult.testFilePath);
 
@@ -123,31 +135,29 @@ class JestBuildkiteTestEngineReporter {
     })
   }
 
-  // Only jest-circus calls the environment's handleTestEvent, so files run by
-  // jest-jasmine2 cannot export either.
-  async _exportedByEnvironment(test) {
+  // Says why a file was not exported. Only jest-circus calls the environment's
+  // handleTestEvent, so files run by jest-jasmine2 cannot export; a file whose
+  // collector environment could not set up OTel was explained by its worker.
+  async _warnNotExported(test) {
     const fallback = this._fallback
     if (!circusRunner(test.context.config)) {
       this._warnOnce('runner', `otelEnabled is set, but only the jest-circus test runner reports to OpenTelemetry; ${fallback}.`)
-      return false
+      return
     }
     const environmentPath = environmentFor(test)
     if (environmentPath === null) {
       this._warnOnce(test.path, `otelEnabled is set, but the test environment for ${test.path} could not be resolved; ${fallback}.`)
-      return false
+      return
     }
     if (!this._environments.has(environmentPath)) {
       this._environments.set(environmentPath, isCollectorEnvironment(test.context.config, environmentPath))
     }
-    const exportsSpans = await this._environments.get(environmentPath)
-    if (!exportsSpans) {
-      this._warnOnce(
-        environmentPath,
-        `otelEnabled is set, but test environment ${JSON.stringify(environmentPath)} is not buildkite-test-collector/jest/environment ` +
-        `(or built with its extend()); for test files using it, ${fallback}.`
-      )
-    }
-    return exportsSpans
+    if (await this._environments.get(environmentPath)) return
+    this._warnOnce(
+      environmentPath,
+      `otelEnabled is set, but test environment ${JSON.stringify(environmentPath)} is not buildkite-test-collector/jest/environment ` +
+      `(or built with its extend()); for test files using it, ${fallback}.`
+    )
   }
 
   _warnOnce(key, message) {
