@@ -10,24 +10,25 @@ const path = require('path')
 // load that environment itself (Yarn Plug'n'Play, for example).
 //
 // Records are per project, since projects can run the same file under
-// different environments. Jest 28 renamed the project config's `name` to `id`;
-// without either, nothing is recorded and the file goes to JSON.
+// different environments. Jest accepts two projects with the same explicit
+// name (Jest 28: id), so the key is the whole project config. Jest copies it
+// to workers as JSON (or a structured clone with workerThreads), which
+// JSON.stringify sees the same. Only testEnvironmentOptions is left out: the
+// worker merges a file's @jest-environment-options docblock into it.
 const recordPath = (dir, projectConfig, testPath) => {
-  const project = projectConfig.id ?? projectConfig.name
-  if (typeof project !== 'string' || project === '') return null
-  return path.join(dir, createHash('sha1').update(`${project}\0${testPath}`).digest('hex'))
+  const { testEnvironmentOptions, ...project } = projectConfig
+  return path.join(dir, createHash('sha1').update(JSON.stringify(project)).update('\0').update(testPath).digest('hex'))
 }
 
 module.exports = {
   createRecords: () => fs.mkdtempSync(path.join(os.tmpdir(), 'buildkite-test-collector-')),
-  recordExport: (dir, projectConfig, testPath) => {
-    const file = recordPath(dir, projectConfig, testPath)
-    if (!file) throw new Error('the Jest project config has neither an id nor a name')
-    fs.writeFileSync(file, '')
-  },
+  recordExport: (dir, projectConfig, testPath) => fs.writeFileSync(recordPath(dir, projectConfig, testPath), ''),
   isExported: (dir, projectConfig, testPath) => {
-    const file = recordPath(dir, projectConfig, testPath)
-    return file !== null && fs.existsSync(file)
+    try {
+      return fs.existsSync(recordPath(dir, projectConfig, testPath))
+    } catch {
+      return false
+    }
   },
   removeRecords: (dir) => fs.rmSync(dir, { recursive: true, force: true }),
 }

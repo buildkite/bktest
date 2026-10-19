@@ -106,12 +106,13 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     publishSettings(settings)
     const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
-    const environment = new Environment({ rootDir: '/proj', id: 'project-a' }, context)
+    const project = { rootDir: '/proj', id: 'project-a' }
+    const environment = new Environment(project, context)
 
-    expect(isExported(exportRecords, { id: 'project-a' }, context.testPath)).toBe(false)
+    expect(isExported(exportRecords, project, context.testPath)).toBe(false)
     await environment.handleTestEvent({ name: 'setup' }, {})
-    expect(isExported(exportRecords, { id: 'project-a' }, context.testPath)).toBe(true)
-    expect(isExported(exportRecords, { id: 'project-b' }, context.testPath)).toBe(false)
+    expect(isExported(exportRecords, project, context.testPath)).toBe(true)
+    expect(isExported(exportRecords, { ...project, id: 'project-b' }, context.testPath)).toBe(false)
   })
 
   it('exports nothing from a file it cannot record, leaving it to the JSON upload', async () => {
@@ -144,11 +145,11 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'secret'
   })
 
-  it('uploads JSON for a Jest 27 project running a file another project exported', async () => {
+  // Jest accepts the same explicit project name (Jest 27) or id (Jest 28+) twice.
+  it.each(['name', 'id'])('uploads JSON for a project running a file another project with the same %s exported', async (key) => {
     const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-    // Jest 27 identifies a project by `name`; Jest 28 renamed it `id`.
-    const collectorProject = { rootDir: '/proj', name: 'collector' }
-    const plainProject = { rootDir: '/proj', name: 'plain' }
+    const collectorProject = { [key]: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/buildkite-test-collector/jest/environment.js' }
+    const plainProject = { [key]: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/jest-environment-node/build/index.js' }
     await new Environment(collectorProject, { testPath }).handleTestEvent({ name: 'setup' }, {})
 
     await reporter.onTestResult({ path: testPath, context: { config: collectorProject } }, testResult)
@@ -156,6 +157,19 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
     await reporter.onRunComplete()
 
     expect(jsonNames()).toEqual(['adds'])
+  })
+
+  it('finds the record a worker wrote from its copy of the project config', async () => {
+    const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
+    const project = { id: 'a', rootDir: '/proj', testEnvironmentOptions: { url: 'http://a' }, moduleLoader: undefined, testRegex: ['\\.test\\.js$'] }
+    // The worker gets the config as JSON, with the file's @jest-environment-options merged in.
+    const workerCopy = { ...JSON.parse(JSON.stringify(project)), testEnvironmentOptions: { url: 'http://a', from: 'docblock' } }
+    await new Environment({ globalConfig: { rootDir: '/proj' }, projectConfig: workerCopy }, { testPath }).handleTestEvent({ name: 'setup' }, {})
+
+    await reporter.onTestResult({ path: testPath, context: { config: project } }, testResult)
+    await reporter.onRunComplete()
+
+    expect(jsonNames()).toEqual([])
   })
 
   it('uploads the JSON, and keeps the run passing, when it cannot remove its records afterwards', async () => {
