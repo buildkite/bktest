@@ -507,6 +507,29 @@ def test_span_filter_hook_drops_child_spans_but_not_phases_or_tests(tmp_path, re
     assert child_names.count("test.body") == 3
 
 
+def test_a_broken_span_filter_is_reported_although_pytest_captures_the_test(tmp_path, receiver):
+    (tmp_path / "conftest.py").write_text(
+        "def pytest_buildkite_otel_span_filter(span):\n"
+        "    raise ValueError('filter bug')\n"
+    )
+    (tmp_path / "test_filtered.py").write_text(
+        "from opentelemetry import trace\n"
+        "def test_a():\n"
+        "    with trace.get_tracer('x').start_as_current_span('a.child'):\n"
+        "        pass\n"
+        "def test_b():\n"
+        "    with trace.get_tracer('x').start_as_current_span('b.child'):\n"
+        "        pass\n"
+    )
+    run = run_pytest(tmp_path, otel_env(receiver), test_file=tmp_path / "test_filtered.py")
+    assert run.returncode == 0, run.stdout + run.stderr
+
+    assert run.stderr.count("Could not filter OpenTelemetry child span, retaining it: "
+                            "ValueError: filter bug") == 1
+    assert "Captured" not in run.stdout
+    assert {"a.child", "b.child"} <= {span.name for span in receiver.spans("child")}
+
+
 def test_span_filter_hook_from_a_conftest_loaded_during_collection(tmp_path, receiver):
     # Only conftests at or above the command-line paths load before the session
     # starts; this one is found while collecting.

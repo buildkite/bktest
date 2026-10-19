@@ -6,6 +6,7 @@ configuring there runs after conftest code has installed any suite-wide
 tracer provider.
 """
 
+import logging
 from contextvars import Token
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Callable, Dict, Generator, List, Mapping, Optional, Tuple
@@ -33,6 +34,33 @@ WORKER_STATUS_KEY = "buildkite_test_collector_otel"
 WORKER_LOSSES = pytest.StashKey[List[Tuple[str, int, str]]]()
 
 
+class HeldWarnings(logging.Filter):
+    """Hold collector warnings until the session ends, where pytest's capture cannot hide them.
+
+    Many arrive while pytest captures output (in a test body, a fixture, or
+    collection, on any thread), and a captured warning is only shown if that
+    test fails.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._records: List[logging.LogRecord] = []
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Keep warnings back; let lower levels through."""
+        if record.levelno < logging.WARNING:
+            return True
+        self._records.append(record)
+        return False
+
+    def release(self) -> None:
+        """Stop holding and log every held warning now."""
+        logger.removeFilter(self)
+        records, self._records = self._records, []
+        for record in records:
+            logger.handle(record)
+
+
 class OTelPlugin:
     """Emit one root span per test alongside the JSON collector, replacing its upload."""
 
@@ -57,6 +85,7 @@ class OTelPlugin:
         self._state: Optional["ExportState"] = None
         self._test_spans: Dict[str, Optional["Span"]] = {}
         self._tokens: Dict[str, Token] = {}
+        self._held_warnings = HeldWarnings()
 
     def pytest_sessionstart(self, session: pytest.Session) -> None:
         """pytest_sessionstart hook callback to configure export or fall back to JSON"""
@@ -96,6 +125,7 @@ class OTelPlugin:
         # span's run key must then match the request header, not this run.
         self._run_attributes[attrs.RUN_KEY_ATTRIBUTE] = self._state.run_key
         self._collector.otel = self
+        logger.addFilter(self._held_warnings)
 
     @staticmethod
     def _span_filter(pytest_config: pytest.Config) -> Callable[[Any], object]:
@@ -122,6 +152,7 @@ class OTelPlugin:
         # reach the log.
         if self._state is None or not _is_xdist_worker(session.config):
             return
+        self._held_warnings.release()
         self._export.force_flush()
         try:
             missing, reasons = self._export.missing_test_spans()
@@ -138,6 +169,7 @@ class OTelPlugin:
         if self._state is None or _is_xdist_worker(config):
             return
         _flush_terminal(config)
+        self._held_warnings.release()
         self._export.force_flush()
 
     @pytest.hookimpl(trylast=True)
