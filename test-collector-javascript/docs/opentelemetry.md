@@ -254,11 +254,13 @@ at the same 10,243 characters, as the other collectors cut theirs. Both limits
 count Unicode code points.
 
 The worker flushes its queue at the end of every test file, because Jest
-exits workers without any later hook. Each file's flush waits up to 30 seconds
-for a slow endpoint. Flushes in one worker share a 30-second budget that only
-failures consume: a healthy endpoint never consumes it, but once a failing
-endpoint has used it up, later flushes stop waiting and export continues in
-the background until the worker exits. The exporter retries on 429, 502, 503,
+exits workers without any later hook. A flush has no overall time limit while
+the endpoint keeps accepting spans, so a large file against a slow endpoint
+can take more than 30 seconds to flush. Flushes in one worker share a
+30-second budget that failures consume, as does a single wait that outlasts
+what is left of it: a healthy endpoint never consumes it, but once it is used
+up, later flushes stop waiting and export continues in the background until
+the worker exits. The exporter retries on 429, 502, 503,
 504, timeouts and connection errors with backoff; other responses (400, 401,
 403, 404, 413) fail the batch immediately.
 
