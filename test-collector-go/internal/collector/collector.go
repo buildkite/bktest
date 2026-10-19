@@ -115,7 +115,7 @@ func New(ctx context.Context, opts Options) (*Collector, error) {
 
 	c := &Collector{
 		env:            env,
-		locationPrefix: opts.LocationPrefix,
+		locationPrefix: validUTF8(opts.LocationPrefix),
 		tags:           runTags(opts.Tags),
 		links:          jobSpanLinks(),
 		testStats:      &streamStats{},

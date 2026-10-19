@@ -4,7 +4,6 @@ import (
 	"context"
 	"maps"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"time"
 
@@ -100,9 +99,9 @@ func (c *Collector) Start(id Identity, start time.Time) (ex *Execution) {
 		}
 	}()
 
-	id.Scope = strings.ToValidUTF8(id.Scope, "\uFFFD")
-	id.Name = strings.ToValidUTF8(id.Name, "\uFFFD")
-	id.File = strings.ToValidUTF8(id.File, "\uFFFD")
+	id.Scope = validUTF8(id.Scope)
+	id.Name = validUTF8(id.Name)
+	id.File = validUTF8(id.File)
 	ex = &Execution{c: c, start: start, identity: id, external: uuid.Must(uuid.NewV7()).String(), tags: map[string]string{}}
 
 	startAttrs := []attribute.KeyValue{
@@ -211,7 +210,7 @@ func attempt(failure string, fn func()) {
 func (ex *Execution) Tag(key, value string) {
 	ex.mu.Lock()
 	defer ex.mu.Unlock()
-	ex.tags[key] = strings.ToValidUTF8(value, "\uFFFD")
+	ex.tags[validUTF8(key)] = validUTF8(value)
 }
 
 // mergedTags returns run-level tags with per-test tags overriding them.
@@ -226,9 +225,8 @@ func (ex *Execution) mergedTags() map[string]string {
 
 // Annotate adds a test.annotation event to the test span.
 func (ex *Execution) Annotate(content string) {
-	// The SDK's attribute length limit does not apply to event attributes,
-	// and the protobuf encoder rejects a batch holding invalid UTF-8.
-	content = strings.ToValidUTF8(content, "\uFFFD")
+	// The SDK's attribute length limit does not apply to event attributes.
+	content = validUTF8(content)
 	ex.span.AddEvent(annotationEventName, trace.WithAttributes(attribute.String(attrAnnotation, truncate(content, testSpanEventAttributeLength))))
 }
 

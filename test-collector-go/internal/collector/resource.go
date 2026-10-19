@@ -38,7 +38,7 @@ func producerResource(env runEnv) *resource.Resource {
 	attrs := []attribute.KeyValue{}
 	add := func(key attribute.Key, value string) {
 		if value != "" {
-			attrs = append(attrs, key.String(value))
+			attrs = append(attrs, key.String(validUTF8(value)))
 		}
 	}
 	add(semconv.ServiceNameKey, os.Getenv("BUILDKITE_TEST_ENGINE_SUITE_SLUG"))
@@ -77,7 +77,7 @@ func runAttributes(env runEnv, locationPrefix string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{}
 	add := func(key, value string) {
 		if value != "" {
-			attrs = append(attrs, attribute.String(key, value))
+			attrs = append(attrs, attribute.String(key, validUTF8(value)))
 		}
 	}
 	add(attrRunKey, env.key)
@@ -101,10 +101,18 @@ func runAttributes(env runEnv, locationPrefix string) []attribute.KeyValue {
 func runTags(configured map[string]string) map[string]string {
 	tags := map[string]string{}
 	if worker := os.Getenv("BUILDKITE_AGENT_ID"); strings.TrimSpace(worker) != "" {
-		tags[workerIDTag] = worker
+		tags[workerIDTag] = validUTF8(worker)
 	}
-	maps.Copy(tags, configured)
+	for k, v := range configured {
+		tags[validUTF8(k)] = validUTF8(v)
+	}
 	return tags
+}
+
+// validUTF8 replaces invalid UTF-8 with U+FFFD: the protobuf encoder
+// rejects a whole export batch over a single invalid string.
+func validUTF8(s string) string {
+	return strings.ToValidUTF8(s, "\uFFFD")
 }
 
 func tagAttributes(tags map[string]string) []attribute.KeyValue {

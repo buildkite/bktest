@@ -239,24 +239,41 @@ func TestExplicitTimesAreKept(t *testing.T) {
 	}
 }
 
-func TestIdentityWithInvalidUTF8IsRepaired(t *testing.T) {
+// The protobuf encoder rejects a whole batch over one invalid UTF-8 string,
+// so every string that reaches a span from a test, an option or the
+// environment is repaired first.
+func TestInvalidUTF8IsRepaired(t *testing.T) {
 	r := otlptest.NewReceiver(t)
-	c := configured(t, r, nil)
-	c.Start(Identity{Scope: "example.com/bad\xff", Name: "Test\xffName", File: "x\xff_test.go", Line: 1}, time.Now()).Finish(time.Now(), passed)
+	c := configured(t, r, map[string]string{
+		"BUILDKITE_ANALYTICS_MESSAGE": "fix caf\xe9",
+		"BUILDKITE_ANALYTICS_BRANCH":  "caf\xe9",
+	}, withTags(map[string]string{"payload": "run\xff", "key\xff": "v"}), withLocationPrefix("caf\xe9/"))
+	ex := c.Start(Identity{Scope: "example.com/bad\xff", Name: "Test\xffName", File: "x\xff_test.go", Line: 1}, time.Now())
+	ex.Tag("owner\xff", "me")
+	ex.Finish(time.Now(), passed)
 	c.Shutdown()
 
-	spans := r.TestSpans()
-	if len(spans) != 1 {
-		t.Fatalf("got %d spans; the batch must still encode", len(spans))
+	reqs := r.Stream(streamTest)
+	if len(reqs) != 1 || len(reqs[0].Spans()) != 1 {
+		t.Fatalf("got %d test span requests; the batch must still encode", len(reqs))
 	}
-	if got := otlptest.StringAttr(t, spans[0].Attributes, attrTestName); got != "Test\uFFFDName" {
-		t.Errorf("name = %q", got)
+	attrs := reqs[0].Spans()[0].Attributes
+	for key, want := range map[string]string{
+		attrTestName:                       "Test\uFFFDName",
+		attrTestScope:                      "example.com/bad\uFFFD",
+		"code.file.path":                   "caf\uFFFD/x\uFFFD_test.go",
+		"buildkite.message":                "fix caf\uFFFD",
+		tagAttributePrefix + "payload":     "run\uFFFD",
+		tagAttributePrefix + "key\uFFFD":   "v",
+		tagAttributePrefix + "owner\uFFFD": "me",
+	} {
+		if got := otlptest.StringAttr(t, attrs, key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
 	}
-	if got := otlptest.StringAttr(t, spans[0].Attributes, attrTestScope); got != "example.com/bad\uFFFD" {
-		t.Errorf("scope = %q", got)
-	}
-	if got := otlptest.StringAttr(t, spans[0].Attributes, "code.file.path"); got != "x\uFFFD_test.go" {
-		t.Errorf("file = %q", got)
+	res := reqs[0].Body.ResourceSpans[0].Resource.GetAttributes()
+	if got := otlptest.StringAttr(t, res, "vcs.ref.head.name"); got != "caf\uFFFD" {
+		t.Errorf("resource vcs.ref.head.name = %q", got)
 	}
 }
 
