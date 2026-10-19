@@ -14,6 +14,39 @@ def test_otel_is_off_unless_opted_in(fake_env):
     assert config.OTelConfig.from_env({**env, "BUILDKITE_ANALYTICS_OTEL_ENABLED": "1"}).enabled is True
 
 
+class RecordingEnv(dict):
+    """An environment that remembers which variables were read."""
+
+    def __init__(self, values):
+        super().__init__(values)
+        self.read = set()
+
+    def get(self, key, default=None):
+        self.read.add(key)
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        self.read.add(key)
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        self.read.add(key)
+        return super().__contains__(key)
+
+
+@pytest.mark.parametrize("switch", [None, "false"])
+def test_otel_off_reads_nothing_but_the_switch(fake_env, switch):
+    env = RecordingEnv({
+        "BUILDKITE_TESTS_OTLP_TOKEN": "t",
+        "BUILDKITE_ANALYTICS_TOKEN": "json",
+        "BUILDKITE_ANALYTICS_OTLP_ENDPOINT": "http://localhost:4318/v1/traces",
+    })
+    if switch is not None:
+        env["BUILDKITE_ANALYTICS_OTEL_ENABLED"] = switch
+    assert otel_plugin.build(env, fake_env, {}, collector=None) is None
+    assert env.read == {"BUILDKITE_ANALYTICS_OTEL_ENABLED"}
+
+
 def test_otel_is_off_without_a_credential_like_the_json_path(fake_env, capfd):
     env = {"BUILDKITE_ANALYTICS_OTEL_ENABLED": "true", "BUILDKITE_TESTS_OTLP_TOKEN": "  "}
     assert otel_plugin.build(env, fake_env, {}, collector=None) is None
@@ -21,15 +54,19 @@ def test_otel_is_off_without_a_credential_like_the_json_path(fake_env, capfd):
 
 
 def test_relay_token_is_preferred_and_blank_means_unset():
-    both = {"BUILDKITE_TESTS_OTLP_TOKEN": " relay ", "BUILDKITE_ANALYTICS_TOKEN": "json"}
+    on = {"BUILDKITE_ANALYTICS_OTEL_ENABLED": "true"}
+    both = {**on, "BUILDKITE_TESTS_OTLP_TOKEN": " relay ", "BUILDKITE_ANALYTICS_TOKEN": "json"}
     assert config.OTelConfig.from_env(both).token == "relay"
-    blank_relay = {"BUILDKITE_TESTS_OTLP_TOKEN": "   ", "BUILDKITE_ANALYTICS_TOKEN": "json"}
+    blank_relay = {**on, "BUILDKITE_TESTS_OTLP_TOKEN": "   ", "BUILDKITE_ANALYTICS_TOKEN": "json"}
     assert config.OTelConfig.from_env(blank_relay).token == "json"
 
 
 def test_endpoint_defaults_and_can_be_overridden():
     assert config.OTelConfig.from_env({}).endpoint == "https://tests-otlp.buildkite.com/v1/traces"
-    custom = {"BUILDKITE_ANALYTICS_OTLP_ENDPOINT": "http://localhost:4318/v1/traces"}
+    custom = {
+        "BUILDKITE_ANALYTICS_OTEL_ENABLED": "true",
+        "BUILDKITE_ANALYTICS_OTLP_ENDPOINT": "http://localhost:4318/v1/traces",
+    }
     assert config.OTelConfig.from_env(custom).endpoint == "http://localhost:4318/v1/traces"
 
 

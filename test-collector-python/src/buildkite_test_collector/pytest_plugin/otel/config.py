@@ -36,8 +36,10 @@ class OTelConfig:
 
     @classmethod
     def from_env(cls, env: Mapping[str, Optional[str]]) -> "OTelConfig":
-        """Read the OTel switch, credential and endpoint from ``env``."""
+        """Read the OTel switch and, only when it is on, the credential and endpoint."""
         enabled = (env.get(ENV_ENABLED) or "").strip().lower() in ("1", "true")
+        if not enabled:
+            return cls(enabled=False, token=None, endpoint=DEFAULT_ENDPOINT)
         token = _stripped(env.get(ENV_OTLP_TOKEN)) or _stripped(env.get(ENV_ANALYTICS_TOKEN))
         endpoint = env.get(ENV_ENDPOINT)
         if endpoint is None:
