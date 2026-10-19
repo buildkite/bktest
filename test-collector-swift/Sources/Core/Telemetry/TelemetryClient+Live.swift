@@ -81,10 +81,17 @@ struct CollectorOTLPConfiguration {
     // variables select an endpoint only when no Buildkite credential is set,
     // and headers alone never enable collection or select the OTLP
     // specification's localhost default.
-    let usesBuildkiteCredentials = environment.analyticsToken != nil
-      || environment.analyticsOTLPEndpoint != nil
+    // bktec's relay sets BUILDKITE_TESTS_OTLP_TOKEN and can leave the upload
+    // token blank, so the OTLP token comes first.
+    let token = environment.otlpToken ?? environment.analyticsToken
+    let usesBuildkiteCredentials = token != nil || environment.analyticsOTLPEndpoint != nil
     let standardEndpoint = environment.otelTracesEndpoint.map { (value: $0, appendsPath: false) }
       ?? environment.otelEndpoint.map { (value: $0, appendsPath: true) }
+    let standardURL = standardEndpoint.flatMap { standard in
+      Self.absoluteURL(standard.value).map {
+        standard.appendsPath ? $0.appendingPathComponent("v1/traces") : $0
+      }
+    }
 
     guard usesBuildkiteCredentials || standardEndpoint != nil else {
       logger?.info(
@@ -114,20 +121,22 @@ struct CollectorOTLPConfiguration {
         endpoint = url
       }
       headers.append(("Buildkite-Tests-Run-Key", runEnvironment.key))
-      if let token = environment.analyticsToken {
+      if let token {
         headers.append(("Authorization", "Token token=\"\(token)\""))
       }
-      if standardEndpoint != nil || rawHeaders != nil {
+      // bktec points the standard variables at the same relay endpoint, so
+      // they only need a warning when they name somewhere else.
+      if standardURL != endpoint, standardEndpoint != nil || rawHeaders != nil {
         logger?.warning(
           "Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(endpoint.redactedForLogs) with Buildkite credentials."
         )
       }
-    } else if let standardEndpoint {
-      guard let url = Self.absoluteURL(standardEndpoint.value) else {
+    } else if standardEndpoint != nil {
+      guard let standardURL else {
         logger?.error("OpenTelemetry traces endpoint is not a valid absolute URL")
         return nil
       }
-      endpoint = standardEndpoint.appendsPath ? url.appendingPathComponent("v1/traces") : url
+      endpoint = standardURL
 
       if let protocolName = environment.otelTracesProtocol ?? environment.otelProtocol,
          protocolName.lowercased() != "http/protobuf" {
@@ -549,7 +558,8 @@ private final class LiveTelemetryClient {
     )
 
     if let location = test.issues.first?.sourceCodeContext.location {
-      span.setAttribute(key: SemanticConventions.Code.filePath.rawValue, value: location.filePath)
+      // The 0.x JSON collector sent the file name, not the full path.
+      span.setAttribute(key: SemanticConventions.Code.filePath.rawValue, value: location.fileName)
       span.setAttribute(key: SemanticConventions.Code.lineNumber.rawValue, value: Int(location.line))
       span.setAttribute(
         key: BuildkiteTelemetryAttribute.executionLocation,

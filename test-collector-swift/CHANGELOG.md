@@ -11,6 +11,9 @@
 - Give the bundle-end flush one 30 s budget shared by test executions (first) and child spans, instead of 30 s each, and warn when child spans are left unexported at the deadline
 - Ignore `OTEL_EXPORTER_OTLP_*` while `BUILDKITE_ANALYTICS_TOKEN` or `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` is set, with a warning, so an application's OpenTelemetry configuration cannot redirect test results away from Test Engine; log the endpoint when the standard variables are used without Buildkite credentials
 - Log endpoints, including in debug output, as scheme, host, port and path only, so credentials in an endpoint's user info, query or fragment never reach the logs
+- Read `BUILDKITE_TESTS_OTLP_TOKEN` (blank = unset) ahead of `BUILDKITE_ANALYTICS_TOKEN`, so tests run by bktec still upload when bktec leaves the upload token blank; no `OTEL_EXPORTER_OTLP_*` warning when those variables point at the endpoint in use, as bktec's do
+- Send the file name as `code.file.path`, as the 0.x JSON collector sent `file_name`, instead of the absolute path
+- Document that `swift test --parallel` hides collector warnings, including `TEST RESULTS MISSING`, for workers without a failing test, and that the bundle-end flush can hold the process for up to 30 s
 - Document that only XCTest (including Quick and Nimble) is collected, that run-level tags are set through `BUILDKITE_ANALYTICS_TAGS` only, and how to keep a local `swift test --parallel` in one run
 
 ## 2.0.0-beta.1

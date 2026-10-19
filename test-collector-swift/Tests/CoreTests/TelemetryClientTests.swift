@@ -150,7 +150,7 @@ final class TelemetryClientTests: XCTestCase {
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.attributes["test.case.result.status"], .string("fail"))
-    XCTAssertEqual(span.attributes["code.file.path"], .string("/src/FailureTests.swift"))
+    XCTAssertEqual(span.attributes["code.file.path"], .string("FailureTests.swift"))
     XCTAssertEqual(span.attributes["code.line.number"], .int(42))
     XCTAssertEqual(span.status, .error(description: "Expected true but was false"))
     XCTAssertEqual(span.events.only?.name, "exception")
@@ -292,6 +292,58 @@ final class TelemetryClientTests: XCTestCase {
     XCTAssertEqual(messages.value, [
       "[BuildkiteTestCollector] warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(TestCollector.endpoint) with Buildkite credentials.",
     ])
+  }
+
+  func testPrefersTheOTLPTokenOverTheUploadToken() throws {
+    for (otlpToken, expected) in [("otlp-token", "otlp-token"), ("   ", "upload-token")] {
+      let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
+        environment: EnvironmentValues(
+          values: [
+            "BUILDKITE_ANALYTICS_KEY": "run-key",
+            "BUILDKITE_ANALYTICS_TOKEN": "upload-token",
+            "BUILDKITE_TESTS_OTLP_TOKEN": otlpToken,
+          ],
+          getFromEnvironment: { _ in nil },
+          getFromInfoDictionary: { _ in nil }
+        ),
+        logger: nil
+      ))
+
+      XCTAssertEqual(configuration.header(named: "Authorization"), #"Token token="\#(expected)""#)
+    }
+  }
+
+  func testSendsTheRelayTokenQuietlyUnderBktecWhenTheUploadTokenIsBlank() throws {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
+    // What bktec's relay sets for the test process; the upload token is blank
+    // when bktec could not mint one.
+    let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
+      environment: EnvironmentValues(
+        values: [
+          "BUILDKITE_ANALYTICS_KEY": "run-key",
+          "BUILDKITE_ANALYTICS_TOKEN": "",
+          "BUILDKITE_ANALYTICS_OTLP_ENDPOINT": "http://127.0.0.1:50123/v1/traces",
+          "BUILDKITE_TESTS_OTLP_TOKEN": "relay-token",
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:50123/v1/traces",
+          "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "authorization=Bearer%20relay-token",
+          "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+        ],
+        getFromEnvironment: { _ in nil },
+        getFromInfoDictionary: { _ in nil }
+      ),
+      logger: logger
+    ))
+    logger.waitForLogs()
+
+    XCTAssertEqual(configuration.endpoint.absoluteString, "http://127.0.0.1:50123/v1/traces")
+    XCTAssertEqual(configuration.headers.map { "\($0.0): \($0.1)" }, [
+      "Buildkite-Tests-Run-Key: run-key",
+      #"Authorization: Token token="relay-token""#,
+    ])
+    XCTAssertEqual(messages.value, [])
   }
 
   func testLogsEndpointsWithoutCredentials() throws {
