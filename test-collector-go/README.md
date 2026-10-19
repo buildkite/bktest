@@ -15,7 +15,7 @@ via the `BUILDKITE_ANALYTICS_*` environment variables.
 > results as missing:
 >
 > ```
-> [buildkite-test-collector] TEST RESULTS MISSING: OpenTelemetry dropped N test.execution span(s) (export-failure, last OTLP failure: 403).
+> [buildkite-test-collector] TEST RESULTS MISSING: OpenTelemetry dropped N test.execution span(s) (export-failure: N, last OTLP failure: 403).
 > [buildkite-test-collector] OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.
 > ```
 >

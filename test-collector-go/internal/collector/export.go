@@ -115,19 +115,23 @@ func (s *streamStats) unreported(drained bool) (dropReport, bool) {
 		notExported = 0
 	}
 	r.dropped = notExported + s.failed + s.startFailed
-	switch {
-	case s.failed > 0 && notExported > 0:
-		r.reason = "export-failure, not-exported"
-	case s.failed > 0:
-		r.reason = "export-failure"
-	case notExported > 0:
-		r.reason = "not-exported"
-	case s.startFailed > 0:
-		r.reason = "could not start span"
+	// Each reason gets its own count, and the last OTLP failure is named
+	// only after the export failures it caused, last so it reads as theirs.
+	var reasons []string
+	if s.startFailed > 0 {
+		reasons = append(reasons, fmt.Sprintf("could not start span: %d", s.startFailed))
 	}
-	if s.failed > 0 && s.lastFailure != "" {
-		r.reason += ", last OTLP failure: " + s.lastFailure
+	if notExported > 0 {
+		reasons = append(reasons, fmt.Sprintf("not-exported: %d", notExported))
 	}
+	if s.failed > 0 {
+		failure := fmt.Sprintf("export-failure: %d", s.failed)
+		if s.lastFailure != "" {
+			failure += ", last OTLP failure: " + s.lastFailure
+		}
+		reasons = append(reasons, failure)
+	}
+	r.reason = strings.Join(reasons, ", ")
 	if r.dropped <= s.reported {
 		return r, false
 	}

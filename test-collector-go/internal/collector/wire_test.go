@@ -190,7 +190,7 @@ func TestEveryTestSpanIsExportedOrCountedAsDropped(t *testing.T) {
 	if exported+dropped != total {
 		t.Fatalf("exported %d + dropped %d != %d\n%s", exported, dropped, total, out.String())
 	}
-	if !strings.Contains(out.String(), "(not-exported)") {
+	if !strings.Contains(out.String(), fmt.Sprintf("(not-exported: %d)", dropped)) {
 		t.Fatalf("drop reason missing:\n%s", out.String())
 	}
 	if !strings.Contains(out.String(), "OpenTelemetry is the only upload path") {
@@ -214,7 +214,7 @@ func TestExportFailureIsReportedWithItsStatus(t *testing.T) {
 	if got := len(r.Stream(streamTest)); got != 1 {
 		t.Fatalf("403 must not be retried; got %d requests", got)
 	}
-	want := "TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 403)."
+	want := "TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure: 1, last OTLP failure: 403)."
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("warning = %q\nwant it to contain %q", out.String(), want)
 	}
@@ -235,7 +235,7 @@ func TestExportFailureCauseOutlivesALaterSuccess(t *testing.T) {
 	if got := len(r.Stream(streamTest)); got != 2 {
 		t.Fatalf("got %d requests, want one per span", got)
 	}
-	want := "TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 413)."
+	want := "TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure: 1, last OTLP failure: 413)."
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("warning = %q\nwant it to contain %q", out.String(), want)
 	}
@@ -266,7 +266,7 @@ func TestRetriedExportFailureIsReportedWithItsStatus(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "503") {
 		t.Fatalf("err = %v; want the exporter's retried failure, which does not name the status", err)
 	}
-	if got, _ := stats.unreported(true); got.reason != "export-failure, last OTLP failure: 503" {
+	if got, _ := stats.unreported(true); got.reason != "export-failure: 1, last OTLP failure: 503" {
 		t.Fatalf("reason = %q", got.reason)
 	}
 }
@@ -346,7 +346,7 @@ func TestUnreachableEndpointWarnsAndStaysBounded(t *testing.T) {
 	if took := time.Since(started); took > processorTimeout {
 		t.Fatalf("shutdown took %s, over the %s budget", took, processorTimeout)
 	}
-	if !strings.Contains(out.String(), "TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: ") {
+	if !strings.Contains(out.String(), "TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure: 1, last OTLP failure: ") {
 		t.Fatalf("warning = %q", out.String())
 	}
 }
@@ -370,7 +370,7 @@ func TestExporterPanicDoesNotKillTheWorker(t *testing.T) {
 	}
 	// The second round only reached the exporter because the worker survived
 	// the first panic.
-	if got, _ := stats.unreported(true); got.dropped != 3 || !strings.HasPrefix(got.reason, "export-failure, last OTLP failure: exporter panicked: boom") {
+	if got, _ := stats.unreported(true); got.dropped != 3 || !strings.HasPrefix(got.reason, "export-failure: 3, last OTLP failure: exporter panicked: boom") {
 		t.Fatalf("drops = %+v, want 3 failed spans", got)
 	}
 	if strings.Count(out.String(), "Could not export OpenTelemetry spans: boom. Further string export failures will not be reported.") != 1 {
@@ -407,7 +407,7 @@ func TestDropAccountingSeparatesLostFromPending(t *testing.T) {
 	s := &streamStats{offered: 10, succeeded: 6, failed: 1, startFailed: 1, lastFailure: "503"}
 
 	drained, fresh := s.unreported(true)
-	if !fresh || drained.dropped != 5 || drained.pending != 0 || drained.reason != "export-failure, not-exported, last OTLP failure: 503" {
+	if !fresh || drained.dropped != 5 || drained.pending != 0 || drained.reason != "could not start span: 1, not-exported: 3, export-failure: 1, last OTLP failure: 503" {
 		t.Fatalf("drained = %+v (%v); want 3 never exported + 1 failed + 1 start failure", drained, fresh)
 	}
 	if _, again := s.unreported(true); again {
@@ -417,7 +417,7 @@ func TestDropAccountingSeparatesLostFromPending(t *testing.T) {
 	// Past the deadline the three unresolved spans may still be in flight,
 	// so only the certain losses count as dropped.
 	late, _ := s.unreported(false)
-	if late.dropped != 2 || late.pending != 3 || late.reason != "export-failure, last OTLP failure: 503" {
+	if late.dropped != 2 || late.pending != 3 || late.reason != "could not start span: 1, export-failure: 1, last OTLP failure: 503" {
 		t.Fatalf("not drained = %+v; want 1 failed + 1 start failure dropped and 3 pending", late)
 	}
 
@@ -430,9 +430,9 @@ func TestDropAccountingSeparatesLostFromPending(t *testing.T) {
 	}
 	c.reportDrops(false, false)
 	for _, want := range []string{
-		"TEST RESULTS MISSING: OpenTelemetry dropped 10 test.execution span(s) (export-failure, last OTLP failure: 503).",
+		"TEST RESULTS MISSING: OpenTelemetry dropped 10 test.execution span(s) (export-failure: 10, last OTLP failure: 503).",
 		"TEST RESULTS MISSING: 2 test.execution span(s) were still exporting when the 30s deadline passed",
-		"OpenTelemetry dropped 2 child span(s) (export-failure, last OTLP failure: 503)",
+		"OpenTelemetry dropped 2 child span(s) (export-failure: 2, last OTLP failure: 503)",
 		"3 child span(s) may be missing",
 	} {
 		if !strings.Contains(out.String(), want) {

@@ -253,7 +253,7 @@ func TestChildQueueOverflowKeepsTheTestSpanAndWarnsBestEffort(t *testing.T) {
 	if strings.Contains(out.String(), "TEST RESULTS MISSING") {
 		t.Fatalf("child drops must not be reported as missing results:\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "child span(s) (not-exported); test.execution results are unaffected.") {
+	if !strings.Contains(out.String(), "child span(s) (not-exported: ") || !strings.Contains(out.String(), "test.execution results are unaffected.") {
 		t.Fatalf("missing best-effort child warning:\n%s", out.String())
 	}
 }
