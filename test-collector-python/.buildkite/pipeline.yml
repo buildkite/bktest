@@ -41,12 +41,14 @@ steps:
       # OpenTelemetry SDK and exporter (within the floor pyproject.toml
       # declares) instead of the uv.lock versions, so an SDK release that
       # breaks OTel mode shows up here before a customer finds it.
+      # This needs --upgrade-package, not --with: the locked versions already
+      # satisfy a --with requirement, so uv would keep using them.
       - label: ":pytest: pytest 3.13 / newest OpenTelemetry SDK (early warning, soft fail)"
         command: "test-collector-python/.buildkite/steps/test"
         soft_fail: true
         env:
           PYTHON_VERSION: "3.13"
-          UV_RUN_FLAGS: "--refresh --with opentelemetry-sdk>=1.45 --with opentelemetry-exporter-otlp-proto-http>=1.45"
+          UV_RUN_FLAGS: "--all-extras --upgrade-package opentelemetry-sdk --upgrade-package opentelemetry-exporter-otlp-proto-http"
 
       - label: ":python: pylint {{matrix}}"
         command: "test-collector-python/.buildkite/steps/lint"
