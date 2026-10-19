@@ -163,7 +163,9 @@ history.
 Without a token this package is silent: `Main` runs the tests and `Start`
 returns a plain context, so `go test` on a laptop prints exactly what it
 would without the package. With a token but an invalid run key or endpoint
-`Main` prints one warning and runs the tests the same way.
+the first `Start` prints one warning (setup waits for the first test, so
+under `go test -json` the warning is part of that test's output) and the
+tests run the same way.
 
 ```go
 package checkout
@@ -198,7 +200,8 @@ finished the test, so nothing else is needed in the test body and a
 cleanup registered before `Start` that fails the test still counts. A
 panicking test is reported as failed, and its result is delivered before
 the process dies; the panic value itself is not available to a cleanup, so
-the failure reads `test panicked; see go test output`. A non-panic failure
+the failure reason is `test panicked` and its detail reads `test panicked;
+go test prints the panic value after the test output`. A non-panic failure
 has no failure text in this mode: `go test` keeps `t.Error` output to
 itself. Subtests call `Start(t)` with their own `*testing.T`. Call `Start`
 after `t.Parallel()`: the span starts at `Start`, so calling it first
@@ -285,12 +288,22 @@ and `OTEL_SERVICE_NAME` are honoured through the SDK's default resource.
 When the stream ends (or `m.Run` returns) the collector flushes within a 30
 second budget. If any `test.execution` span could not be delivered it prints
 `TEST RESULTS MISSING: OpenTelemetry dropped N test.execution span(s) (...)`
-with the reason and the last OTLP failure, and the exit code still mirrors
-the tests. Lost child spans are reported separately and never count as
-missing results. A burst of results larger than the queue (thousands of
-subtests finishing at once) is held back until the exporter has room,
-within the same budget, rather than dropped. The holding back happens off
-the test goroutines, so it never counts against `go test -timeout`.
+with the reason and the last OTLP failure (its HTTP status, such as `503`,
+or the error), and spans still being exported when the budget ran out on a
+second line, `TEST RESULTS MISSING: N test.execution span(s) were still
+exporting when the 30s deadline passed ...`. The exit code still mirrors the
+tests. Lost child spans are reported separately and never count as missing
+results.
+
+A burst of results larger than the queue (thousands of subtests finishing
+at once) is held back until the exporter has room, within the same budget,
+rather than dropped. The holding back happens on one background goroutine
+per process, not on the test goroutines, so it never counts against
+`go test -timeout`; that goroutine stays (idle) after the flush, so a
+goroutine-leak check run after `bktest.Main` returns will report it. An
+endpoint that takes more than about a second to answer each request gets
+fewer results within the budget than a fast one; the rest are reported as
+still exporting.
 
 Two cases lose results without that warning:
 
@@ -312,7 +325,9 @@ Two cases lose results without that warning:
   it when that matters.
 
 Export failures are reported with the token and the run key redacted, even
-when the receiver echoes them back.
+when the receiver echoes them back, as long as each is at least 8
+characters long. A shorter one is left as is, because replacing a run key
+such as `4` would rewrite every status code and URL in the message.
 
 ## What is not supported
 

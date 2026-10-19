@@ -21,8 +21,8 @@
 // (BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_TOKEN) and a valid run
 // key. Without a token every function is a silent no-op, so go test on a
 // developer's machine runs and prints exactly as it would without this
-// package; with a token but an invalid run key or endpoint Main prints one
-// warning and runs the tests the same way.
+// package; with a token but an invalid run key or endpoint the first Start
+// prints one warning and the tests run the same way.
 //
 // Do not combine this package with the buildkite-test-collector command on
 // the same package: every test would be reported twice.
