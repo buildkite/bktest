@@ -127,19 +127,20 @@ final class SynchronousExecutionSpanProcessor: SpanProcessor {
   }
 
   // The flush is the last chance before the process exits: the first attempt
-  // ignores any backoff, later ones wait it out while the budget allows.
-  // Anything still unsent at the deadline is lost; count it as dropped.
+  // ignores any backoff, and after a transient failure later ones wait it out
+  // while the budget allows. A terminal failure rejected only its own batch,
+  // so the next batch goes at once. Anything still unsent at the deadline is
+  // lost; count it as dropped.
   private func flush(timeout: TimeInterval?) {
     let deadline = timeout.map { self.now() + $0 }
-    var attempted = false
+    var lastOutcome: ExportOutcome?
     while !self.pending.isEmpty {
-      if attempted, let retryNotBefore = self.retryNotBefore, self.now() < retryNotBefore {
+      if lastOutcome == .retryLater, let retryNotBefore = self.retryNotBefore, self.now() < retryNotBefore {
         guard let deadline, retryNotBefore < deadline else { break }
         self.sleep(retryNotBefore - self.now())
       }
-      if attempted, let deadline, self.now() >= deadline { break }
-      attempted = true
-      self.exportPending(deadline: deadline)
+      if lastOutcome != nil, let deadline, self.now() >= deadline { break }
+      lastOutcome = self.exportPending(deadline: deadline)
     }
     if !self.pending.isEmpty {
       let batch = self.pending[...]

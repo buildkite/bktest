@@ -197,7 +197,7 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
     ])
   }
 
-  func testSplitsBatchesByEncodedSizeAndDropsOnlyTheBatchTheReceiverRejects() {
+  func testSplitsBatchesByEncodedSizeAndDropsOnlyTheBatchesTheReceiverRejects() {
     let clock = TestClock()
     let exporter = SequencedExporter(results: [.failure(.httpStatus(503))]) { spans in
       let payloadSize = spans.reduce(0) { size, span in
@@ -220,11 +220,13 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
     )
 
     self.endSpan("one", with: tracer)
-    tracer.spanBuilder(spanName: "huge")
-      .setNoParent()
-      .setAttribute(key: "payload", value: String(repeating: "x", count: 700 * 1024))
-      .startSpan()
-      .end()
+    for name in ["huge", "huger"] {
+      tracer.spanBuilder(spanName: name)
+        .setNoParent()
+        .setAttribute(key: "payload", value: String(repeating: "x", count: 700 * 1024))
+        .startSpan()
+        .end()
+    }
     self.endSpan("two", with: tracer)
     self.endSpan("three", with: tracer)
     processor.forceFlush(timeout: 30)
@@ -232,10 +234,12 @@ final class SynchronousExecutionSpanProcessorTests: XCTestCase {
 
     XCTAssertEqual(
       exporter.exports.map { $0.map(\.name) },
-      [["one"], ["one"], ["huge"], ["two", "three"]]
+      [["one"], ["one"], ["huge"], ["huger"], ["two", "three"]]
     )
+    XCTAssertEqual(clock.now, 0)
     XCTAssertEqual(messages.withValue { $0.filter { $0.hasPrefix("[BuildkiteTestCollector] warning:") } }, [
       "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 413): huge. OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.",
+      "[BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 2 test.execution span(s) so far this run; those test executions were not uploaded to Buildkite Test Engine.",
     ])
   }
 
