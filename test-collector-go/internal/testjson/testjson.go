@@ -14,8 +14,9 @@ import (
 
 // Event is one line of go test -json output, as cmd/test2json defines it.
 // FailedBuild is set on a package's fail event when its build failed (Go
-// 1.24+). OutputType marks the framing lines go test prints around a test's
-// own output (Go 1.27+).
+// 1.24+). Key and Value are a t.Attr pair on an attr event (Go 1.25+).
+// OutputType marks the framing lines go test prints around a test's own
+// output (Go 1.27+).
 type Event struct {
 	Time        time.Time
 	Action      string
@@ -25,6 +26,8 @@ type Event struct {
 	Output      string
 	OutputType  string
 	FailedBuild string
+	Key         string
+	Value       string
 }
 
 // actions are the event kinds test2json emits; any other Action field
@@ -32,7 +35,7 @@ type Event struct {
 var actions = map[string]bool{
 	"start": true, "run": true, "pause": true, "cont": true, "output": true,
 	"bench": true, "pass": true, "fail": true, "skip": true,
-	"build-output": true, "build-fail": true,
+	"build-output": true, "build-fail": true, "attr": true,
 }
 
 // Execution is one test's run as reconstructed from the stream.
@@ -44,6 +47,9 @@ type Execution struct {
 	Start  time.Time
 	End    time.Time
 	Result collector.Result
+	// Tags are the test's t.Attr pairs; a repeated key keeps its last
+	// value.
+	Tags map[string]string
 }
 
 // Handler receives what the parser finds. Every field must be set; the
@@ -85,6 +91,7 @@ type packageState struct {
 type testState struct {
 	start  time.Time
 	output []string
+	attrs  map[string]string
 }
 
 // NewParser returns a parser reporting to h.
@@ -161,6 +168,13 @@ func (p *Parser) handle(ev Event) {
 		if ts := pkg.running[ev.Test]; ts != nil && !p.isFraming(ev) {
 			ts.output = append(ts.output, ev.Output)
 		}
+	case "attr":
+		if ts := pkg.running[ev.Test]; ts != nil && ev.Key != "" {
+			if ts.attrs == nil {
+				ts.attrs = map[string]string{}
+			}
+			ts.attrs[ev.Key] = ev.Value
+		}
 	case "pass", "fail", "skip":
 		ts := pkg.running[ev.Test]
 		if ts == nil {
@@ -232,7 +246,7 @@ func (p *Parser) Finish() {
 }
 
 func (p *Parser) emit(pkgName, test string, ts *testState, end time.Time, action string) {
-	ex := Execution{Package: pkgName, Test: test, Start: ts.start, End: end}
+	ex := Execution{Package: pkgName, Test: test, Start: ts.start, End: end, Tags: ts.attrs}
 	switch action {
 	case "pass":
 		ex.Result = collector.Result{Status: collector.StatusPass}
@@ -291,7 +305,7 @@ func (p *Parser) isFraming(ev Event) bool {
 	if p.labelledFrames {
 		return ev.OutputType == "frame"
 	}
-	for _, prefix := range []string{"=== RUN", "=== PAUSE", "=== CONT", "=== NAME", "--- PASS", "--- FAIL", "--- SKIP", "--- BENCH"} {
+	for _, prefix := range []string{"=== RUN", "=== PAUSE", "=== CONT", "=== NAME", "=== ATTR", "--- PASS", "--- FAIL", "--- SKIP", "--- BENCH"} {
 		if strings.HasPrefix(ev.Output, prefix) {
 			return true
 		}

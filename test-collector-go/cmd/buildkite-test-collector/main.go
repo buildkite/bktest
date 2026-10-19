@@ -93,6 +93,9 @@ func run(stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 			}
 			pos := resolver.Lookup(lookupCtx, e.Package, e.Test)
 			if ex := c.Start(collector.Identity{Scope: e.Package, Name: e.Test, File: pos.File, Line: pos.Line}, e.Start); ex != nil {
+				for key, value := range e.Tags {
+					ex.Tag(key, value)
+				}
 				ex.Finish(e.End, e.Result)
 			}
 		},

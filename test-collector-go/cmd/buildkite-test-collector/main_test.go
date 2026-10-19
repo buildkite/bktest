@@ -134,6 +134,53 @@ func TestExportsEachTestAndMirrorsTheFailure(t *testing.T) {
 	}
 }
 
+// Go 1.25+ reports t.Attr pairs as attr events and, before Go 1.27 labels
+// framing, as unlabelled "=== ATTR" output lines.
+func TestAttrsBecomeTagsAndTheirLinesAreFraming(t *testing.T) {
+	r := otlptest.NewReceiver(t)
+	configure(t, r, nil)
+	stream := strings.Join([]string{
+		ev("run", "TestFail", ""),
+		ev("output", "TestFail", "=== RUN   TestFail\n"),
+		ev("attr", "TestFail", "", `"Key":"team"`, `"Value":"checkout"`),
+		ev("output", "TestFail", "=== ATTR  TestFail team checkout\n"),
+		ev("attr", "TestFail", "", `"Key":"ticket"`, `"Value":"TE-1"`),
+		ev("output", "TestFail", "=== ATTR  TestFail ticket TE-1\n"),
+		ev("attr", "TestFail", "", `"Key":"ticket"`, `"Value":"TE-2"`),
+		ev("output", "TestFail", "=== ATTR  TestFail ticket TE-2\n"),
+		ev("output", "TestFail", "    p_test.go:17: deliberate failure\n"),
+		ev("output", "TestFail", "--- FAIL: TestFail (0.00s)\n"),
+		ev("fail", "TestFail", "", `"Elapsed":0`),
+		ev("run", "TestPass", ""),
+		ev("pass", "TestPass", "", `"Elapsed":0`),
+		ev("fail", "", "", `"Elapsed":0.227`),
+	}, "")
+
+	_, stdout, _ := runWrapper(t, stream, "-tag", "team=payments")
+
+	if strings.Contains(stdout, `"Action"`) {
+		t.Errorf("an attr event was echoed as raw JSON:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "=== ATTR  TestFail ticket TE-1\n") {
+		t.Errorf("stdout lacks the go test -v attr line:\n%s", stdout)
+	}
+	spans := r.TestSpans()
+	fail := otlptest.FindSpan(t, spans, "TestFail")
+	if got := fail.Status.GetMessage(); got != "p_test.go:17: deliberate failure" {
+		t.Errorf("failure reason = %q", got)
+	}
+	if got := otlptest.StringAttr(t, fail.Attributes, "buildkite.tag.ticket"); got != "TE-2" {
+		t.Errorf("ticket tag = %q, want the last value", got)
+	}
+	if got := otlptest.StringAttr(t, fail.Attributes, "buildkite.tag.team"); got != "checkout" {
+		t.Errorf("team tag = %q, want the test's attr over the -tag value", got)
+	}
+	pass := otlptest.FindSpan(t, spans, "TestPass")
+	if _, ok := otlptest.Attr(pass.Attributes, "buildkite.tag.ticket"); ok {
+		t.Errorf("another test's attr leaked onto TestPass: %v", pass.Attributes)
+	}
+}
+
 func TestQuietKeepsStdoutEmptyAndChangesNothingElse(t *testing.T) {
 	r := otlptest.NewReceiver(t)
 	configure(t, r, map[string]string{"BUILDKITE_ANALYTICS_OTLP_ENDPOINT": otlptest.ClosedPort(t) + "/v1/traces"})

@@ -125,6 +125,7 @@ them.
 | result | `pass`, `fail` or `skipped`; a test that was still running when its package died (panic in another test, `-timeout`) is `fail` |
 | duration | the `Elapsed` time `go test` reports for the test; below its 10 ms resolution, the gap between the test's `run` and result events (at most 10 ms) |
 | failure | the test's own output lines; the first non-empty one is the reason, the whole text is the detail, and a panic trace is attached as a stack trace |
+| tags | the run-level `-tag` values, plus the test's `t.Attr` pairs (Go 1.25+), which win over a `-tag` of the same key |
 
 Examples and fuzz seed corpus entries are executions like any other test.
 Benchmarks and a package's own `ok`/`FAIL` lines are not executions. A
@@ -315,8 +316,9 @@ when the receiver echoes them back.
 
 ## What is not supported
 
-- Child spans, tags and annotations from the command; use the `bktest`
-  package for those.
+- Child spans, annotations and per-test tags other than `t.Attr` from the
+  command; use the `bktest` package for those. The package does not see
+  `t.Attr`; use `bktest.Tag`.
 - Tests that do not call `bktest.Start` when using the package; the command
   sees every test.
 - `test.setup` and `test.teardown` phases. `go test` has no setup or

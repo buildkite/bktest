@@ -11,7 +11,7 @@
   skips the output replay for a `gotestsum --jsonfile` that was already
   printed; a JUnit file can be kept beside it either way round. `-tags`
   (or `GOFLAGS`) names the build tags `go test` ran with so locations come
-  from the same files.
+  from the same files. `t.Attr` pairs (Go 1.25+) become tags.
 * `bktest` package: `bktest.Main` and `bktest.Start` report tests from inside
   the test process, with `test.body` phase spans and forwarded child spans on
   a separate stream, per-test `Tag` and `Annotate`, and a warning when a
