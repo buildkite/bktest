@@ -1,4 +1,6 @@
 const { randomUUID } = require('crypto')
+const path = require('path')
+const { types } = require('util')
 const Paths = require('../util/paths')
 const { readSettings } = require('../util/otel/config')
 const { sessionFor } = require('../util/otel/session')
@@ -17,9 +19,43 @@ const tryRequireFrom = (request, dirs) => {
   }
 }
 
-const prettyFormatter = (rootDir) => {
-  const prettyFormat = tryRequireFrom('pretty-format', [rootDir, __dirname])
-  return prettyFormat ? (value) => prettyFormat.format(value, { maxDepth: 3 }) : String
+const stackOrMessage = (error) => (typeof error.stack === 'string' ? error.stack : error.message)
+const nonEmptyStackOrMessage = (error) => (typeof error.stack === 'string' && error.stack !== '' ? error.stack : error.message)
+
+// Jest 30.4's formatErrorStackWithCause, which jest-circus does not export.
+const stackWithCauses = (isError) => {
+  const format = (error, seen) => {
+    const stack = nonEmptyStackOrMessage(error)
+    const { cause } = error
+    if (!('cause' in error) || !(typeof cause === 'string' || isError(cause) || cause instanceof Error)) return stack
+    if (typeof cause === 'string') return `${stack}\n\n[cause]: ${cause}`
+    if (seen.has(cause)) return `${stack}\n\n[cause]: [Circular cause]`
+    seen.add(error)
+    return `${stack}\n\n[cause]: ${format(cause, seen)}`
+  }
+  return (error) => format(error, new Set())
+}
+
+// Failures are formatted the way the project's own jest-circus formats them,
+// with the modules it loads. How it turns an error into text changed in
+// Jest 30.1 (an empty stack falls back to the message), 30.4 (causes are
+// appended) and 30.5 (jest-message-util's flattenErrorStack, which also
+// appends an AggregateError's errors, and non-Error throws are wrapped).
+const failureFormatting = (projectConfig) => {
+  const dirs = [projectConfig.testRunner && path.dirname(projectConfig.testRunner), projectConfig.rootDir, __dirname].filter(Boolean)
+  const prettyFormat = tryRequireFrom('pretty-format', dirs)
+  const flattenErrorStack = tryRequireFrom('jest-message-util', dirs)?.flattenErrorStack
+  const [major, minor] = (tryRequireFrom('jest-circus/package.json', dirs)?.version || '0.0').split('.').map(Number)
+  const since30 = (minimum) => major > 30 || (major === 30 && minor >= minimum)
+  let errorText = stackOrMessage
+  if (flattenErrorStack) errorText = flattenErrorStack
+  else if (since30(4)) errorText = stackWithCauses(tryRequireFrom('jest-util', dirs)?.isError || types.isNativeError)
+  else if (since30(1)) errorText = nonEmptyStackOrMessage
+  return {
+    format: prettyFormat ? (value) => prettyFormat.format(value, { maxDepth: 3 }) : String,
+    errorText,
+    wrapsThrownValues: Boolean(flattenErrorStack),
+  }
 }
 
 // parseStackLine through assertionResult mirror how jest-circus turns a
@@ -43,20 +79,27 @@ const testLocation = (test) => {
   return parsed ? { line: parsed.line, column: parsed.column } : null
 }
 
-const failureMessage = (errors, format) => {
+const failureMessage = (errors, { format, errorText, wrapsThrownValues }) => {
   const [error, asyncError] = Array.isArray(errors) ? errors : [errors, new Error()]
-  if (error && (typeof error.stack === 'string' || error.message)) {
-    return typeof error.stack === 'string' ? error.stack : error.message
+  if (error && (typeof error.stack === 'string' || error.message)) return errorText(error)
+  const message = `thrown: ${format(error)}`
+  if (asyncError && !wrapsThrownValues) {
+    asyncError.message = message
+    return errorText(asyncError)
   }
-  asyncError.message = `thrown: ${format(error)}`
-  return typeof asyncError.stack === 'string' ? asyncError.stack : asyncError.message
+  // Jest 30.5 wraps a non-Error throw in a new Error caused by the test's own
+  // error. Jest creates that Error while building its results, so its stack
+  // is Jest's internal frames; the copy here has none.
+  const thrown = asyncError ? new Error(message, { cause: asyncError }) : new Error(message)
+  thrown.stack = `Error: ${message}`
+  return errorText(thrown)
 }
 
 // `status` is undefined while the test is still running. V8 formats an
 // error's stack on first access using the message at that moment, and jest
 // rewrites asyncError.message for non-Error throws before it reads the
 // location, so the location is only read once the test has settled.
-const assertionResult = (test, status, { includeLocation, format }) => {
+const assertionResult = (test, status, { includeLocation, formatting }) => {
   const names = []
   for (let block = test; block; block = block.parent) names.unshift(block.name)
   // jest-circus filters the root marker out of the whole path before it
@@ -66,7 +109,7 @@ const assertionResult = (test, status, { includeLocation, format }) => {
   ancestorTitles.pop()
   const title = names[names.length - 1]
 
-  const failureMessages = status === 'failed' ? test.errors.map((errors) => failureMessage(errors, format)) : []
+  const failureMessages = status === 'failed' ? test.errors.map((errors) => failureMessage(errors, formatting)) : []
   const location = includeLocation && status ? testLocation(test) : null
 
   return { ancestorTitles, title, location, status, failureMessages }
@@ -91,12 +134,12 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   // running: a failure here is a lost upload, not a failed test file.
   constructor(config, context) {
     super(config, context)
-    this._buildkite = { session: null, spans: new Map(), includeLocation: false, format: String, testPath: context?.testPath }
+    this._buildkite = { session: null, spans: new Map(), includeLocation: false, formatting: null, testPath: context?.testPath }
     try {
       const settings = readSettings()
       if (!settings) return
       const projectConfig = config.projectConfig || config
-      this._buildkite.format = prettyFormatter(projectConfig.rootDir)
+      this._buildkite.formatting = failureFormatting(projectConfig)
       const paths = new Paths({ rootDir: settings.rootDir }, settings.runEnv.location_prefix)
       this._buildkite.testPath = paths.prefixTestPath(context.testPath)
       this._buildkite.session = sessionFor(settings)
@@ -137,8 +180,8 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   }
 
   _assertionResult(test, status) {
-    const { includeLocation, format } = this._buildkite
-    return assertionResult(test, status, { includeLocation, format })
+    const { includeLocation, formatting } = this._buildkite
+    return assertionResult(test, status, { includeLocation, formatting })
   }
 
   _finish(test, status) {

@@ -1,3 +1,6 @@
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 const { SETTINGS_ENV, publishSettings } = require('../util/otel/config')
 
 jest.mock('../util/otel/session', () => ({
@@ -145,5 +148,63 @@ describe('BuildkiteTestEngineEnvironment test locations', () => {
     const [, record, { line: spanLine }] = session.finishTestSpan.mock.calls[0]
     expect(record.location).toBe(`each.test.js:${line}`)
     expect(spanLine).toBe(line)
+  })
+})
+
+// A project whose jest-circus is `version`, with a jest-message-util beside it
+// whose source is `messageUtil`; returns the project config a worker gets.
+const projects = []
+const projectWithJestCircus = (version, messageUtil) => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bk-jest-circus-'))
+  projects.push(rootDir)
+  const circus = path.join(rootDir, 'node_modules', 'jest-circus')
+  const util = path.join(rootDir, 'node_modules', 'jest-message-util')
+  fs.mkdirSync(path.join(circus, 'build'), { recursive: true })
+  fs.mkdirSync(util, { recursive: true })
+  fs.writeFileSync(path.join(circus, 'package.json'), JSON.stringify({ name: 'jest-circus', version }))
+  fs.writeFileSync(path.join(circus, 'build', 'runner.js'), '')
+  fs.writeFileSync(path.join(util, 'package.json'), JSON.stringify({ name: 'jest-message-util', version }))
+  fs.writeFileSync(path.join(util, 'index.js'), messageUtil)
+  return { rootDir, testRunner: path.join(circus, 'build', 'runner.js') }
+}
+afterAll(() => projects.forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })))
+
+// Stands in for Jest 30.5's flattenErrorStack, which appends each cause.
+const FLATTEN_ERROR_STACK = `
+const flattenErrorStack = (error) => typeof error === 'string' ? error : error.stack + (error.cause ? '\\n\\n[cause]: ' + flattenErrorStack(error.cause) : '')
+module.exports = { flattenErrorStack }
+`
+
+const errorWith = (message, stack, cause) => Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { stack })
+const outer = () => errorWith('outer', 'Error: outer\n    at a (/repo/fail.test.js:1:1)',
+  errorWith('middle', 'Error: middle\n    at b (/repo/fail.test.js:2:1)', 'bottom'))
+const asyncError = () => errorWith('', 'Error\n    at Object.test (/repo/fail.test.js:3:1)')
+
+const FAILURES = [
+  ['Jest 29 ignores causes', '29.7.0', '', [outer(), asyncError()],
+    'Error: outer\n    at a (/repo/fail.test.js:1:1)'],
+  ['Jest 30.3 falls back to the message for an empty stack', '30.3.0', '', [errorWith('empty', ''), asyncError()],
+    'empty'],
+  ['Jest 30.4 appends causes', '30.4.1', '', [outer(), asyncError()],
+    'Error: outer\n    at a (/repo/fail.test.js:1:1)\n\n[cause]: Error: middle\n    at b (/repo/fail.test.js:2:1)\n\n[cause]: bottom'],
+  ['Jest 30.5 flattens errors with its own flattenErrorStack', '30.5.2', FLATTEN_ERROR_STACK, [outer(), asyncError()],
+    'Error: outer\n    at a (/repo/fail.test.js:1:1)\n\n[cause]: Error: middle\n    at b (/repo/fail.test.js:2:1)\n\n[cause]: bottom'],
+  ['Jest 30.5 wraps a non-Error throw in an Error caused by the test\'s own', '30.5.2', FLATTEN_ERROR_STACK, ['oops', asyncError()],
+    'Error: thrown: "oops"\n\n[cause]: Error\n    at Object.test (/repo/fail.test.js:3:1)'],
+]
+
+describe('BuildkiteTestEngineEnvironment failure text', () => {
+  it.each(FAILURES)('%s', async (_, version, messageUtil, errors, text) => {
+    publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
+    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn() }
+    sessionFor.mockReturnValueOnce(session)
+    const environment = new Environment(projectWithJestCircus(version, messageUtil), { testPath: '/repo/fail.test.js' })
+    const test = { name: 'fails', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [errors], asyncError: errors[1] }
+
+    await environment.handleTestEvent({ name: 'test_start', test }, {})
+    await environment.handleTestEvent({ name: 'test_done', test }, {})
+
+    const [, record] = session.finishTestSpan.mock.calls[0]
+    expect([record.failure_reason, ...record.failure_expanded[0].expanded].join('\n')).toBe(text)
   })
 })
