@@ -277,9 +277,9 @@ class TestParentReportGuard:
         [test_data] = plugin.payload.data
         assert isinstance(test_data.result, TestResultFailed)
 
-    def test_teardown_failure_overrides_subtest_failure(self, plugin):
-        """If subtests failed AND teardown failed, teardown failure wins
-        (consistent with existing behaviour where teardown overrides call)."""
+    def test_teardown_failure_after_subtest_failure_is_added_as_detail(self, plugin):
+        """If subtests failed AND teardown failed, the subtest failure stays the
+        reason and the teardown failure is added to failure_expanded."""
         sub = FakeSubtestReport(
             nodeid=NODEID,
             outcome="failed",
@@ -312,7 +312,8 @@ class TestParentReportGuard:
 
         [test_data] = plugin.payload.data
         assert isinstance(test_data.result, TestResultFailed)
-        assert test_data.result.failure_reason == "teardown also exploded"
+        assert test_data.result.failure_reason == "subtest boom"
+        assert test_data.result.failure_expanded == [{"expanded": ["teardown also exploded"]}]
 
 
 class TestFinalizeCleanup:

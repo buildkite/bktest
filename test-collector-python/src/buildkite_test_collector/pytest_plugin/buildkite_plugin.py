@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from filelock import FileLock
 
-from ..collector.payload import TestData
+from ..collector.payload import TestData, TestResultFailed
 from .logger import logger
 from .failure_reasons import failure_reasons
 
@@ -288,6 +288,16 @@ class BuildkitePlugin:
             elif report.failed or report.outcome == 'rerun':
                 failure_reason, failure_expanded = failure_reasons(longrepr=report.longrepr)
                 logger.debug('-> test %s: %s', report.outcome, failure_reason)
+                if report.when == 'teardown' and isinstance(test_data.result, TestResultFailed):
+                    # The test had already failed: that stays the reason, and
+                    # the teardown failure is added as a further detail.
+                    teardown_detail = failure_expanded or (
+                        [{"expanded": [failure_reason]}] if failure_reason else []
+                    )
+                    failure_reason = test_data.result.failure_reason
+                    failure_expanded = [
+                        *(test_data.result.failure_expanded or ()), *teardown_detail
+                    ]
                 test_data = test_data.failed(
                     failure_reason=failure_reason,
                     failure_expanded=failure_expanded

@@ -196,6 +196,34 @@ def test_results_follow_pytests_final_verdict_including_teardown_and_reruns(tmp_
     assert "no result set" not in run.stderr
 
 
+def test_a_failed_test_keeps_its_reason_when_teardown_also_fails(tmp_path, receiver):
+    (tmp_path / "test_body_and_teardown.py").write_text(
+        "import pytest\n"
+        "@pytest.fixture\n"
+        "def broken_teardown():\n"
+        "    yield\n"
+        "    raise RuntimeError('teardown exploded')\n"
+        "def test_fail_and_teardown_error(broken_teardown):\n"
+        "    assert 1 == 2\n"
+    )
+    run = run_pytest(tmp_path, otel_env(receiver), test_file=tmp_path / "test_body_and_teardown.py")
+    assert run.returncode == 1, run.stderr
+
+    [json_test] = json.loads(run.json_path.read_text())
+    assert json_test["result"] == "failed"
+    assert json_test["failure_reason"] == "assert 1 == 2"
+    body, teardown = json_test["failure_expanded"]
+    assert "assert 1 == 2" in "\n".join(body["expanded"])
+    assert "RuntimeError: teardown exploded" in "\n".join(teardown["expanded"])
+
+    [span] = receiver.spans("test")
+    assert span.attributes["test.case.result.status"] == "fail"
+    assert span.status_message == "assert 1 == 2"
+    body_event, teardown_event = [event for event in span.events if event["name"] == "exception"]
+    assert "assert 1 == 2" in body_event["exception.message"]
+    assert "RuntimeError: teardown exploded" in teardown_event["exception.message"]
+
+
 def test_an_interrupted_test_is_reported_as_skipped(tmp_path, receiver):
     (tmp_path / "test_interrupt.py").write_text(
         "def test_done():\n"
