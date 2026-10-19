@@ -147,8 +147,16 @@ https://buildkite.com/buildkite/test-engine-client-examples/builds/885
   execution(s) remain queued in this process`, then after the suite finished waited out the
   10 s backoff, retried, and 20 s after the last test printed `warning: TEST RESULTS MISSING:
   OpenTelemetry dropped 5 test.execution span(s) (unsent at flush, last OTLP failure:
-  socket_error): testSubtractFails … testSkipped. …`; exit 1 (XCTest's). That wait is new:
-  flush now retries within the 30 s budget instead of giving up immediately.
+  socket_error): testSubtractFails … testSkipped. …`; exit 1 (XCTest's). The flush waited out
+  the backoff then; since `93aba95` it makes one immediate attempt instead (build 974).
+- Build 974 (collector at `f7b1836`, after the flush stopped waiting out the backoff):
+  https://buildkite.com/buildkite/test-engine-client-examples/builds/974, run
+  `9238d288-87f4-8b00-a1c3-6c9306e77eab`: five executions, 2 passed, 2 failed, 1 skipped,
+  matching XCTest's `Executed 5 tests, with 1 test skipped and 2 failures`; same test ids as
+  the baseline run `77684752-ef1f-8bc1-a94b-282592e16a56`, and `code.file.path` is
+  `FailingTests.swift` as in the 0.6.0 step. The unreachable-endpoint step printed the same
+  two lines as build 943, with `TEST RESULTS MISSING` 2 ms after XCTest's summary instead of
+  20 s.
 
 ## Documented deviations — what closing each would take
 
