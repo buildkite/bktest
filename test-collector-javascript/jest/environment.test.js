@@ -88,3 +88,62 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     ])
   })
 })
+
+// Stacks of test.asyncError captured from real runs; `line` is the location
+// Jest itself reports for that test in the JSON upload.
+const stack = (...frames) => ['Error', ...frames.map((frame) => `    at ${frame}`)].join('\n')
+const STACKS = [
+  ['Jest 27 test.each', 1, stack(
+    '/repo/node_modules/jest-each/build/bind.js:43:11',
+    'Array.forEach (<anonymous>)',
+    'eachBind (/repo/node_modules/jest-each/build/bind.js:42:22)',
+    'Object.<anonymous> (/repo/each.test.js:1:36)',
+    'Runtime._execModule (/repo/node_modules/jest-runtime/build/index.js:1646:24)',
+  )],
+  ['Jest 29 test.each', 1, stack(
+    '/repo/node_modules/jest-each/build/bind.js:47:15',
+    'Array.forEach (<anonymous>)',
+    'eachBind (/repo/node_modules/jest-each/build/bind.js:39:22)',
+    'Object.<anonymous> (/repo/each.test.js:1:36)',
+    'Runtime._execModule (/repo/node_modules/jest-runtime/build/index.js:1439:24)',
+  )],
+  ['Jest 30 test.each', 1, stack(
+    'eachBind (/repo/node_modules/jest-each/build/index.js:54:13)',
+    'Object.<anonymous> (/repo/each.test.js:1:15)',
+    'ModuleExecutor.exec (/repo/node_modules/jest-runtime/build/index.js:3055:26)',
+    'CjsLoader.loadModule (/repo/node_modules/jest-runtime/build/index.js:440:36)',
+    'CjsLoader.requireModule (/repo/node_modules/jest-runtime/build/index.js:335:12)',
+  )],
+  ['Jest 30 test.each inside describe.each', 2, stack(
+    'eachBind (/repo/node_modules/jest-each/build/index.js:54:13)',
+    '/repo/each.test.js:2:17',
+    '/repo/node_modules/jest-each/build/index.js:80:140',
+    '_dispatchDescribe (/repo/node_modules/jest-circus/build/jestAdapterInit.js:626:26)',
+    'describe (/repo/node_modules/jest-circus/build/jestAdapterInit.js:594:44)',
+  )],
+  ['Jest 30 test inside describe.each', 3, stack(
+    'test (/repo/each.test.js:3:3)',
+    '/repo/node_modules/jest-each/build/index.js:80:140',
+    '_dispatchDescribe (/repo/node_modules/jest-circus/build/jestAdapterInit.js:626:26)',
+    'describe (/repo/node_modules/jest-circus/build/jestAdapterInit.js:594:44)',
+    'eachBind (/repo/node_modules/jest-each/build/index.js:54:13)',
+  )],
+]
+
+describe('BuildkiteTestEngineEnvironment test locations', () => {
+  it.each(STACKS)('reports the line Jest reports for a %s', async (_, line, asyncErrorStack) => {
+    publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
+    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn() }
+    sessionFor.mockReturnValueOnce(session)
+    const environment = new Environment({ rootDir: '/repo' }, { testPath: '/repo/each.test.js' })
+    const test = { name: 'each 1', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: { stack: asyncErrorStack } }
+
+    await environment.handleTestEvent({ name: 'include_test_location_in_result' }, {})
+    await environment.handleTestEvent({ name: 'test_start', test }, {})
+    await environment.handleTestEvent({ name: 'test_done', test }, {})
+
+    const [, record, { line: spanLine }] = session.finishTestSpan.mock.calls[0]
+    expect(record.location).toBe(`each.test.js:${line}`)
+    expect(spanLine).toBe(line)
+  })
+})

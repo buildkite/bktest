@@ -30,10 +30,16 @@ const parseStackLine = (line) => {
   return match ? { file: match[1], line: Number(match[2]), column: Number(match[3]) } : null
 }
 
+// Under test.each and describe.each the first frame is inside jest-each, and
+// jest-circus reads the line from a fixed later frame: the fourth before
+// Jest 30, the second since. Skipping every frame inside jest-each or without
+// a file position lands on that frame in both.
 const testLocation = (test) => {
-  const stackLines = test.asyncError.stack.split('\n')
-  let parsed = parseStackLine(stackLines[1])
-  if (parsed && JEST_EACH_BUILD_DIR.test(parsed.file)) parsed = parseStackLine(stackLines[4])
+  const frames = test.asyncError.stack.split('\n').slice(1).map(parseStackLine)
+  let parsed = frames[0]
+  if (parsed && JEST_EACH_BUILD_DIR.test(parsed.file)) {
+    parsed = frames.slice(1).find((frame) => frame && !JEST_EACH_BUILD_DIR.test(frame.file))
+  }
   return parsed ? { line: parsed.line, column: parsed.column } : null
 }
 
