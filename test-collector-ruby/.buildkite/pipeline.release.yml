@@ -14,9 +14,9 @@
 #     every rehearsal, so rehearsals exercise the release code. It never sees
 #     RELEASE_PUBLISH (set only on the publish step below), so it stops
 #     before `gem push` even on tag builds.
-#   - The publish steps mint a push token via the rubygems.org OIDC API key
-#     role, whose access policy trusts this pipeline (see the credential
-#     cut-over section of ctg docs/publishing.md).
+#   - The publish step mints a push token inside the patched container via
+#     the rubygems.org OIDC API key role. Its access policy trusts this pipeline
+#     (see the credential cut-over section of ctg docs/publishing.md).
 #   - The publish step exists only on an exact test-collector-ruby/vX.Y.Z
 #     tag, behind a block step; it sets RELEASE_PUBLISH=true in its own
 #     environment, and the release script independently re-checks the tag
@@ -32,6 +32,7 @@ steps:
     plugins:
       - docker#v5.12.0:
           image: "ruby:3.4"
+          user: "root" # release script upgrades CA trust before contacting RubyGems
           environment:
             - BUILDKITE_TAG
 
@@ -48,13 +49,14 @@ steps:
       # Step-local publish signal: distinguishes this credentialed step from
       # the rehearsal build step, which runs the same script.
       RELEASE_PUBLISH: "true"
+      RUBYGEMS_OIDC_ROLE: "rg_oidc_akr_fy1x4px4yjwd1rdhkkda"
     command: test-collector-ruby/.buildkite/steps/release
     plugins:
-      - rubygems-oidc#v0.2.0:
-          role: "rg_oidc_akr_fy1x4px4yjwd1rdhkkda"
       - docker#v5.12.0:
           image: "ruby:3.4"
+          user: "root"
+          mount-buildkite-agent: true
           environment:
-            - GEM_HOST_API_KEY
+            - RUBYGEMS_OIDC_ROLE
             - BUILDKITE_TAG
             - RELEASE_PUBLISH

@@ -6,6 +6,13 @@
 
 set -euo pipefail
 
+bash "$(dirname "$0")/../../../.buildkite/steps/update-ca-certificates"
+# pip's truststore backend also loads vendored certifi, even with PIP_CERT.
+# Disable that backend and use only the patched system bundle.
+export PIP_USE_DEPRECATED=legacy-certs
+export PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+export REQUESTS_CA_BUNDLE="$PIP_CERT"
+
 PROJECT="test-collector-swift"
 REMOTE_URL="https://github.com/buildkite/test-collector-swift.git"
 PUSH_URL="git@github.com:buildkite/test-collector-swift.git"

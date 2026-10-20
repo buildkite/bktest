@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Run as root before release clients or dependency downloads. APT verifies
+# signed repository metadata/packages while bootstrapping the trust update.
+set -euo pipefail
+
+source /etc/os-release
+case "${ID}:${VERSION_ID}" in
+  debian:12) minimum='20250419~deb12u2' ;;
+  debian:13) minimum='20250419+deb13u1' ;;
+  ubuntu:22.04|ubuntu:24.04|ubuntu:26.04|ubuntu:26.10)
+    minimum="20260816ubuntu0.${VERSION_ID}.1" ;;
+  *)
+    echo "ERROR: no CVE-2026-111943 ca-certificates baseline for ${ID}:${VERSION_ID}; refusing" >&2
+    exit 1
+    ;;
+esac
+
+echo '--- Updating CA trust (CVE-2026-111943)'
+apt-get update -o APT::Update::Error-Mode=any
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates
+installed="$(dpkg-query -W -f='${Version}' ca-certificates)"
+if ! dpkg --compare-versions "$installed" ge "$minimum"; then
+  echo "ERROR: ca-certificates ${installed} is unpatched; need >= ${minimum}; refusing release/downloads" >&2
+  exit 1
+fi
+update-ca-certificates --fresh
+echo "ca-certificates ${installed} (required >= ${minimum})"

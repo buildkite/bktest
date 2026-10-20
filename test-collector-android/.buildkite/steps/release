@@ -13,6 +13,26 @@
 
 set -euo pipefail
 
+bash "$(dirname "$0")/../../../.buildkite/steps/update-ca-certificates"
+# Ubuntu OpenJDK uses ca-certificates-java's generated JKS, not the PEM
+# bundle directly. Refuse a private JDK bundle outside the hook's control.
+JAVA_CACERTS="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")/lib/security/cacerts"
+if [ "$(readlink -f "${JAVA_CACERTS}")" != /etc/ssl/certs/java/cacerts ]; then
+  echo "ERROR: JDK cacerts is not managed by ca-certificates-java; refusing" >&2
+  exit 1
+fi
+# The image's old Java hook leaves removed roots behind on an incremental
+# update. Rebuild its disposable JKS from the patched system roots instead.
+rm /etc/ssl/certs/java/cacerts
+update-ca-certificates --fresh
+keytool -list -keystore "${JAVA_CACERTS}" -storepass changeit > /dev/null
+for alias in 'debian:emsign_ecc_root_ca_-_g3.pem' 'debian:comodo_aaa_services_root.pem'; do
+  if keytool -list -keystore "${JAVA_CACERTS}" -storepass changeit -alias "$alias" > /dev/null 2>&1; then
+    echo "ERROR: JDK cacerts still trusts ${alias} (CVE-2026-111943); refusing" >&2
+    exit 1
+  fi
+done
+
 cd "$(dirname "$0")/../.." # this project's root, wherever the checkout cwd is
 
 PROJECT="test-collector-android"

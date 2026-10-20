@@ -12,6 +12,8 @@
 
 set -euo pipefail
 
+bash "$(dirname "$0")/../../../.buildkite/steps/update-ca-certificates"
+
 cd "$(dirname "$0")/../.." # this project's root, wherever the checkout cwd is
 
 PROJECT="test-collector-ruby"
@@ -67,8 +69,21 @@ if [ "${ALREADY_PUBLISHED}" = "true" ]; then
   echo "version ${VERSION} already published; refusing" >&2
   exit 1
 fi
-if [ -z "${GEM_HOST_API_KEY:-}" ]; then
-  echo "GEM_HOST_API_KEY not set (rubygems-oidc plugin missing or failed)" >&2
-  exit 1
-fi
+
+# The OIDC plugin's environment hook ran on the agent before Docker, outside
+# this trust update. Exchange the same short-lived JWT inside the container.
+echo "--- Obtaining RubyGems push key (OIDC)"
+GEM_HOST_API_KEY="$(
+  buildkite-agent oidc request-token --audience rubygems.org --lifetime 60 |
+    ruby -rnet/http -rjson -e '
+      role = ARGV.fetch(0)
+      uri = URI("https://rubygems.org/api/v1/oidc/api_key_roles/#{role}/assume_role")
+      response = Net::HTTP.post(uri, JSON.generate(jwt: STDIN.read.strip), "Content-Type" => "application/json")
+      abort "RubyGems OIDC exchange failed (HTTP #{response.code})" unless response.is_a?(Net::HTTPSuccess)
+      key = JSON.parse(response.body).fetch("rubygems_api_key")
+      abort "RubyGems OIDC exchange returned an empty key" if key.to_s.empty?
+      print key
+    ' "${RUBYGEMS_OIDC_ROLE:?RUBYGEMS_OIDC_ROLE must be set for publishing}"
+)"
+export GEM_HOST_API_KEY
 gem push "${GEM_FILENAME}"
