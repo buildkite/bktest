@@ -49,15 +49,18 @@ test.execution  "Buildkite::Pipeline creates a build"   12.4ms
 `test.setup` covers `before(:each)` hooks and `let!`, `test.body` the example
 block, and `test.teardown` `after(:each)` hooks and mock verification. A phase
 whose failure fails the example gets an error status and an `exception` event
-per failure, so a trace shows which phase failed even before you read the
-test's own error. A before hook that raises leaves no `test.body` span, because
-RSpec never runs the example. `around` hooks wrap all three phases, so spans
-they open stay direct children of the test span, alongside the phases.
+per failure. The trace identifies which phase failed only when that phase
+grouped a child span and is exported. A before hook that raises leaves no
+`test.body` span, because RSpec never runs the example. `around` hooks wrap all
+three phases, so spans they open stay direct children of the test span,
+alongside the phases.
 
-A phase is exported only when it grouped at least one span or failed; a phase
-with nothing in it says nothing the test span does not. An example with no
-instrumented work therefore adds no child spans at all, and `otel_span_filter`
-never sees phase spans.
+A phase is sent to Buildkite only when it grouped at least one tracked child
+span, even if the child is later dropped by `otel_span_filter`. An example
+with no instrumented work therefore adds no child spans at all, even when it
+fails: the test span still carries the error status and exception events.
+The filter never sees phase spans. A suite-owned provider's own exporters
+still receive every phase, empty or not.
 
 One example is one trace. Child spans share the root's trace ID, and the root is
 never nested under anything else, so a trace always belongs to exactly one test.
@@ -211,9 +214,9 @@ configure instrumentation there as you normally would. This is also the way to
 keep a bundle full of instrumentation gems (such as
 `opentelemetry-instrumentation-all`, loaded for production) unpatched under
 test: configure the SDK yourself, before the suite starts, without `use` or
-`use_all`, and the collector forwards only `test.execution` spans, the phase
-spans, and any spans your suite creates by hand. Set `OTEL_TRACES_EXPORTER=none`
-as well, or the SDK adds its own default OTLP exporter aimed at
+`use_all`, and the collector forwards only `test.execution` spans, any spans
+your suite creates by hand, and the phases that grouped those spans. Set
+`OTEL_TRACES_EXPORTER=none` as well, or the SDK adds its own default OTLP exporter aimed at
 `localhost:4318`:
 
 ```ruby

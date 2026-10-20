@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+* Send OpenTelemetry phase spans to Buildkite only when they grouped a tracked
+  child span. Failed examples with no instrumentation now send no child spans;
+  their test spans still carry the failure status and exception events. The
+  trace identifies the failing phase only when it grouped a child span.
+
 ## v2.17.0
 
 * Export an OpenTelemetry `test.execution` span for examples that RSpec fails
