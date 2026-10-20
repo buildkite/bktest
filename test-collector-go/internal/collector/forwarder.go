@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -67,8 +66,8 @@ func (f *forwarder) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
 	}
 }
 
-// OnEnd forwards a tracked span to the child stream: phases when populated
-// or not UNSET, other spans when the filter accepts them.
+// OnEnd forwards a tracked span to the child stream: phases only when
+// populated, other spans when the filter accepts them.
 func (f *forwarder) OnEnd(s sdktrace.ReadOnlySpan) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -86,7 +85,7 @@ func (f *forwarder) OnEnd(s sdktrace.ReadOnlySpan) {
 		return
 	}
 	if ts.phase {
-		if ts.populated || s.Status().Code != codes.Unset {
+		if ts.populated {
 			f.forward(s)
 		}
 		return

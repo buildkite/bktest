@@ -68,14 +68,21 @@ func TestPhaseExportRule(t *testing.T) {
 		_, child := tracer.Start(ex.Context(), "child")
 		child.End()
 	}))
+	run(c, "failing with a child", func(ex *Execution) Result {
+		_, child := tracer.Start(ex.Context(), "child")
+		child.End()
+		return Result{Status: StatusFail, Reason: "boom", Exception: &Exception{
+			Type: "panic", Message: "boom", Stacktrace: "suite_test.go:42",
+		}}
+	})
 	c.Shutdown()
 
-	if n := len(r.TestSpans()); n != 3 {
-		t.Fatalf("got %d test spans, want 3", n)
+	if n := len(r.TestSpans()); n != 4 {
+		t.Fatalf("got %d test spans, want 4", n)
 	}
 	children := r.SpansOn(streamChild)
 	if len(children) != 2 {
-		t.Fatalf("child stream = %v, want one failed empty body and one populated body", r.ChildNames())
+		t.Fatalf("child stream = %v, want only the passing and failing populated bodies", r.ChildNames())
 	}
 	var sawFailed, sawPopulated bool
 	for _, s := range children {
@@ -84,12 +91,25 @@ func TestPhaseExportRule(t *testing.T) {
 		}
 		if s.Status.GetCode() == tracepb.Status_STATUS_CODE_ERROR {
 			sawFailed = true
+			parent := otlptest.FindSpan(t, r.TestSpans(), "failing with a child")
+			if hexOf(s.ParentSpanId) != hexOf(parent.SpanId) || s.Status.GetMessage() != "boom" {
+				t.Errorf("failed populated phase lost its parent or failure: %v", s)
+			}
+			if len(s.Events) != 1 || s.Events[0].Name != "exception" {
+				t.Fatalf("failed populated phase events = %v", s.Events)
+			}
+			if got := otlptest.StringAttr(t, s.Events[0].Attributes, "exception.message"); got != "boom" {
+				t.Errorf("phase exception message = %q", got)
+			}
+			if got := otlptest.StringAttr(t, s.Events[0].Attributes, "exception.stacktrace"); got != "suite_test.go:42" {
+				t.Errorf("phase exception stacktrace = %q", got)
+			}
 		} else {
 			sawPopulated = true
 		}
 	}
 	if !sawFailed || !sawPopulated {
-		t.Errorf("expected a failed empty phase and a populated unset phase, got %v", children)
+		t.Errorf("expected failed and unset populated phases, got %v", children)
 	}
 }
 
@@ -343,8 +363,8 @@ func TestSuiteOwnedProviderIsAttachedNotReplaced(t *testing.T) {
 
 // When the suite started without a provider and the first test to call
 // Start installed one of its own before doing so, that provider stays
-// global and sees only the test's spans; the phase, exported here because
-// the test fails, comes from a provider the collector keeps to itself.
+// global and sees only the test's spans; the empty phase comes from a
+// provider the collector keeps to itself and is not forwarded.
 func TestProviderATestInstalledBeforeTheFirstStartIsLeftAlone(t *testing.T) {
 	r := otlptest.NewReceiver(t)
 	restoreGlobalProvider(t)
@@ -374,8 +394,8 @@ func TestProviderATestInstalledBeforeTheFirstStartIsLeftAlone(t *testing.T) {
 	if len(seen) != 1 || seen[0] != "from-the-test" {
 		t.Errorf("the test's provider saw %v, want only its own span", seen)
 	}
-	if got := r.ChildNames(); got[bodyPhaseName] != 1 || got["from-the-test"] != 0 {
-		t.Errorf("child stream = %v, want the failed body phase and not the test's own span", got)
+	if got := r.ChildNames(); len(got) != 0 {
+		t.Errorf("child stream = %v, want neither the empty phase nor the test's own span", got)
 	}
 }
 

@@ -223,17 +223,8 @@ func TestEndToEndWithGoTest(t *testing.T) {
 	if bodyOfTagged == nil || hexOf(work.ParentSpanId) != hexOf(bodyOfTagged.SpanId) {
 		t.Errorf("fixture.work should be a child of TestTagged's body phase")
 	}
-	// Failed tests export their body phase even when empty; passing empty
-	// tests do not.
-	bodies := 0
-	for _, b := range byName["test.body"] {
-		bodies++
-		if hexOf(b.TraceId) == hexOf(pass.TraceId) {
-			t.Errorf("TestPass has an empty body phase that should not export")
-		}
-	}
-	if bodies != 6 { // TestFail, TestSubtests, TestSubtests/b, TestTagged, TestCleanupBeforeStart and its subtest
-		t.Errorf("got %d body phases, want 6: %v", bodies, r.ChildNames())
+	if bodies := len(byName["test.body"]); bodies != 1 {
+		t.Errorf("got %d body phases, want only TestTagged's populated phase: %v", bodies, r.ChildNames())
 	}
 
 	for _, req := range r.All() {
@@ -364,6 +355,48 @@ func TestEndToEndCachedPackageRerunsWhenTheRunChanges(t *testing.T) {
 	}
 	if out := run(second, "fixture-cache-2"); !strings.Contains(out, "(cached)") {
 		t.Errorf("an identical run was not served from the cache:\n%s", out)
+	}
+}
+
+func TestUninstrumentedFailuresSendNoChildRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name, pkg, pattern, reason string
+		failed                     []string
+	}{
+		{"body", ".", "^TestFail$", "test failed", []string{"TestFail"}},
+		{"panic", "./panicky", ".", "test panicked", []string{"TestPanics", "TestPanics/child"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := otlptest.NewReceiver(t)
+			out, code := goTest(t, tc.pkg, exportedTo(r, "uninstrumented-"+tc.name), "-run", tc.pattern)
+			if code != 1 {
+				t.Fatalf("exit code = %d, want 1:\n%s", code, out)
+			}
+			for _, name := range tc.failed {
+				s := otlptest.FindSpan(t, r.TestSpans(), name)
+				if s.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR || s.Status.GetMessage() != tc.reason {
+					t.Errorf("%s failure = %v, want ERROR with %q", name, s.Status, tc.reason)
+				}
+				if got := otlptest.StringAttr(t, s.Attributes, "test.case.result.status"); got != "fail" {
+					t.Errorf("%s result = %q, want fail", name, got)
+				}
+				if tc.name == "panic" {
+					if len(s.Events) != 1 || s.Events[0].Name != "exception" {
+						t.Fatalf("%s events = %v, want an exception", name, s.Events)
+					}
+					for _, attr := range []string{"exception.message", "exception.stacktrace"} {
+						if otlptest.StringAttr(t, s.Events[0].Attributes, attr) == "" {
+							t.Errorf("%s has empty %s", name, attr)
+						}
+					}
+				} else if len(s.Events) != 0 {
+					t.Errorf("testing.T exposes no exception for t.Error: %v", s.Events)
+				}
+			}
+			if n := len(r.Stream(otlptest.StreamChild)); n != 0 {
+				t.Errorf("got %d child-stream requests without instrumentation", n)
+			}
+		})
 	}
 }
 

@@ -230,7 +230,12 @@ suite's tracer provider (the global one unless you pass `WithTracerProvider`)
 and makes it the current span in `ctx`, so instrumentation that runs with
 that context nests under the test and is shown against it in Test Engine.
 Phase and instrumentation spans travel on a separate child stream; losing
-them never loses the result. The command does not produce child spans:
+them never loses the result. Only phases that grouped a tracked child span
+are sent to Buildkite, even if that child is later filtered out. Without
+instrumentation, even a failing test sends no child spans: its failure stays
+on the test span. The trace identifies the failing phase only when it grouped
+a child span. A suite-owned provider's own exporters still receive every
+phase, empty or not. The command does not produce child spans:
 nothing runs in the test process to make them.
 
 Run-level tags, a location prefix, a child span filter and the suite's own

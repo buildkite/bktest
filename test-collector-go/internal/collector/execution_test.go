@@ -189,17 +189,6 @@ func TestExceptionEventCarriesTruncatedDetail(t *testing.T) {
 	if got := otlptest.StringAttr(t, ev.Attributes, "exception.stacktrace"); len(got) != testSpanEventAttributeLength || !strings.HasSuffix(got, "...") {
 		t.Errorf("exception.stacktrace has %d characters, want %d with a truncation marker", len(got), testSpanEventAttributeLength)
 	}
-	// Failed tests export their body phase with the same failure recorded.
-	bodies := r.SpansOn(streamChild)
-	if len(bodies) != 2 {
-		t.Fatalf("child stream = %v", r.ChildNames())
-	}
-	for _, b := range bodies {
-		if b.Status.GetCode() != tracepb.Status_STATUS_CODE_ERROR || len(b.Events) != 1 {
-			t.Errorf("body phase status = %v events = %d", b.Status, len(b.Events))
-		}
-	}
-
 	typeOnly := otlptest.FindSpan(t, r.TestSpans(), "TestTypeOnly")
 	if len(typeOnly.Events) != 1 || len(typeOnly.Events[0].Attributes) != 1 {
 		t.Fatalf("empty message and stacktrace must be omitted, got %v", typeOnly.Events)
