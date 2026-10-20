@@ -114,9 +114,12 @@ what the JSON upload reports.
 
 The span's start and end are read from the real clock in the worker, outside
 the test's sandbox, so `jest.useFakeTimers()` does not affect the execution's
-duration. The result is Jest's own verdict for the test, read once the test has
-settled, so `afterEach` failures count against the test as they do in Jest's
-output.
+duration. The final attempt is recorded once the file's results have settled,
+using the time the test finished, not the end of `afterAll`. This includes late
+test-owned promise rejections that Jest 30.5 attaches to a test during
+`afterAll`, as well as `afterEach` failures. Jest 27 and 29 treat those late
+rejections as file errors instead; the test's span stays passed, matching the
+JSON upload.
 
 Spans are exported with explicit settings on a provider the collector owns:
 the sampler always samples, span and trace IDs come from `crypto.randomBytes`

@@ -1,4 +1,4 @@
 const { extend } = require('buildkite-test-collector/jest/environment')
-const NodeEnvironment = require('jest-environment-node').default
+const node = require('jest-environment-node')
 
-export default extend(NodeEnvironment)
+export default extend(node.default || node)

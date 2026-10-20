@@ -23,6 +23,8 @@ class Base {
     this.config = config
     this.context = context
   }
+
+  async teardown() {}
 }
 const Environment = extend(Base)
 
@@ -273,7 +275,7 @@ const STACKS = [
 describe('BuildkiteTestEngineEnvironment test locations', () => {
   it.each(STACKS)('reports the line Jest reports for a %s', async (_, line, asyncErrorStack) => {
     publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
-    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn() }
+    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
     const environment = new Environment({ rootDir: '/repo', id: 'project' }, { testPath: '/repo/each.test.js' })
     const test = { name: 'each 1', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: { stack: asyncErrorStack } }
@@ -281,6 +283,7 @@ describe('BuildkiteTestEngineEnvironment test locations', () => {
     await environment.handleTestEvent({ name: 'include_test_location_in_result' }, {})
     await environment.handleTestEvent({ name: 'test_start', test }, {})
     await environment.handleTestEvent({ name: 'test_done', test }, {})
+    await environment.teardown()
 
     const [, record, { line: spanLine }] = session.finishTestSpan.mock.calls[0]
     expect(record.location).toBe(`each.test.js:${line}`)
@@ -339,7 +342,7 @@ const FAILURES = [
 describe('BuildkiteTestEngineEnvironment failure text', () => {
   it.each(FAILURES)('%s', async (_, version, messageUtil, errors, text) => {
     publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
-    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn() }
+    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
     const project = projectWithJestCircus(version, messageUtil)
     const environment = new Environment(project, { testPath: '/repo/fail.test.js' })
@@ -349,6 +352,7 @@ describe('BuildkiteTestEngineEnvironment failure text', () => {
 
     await dispatch(handler, { name: 'test_start', test })
     await dispatch(handler, { name: 'test_done', test })
+    await environment.teardown()
 
     const [, record] = session.finishTestSpan.mock.calls[0]
     expect([record.failure_reason, ...record.failure_expanded[0].expanded].join('\n')).toBe(text)
@@ -356,7 +360,7 @@ describe('BuildkiteTestEngineEnvironment failure text', () => {
 
   it('formats failures as the jest-circus dispatching events does, not the one beside a custom testRunner', async () => {
     publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
-    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn() }
+    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
     const host = projectWithJestCircus('30.5.2', FLATTEN_ERROR_STACK)
     const delegate = projectWithJestCircus('30.4.1', '')
@@ -368,6 +372,7 @@ describe('BuildkiteTestEngineEnvironment failure text', () => {
 
     await dispatch(handler, { name: 'test_start', test })
     await dispatch(handler, { name: 'test_done', test })
+    await environment.teardown()
 
     // Jest 30.4 reports a thrown string at the test's call site; 30.5 would wrap it in an Error.
     const [, record] = session.finishTestSpan.mock.calls[0]

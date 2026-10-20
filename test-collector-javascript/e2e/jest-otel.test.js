@@ -8,6 +8,7 @@ const { startOtlpServer } = require('./support/otlpServer')
 // otel/outcomes.js (9) and otel/retries.js (1 test, 2 attempts).
 const EXPECTED_SPANS = 14
 const EXPECTED_JSON_RESULTS = 13
+const jestMajor = Number(require(require.resolve('jest/package.json', { paths: [path.join(__dirname, '../examples/jest')] })).version.split('.')[0])
 
 const run = (command, env) => new Promise((resolve) => {
   const cwd = path.join(__dirname, '../examples/jest')
@@ -131,6 +132,55 @@ describe('examples/jest in OTel mode', () => {
       })), identity))
     }, 30000)
   })
+
+  test.each([
+    ['workers', '--maxWorkers=2'],
+    ['workers with forceExit', '--maxWorkers=2 --forceExit'],
+    ['in band', '--runInBand'],
+    ['in band with forceExit', '--runInBand --forceExit'],
+  ])('matches the final JSON result for a late rejection %s without extending its duration', async (_, flags) => {
+    server = await startOtlpServer()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jest-late-errors-'))
+    const outputFile = path.join(dir, 'results.json')
+    const selection = `--testMatch '**/otel-late-errors/*.test.js' '**/passed.test.js' --no-cache --cacheDirectory ${dir} --json --outputFile ${outputFile} ${flags}`
+    const env = { ...baseEnv, BUILDKITE_ANALYTICS_TOKEN: 'xyz', BUILDKITE_ANALYTICS_BASE_URL: 'http://127.0.0.1:1', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url }
+    try {
+      const json = await run(`jest --config otel-off.config.js ${selection}`, env)
+      const jsonRecords = jsonUpload(json.stdout)
+      const jsonResult = JSON.parse(fs.readFileSync(outputFile, 'utf8'))
+      const otel = await run(`jest --config otel.config.js ${selection}`, env)
+      const otelResult = JSON.parse(fs.readFileSync(outputFile, 'utf8'))
+      expect(json.code).toBe(1)
+      expect(otel.code).toBe(json.code)
+      expect(jsonRecords).toHaveLength(2)
+      expect(otel.stdout).not.toMatch(/Test Engine Sending:/)
+      expect(otel.stderr).not.toMatch(/\[buildkite-test-collector\]/)
+      expect(otelResult.numTotalTests).toBe(2)
+      expect(otelResult.numFailedTests).toBe(jestMajor >= 30 ? 1 : 0)
+      const assertions = (result) => sortedBy(result.testResults.flatMap((file) => file.assertionResults).map(({ title, status, failureMessages }) => ({ title, status, failureMessages })), (test) => test.title)
+      expect(assertions(otelResult)).toEqual(assertions(jsonResult))
+
+      const spans = server.spans()
+      expect(spans).toHaveLength(2)
+      const late = spans.filter((span) => span.attributes['buildkite.test.name'] === 'rejects after test_done during afterAll')
+      expect(late).toHaveLength(1)
+      const [span] = late
+      const record = jsonRecords.find((record) => record.name === 'rejects after test_done during afterAll')
+      expect(record.result).toBe(jestMajor >= 30 ? 'failed' : 'passed')
+      expect(spanRecord(span)).toEqual({
+        scope: record.scope, name: record.name, location: record.location, file_name: record.file_name,
+        result: record.result === 'failed' ? 'fail' : 'pass', failure_reason: record.failure_reason,
+      })
+      expect(span.status.code).toBe(record.result === 'failed' ? 2 : 0)
+      expect(span.events).toEqual(record.result === 'failed' ? [{
+        name: 'exception', attributes: { 'exception.message': record.failure_expanded[0].expanded.join('\n') },
+      }] : [])
+      const afterAllStarted = Number(otel.stdout.match(/afterAll started at (\d+)/)[1])
+      expect(span.endTimeUnixNano <= BigInt(afterAllStarted) * 1000000n).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  }, 30000)
 
   test('ignores OTEL_* exporter, sampler and span-limit configuration', async () => {
     server = await startOtlpServer()

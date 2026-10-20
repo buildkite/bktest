@@ -188,8 +188,17 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
       case 'test_todo':
         this._finish(event.test, 'todo')
         break
-      case 'test_done':
-        this._finish(event.test, event.test.errors.length ? 'failed' : 'passed')
+      case 'test_done': {
+        const started = spans.get(event.test)
+        if (started) {
+          started.endTime = Date.now()
+          // Circus replaces this array before dispatching test_retry.
+          started.errors = event.test.errors
+        }
+        break
+      }
+      case 'test_retry':
+        this._finish(event.test)
         break
     }
   }
@@ -215,15 +224,16 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   }
 
   _finish(test, status) {
-    const endTime = Date.now()
     const { session, spans, testPath } = this._buildkite
     const started = spans.get(test)
     spans.delete(test)
     if (!started) return
+    const endTime = started.endTime ?? Date.now()
+    const errors = started.errors || test.errors
     let record = { id: started.id }
     let line
     try {
-      const result = this._assertionResult(test, status)
+      const result = this._assertionResult({ ...test, errors }, status || (errors.length ? 'failed' : 'passed'))
       record = { ...record, ...testEngineRecord(result, testPath) }
       line = result.location?.line
     } catch (error) {
@@ -234,8 +244,13 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
 
   async teardown() {
     try {
-      const { session } = this._buildkite
-      if (session) await session.forceFlush()
+      const { session, spans } = this._buildkite
+      if (session) {
+        // Late test-owned rejections can arrive during afterAll. Circus has
+        // settled the file's results before tearing down its environment.
+        for (const test of spans.keys()) this._finish(test)
+        await session.forceFlush()
+      }
     } finally {
       await super.teardown()
     }
