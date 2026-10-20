@@ -80,14 +80,13 @@ module Buildkite
 
         private
 
-        # Called under @mutex. A phase span that grouped nothing and did not
-        # fail says nothing the test span does not, so an uninstrumented
-        # suite exports no child spans at all.
+        # Called under @mutex. Failures already ride on the test span, so an
+        # uninstrumented suite exports no child spans, even when tests fail.
         def accept(span)
           return false unless @spans.delete(span)
           return true unless phase_span?(span)
 
-          @populated_phases.delete(span) || span.status.code != OpenTelemetry::Trace::Status::UNSET
+          @populated_phases.delete(span)
         end
 
         # Only called with tracked spans, which have a name.

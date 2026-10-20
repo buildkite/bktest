@@ -110,13 +110,13 @@ RSpec.describe forwarder_class do
     expect(forwarder.instance_variable_get(:@spans)).to be_empty
   end
 
-  it "forwards a phase span that failed even when it grouped nothing" do
+  it "drops a phase span that failed when it grouped nothing" do
     failed_phase = phase_span(status: OpenTelemetry::Trace::Status.error("boom"))
 
     forwarder.on_start(failed_phase, execution_context)
     forwarder.on_finish(failed_phase)
 
-    expect(processor).to have_received(:on_finish).with(failed_phase).once
+    expect(processor).not_to have_received(:on_finish)
   end
 
   it "forgets a phase span's children once it finishes" do

@@ -265,8 +265,7 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
     expect(body_statuses).to eq([OpenTelemetry::Trace::Status::ERROR, OpenTelemetry::Trace::Status::UNSET])
   end
 
-  # The forwarder sends Buildkite only phases that grouped a child span or
-  # failed, so an uninstrumented, passing example adds no child spans.
+  # The forwarder sends Buildkite only phases that grouped a child span.
   describe "through the child span forwarder" do
     def run_through_forwarder(span_filter: nil, **example_options, &configure)
       child_exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
@@ -288,14 +287,27 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
       child_exporter.finished_spans
     end
 
-    it "exports nothing for a passing example with no instrumentation" do
-      exported = run_through_forwarder do |config|
-        config.before(:each) { nil }
-        config.after(:each) { nil }
-      end
+    %i[passing body before after].each do |outcome|
+      it "exports nothing for a #{outcome} example with no instrumentation" do
+        exported = run_through_forwarder(body: proc { raise "body boom" if outcome == :body }) do |config|
+          config.before(:each) { raise "before boom" if outcome == :before }
+          config.after(:each) { raise "after boom" if outcome == :after }
+        end
 
-      expect(exported).to be_empty
-      expect(span_named("test.execution")).not_to be_nil
+        expect(exported).to be_empty
+        test_span = span_named("test.execution")
+        expect(test_span).not_to be_nil
+        if outcome == :passing
+          expect(test_span.status.code).to eq(OpenTelemetry::Trace::Status::UNSET)
+        else
+          expect(test_span.attributes.fetch("test.case.result.status")).to eq("fail")
+          expect(test_span.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+          expect(test_span.status.description).not_to be_empty
+          exception = test_span.events.find { |event| event.name == "exception" }
+          expect(exception.attributes.fetch("exception.message")).to include("#{outcome} boom")
+          expect(exception.attributes.fetch("exception.stacktrace")).to include("phase_spans_spec.rb")
+        end
+      end
     end
 
     it "exports only the phases that grouped a span, past a filter that drops everything" do
@@ -308,6 +320,21 @@ RSpec.describe Buildkite::TestCollector::RSpecPlugin::PhaseSpans do
 
       expect(exported.map(&:name)).to eq(["test.body"])
       expect(exported.map(&:parent_span_id)).to all(eq(span_named("test.execution").span_id))
+    end
+
+    it "exports a populated failed phase with its failure" do
+      exported = run_through_forwarder(
+        span_filter: ->(_span) { false },
+        body: proc { PhaseSpanSpecInstrumentation.span("in body"); raise "body boom" },
+      )
+
+      expect(exported.map(&:name)).to eq(["test.body"])
+      body = exported.first
+      expect(body.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
+      expect(body.status.description).to eq("body boom")
+      exception = body.events.find { |event| event.name == "exception" }
+      expect(exception.attributes.fetch("exception.message")).to eq("body boom")
+      expect(exception.attributes.fetch("exception.stacktrace")).to include("phase_spans_spec.rb")
     end
   end
 
