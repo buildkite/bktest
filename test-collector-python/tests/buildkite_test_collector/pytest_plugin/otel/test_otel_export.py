@@ -97,17 +97,24 @@ def test_forwarder_filter_decides_and_phases_bypass_it():
     tracer.start_span("keep", context=ctx).end()
     tracer.start_span("drop", context=ctx).end()
     failed_phase = tracer.start_span("test.setup", context=ctx)
+    tracer.start_span("drop", context=trace.set_span_in_context(failed_phase, ctx)).end()
     failed_phase.set_status(Status(StatusCode.ERROR, "boom"))
     failed_phase.end()
     assert [span.name for span in processor.ended] == ["keep", "test.setup"]
+    assert processor.ended[-1].status.status_code is StatusCode.ERROR
+    assert processor.ended[-1].status.description == "boom"
 
 
-def test_forwarder_exports_a_phase_iff_populated_or_not_unset():
+def test_forwarder_exports_a_phase_iff_populated():
     tracer, _, processor = forwarder_with(lambda span: False)
     _, ctx = in_test_trace(tracer)
 
     empty_phase = tracer.start_span("test.body", context=ctx)
     empty_phase.end()
+
+    failed_empty_phase = tracer.start_span("test.setup", context=ctx)
+    failed_empty_phase.set_status(Status(StatusCode.ERROR, "boom"))
+    failed_empty_phase.end()
 
     populated_phase = tracer.start_span("test.body", context=ctx)
     tracer.start_span("child", context=trace.set_span_in_context(populated_phase, ctx)).end()

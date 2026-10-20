@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from otel_harness import DATA_DIR, otel_env, run_pytest
+from otel_harness import DATA_DIR, OTLPReceiver, otel_env, run_pytest
 
 EXPECTED_RESULTS = {
     "test_passing": "pass",
@@ -117,18 +117,74 @@ def test_child_spans_and_phases_use_the_child_stream(tmp_path, receiver):
     assert child_span_test["db.query"].parent_span_id == child_span_test["test.body"].span_id
     assert child_span_test["test.body"].status_code == 0
 
-    failing = {span.name: span for span in children_of("test_failing")}
-    assert set(failing) == {"test.body"}
-    assert failing["test.body"].status_code == 2
-    assert "one is not two" in failing["test.body"].status_message
-
-    setup_error = {span.name: span for span in children_of("test_setup_error")}
-    assert set(setup_error) == {"test.setup"}
-    assert setup_error["test.setup"].status_code == 2
-
+    assert children_of("test_failing") == []
+    assert children_of("test_setup_error") == []
     assert children_of("test_passing") == []
     assert children_of("test_skipped") == []
-    assert {span.name for span in children_of("test_expected_failure")} == {"test.body"}
+    assert children_of("test_expected_failure") == []
+
+
+@pytest.mark.parametrize("instrumented", [False, True])
+def test_failed_phases_reach_the_child_stream_only_with_instrumentation(
+    tmp_path: Path, receiver: OTLPReceiver, instrumented: bool,
+) -> None:
+    """Keep failures on test spans and forward only phases that grouped a child."""
+    (tmp_path / "conftest.py").write_text(
+        "def pytest_buildkite_otel_span_filter(span):\n"
+        "    return False\n"
+    )
+    test_file = tmp_path / "test_failures.py"
+    test_file.write_text(
+        "import pytest\n"
+        "from opentelemetry import trace\n"
+        "def fail(phase):\n"
+        + ("    with trace.get_tracer('suite').start_as_current_span('child'):\n"
+           "        pass\n" if instrumented else "")
+        + "    raise RuntimeError(phase + ' exploded')\n"
+        "@pytest.fixture\n"
+        "def broken_setup():\n"
+        "    fail('setup')\n"
+        "@pytest.fixture\n"
+        "def broken_teardown():\n"
+        "    yield\n"
+        "    fail('teardown')\n"
+        "def test_body():\n"
+        "    fail('body')\n"
+        "def test_setup(broken_setup):\n"
+        "    pass\n"
+        "def test_teardown(broken_teardown):\n"
+        "    pass\n"
+        "def test_passing():\n"
+        "    pass\n"
+    )
+    run = run_pytest(tmp_path, otel_env(receiver), test_file=test_file)
+    assert run.returncode == 1, run.stdout + run.stderr
+    tests = _by_name(receiver.spans("test"))
+    assert set(tests) == {"test_body", "test_setup", "test_teardown", "test_passing"}
+    for phase in ("body", "setup", "teardown"):
+        span = tests[f"test_{phase}"]
+        assert span.attributes["test.case.result.status"] == "fail"
+        assert span.status_code == 2
+        assert f"{phase} exploded" in span.status_message
+        [event] = [event for event in span.events if event["name"] == "exception"]
+        assert f"{phase} exploded" in event["exception.message"]
+        assert "test_failures.py" in event["exception.stacktrace"]
+    assert tests["test_passing"].status_code == 0
+    if instrumented:
+        phases = {span.name: span for span in receiver.spans("child")}
+        assert set(phases) == {"test.setup", "test.body", "test.teardown"}
+        for name, span in phases.items():
+            phase = name.removeprefix("test.")
+            assert span.parent_span_id == tests[f"test_{phase}"].span_id
+            assert span.status_code == 2
+            assert span.status_message == f"{phase} exploded"
+            [event] = span.events
+            assert event["name"] == "exception"
+            assert event["exception.message"] == f"{phase} exploded"
+            assert "test_failures.py" in event["exception.stacktrace"]
+    else:
+        assert receiver.trace_requests("child") == []
+    assert receiver.upload_requests() == []
 
 
 def test_span_identity_matches_the_json_upload(tmp_path, receiver):
@@ -524,7 +580,7 @@ def test_span_filter_hook_drops_child_spans_but_not_phases_or_tests(tmp_path, re
     assert len(receiver.spans("test")) == len(EXPECTED_RESULTS)
     child_names = [span.name for span in receiver.spans("child")]
     assert "db.query" not in child_names
-    assert child_names.count("test.body") == 3
+    assert child_names == ["test.body"]
 
 
 def test_a_broken_span_filter_is_reported_although_pytest_captures_the_test(tmp_path, receiver):

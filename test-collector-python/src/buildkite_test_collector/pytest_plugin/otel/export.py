@@ -29,7 +29,6 @@ from opentelemetry.sdk.trace.id_generator import IdGenerator
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 from opentelemetry.trace import Link
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
-from opentelemetry.trace import StatusCode
 
 from ...collector.constants import VERSION
 from ...collector.run_env import RunEnv
@@ -292,9 +291,9 @@ class ChildSpanForwarder(SpanProcessor):
                 if tracked is None or not self._active:
                     return
                 if tracked.phase:
-                    # Phase spans bypass the filter and are only worth exporting when
-                    # they carry children or an error.
-                    if tracked.populated or span.status.status_code is not StatusCode.UNSET:
+                    # Failures already ride on the test span; only populated
+                    # phases reach the child stream, bypassing the filter.
+                    if tracked.populated:
                         self._processor.on_end(span)
                     return
                 if self._filter is None:

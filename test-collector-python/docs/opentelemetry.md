@@ -47,15 +47,18 @@ test.execution  "tests/test_pipeline.py::test_create_build"   12.4ms
 
 `test.setup` covers fixture setup, `test.body` the test function, and
 `test.teardown` fixture finalizers. A phase that raises gets an error status
-and an `exception` event, so a trace shows which phase failed before you read
-the test's own error. A fixture that raises leaves no `test.body` span, because
-pytest never calls the test. A phase that skips the test (`pytest.skip`, a
-`skip` marker, `pytest.xfail`) is not a failure and keeps its status unset.
+and an `exception` event. The trace shows which phase failed only when that
+phase grouped a child span and is exported. A fixture that raises leaves no
+`test.body` span, because pytest never calls the test. A phase that skips the
+test (`pytest.skip`, a `skip` marker, `pytest.xfail`) is not a failure and keeps
+its status unset.
 
-A phase is exported only when it grouped at least one span or has a status; a
-phase with nothing in it says nothing the test span does not. A test with no
-instrumented work therefore adds no child spans at all, and the span filter
-never sees phase spans.
+A phase is sent to Buildkite only when it grouped at least one tracked child
+span, even if the child is later dropped by the span filter. A test with no
+instrumented work therefore adds no child spans at all, even when it fails:
+the test span still carries the error status and exception events. The span
+filter never sees phase spans. A suite-owned provider's own exporters still
+receive every phase, empty or not.
 
 One test is one trace. Child spans share the root's trace ID, and the root is
 never nested under anything else, so a trace always belongs to exactly one
