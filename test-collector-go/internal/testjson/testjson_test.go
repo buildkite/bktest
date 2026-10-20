@@ -221,6 +221,42 @@ func TestSubtestsKeepTheirFullNameAndOwnOutput(t *testing.T) {
 	}
 }
 
+func TestIndentedSubtestReportsAreNotFailureOutput(t *testing.T) {
+	// Output and event order from go test -json -v on Go 1.23.12 and 1.24.13.
+	_, r := parse(t,
+		ev(0, "run", "TestNested", ""),
+		ev(0, "output", "TestNested", "=== RUN   TestNested\n"),
+		ev(0, "run", "TestNested/outer", ""),
+		ev(0, "output", "TestNested/outer", "=== RUN   TestNested/outer\n"),
+		ev(0, "run", "TestNested/outer/silent", ""),
+		ev(0, "output", "TestNested/outer/silent", "=== RUN   TestNested/outer/silent\n"),
+		ev(0, "run", "TestNested/outer/error", ""),
+		ev(0, "output", "TestNested/outer/error", "=== RUN   TestNested/outer/error\n"),
+		ev(0, "output", "TestNested/outer/error", "    framing_test.go:8: got 4, want 5\n"),
+		ev(0, "output", "TestNested", "--- FAIL: TestNested (0.00s)\n"),
+		ev(0, "output", "TestNested/outer", "    --- FAIL: TestNested/outer (0.00s)\n"),
+		ev(0, "output", "TestNested/outer/silent", "        --- FAIL: TestNested/outer/silent (0.00s)\n"),
+		ev(0, "fail", "TestNested/outer/silent", ""),
+		ev(0, "output", "TestNested/outer/error", "        --- FAIL: TestNested/outer/error (0.00s)\n"),
+		ev(0, "fail", "TestNested/outer/error", ""),
+		ev(0, "fail", "TestNested/outer", ""),
+		ev(0, "fail", "TestNested", ""),
+	)
+	if len(r.executions) != 4 {
+		t.Fatalf("executions: %+v", r.executions)
+	}
+	for _, name := range []string{"TestNested", "TestNested/outer", "TestNested/outer/silent"} {
+		if got := r.byName(t, name).Result; got.Status != collector.StatusFail || got.Reason != "test failed" || got.Exception != nil {
+			t.Errorf("%s result = %+v, want failure without output", name, got)
+		}
+	}
+	failed := r.byName(t, "TestNested/outer/error").Result
+	if failed.Status != collector.StatusFail || failed.Reason != "framing_test.go:8: got 4, want 5" ||
+		failed.Exception == nil || failed.Exception.Message != "framing_test.go:8: got 4, want 5" {
+		t.Errorf("error result = %+v, exception = %+v", failed, failed.Exception)
+	}
+}
+
 func TestPanicIsAFailureWithThePanicLineAsReasonAndTheTraceAsStack(t *testing.T) {
 	_, r := parse(t,
 		ev(0, "run", "TestPanics", ""),

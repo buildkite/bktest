@@ -305,8 +305,9 @@ func (p *Parser) isFraming(ev Event) bool {
 	if p.labelledFrames {
 		return ev.OutputType == "frame"
 	}
+	output := strings.TrimLeft(ev.Output, " ")
 	for _, prefix := range []string{"=== RUN", "=== PAUSE", "=== CONT", "=== NAME", "=== ATTR", "--- PASS", "--- FAIL", "--- SKIP", "--- BENCH"} {
-		if strings.HasPrefix(ev.Output, prefix) {
+		if strings.HasPrefix(output, prefix) {
 			return true
 		}
 	}
