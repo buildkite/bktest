@@ -176,6 +176,7 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
         this._buildkite.includeLocation = true
         break
       case 'test_start': {
+        this._finish(event.test)
         const result = this._assertionResult(event.test, undefined)
         const record = { id: randomUUID(), ...testEngineRecord(result, this._buildkite.testPath) }
         const handle = session.startTestSpan(record, { startTime: Date.now() })
@@ -192,14 +193,11 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
         const started = spans.get(event.test)
         if (started) {
           started.endTime = Date.now()
-          // Circus replaces this array before dispatching test_retry.
+          // Circus replaces this array when retrying a test or describe.
           started.errors = event.test.errors
         }
         break
       }
-      case 'test_retry':
-        this._finish(event.test)
-        break
     }
   }
 

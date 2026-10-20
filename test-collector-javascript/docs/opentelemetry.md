@@ -107,7 +107,8 @@ packages are only loaded once a run has decided to use OpenTelemetry; with
 
 Each test that Jest runs gets one `test.execution` span, which is a trace of its
 own: the span is never nested under anything else. A test retried with
-`jest.retryTimes` gets one span per attempt. A test skipped with `test.skip`,
+`jest.retryTimes`, including Jest 30.5's `entireDescribe` mode, gets one span per
+attempt. A test skipped with `test.skip`,
 `xit` or `test.todo` gets a `skipped` span. When a `beforeAll` hook fails, every
 test in its block gets a failed span carrying the hook's error, which is also
 what the JSON upload reports.

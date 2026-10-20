@@ -5,14 +5,16 @@ const path = require('path')
 const { startOtlpServer } = require('./support/otlpServer')
 
 // examples/jest/otel.config.js runs: example.test.js (2), passed.test.js (1),
-// otel/outcomes.js (9) and otel/retries.js (1 test, 2 attempts).
-const EXPECTED_SPANS = 14
-const EXPECTED_JSON_RESULTS = 13
+// otel/outcomes.js (9) and otel/retries.js (2 tests, 2 attempts each).
+const EXPECTED_SPANS = 16
+const EXPECTED_JSON_RESULTS = 14
 const jestMajor = Number(require(require.resolve('jest/package.json', { paths: [path.join(__dirname, '../examples/jest')] })).version.split('.')[0])
 
 const run = (command, env) => new Promise((resolve) => {
   const cwd = path.join(__dirname, '../examples/jest')
-  exec(command, { cwd, env: { ...process.env, ...env } }, (error, stdout, stderr) => {
+  const jestBin = require.resolve('jest/bin/jest', { paths: [cwd] })
+  const selectedJest = command.replace(/^jest\b/, `"${process.execPath}" "${jestBin}"`)
+  exec(selectedJest, { cwd, env: { ...process.env, ...env } }, (error, stdout, stderr) => {
     resolve({ code: error ? error.code : 0, stdout, stderr })
   })
 })
@@ -121,7 +123,11 @@ describe('examples/jest in OTel mode', () => {
       expect(new Set(spanRecords.map(identity))).toEqual(new Set(jsonRecords.map(identity)))
 
       const RESULTS = { passed: 'pass', failed: 'fail', pending: 'skipped', skipped: 'skipped' }
-      const finalAttempts = spanRecords.filter((record) => !(record.name === 'passes on the second attempt' && record.result === 'fail'))
+      const retriedNames = ['passes on the second attempt', 'passes on the second describe attempt']
+      for (const name of retriedNames) {
+        expect(spanRecords.filter((record) => record.name === name).map((record) => record.result).sort()).toEqual(['fail', 'pass'])
+      }
+      const finalAttempts = spanRecords.filter((record) => !(retriedNames.includes(record.name) && record.result === 'fail'))
       expect(sortedBy(finalAttempts, identity)).toEqual(sortedBy(jsonRecords.map((record) => ({
         scope: record.scope,
         name: record.name,
