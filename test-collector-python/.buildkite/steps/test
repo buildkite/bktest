@@ -18,7 +18,7 @@ BUILDKITE_ANALYTICS_TOKEN="$(buildkite-agent oidc request-token --audience "$SUI
 export BUILDKITE_ANALYTICS_TOKEN
 
 # Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -LsSf https://astral.sh/uv/0.13.4/install.sh | sh
 source "$HOME/.local/bin/env"
 
 # Install dependencies
