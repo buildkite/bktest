@@ -29,7 +29,7 @@ agents:
 steps:
   - label: ":pipeline: test-collector-ruby release rehearsal"
     if: build.tag == null
-    if_changed: "test-collector-ruby/**"
+    if_changed: "{test-collector-ruby/**,.buildkite/steps/update-ca-certificates}"
     command: "[ ! -d test-collector-ruby ] || buildkite-agent pipeline upload test-collector-ruby/.buildkite/pipeline.release.yml"
 
   - label: ":pipeline: test-collector-ruby release"
@@ -47,7 +47,7 @@ steps:
 
   - label: ":pipeline: test-collector-android release rehearsal"
     if: build.tag == null
-    if_changed: "test-collector-android/**"
+    if_changed: "{test-collector-android/**,.buildkite/steps/update-ca-certificates}"
     command: "[ ! -d test-collector-android ] || buildkite-agent pipeline upload test-collector-android/.buildkite/pipeline.release.yml"
 
   - label: ":pipeline: test-collector-android release"
@@ -56,7 +56,7 @@ steps:
 
   - label: ":pipeline: test-collector-swift release rehearsal"
     if: build.tag == null
-    if_changed: "test-collector-swift/**"
+    if_changed: "{test-collector-swift/**,.buildkite/steps/update-ca-certificates}"
     command: "[ ! -d test-collector-swift ] || buildkite-agent pipeline upload test-collector-swift/.buildkite/pipeline.release.yml"
 
   - label: ":pipeline: test-collector-swift release"

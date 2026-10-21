@@ -16,8 +16,11 @@ step() {
 
 system_packages() {
   local package missing=()
+  # Upgrade even on warm orbs; fail before downloading tools/dependencies if
+  # the repository mirror has not shipped the compromised-CA removal yet.
+  sudo bash "$repo_root/.buildkite/steps/update-ca-certificates"
   # Compiler/native extensions, Swift/OTP/.NET runtimes, and Chromium/Cypress.
-  for package in build-essential curl ca-certificates unzip xz-utils pkg-config \
+  for package in build-essential curl unzip xz-utils pkg-config \
     libssl-dev libyaml-dev zlib1g-dev libncurses6 libtinfo6 libodbc2 \
     libicu72 libxml2 libcurl4 libedit2 libsqlite3-0 libpython3.11 \
     libatomic1 clang libblocksruntime-dev \
