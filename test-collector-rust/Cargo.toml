@@ -12,12 +12,14 @@ license = "MIT"
 name = "buildkite-test-collector"
 readme = "README.md"
 repository = "https://github.com/buildkite/test-collector-rust"
-version = "0.1.4"
+version = "0.1.5"
 
 [dependencies]
 http = "1.4.2"
-# Keep ureq's TLS stack patched for CVE-2026-111943 / RUSTSEC-2026-0381,
+# Keep ureq's TLS stack patched for CVE-2026-111943 / RUSTSEC-2026-0381 / RUSTSEC-2026-0382,
 # including installations that resolve dependencies without Cargo.lock.
+# rustls also addresses RUSTSEC-2026-0285, -0346, -0348 and -0349.
+rustls = {version = "0.23.46", default-features = false}
 rustls-webpki = {version = "0.103.16", default-features = false}
 webpki-roots = {version = "1.0.10", default-features = false}
 serde = {version = "1.0", features = ["derive"]}
