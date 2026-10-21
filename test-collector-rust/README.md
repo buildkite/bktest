@@ -14,11 +14,13 @@ The official Rust adapter for [Buildkite Test Analytics](https://buildkite.com/t
 cargo install buildkite-test-collector
 ```
 
-**Security update:** Version 0.1.4 updates the compiled-in TLS trust store and certificate verifier
-for the eMudhra intermediate CA key compromise
-([CVE-2026-111943 / RUSTSEC-2026-0381](https://emudhra.we-have-a-problem.com/)).
+**Security update:** Version 0.1.5 updates rustls for RUSTSEC-2026-0285,
+RUSTSEC-2026-0346, RUSTSEC-2026-0348 and RUSTSEC-2026-0349. It retains the
+compiled-in TLS trust store and certificate verifier fixes from 0.1.4 for the
+eMudhra intermediate CA key compromise
+([CVE-2026-111943 / RUSTSEC-2026-0381 / RUSTSEC-2026-0382](https://emudhra.we-have-a-problem.com/)).
 Existing binaries must be rebuilt; updating the operating system's CA store
-alone does not update this collector's bundled roots. Reinstall version 0.1.4
+alone does not update this collector's bundled roots. Reinstall version 0.1.5
 or later:
 
 ```sh
