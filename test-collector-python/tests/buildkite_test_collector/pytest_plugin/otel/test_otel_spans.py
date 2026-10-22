@@ -81,9 +81,12 @@ def test_failure_becomes_status_and_exception_events(state, failed_test):
     }
 
 
-def test_identity_survives_129_attributes(state, successful_test):
+def test_identity_and_location_survive_129_attributes(state, successful_test):
     export_state, exporter = state
-    noisy = replace(successful_test, tags={f"tag{i}": "v" for i in range(129)})
+    noisy = replace(
+        successful_test, location="san_dimas_meltdown.py:47",
+        tags={f"tag{i}": "v" for i in range(129)},
+    )
     span = spans.start_test_span(export_state, noisy)
     spans.finish_test_span(span, noisy, {"buildkite.run_key": "run-1"}, {})
     finished = exporter.get_finished_spans()[0]
@@ -94,6 +97,8 @@ def test_identity_survives_129_attributes(state, successful_test):
     assert finished.attributes["test.case.result.status"] == "pass"
     assert finished.attributes["buildkite.test.scope"] == "wyld stallyns"
     assert finished.attributes["buildkite.test.name"] == "san dimas meltdown"
+    assert finished.attributes["code.file.path"] == "san_dimas_meltdown.py"
+    assert finished.attributes["code.line.number"] == 47
 
 
 def test_exception_events_keep_the_newest_100(state, successful_test):

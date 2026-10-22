@@ -137,12 +137,15 @@ def _describe_test(
     for key, value in tags.items():
         span.set_attribute(key, value)
     # The Python SDK evicts the *oldest* attribute at the count limit, so the
-    # keys the server needs to accept the execution are written last.
+    # execution identity, result and source location are written last.
     span.set_attribute(attrs.EXECUTION_VIA_ATTRIBUTE, attrs.EXECUTION_VIA)
     span.set_attribute(attrs.RUN_KEY_ATTRIBUTE, run_attributes[attrs.RUN_KEY_ATTRIBUTE])
     span.set_attribute(attrs.RESULT_ATTRIBUTE, attrs.result_status(test) or attrs.RESULT_UNSET)
     span.set_attribute(attrs.SCOPE_ATTRIBUTE, test_attributes[attrs.SCOPE_ATTRIBUTE])
     span.set_attribute(attrs.NAME_ATTRIBUTE, test_attributes[attrs.NAME_ATTRIBUTE])
+    for key in ("code.file.path", "code.line.number"):
+        if key in test_attributes:
+            span.set_attribute(key, test_attributes[key])
 
 
 def current_test_span() -> Optional[Span]:
