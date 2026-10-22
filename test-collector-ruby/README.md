@@ -90,8 +90,12 @@ trace is rooted in a `test.execution` span carrying the test's name, location,
 result, and failure detail. Phase spans underneath it, `test.setup`,
 `test.body`, and `test.teardown`, group the instrumented child spans by whether
 they ran in before hooks, the example itself, or after hooks, and each records
-the failure raised in its phase. A phase with no spans and no failure is not
-exported.
+the failure raised in its phase. Only phases that grouped at least one tracked
+child span are sent to Buildkite, even if the child is later filtered out.
+An uninstrumented suite sends no child spans, even when tests fail: the test
+span still carries the failure. The trace identifies which phase failed only
+when that phase grouped a child span. A suite-owned provider's own exporters
+still receive every phase.
 
 This feature is still under development and may change. OpenTelemetry is off by
 default. Enable it when you configure the collector:
