@@ -134,6 +134,11 @@ Use `npm version --no-git-tag-version X.Y.Z` in the release pull request so
 `test-collector-javascript/vX.Y.Z`, publish from
 `test-collector-javascript/` with `npm publish`.
 
+Prereleases use numbered versions such as `1.13.0-beta.1`, tagged
+`test-collector-javascript/v1.13.0-beta.1`. Publish them with
+`npm publish --tag beta` so the `latest` dist-tag, which `npm install` and
+semver ranges resolve to, stays on the last stable release.
+
 ### Elixir (Hex)
 
 Update `@version` in `mix.exs` and `CHANGELOG.md` in the release pull request.
