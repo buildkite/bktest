@@ -28,12 +28,18 @@ final class ExecutionChildSpanProcessor: SpanProcessor {
   private struct State {
     var active = true
     var acceptedSpanIDs = Set<SpanId>()
+    var forwardedSpanCount = 0
     var processor: any SpanProcessor
   }
 
   init(processor: any SpanProcessor, registry: ExecutionTraceRegistry) {
     self.registry = registry
     self.state = LockIsolated(State(processor: processor))
+  }
+
+  /// How many finished child spans have been handed to the processor.
+  var forwardedSpanCount: Int {
+    self.state.forwardedSpanCount
   }
 
   func onStart(parentContext: SpanContext?, span: any ReadableSpan) {
@@ -53,16 +59,16 @@ final class ExecutionChildSpanProcessor: SpanProcessor {
   func onEnd(span: any ReadableSpan) {
     self.state.withValue { state in
       guard state.active, state.acceptedSpanIDs.remove(span.context.spanId) != nil else { return }
+      state.forwardedSpanCount += 1
       state.processor.onEnd(span: span)
     }
   }
 
+  // The flush runs outside the lock so an abandoned slow flush does not
+  // block spans that finish after it.
   func forceFlush(timeout: TimeInterval?) {
-    self.state.withValue { state in
-      if state.active {
-        state.processor.forceFlush(timeout: timeout)
-      }
-    }
+    guard let processor = self.state.withValue({ $0.active ? $0.processor : nil }) else { return }
+    processor.forceFlush(timeout: timeout)
   }
 
   func shutdown(explicitTimeout: TimeInterval?) {

@@ -2,7 +2,8 @@
 
 Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine/) collector for Swift test frameworks ✨
 
-⚒ **Supported test frameworks:** XCTest, Quick, and Nimble.
+⚒ **Supported test frameworks:** XCTest, Quick, and Nimble. XCTest only:
+Swift Testing (`@Test`) results are not collected.
 
 📦 **Supported CI systems:** Buildkite, GitHub Actions, CircleCI, Xcode Cloud, and others via the `BUILDKITE_ANALYTICS_*` environment variables.
 
@@ -15,6 +16,22 @@ The collector requires Swift 5.10 or newer. Its macOS deployment target is macOS
 12 or newer.
 
 ## 👉 Installing
+
+> **OTLP ingestion must be enabled for your Buildkite organization.** The
+> collector sends results only over OTLP. Until ingestion is enabled, every
+> upload is rejected (a `403` when OTLP ingest is not enabled for the
+> organization), no results appear in Test Engine, and the collector reports
+> them as missing. Your tests still run and keep XCTest's exit code. The first
+> rejected test prints:
+>
+> ```
+> [BuildkiteTestCollector] warning: TEST RESULTS MISSING: OpenTelemetry dropped 1 test.execution span(s) (export-failure, last OTLP failure: 403): testSubtractFails. OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.
+> ```
+>
+> and the end of the run prints the total, for example `TEST RESULTS MISSING:
+> OpenTelemetry dropped 5 test.execution span(s) so far this run`. Under
+> `swift test --parallel` these lines are hidden unless a test in the same
+> worker fails; see the note on parallel runs in Step 2.
 
 ### Step 1
 
@@ -29,7 +46,7 @@ To use the Buildkite Test Collector with a SwiftPM project, add this repository 
 let package = Package(
   name: "MyProject",
   dependencies: [
-    .package(url: "https://github.com/buildkite/test-collector-swift", exact: "2.0.0-beta.1")
+    .package(url: "https://github.com/buildkite/test-collector-swift", exact: "2.0.0-beta.2")
   ],
   targets: [
     .target(name: "MyProject"),
@@ -50,10 +67,17 @@ Set the `BUILDKITE_ANALYTICS_TOKEN` secret on your CI to the API token from earl
 
 By default, traces are sent using OTLP/HTTP protobuf to
 `https://tests-otlp.buildkite.com/v1/traces`. The collector adds the suite token
-and run key as request headers.
+and run key as request headers. `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` overrides
+that endpoint and still receives the suite token and run key over
+HTTP/protobuf. When `BUILDKITE_TESTS_OTLP_TOKEN` is set, it is sent instead of
+`BUILDKITE_ANALYTICS_TOKEN`. The Buildkite Test Engine Client (bktec) relay sets
+`BUILDKITE_ANALYTICS_OTLP_ENDPOINT` and `BUILDKITE_TESTS_OTLP_TOKEN` for the test
+process, so tests run by bktec need no extra configuration.
 
-To send traces through an OpenTelemetry endpoint such as the Buildkite Test
-Engine Client relay, set the standard exporter variables instead:
+To send traces to another OpenTelemetry endpoint, such as a local
+OpenTelemetry Collector, leave `BUILDKITE_ANALYTICS_TOKEN`,
+`BUILDKITE_TESTS_OTLP_TOKEN` and `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` unset and
+use the standard exporter variables:
 
 ```bash
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://127.0.0.1:4318/v1/traces"
@@ -61,18 +85,44 @@ export OTEL_EXPORTER_OTLP_TRACES_HEADERS="authorization=Bearer%20local-token"
 export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="http/protobuf"
 ```
 
-The signal-specific variables take precedence over
-`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, and
-`OTEL_EXPORTER_OTLP_PROTOCOL`. A generic OTLP endpoint has `/v1/traces`
-appended. Standard header and protocol variables are applied only when a
-standard endpoint is explicitly configured; those variables alone do not enable
-the collector or select an endpoint. Standard endpoints receive only the
-explicitly configured OTLP headers, and the collector does not send the
-Buildkite suite token to them.
-`BUILDKITE_ANALYTICS_OTLP_ENDPOINT` remains available as a trusted,
-collector-specific endpoint override that receives only the suite token and run
-key and always uses HTTP/protobuf. To send custom headers or select a protocol
-for a relay, configure it through the standard exporter variables instead.
+Buildkite settings always win: while `BUILDKITE_ANALYTICS_TOKEN`,
+`BUILDKITE_TESTS_OTLP_TOKEN` or `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` is set, every
+`OTEL_EXPORTER_OTLP_*` variable is ignored, so an application's own
+OpenTelemetry configuration cannot redirect test results away from Test Engine.
+A warning names the endpoint in use unless the standard variables point at that
+same endpoint, as bktec's do. Without Buildkite settings, the signal-specific
+variables take precedence over `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_HEADERS`, and `OTEL_EXPORTER_OTLP_PROTOCOL`; a generic OTLP
+endpoint has `/v1/traces` appended; and the collector logs the endpoint it
+sends to. Standard endpoints receive only the explicitly configured OTLP
+headers, never the suite token. Header and protocol variables alone do not
+enable the collector or select an endpoint. Logged endpoints, including debug
+output, show only the scheme, host, port and path; user info, query and
+fragment are left out because they can carry credentials.
+
+Each test process is one Test Engine run, identified by `BUILDKITE_ANALYTICS_KEY`
+or, on a supported CI system, the build and job. Outside recognised CI,
+`swift test --parallel` spreads tests across several worker processes, so set
+one key for the whole invocation to keep them in one run:
+
+```bash
+BUILDKITE_ANALYTICS_KEY="$(uuidgen)" swift test --parallel
+```
+
+SwiftPM's parallel runner prints a worker's output only when one of its tests
+fails, so under `swift test --parallel` the collector's warnings, including
+`TEST RESULTS MISSING`, are hidden for workers whose tests all passed or were
+skipped. `BUILDKITE_ANALYTICS_DEBUG_ENABLED` does not change that. To see them,
+add `--verbose` or run without `--parallel`.
+
+Each worker process also sends and flushes its results on its own. When the
+endpoint refuses connections or returns errors, that costs one extra immediate
+request per process. When it accepts connections but never answers, each
+process waits up to 10 s as its test finishes and up to 10 s more at the flush.
+Each batch of up to 512 OpenTelemetry child spans also waits up to 10 s, so a
+test that created thousands of child spans can hold its process for the whole
+30 s flush budget, about 40 s in total. During such an outage, set
+`BUILDKITE_ANALYTICS_ENABLED=false` to run the suite without the collector.
 
 ### Step 3
 
@@ -83,6 +133,9 @@ key:
 
 value:
 `$(BUILDKITE_ANALYTICS_TOKEN)`
+
+To reach the bktec relay from an Xcode test run, map
+`BUILDKITE_TESTS_OTLP_TOKEN` and `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` the same way.
 
 If you configure a standard OTLP endpoint, map that endpoint and its associated
 `OTEL_EXPORTER_OTLP_TRACES_*` header or protocol variables into the test runner
@@ -173,13 +226,7 @@ Run-level tags apply to all test executions in a run. Set the `BUILDKITE_ANALYTI
 export BUILDKITE_ANALYTICS_TAGS='{"host.arch":"arm64","cloud.region":"us-east-1"}'
 ```
 
-If you're using an Xcode project, add this to your test scheme or test plan environment variables like the other `BUILDKITE_ANALYTICS_*` variables.
-
-Run-level tags can also be set programmatically by passing them to `load`. Environment variable tags take precedence over programmatic tags when keys collide:
-
-```swift
-TestCollector.load(uploadTags: ["host.arch": "arm64"])
-```
+If you're using an Xcode project, add this to your test scheme or test plan environment variables like the other `BUILDKITE_ANALYTICS_*` variables. The environment variable is the only way to set run-level tags; the collector loads itself before any test code runs, so there is no programmatic hook.
 
 Run tags are exported as `buildkite.tag.<key>` attributes on every test root.
 An execution-level tag takes precedence when it uses the same key.
@@ -221,21 +268,26 @@ provider configured by the test suite keep that provider's resource.
 
 The collector prioritizes `buildkite.execution.via`, `buildkite.run_key`, and
 `test.case.result.status` so Test Engine can synthesize an execution when the
-OpenTelemetry SDK span attribute limit is constrained. The minimum useful span
-attribute limit is three; additional metadata and tags may be dropped at that
-limit.
+OpenTelemetry SDK span attribute limit is constrained.
 
 While the endpoint is healthy, finishing a test waits for its root span to be
-accepted by the configured OTLP endpoint. After a failure, subsequent roots stay
-in the collector's in-memory queue while export attempts back off for 10, 20,
-30, and then at most 60 seconds. The bundle-end flush always makes an immediate
-final attempt. When the endpoint is the Test Engine Client relay, acceptance
+accepted by the configured OTLP endpoint. After a transient failure (a network
+error, timeout, or an HTTP 408, 429, 502, 503 or 504 response), subsequent
+roots stay in the collector's in-memory queue while export attempts back off
+for 10, 20, 30, and then at most 60 seconds. The bundle-end flush makes one
+immediate final attempt without waiting out the backoff; each request times
+out after 10 s, and the whole flush is capped at 30 s. Any other HTTP error
+(for example 401 or 403 for a bad token, or 413 for an oversized request) is not
+retried: the queued executions are dropped and a `TEST RESULTS MISSING` warning
+names the status. When the endpoint is the Test Engine Client relay, acceptance
 transfers the span to the longer-lived parent process, which protects completed
 executions from an XCTest runner restart.
 
 This is not disk-backed delivery. A hard exit before a test finishes, a process
 exit while the endpoint remains unavailable, or a machine restart can still
-lose spans. An ambiguous network timeout may also result in a retry after the
+lose spans. Drops the collector sees before the bundle-end flush are reported
+there as a `TEST RESULTS MISSING` total; losses from a hard exit or restart are
+not reported. An ambiguous network timeout may also result in a retry after the
 server accepted the first request.
 
 ## 🔍 Debugging

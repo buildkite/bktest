@@ -29,16 +29,12 @@ public struct TestCollector {
     let envTags = environment.analyticsTags ?? [:]
     let tags = uploadTags.merging(envTags) { _, env in env }
 
+    // When this returns nil it has already logged the one reason export is off.
     let telemetry = TelemetryClient.live(
       environment: environment,
       uploadTags: tags,
       logger: logger
     )
-    if telemetry == nil {
-      logger?.info(
-        "TestCollector requires an API token or OpenTelemetry exporter configuration. Test results will not be exported."
-      )
-    }
 
     self.observer = TestObserver(logger: logger, telemetry: telemetry)
   }
@@ -86,5 +82,5 @@ public struct TestCollector {
 
   public static let endpoint = "https://tests-otlp.buildkite.com/v1/traces"
   static let name = "test-collector-swift"
-  static let version = "2.0.0-beta.1"
+  static let version = "2.0.0-beta.2"
 }
