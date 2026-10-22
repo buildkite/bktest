@@ -93,13 +93,19 @@ Export needs the OpenTelemetry packages, which are optional peer dependencies
 of `buildkite-test-collector` and are not installed with it:
 
 ```bash
-npm install --save-dev @opentelemetry/api @opentelemetry/sdk-trace-base \
-  @opentelemetry/resources @opentelemetry/exporter-trace-otlp-proto
+npm install --save-dev '@opentelemetry/api@~1.9.0' \
+  '@opentelemetry/sdk-trace-base@^2.0.0' '@opentelemetry/resources@^2.0.0' \
+  '@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0'
 ```
 
-The collector supports `@opentelemetry/api` 1.9+, `@opentelemetry/sdk-trace-base`
-and `@opentelemetry/resources` 2.x, and `@opentelemetry/exporter-trace-otlp-proto`
-0.200 or newer. Those SDK versions need Node.js 18.19 or 20.6 and newer. The
+The collector supports the OpenTelemetry JavaScript 2.x SDK line:
+`@opentelemetry/api` 1.9, `@opentelemetry/sdk-trace-base` and
+`@opentelemetry/resources` 2.x, and `@opentelemetry/exporter-trace-otlp-proto`
+0.200 to 0.2xx. The 3.0 SDK line (`@opentelemetry/api` 1.10,
+`@opentelemetry/resources` 3.x, `@opentelemetry/sdk-trace` 3.x and the
+0.300 exporter) is not supported yet. Keep the versions in the command above:
+without them npm installs the newest packages, which mix the two lines and fail
+to resolve. Those SDK versions need Node.js 18.19 or 20.6 and newer. The
 packages are only loaded once a run has decided to use OpenTelemetry; with
 `otelEnabled` off nothing changes.
 
