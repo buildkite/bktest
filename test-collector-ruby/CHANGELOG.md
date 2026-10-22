@@ -2,10 +2,13 @@
 
 ## Unreleased
 
-* Send OpenTelemetry phase spans to Buildkite only when they grouped a tracked
-  child span. Failed examples with no instrumentation now send no child spans;
-  their test spans still carry the failure status and exception events. The
-  trace identifies the failing phase only when it grouped a child span.
+## v2.17.1
+
+* Failed tests with no instrumented work no longer send OpenTelemetry phase
+  spans (`test.setup`, `test.body`, and `test.teardown`) to Buildkite, reducing
+  billable child span ingest for uninstrumented suites. Test spans still carry
+  the failure status and exception events. The trace identifies the failing
+  phase only when it grouped a tracked child span.
 
 ## v2.17.0
 
