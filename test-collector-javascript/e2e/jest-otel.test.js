@@ -56,6 +56,111 @@ describe('examples/jest in OTel mode', () => {
     server = null
   })
 
+  test.each(['managed', 'managed-workers', 'suite', 'suite-off', 'suite-no-forwarder'])(
+    'exports correctly parented instrumentation with a %s provider', async (mode) => {
+      server = await startOtlpServer()
+      const flags = mode === 'managed-workers' ? '--maxWorkers=2 --no-cache' : '--runInBand'
+      const result = await run(`jest --config otel-children.config.js ${flags}`, {
+        ...baseEnv,
+        OTEL_CHILD_CASE: mode,
+        BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
+        BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+      })
+      expect(result.code).toBe(1) // three intentional failures in empty.test.js
+      expect(result.stderr).toMatch(/3 failed, 7 passed, 10 total/)
+      expect(result.stdout).not.toMatch(/Test Engine Sending:/)
+      if (mode === 'suite-no-forwarder') expect(result.stderr).toMatch(/suite-owned SDK 2.x provider requires createBuildkiteSpanProcessor/)
+      else expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]/)
+
+      const roots = server.spans().filter((s) => s.name === 'test.execution')
+      expect(roots).toHaveLength(10)
+      expect(roots.filter((s) => s.attributes['test.case.result.status'] === 'fail')).toHaveLength(3)
+      const byName = new Map(roots.map((s) => [s.attributes['buildkite.test.name'], s]))
+      const children = server.spans().filter((s) => s.name !== 'test.execution')
+      const byId = new Map(server.spans().map((s) => [s.spanId, s]))
+      for (const request of server.requests) {
+        expect(request.decodeError).toBeNull()
+        expect(request.headers.authorization).toBe('Token token="relay-token"')
+        for (const span of request.decoded.resourceSpans.flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))) {
+          expect(request.headers['buildkite-tests-span-stream']).toBe(span.name === 'test.execution' ? 'test' : 'child')
+        }
+      }
+      for (const root of roots) expect(root.parentSpanId).toBe('')
+      if (['suite-off', 'suite-no-forwarder'].includes(mode)) {
+        expect(children).toHaveLength(0)
+        return
+      }
+      const assertUnder = (span, testName) => {
+        const root = byName.get(testName)
+        expect(span.traceId).toBe(root.traceId)
+        let current = span
+        const visited = new Set()
+        while (current.parentSpanId) {
+          expect(visited.has(current.spanId)).toBe(false)
+          visited.add(current.spanId)
+          current = byId.get(current.parentSpanId)
+          expect(current).toBeDefined()
+        }
+        expect(current.spanId).toBe(root.spanId)
+      }
+      expect(children.length).toBeGreaterThanOrEqual(20)
+      expect(children.some((s) => s.name === 'outside-test')).toBe(false)
+      for (const child of children) expect(roots.some((root) => root.traceId === child.traceId)).toBe(true)
+      for (const name of ['http I/O', 'undici I/O']) {
+        const io = children.filter((s) => s.name === 'GET' && s.traceId === byName.get(name).traceId)
+        expect(io).toHaveLength(1)
+        assertUnder(io[0], name)
+      }
+      const gql = children.filter((s) => s.name.startsWith('graphql.'))
+      expect(gql.length).toBeGreaterThanOrEqual(4)
+      for (const child of gql) assertUnder(child, 'graphql resolver I/O')
+      for (const name of ['slow', 'fast']) {
+        const child = children.filter((s) => s.name === `concurrent-${name}`)
+        expect(child).toHaveLength(1)
+        assertUnder(child[0], `concurrent ${name}`)
+      }
+      const callback = children.filter((s) => s.name === 'callback-child')
+      expect(callback).toHaveLength(1)
+      assertUnder(callback[0], 'callback body')
+      for (const name of ['http I/O', 'undici I/O', 'graphql resolver I/O', 'callback body']) {
+        for (const hook of ['setup-child', 'teardown-child']) {
+          const child = children.filter((s) => s.name === hook && s.traceId === byName.get(name).traceId)
+          expect(child).toHaveLength(1)
+          assertUnder(child[0], name)
+        }
+      }
+    }, 30000,
+  )
+
+  test('keeps test export when child patch setup fails', async () => {
+    server = await startOtlpServer()
+    const result = await run('jest --config otel-children.config.js empty.test.js --runInBand', {
+      ...baseEnv, OTEL_CHILD_CASE: 'bad-patch',
+      BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+    })
+    expect(result.code).toBe(1)
+    expect(result.stderr).toMatch(/OpenTelemetry child span export disabled: .*no module patch definition.*test.execution export remains enabled/)
+    expect(result.stdout).not.toMatch(/Test Engine Sending:/)
+    expect(server.spans()).toHaveLength(4)
+    expect(server.spans().every((s) => s.name === 'test.execution')).toBe(true)
+  }, 30000)
+
+  test('a bounded child queue can overflow without displacing test results', async () => {
+    server = await startOtlpServer()
+    const result = await run('jest --config otel-children.config.js io.test.js --runInBand', {
+      ...baseEnv, OTEL_CHILD_CASE: 'flood',
+      BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE: '2', BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE: '1',
+      BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+    })
+    expect(result.code).toBe(0)
+    expect(result.stderr).toMatch(/OpenTelemetry dropped \d+ child span\(s\).*test.execution results are unaffected/)
+    expect(result.stderr).not.toMatch(/TEST RESULTS MISSING/)
+    expect(result.stdout).not.toMatch(/Test Engine Sending:/)
+    expect(server.spans().filter((s) => s.name === 'test.execution')).toHaveLength(6)
+    expect(server.spans().filter((s) => s.name === 'flood-child').length).toBeLessThan(100)
+    expect(server.spans().filter((s) => s.name === 'POST')).toHaveLength(0)
+  }, 30000)
+
   describe('with a relay token and a receiver that fails the first request', () => {
     let flakyServer
     let result

@@ -22,6 +22,7 @@ class Base {
   constructor(config, context) {
     this.config = config
     this.context = context
+    this.global = {}
   }
 
   async teardown() {}

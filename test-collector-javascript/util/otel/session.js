@@ -5,6 +5,7 @@ const { createExporter, EXPORT_TIMEOUT_MILLISECONDS } = require('./exporter')
 const { resourceAttributes, runAttributes } = require('./attributes')
 const { describeTest, truncate } = require('./describeTest')
 const { warn, describeError, PREFIX } = require('./warn')
+const { createChildExport } = require('./children')
 
 const TRACER_NAME = 'buildkite-test-collector'
 const TEST_SPAN_NAME = 'test.execution'
@@ -47,14 +48,14 @@ const processorSize = (name, fallback) => {
   return fallback
 }
 
-const processorSizes = () => {
-  const queueName = 'BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE'
-  const batchName = 'BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE'
-  const queue = processorSize(queueName, PROCESSOR_DEFAULTS.queue)
-  const batch = processorSize(batchName, PROCESSOR_DEFAULTS.batch)
+const processorSizes = (stream = 'TEST', defaults = PROCESSOR_DEFAULTS) => {
+  const queueName = `BUILDKITE_TESTS_OTEL_${stream}_SPAN_QUEUE_SIZE`
+  const batchName = `BUILDKITE_TESTS_OTEL_${stream}_SPAN_BATCH_SIZE`
+  const queue = processorSize(queueName, defaults.queue)
+  const batch = processorSize(batchName, defaults.batch)
   if (batch > queue) {
-    warn(`${batchName} must be <= ${queueName}; using defaults (batch ${PROCESSOR_DEFAULTS.batch}, queue ${PROCESSOR_DEFAULTS.queue})`)
-    return PROCESSOR_DEFAULTS
+    warn(`${batchName} must be <= ${queueName}; using defaults (batch ${defaults.batch}, queue ${defaults.queue})`)
+    return defaults
   }
   return { queue, batch }
 }
@@ -193,6 +194,11 @@ const createSession = (settings) => {
   const provider = new trace.BasicTracerProvider({ ...providerConfig, spanProcessors: [holdingProcessor] })
   const tracer = provider.getTracer(TRACER_NAME, version)
   const run = runAttributes(settings)
+  let children
+  const childExport = () => {
+    if (!children) children = createChildExport({ sdk, settings, providerConfig, processorSizes })
+    return children
+  }
 
   const startTestSpan = (record, { line, startTime } = {}) => {
     try {
@@ -352,27 +358,52 @@ const createSession = (settings) => {
     const { drained, failure } = await drain()
     warnUnlessCounted('flush OpenTelemetry spans', failure)
     reportUndelivered({ drained })
+    await flushChildren()
   }
 
-  const onExit = () => reportUndelivered({ drained: false })
+  const flushChildren = async () => {
+    if (!children) return
+    let drained = false
+    try {
+      drained = await awaitWithinBudget(children.flush())
+    } catch (error) {
+      warn(`Could not flush OpenTelemetry child spans: ${describeError(error)}; test.execution results are unaffected.`)
+      drained = true
+    }
+    children.report(drained)
+  }
+
+  const onExit = () => {
+    reportUndelivered({ drained: false })
+    if (children) children.report(false)
+  }
   process.on('exit', onExit)
 
   let shutDown = false
   const shutdown = async () => {
     if (shutDown) return
     shutDown = true
+    if (children) children.deactivate()
     let { drained, failure } = await drain()
     warnUnlessCounted('flush OpenTelemetry spans', failure)
+    await flushChildren()
     try {
       drained = await awaitWithinBudget(provider.shutdown()) && drained
     } catch (error) {
       warnUnlessCounted('shut down OpenTelemetry span export', error)
     }
+    if (children) {
+      try {
+        await awaitWithinBudget(children.shutdown())
+      } catch (error) {
+        warn(`Could not shut down OpenTelemetry child spans: ${describeError(error)}`)
+      }
+    }
     reportUndelivered({ drained })
     if (drained) process.off('exit', onExit)
   }
 
-  return { runKey, metrics, startTestSpan, finishTestSpan, forceFlush, shutdown }
+  return { runKey, metrics, startTestSpan, finishTestSpan, forceFlush, shutdown, childExport }
 }
 
 // One session per process: a run's identity is fixed once export is
