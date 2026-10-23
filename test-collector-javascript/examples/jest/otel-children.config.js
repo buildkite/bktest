@@ -17,7 +17,14 @@ const instrumentations = {
   '@opentelemetry/instrumentation-http',
   '@opentelemetry/instrumentation-undici',
   ['@opentelemetry/instrumentation-graphql', { mergeItems: true }],
+  '@opentelemetry/instrumentation-express',
 ]
+
+// OTEL_CHILD_CASE=optout runs a managed file, then one that opted out of the
+// collector's environment, in that order in one process.
+const testMatch = mode === 'optout'
+  ? ['<rootDir>/otel-children/io.js', '<rootDir>/otel-children/optout/*.js']
+  : ['<rootDir>/otel-children/*.js', '!**/environment.js', '!**/*.setup.js', '!**/preload.js', '!**/prime.js', '!**/sequencer.js']
 
 module.exports = {
   reporters: ['default', ['buildkite-test-collector/jest/reporter', { otelEnabled: true, otelInstrumentations: instrumentations }]],
@@ -26,5 +33,6 @@ module.exports = {
   ...(mode === 'no-runtime' ? {} : { [major >= 28 ? 'runtime' : 'moduleLoader']: 'buildkite-test-collector/jest/runtime' }),
   setupFilesAfterEnv: mode.startsWith('suite') ? ['<rootDir>/otel-children/suite.setup.js'] : [],
   testLocationInResults: true,
-  testMatch: ['<rootDir>/otel-children/*.js', '!**/environment.js', '!**/*.setup.js', '!**/preload.js'],
+  testMatch,
+  ...(mode === 'optout' ? { testSequencer: '<rootDir>/otel-children/sequencer.js' } : {}),
 }

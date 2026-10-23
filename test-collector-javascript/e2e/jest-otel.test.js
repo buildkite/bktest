@@ -62,9 +62,9 @@ describe('examples/jest in OTel mode', () => {
     expect(jestVersion).toBe(process.env.EXPECTED_JEST_VERSION || jestVersion)
   })
 
-  // examples/jest/otel-children.config.js: 16 tests in io.js, again.js,
+  // examples/jest/otel-children.config.js: 19 tests in io.js, again.js,
   // empty.js and owner.js; again.js retries one test, which fails once.
-  const CHILD_FIXTURE_ROOTS = 17
+  const CHILD_FIXTURE_ROOTS = 20
   const CLIENT = 3
   const SERVER = 2
 
@@ -142,6 +142,8 @@ describe('examples/jest in OTel mode', () => {
   const expectManualChildren = ({ rootsNamed, childrenOf, children }, { instrumented = true } = {}) => {
     for (const [test, child] of [
       ['concurrent slow', 'concurrent-slow'], ['concurrent fast', 'concurrent-fast'],
+      ['concurrent plain slow', 'concurrent-plain-slow-start'], ['concurrent plain slow', 'concurrent-plain-slow'],
+      ['concurrent plain fast', 'concurrent-plain-fast'],
       ['callback body', 'callback-child'], ['fake timers', 'fake-timer-child'],
       ['generator body', 'generator-child'], ['failing body', 'failing-child'],
     ]) {
@@ -177,6 +179,8 @@ describe('examples/jest in OTel mode', () => {
     expectStreams()
     // owner.js registers its own provider without the Buildkite processor.
     expect(warnings).toEqual([expect.stringMatching(/the suite registers its own tracer provider, so add createBuildkiteSpanProcessor\(\)/)])
+    // Each patch is undone exactly once: shimmer complains about a second unwrap.
+    expect(outcome.result.stderr).not.toMatch(/already been unwrapped/)
 
     for (const child of children) expect([child.name, rootOf(child) && roots.includes(rootOf(child))]).toEqual([child.name, true])
     expect(children.filter(isOwnRequest)).toEqual([])
@@ -199,6 +203,14 @@ describe('examples/jest in OTel mode', () => {
     const [resolve] = childrenOf(graphqlRoot, named('graphql.resolve message'))
     expect(resolve).toBeDefined()
     expect(childrenOf(graphqlRoot, (s) => clientGet(s) && s.parentSpanId === resolve.spanId)).toHaveLength(1)
+
+    // Express is patched under its main module's name, although the file it
+    // re-exports loaded first: its spans nest under the in-process server.
+    const expressRoot = rootsNamed('express route I/O')[0]
+    const [expressServer] = childrenOf(expressRoot, (s) => s.kind === SERVER)
+    const [handler] = childrenOf(expressRoot, (s) => s.attributes['express.type'] === 'request_handler')
+    expect(handler).toEqual(expect.objectContaining({ name: 'request handler - /route', parentSpanId: expressServer.spanId }))
+    expect(childrenOf(expressRoot, (s) => s.attributes['express.type'] === 'middleware').length).toBeGreaterThan(0)
 
     // A file that owns its provider gets no forwarding and no instrumentation.
     expect(childrenOf(rootsNamed('own provider')[0])).toEqual([])
@@ -231,12 +243,29 @@ describe('examples/jest in OTel mode', () => {
     expectManualChildren(outcome)
     // Only the suite's instrumentation runs: its http, no graphql, and its
     // resource rather than the collector's.
-    expect(children.filter((s) => s.name.startsWith('graphql.'))).toEqual([])
+    expect(children.filter((s) => s.name.startsWith('graphql.') || s.attributes['express.type'])).toEqual([])
     expect(childrenOf(rootsNamed('http I/O')[0], clientGet)).toHaveLength(1)
     expect(childrenOf(rootsNamed('own provider')[0], named('owner-child'))).toHaveLength(1)
     for (const resource of childResources()) expect(resource['service.name']).toBe('customer-service')
     // The suite's sampler and exporter still see everything it recorded.
     for (const child of children) expect(recorded.some((s) => s.name === child.name)).toBe(true)
+  }, 60000)
+
+  // Built-in modules are unpatched at each file's teardown. A later file that
+  // opted out of the collector's environment finds no wrappers and sends no
+  // trace headers, also when a require hook saw http before any
+  // instrumentation registered for it, so the collector patched it itself.
+  test('unpatches built-ins before a later file that opted out of the collector environment', async () => {
+    const prime = path.join(__dirname, '../examples/jest/otel-children/prime.js')
+    const outcome = await runChildren('optout', {
+      env: { BUILDKITE_ANALYTICS_TOKEN: 'xyz', NODE_OPTIONS: `--require ${JSON.stringify(prime)}` },
+    })
+    const { result, roots, children, rootsNamed, childrenOf } = outcome
+    expect([result.code, result.stderr]).toEqual([0, expect.not.stringMatching(/opted-out request carries no trace headers|already been unwrapped/)])
+    expect(roots.map((root) => root.attributes['buildkite.test.name'])).not.toContain('opted-out request carries no trace headers')
+    expect(jsonUpload(result.stdout).map((record) => [record.name, record.result])).toEqual([['opted-out request carries no trace headers', 'passed']])
+    expect(childrenOf(rootsNamed('http I/O')[0], clientGet)).toHaveLength(1)
+    for (const child of children) expect(roots).toContain(outcome.rootOf(child))
   }, 60000)
 
   test('leaves OpenTelemetry configured outside the test sandbox alone', async () => {
@@ -302,7 +331,7 @@ describe('examples/jest in OTel mode', () => {
     expect(result.stderr).not.toMatch(/TEST RESULTS MISSING/)
     expect(result.stdout).not.toMatch(/Test Engine Sending:/)
     const spans = server.spans()
-    expect(spans.filter((s) => s.name === 'test.execution')).toHaveLength(6)
+    expect(spans.filter((s) => s.name === 'test.execution')).toHaveLength(9) // io.js
     expect(spans.filter((s) => s.name === 'flood-child').length).toBeLessThan(100)
     expect(spans.filter((s) => s.name === 'GET').length).toBeGreaterThan(0)
     const own = spans.filter((s) => s.name.startsWith('POST') || Object.values(s.attributes).some((value) => String(value) === port))
