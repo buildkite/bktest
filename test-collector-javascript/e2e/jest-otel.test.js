@@ -62,9 +62,10 @@ describe('examples/jest in OTel mode', () => {
     expect(jestVersion).toBe(process.env.EXPECTED_JEST_VERSION || jestVersion)
   })
 
-  // examples/jest/otel-children.config.js: 19 tests in io.js, again.js,
-  // empty.js and owner.js; again.js retries one test, which fails once.
-  const CHILD_FIXTURE_ROOTS = 20
+  // examples/jest/otel-children.config.js: 21 tests in io.js, again.js,
+  // cache.js, empty.js and owner.js; again.js retries one test, which fails
+  // once.
+  const CHILD_FIXTURE_ROOTS = 22
   const CLIENT = 3
   const SERVER = 2
 
@@ -210,6 +211,13 @@ describe('examples/jest in OTel mode', () => {
     expect(handler).toEqual(expect.objectContaining({ name: 'request handler - /route', parentSpanId: expressServer.spanId }))
     expect(childrenOf(expressRoot, (s) => s.attributes['express.type'] === 'middleware').length).toBeGreaterThan(0)
 
+    // node-redis is patched once its circularly required index.js has
+    // finished loading, whether the file or the test loads it.
+    for (const test of ['redis loaded with the file', 'redis loaded inside the test']) {
+      expect([test, childrenOf(rootsNamed(test)[0], (s) => s.name.startsWith('redis-')).map((s) => s.name).sort()])
+        .toEqual([test, ['redis-GET', 'redis-SET', 'redis-connect']])
+    }
+
     // A file that owns its provider gets no forwarding and no instrumentation.
     expect(childrenOf(rootsNamed('own provider')[0])).toEqual([])
     expect(children.filter(named('owner-child'))).toEqual([])
@@ -241,7 +249,7 @@ describe('examples/jest in OTel mode', () => {
     expectManualChildren(outcome)
     // Only the suite's instrumentation runs: its http, no graphql, and its
     // resource rather than the collector's.
-    expect(children.filter((s) => s.name.startsWith('graphql.') || s.attributes['express.type'])).toEqual([])
+    expect(children.filter((s) => s.name.startsWith('graphql.') || s.name.startsWith('redis-') || s.attributes['express.type'])).toEqual([])
     expect(childrenOf(rootsNamed('http I/O')[0], clientGet)).toHaveLength(1)
     expect(childrenOf(rootsNamed('own provider')[0], named('owner-child'))).toHaveLength(1)
     for (const resource of childResources()) expect(resource['service.name']).toBe('customer-service')

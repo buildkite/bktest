@@ -18,6 +18,7 @@ const instrumentations = {
   '@opentelemetry/instrumentation-undici',
   ['@opentelemetry/instrumentation-graphql', { mergeItems: true }],
   '@opentelemetry/instrumentation-express',
+  '@opentelemetry/instrumentation-redis',
 ]
 
 // OTEL_CHILD_CASE=optout runs a managed file, then one that opted out of the
