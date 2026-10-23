@@ -149,13 +149,18 @@ const describeModule = (from, moduleName, packages) => {
 // Node's built-in modules are patched here rather than on their next
 // require: require-in-the-middle remembers a module it has already returned
 // unpatched, and the sandbox may never require it again. Recording the module
-// on its definition, as require-in-the-middle would, lets disable() unpatch
-// it and a later enable() patch it again, each exactly once.
+// on the instrumentation's own definition, as require-in-the-middle would,
+// lets disable() unpatch it and a later enable() patch it again, each exactly
+// once. getModuleDefinitions() builds new definitions on every call, which
+// disable() never sees, so it cannot be used here; instrumentation without
+// InstrumentationBase's definitions gets built-ins only through its hook.
+const ownDefinitions = (instance) => (Array.isArray(instance._modules) ? instance._modules : [])
+
 const enable = (instance, provider) => {
   instance.setTracerProvider(provider)
   instance.setConfig({ ...instance.getConfig(), enabled: true })
   instance.enable()
-  for (const definition of moduleDefinitions(instance)) {
+  for (const definition of ownDefinitions(instance)) {
     if (!isBuiltin(definition.name) || typeof definition.patch !== 'function') continue
     const exports = require(definition.name)
     if (definition.moduleExports === exports) continue
