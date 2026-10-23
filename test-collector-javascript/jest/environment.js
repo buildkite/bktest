@@ -7,6 +7,7 @@ const { sessionFor } = require('../util/otel/session')
 const { warn, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
 const { recordKey, recordExport } = require('./exportRecords')
+const JestOtelContext = require('./otelContext')
 
 const ROOT_DESCRIBE_BLOCK_NAME = 'ROOT_DESCRIBE_BLOCK'
 const STACK_LINE = /^(?:\s*at )?(?:new )?(?:.*? \()?(?:eval at [^ ]+ \(.+?:\d+:\d+\), )?(.+?):(\d+):(\d+)\)?$/
@@ -57,6 +58,7 @@ const failureFormatting = (projectConfig, circusDir) => {
     format: prettyFormat ? (value) => prettyFormat.format(value, { maxDepth: 3 }) : String,
     errorText,
     wrapsThrownValues: Boolean(flattenErrorStack),
+    major,
   }
 }
 
@@ -160,6 +162,13 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
       this._buildkite.record = () => recordExport(settings.exportRecords, recordKey(projectConfig, context.testPath))
       this._buildkite.fallback = fallback
       this._buildkite.session = sessionFor(settings)
+      // The collector's exports run with tracing suppressed in this sandbox.
+      this._buildkite.disconnect = this._buildkite.session.connectSandbox(this.global)
+      this._buildkite.children = new JestOtelContext({
+        session: this._buildkite.session, settings, testPath: context.testPath, rootDir: projectConfig.rootDir,
+      })
+      // For createBuildkiteSpanProcessor() in the sandbox's setup files.
+      this.global.__buildkiteOtel = this._buildkite.children
     } catch (error) {
       warn(`OpenTelemetry could not be set up in this test worker (${describeError(error)}); for ${this._buildkite.testPath}, ${fallback}.`)
     }
@@ -167,20 +176,35 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
 
   async handleTestEvent(event, state) {
     if (this._buildkite.session && !this._buildkite.started) this._start(new Error().stack)
+    // Recorded before any await: Jest dispatches add_test synchronously, and
+    // the test.concurrent wrapper reads it as soon as registration returns.
+    if (event.name === 'add_test') {
+      const siblings = state.currentDescribeBlock.children
+      this._buildkite.added = siblings[siblings.length - 1]
+    }
     if (super.handleTestEvent) await super.handleTestEvent(event, state)
-    const { session, spans } = this._buildkite
+    const { session, spans, children } = this._buildkite
     if (!session) return
 
     switch (event.name) {
+      case 'setup':
+        if (this._buildkite.formatting?.major === 27 && event.runtimeGlobals?.test?.concurrent) this._wrapJest27Concurrent(event.runtimeGlobals.test, state)
+        break
+      case 'run_start':
+        if (children.canExportChildren) this._wrapFunctions(state.rootDescribeBlock)
+        break
       case 'include_test_location_in_result':
         this._buildkite.includeLocation = true
         break
       case 'test_start': {
-        this._finish(event.test)
-        const result = this._assertionResult(event.test, undefined)
-        const record = { id: randomUUID(), ...testEngineRecord(result, this._buildkite.testPath) }
-        const handle = session.startTestSpan(record, { startTime: Date.now() })
-        spans.set(event.test, { handle, id: record.id })
+        // Older Circus launches concurrent bodies before test_start. Their
+        // wrappers already own a root; never replace it here.
+        if (spans.get(event.test)?.endTime !== undefined) this._finish(event.test)
+        this._begin(event.test)
+        break
+      }
+      case 'hook_start': {
+        this._buildkite.hookTest = state.currentlyRunningTest
         break
       }
       case 'test_skip':
@@ -198,6 +222,80 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
         }
         break
       }
+    }
+  }
+
+  _begin(test) {
+    const { session, spans, children, testPath } = this._buildkite
+    if (spans.has(test)) return spans.get(test)
+    const result = this._assertionResult(test, undefined)
+    const record = { id: randomUUID(), ...testEngineRecord(result, testPath) }
+    const handle = session.startTestSpan(record, { startTime: Date.now() })
+    const started = { handle, id: record.id }
+    spans.set(test, started)
+    children.began(started)
+    return started
+  }
+
+  // Jest 27 starts a test.concurrent body as the file registers it, before
+  // the test exists, and the test it registers only awaits that promise. The
+  // body is wrapped here instead, and its test span starts with it: under a
+  // stand-in with the test's name and describe blocks until registration
+  // returns the test itself. The collector then sets up as the first body
+  // starts, while the file is still being collected.
+  _wrapJest27Concurrent(test, state) {
+    const env = this
+    const wrap = (register) => {
+      const wrapped = function (testName, testFn, timeout) {
+        if (typeof testFn !== 'function') return register.call(this, testName, testFn, timeout)
+        let owner = { name: testName, parent: state.currentDescribeBlock, errors: [] }
+        const body = function (...args) {
+          const { children } = env._buildkite
+          if (!children.canExportChildren) return testFn.apply(this, args)
+          return children.run(env._begin(owner), testFn, this, args)
+        }
+        env._buildkite.added = null
+        const result = register.call(this, testName, body, timeout)
+        const registered = env._buildkite.added
+        if (registered && registered.type === 'test') {
+          const { spans } = env._buildkite
+          if (spans.has(owner)) spans.set(registered, spans.get(owner))
+          spans.delete(owner)
+          owner = registered
+        }
+        return result
+      }
+      return Object.assign(wrapped, register)
+    }
+    const concurrent = wrap(test.concurrent)
+    if (typeof test.concurrent.only === 'function') concurrent.only = wrap(test.concurrent.only)
+    test.concurrent = concurrent
+  }
+
+  _wrapFunctions(block) {
+    const env = this
+    const { children, spans } = this._buildkite
+    const wrap = (entry, test) => {
+      const fn = entry.fn
+      if (!fn) return
+      const invoke = (receiver, args) => {
+        const owner = test || env._buildkite.hookTest
+        if (!owner || (!test && !['beforeEach', 'afterEach'].includes(entry.type))) return fn.apply(receiver, args)
+        const started = test ? env._begin(owner) : spans.get(owner)
+        return children.run(started, fn, receiver, args)
+      }
+      // Circus uses .length to distinguish callback tests/hooks. Do not
+      // replace a done-style function with a zero-arity rest wrapper.
+      entry.fn = fn.length
+        ? function (done) { return invoke(this, [done]) }
+        : function () { return invoke(this, []) }
+      // Circus recognises generator tests by their function prototype.
+      Object.setPrototypeOf(entry.fn, Object.getPrototypeOf(fn))
+    }
+    for (const hook of block.hooks) wrap(hook)
+    for (const child of block.children) {
+      if (child.type === 'describeBlock') this._wrapFunctions(child)
+      else wrap(child, child)
     }
   }
 
@@ -247,9 +345,16 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
         // Late test-owned rejections can arrive during afterAll. Circus has
         // settled the file's results before tearing down its environment.
         for (const test of spans.keys()) this._finish(test)
-        await session.forceFlush()
+        try {
+          await this._buildkite.children.teardown()
+        } catch (error) {
+          warn(`Could not shut down OpenTelemetry child instrumentation: ${describeError(error)}`)
+        } finally {
+          await session.forceFlush()
+        }
       }
     } finally {
+      if (this._buildkite.disconnect) this._buildkite.disconnect()
       await super.teardown()
     }
   }

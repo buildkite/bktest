@@ -1,8 +1,6 @@
 # OpenTelemetry submission (experimental)
 
 > **This feature is still under development and may change.**
-> It is intended for suites that do not already configure OpenTelemetry.
-> Existing OpenTelemetry setups may work, but are not yet supported.
 
 When `otelEnabled` is true, spans are the only submission path. Every test
 becomes a `test.execution` span with `buildkite.execution.via=otlp`, which makes
@@ -57,7 +55,7 @@ module.exports = extend(require('jest-environment-jsdom').default)
 testEnvironment: './buildkite-jsdom-environment.js',
 ```
 
-The package ships no TypeScript declarations, so a TypeScript environment
+The environment ships no TypeScript declarations, so a TypeScript environment
 loads the module with `require` and gives `extend` the base class's type:
 
 ```ts
@@ -137,9 +135,181 @@ On Buildkite Agent v3.110 or newer with tracing enabled, the test span links to
 the Agent's job span through `TRACEPARENT`, letting you navigate between them
 without combining every test into one trace.
 
-Child spans (what the test did, and where its time went) are not exported for
-Jest: the test file runs in a separate module realm from the environment, so an
-`@opentelemetry/api` instance inside a test cannot see the collector's span.
+### Instrumentation and manual child spans
+
+Starting with 1.13.0-beta.2, the collector can also export the work each test
+does, as child spans under its `test.execution` span: spans from OpenTelemetry
+instrumentation (HTTP, `fetch`, databases, GraphQL and so on) and spans your
+tests create themselves. Name the instrumentation packages you want and set the
+collector's Jest runtime; there is no setup file to write:
+
+```js
+// jest.config.js
+module.exports = {
+  reporters: [
+    'default',
+    ['buildkite-test-collector/jest/reporter', {
+      otelEnabled: true,
+      otelInstrumentations: [
+        '@opentelemetry/instrumentation-http',
+        '@opentelemetry/instrumentation-undici',
+        ['@opentelemetry/instrumentation-graphql', { mergeItems: true }],
+        '@opentelemetry/instrumentation-express',
+      ],
+    }],
+  ],
+  testEnvironment: 'buildkite-test-collector/jest/environment',
+  runtime: 'buildkite-test-collector/jest/runtime', // Jest 27: moduleLoader
+  testLocationInResults: true,
+}
+```
+
+Install the async context manager and the instrumentation packages alongside
+the OpenTelemetry packages above. For example, versions verified with the 2.x
+SDK line:
+
+```bash
+npm install --save-dev '@opentelemetry/context-async-hooks@^2.0.0' \
+  '@opentelemetry/instrumentation-http@0.223.0' \
+  '@opentelemetry/instrumentation-undici@0.33.0' \
+  '@opentelemetry/instrumentation-graphql@0.69.0' \
+  '@opentelemetry/instrumentation-express@0.71.1'
+```
+
+The e2e tests run these four on Jest 27, 29 and 30. Other instrumentation built
+on `@opentelemetry/instrumentation` is expected to work the same way but is not
+tested yet.
+
+Each `otelInstrumentations` entry is a package name, or `[name, options]` where
+`options` is the instrumentation's own configuration as plain JSON: the reporter
+passes it to Jest's worker processes, so functions (such as `requestHook`) and
+class instances cannot be used. An invalid entry makes the reporter warn
+`otelInstrumentations is ignored: …` and export children without
+instrumentation. A package that cannot be loaded is skipped with a warning and
+the others still load. To skip one without editing the config, set
+`OTEL_NODE_DISABLED_INSTRUMENTATIONS` to a comma-separated list of names without
+the `@opentelemetry/instrumentation-` prefix (for example `http,undici`, as
+`@opentelemetry/auto-instrumentations-node` reads it), or pass
+`{ enabled: false }` as the package's options. Instrumentation from other
+publishers is listed by its full package name.
+
+The runtime (`moduleLoader` in Jest 27) is what makes children possible. Jest
+loads every module a test file uses itself, so the `require` hooks that
+instrumentation normally relies on never see them; the collector's runtime
+extends Jest's own and patches each module of an instrumented package as Jest
+loads it, including fresh copies after `jest.resetModules()`. Modules a file
+loads before the collector takes over its provider (see below) are patched
+when it does. Instrumentation that wraps what an app registers, such as
+Express routes and middleware, cannot reach registrations made before then:
+an app built at a test file's top level or in `beforeAll` gets HTTP spans but
+not Express spans, so build it in the test or a `beforeEach` hook. Node's
+built-in modules, which Jest shares between test files, are patched in the
+worker process for each file the collector manages and unpatched at the end
+of that file, so a later file that opts out with `@jest-environment` or owns
+its provider sees no wrappers and sends no trace headers. With
+`otelInstrumentations` set but no runtime, the run warns once that it needs the
+runtime and exports test spans only. If your project already uses
+a custom runtime, build one with `extend`:
+`module.exports = require('buildkite-test-collector/jest/runtime').extend(MyRuntime)`.
+
+Nothing is configured until a test file's first test or `beforeEach` hook runs,
+after setup files, the file's own top-level code and `beforeAll` hooks. If the
+file's OpenTelemetry API has no tracer provider by then, the collector registers
+a provider for children with the collector's resource and random ids from
+`crypto.randomBytes`, an async context manager and W3C trace-context
+propagation (each only where none is registered), and enables the named
+instrumentation. Children otherwise use the SDK's defaults and `OTEL_*`
+settings, as Ruby's do: `OTEL_TRACES_SAMPLER=traceidratio` can sample children
+out, but never test spans, whose provider is separate and always samples.
+
+Inside a test, or a `beforeEach`/`afterEach` hook, the test span is current:
+
+```js
+const { trace } = require('@opentelemetry/api')
+test('does work', async () => {
+  await trace.getTracer('my-suite').startActiveSpan('work', async (span) => {
+    try { await doWork() } finally { span.end() }
+  })
+})
+```
+
+Async work inherits that context across `await`, timers (including Jest's fake
+timers) and callback APIs, and concurrent tests keep separate contexts. A test
+retried with `jest.retryTimes` gets one test span per attempt, each with the
+children of its own attempt. Callback-style (`done`) tests and hooks and
+generator tests are supported. A child span is any span in a running test's
+trace: spans started under the test, and spans that continue its trace through
+propagation, such as an in-process server handling a request the test made.
+Spans from `beforeAll`, `afterAll`, file loading or roots you start yourself are
+in traces of their own and are not exported. Each child is exported when it
+ends; end child spans before the test file finishes.
+
+Jest 27 starts a `test.concurrent` body as the file registers it, while the
+file is still being collected. On Jest 27 such a test's span starts with its
+body and ends when Jest finishes the test, and the collector decides who owns
+the provider when the first such body starts, before `beforeAll` hooks run.
+
+Jest 27 does not copy Node's `fetch` into the test sandbox. To use `fetch` on
+that version, extend the collector's environment and set
+`this.global.fetch = globalThis.fetch` after `super(...)`.
+
+Instrumentation is matched against CommonJS modules. Test code that Jest runs
+as native ECMAScript modules is not patched, and instrumentation that does not
+publish its module definitions (`getModuleDefinitions()`, part of
+`@opentelemetry/instrumentation`) cannot patch packages.
+
+### Suites that configure OpenTelemetry
+
+A tracer provider the suite registers itself, in a setup file, the test file or
+a `beforeAll` hook, is never replaced or reconfigured, and the collector then
+installs no instrumentation for that file. Jest bypasses the `require` hooks
+that instrumentation relies on, so instrumentation you register yourself,
+directly or through `NodeSDK`, does not patch the packages a test file loads,
+and reaches Node's built-in modules only if you apply its
+`getModuleDefinitions()` patches to them yourself. Spans your code creates are
+exported either way. For package spans, let the collector own the provider and
+list the packages in `otelInstrumentations`. Unlike Ruby's SDK, the 2.x
+JavaScript SDK cannot add a span processor to a provider after it is
+constructed, so add the collector's when you construct yours:
+
+```js
+// otel.setup.js, in setupFilesAfterEnv
+const { trace, context } = require('@opentelemetry/api')
+const { BasicTracerProvider } = require('@opentelemetry/sdk-trace-base')
+const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks')
+const { createBuildkiteSpanProcessor } = require('buildkite-test-collector/jest/otel')
+
+const provider = new BasicTracerProvider({
+  // Keep your sampler, resource, limits and existing processors here.
+  spanProcessors: [myProcessor, createBuildkiteSpanProcessor()],
+})
+trace.setGlobalTracerProvider(provider)
+context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable())
+```
+
+`createBuildkiteSpanProcessor()` is the module's only export; it has
+TypeScript declarations. It works with or without the collector's runtime.
+Outside the collector's environment, or with OpenTelemetry submission off, it
+returns a processor that does nothing. Your provider's sampler applies to
+children, child spans keep your provider's resource, and they go to your own
+exporters as well as Buildkite. The collector does not enable, flush or shut
+down your provider or instrumentation. A provider without the processor gets a
+warning, `the suite registers its own tracer provider, so add
+createBuildkiteSpanProcessor() …`, and test spans export as usual.
+
+OpenTelemetry configured for the whole Jest process instead, for example with
+`NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register`,
+lives outside the test sandboxes, where the collector cannot connect a test to
+it: the run warns `OpenTelemetry is configured outside the Jest test sandbox`
+and exports test spans only.
+
+Either way, the collector's own requests to Buildkite run with tracing
+suppressed in every context manager the tests can reach, so your
+instrumentation never records them in your traces or as children.
+
+Phase spans (`test.setup`, `test.body`, `test.teardown`) are not implemented in
+JavaScript yet: children nest directly under the test span, or under their own
+parent spans. There is no `otelSpanFilter` option.
 
 ### Identity
 
@@ -242,14 +412,16 @@ forwards spans to Buildkite with its own credential.
 
 Every request is an OTLP/HTTP protobuf `POST` with gzip compression and the
 headers `Authorization: Token token="…"`, `Buildkite-Tests-Run-Key` (the run
-key) and `Buildkite-Tests-Span-Stream: test`. If you relay collector traffic
+key) and `Buildkite-Tests-Span-Stream: test` for test spans, or `child` for child
+spans. Separate exporters and queues keep children out of test batches. If you relay collector traffic
 through your own OTLP proxy, forward both `Buildkite-Tests-*` headers.
 
 The standard `OTEL_EXPORTER_OTLP_*` endpoint, header, compression, certificate
 and protocol variables are never read, so credentials the process configures
 for another OpenTelemetry destination are not sent to Buildkite, and that
 destination's settings do not redirect test results. `OTEL_TRACES_SAMPLER`,
-`OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_EVENT_*` are ignored for the same reason.
+`OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_EVENT_*` cannot change test-span export.
+The child provider uses normal SDK sampling, including `OTEL_TRACES_SAMPLER`.
 
 Without either token, nothing is exported and the run uses the JSON path as it
 always has. There is no OTel warning, but the legacy uploader still prints
@@ -271,6 +443,17 @@ A full queue never drops a result. A file of fast tests finishes spans faster
 than the worker can export them, so spans that would overflow the queue are
 held in memory and handed to the exporter as earlier batches complete, with
 memory as the only cap; the queue size only bounds what is in flight.
+
+Children use a separate bounded queue of 2,048 spans, batches of up to 512,
+a 5,000 ms schedule delay and a 30-second export timeout. Set
+`BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` and
+`BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` to override these sizes, with the
+same validation as test sizes. A child flood can drop children but never
+displace test results. Each path has its own 30-second flush budget in the
+worker, and test spans flush first. Dropped children warn that
+`test.execution results are unaffected`; SDK 2.x does not expose immediate
+queue-overflow callbacks, so accounting is reported at flush, not the moment a
+queue fills.
 
 Span attribute values are truncated to 10,243 characters, each span keeps at
 most 128 attributes and 100 events, and each event keeps at most 128
@@ -294,6 +477,21 @@ Jest later force-exits the worker. The exporter retries on 429, 502, 503,
 403, 404, 413) fail the batch immediately.
 
 ## When something goes wrong
+
+Child spans are best-effort: missing child packages, instrumentation that
+cannot load or patch, and child export failures warn once per run and leave
+test-span export enabled. They never select the JSON fallback. Check for
+`OpenTelemetry child span export disabled` or `OpenTelemetry instrumentation …`
+if children are missing. Children have their own queue (2,048 spans, batches of
+512, sent every 5 seconds; `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` and
+`BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` override them) and their own
+30-second flush budget, so a flood of children or a slow child endpoint never
+delays or displaces test results. The first dropped children are reported as
+`OpenTelemetry dropped N child span(s) …; test.execution results are
+unaffected` when the collector notices, and any further losses as one total
+when the worker exits. When Buildkite refuses child spans with HTTP 403, for example
+because the organization has reached its child span limit, the worker stops
+sending them and the run warns once that child span export has stopped.
 
 The run key (`BUILDKITE_ANALYTICS_KEY`, or the key derived from your CI's
 variables) must be 1–255 printable ASCII characters without spaces. An invalid

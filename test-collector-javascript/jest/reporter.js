@@ -76,6 +76,7 @@ class JestBuildkiteTestEngineReporter {
       frameworkVersion: jestVersion(globalConfig.rootDir),
       runEnv: this._testEnv,
       tags: this._tags,
+      instrumentations: options?.otelInstrumentations,
     })
     if (this._otel) {
       try {

@@ -29,6 +29,8 @@ const loadSdk = () => {
       throw new Error(`${String(error.message).split('\n')[0]}. Install the OpenTelemetry packages with: ${installCommand()}`)
     }
   }
+  // suppressTracing; a dependency of the trace SDK rather than a peer of ours.
+  sdk.core = createRequire(require.resolve(PACKAGES.trace))('@opentelemetry/core')
   return sdk
 }
 
