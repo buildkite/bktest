@@ -30,9 +30,9 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
   }
 
   requireModule(from, moduleName, options, isRequireActual) {
-    const exports = super.requireModule(from, moduleName, options, isRequireActual)
-    if (!this._buildkiteChildren || options?.isInternalModule) return exports
-    return this._buildkiteChildren.loaded(from, moduleName, exports)
+    const load = () => super.requireModule(from, moduleName, options, isRequireActual)
+    if (!this._buildkiteChildren || options?.isInternalModule) return load()
+    return this._buildkiteChildren.load(from, moduleName, load)
   }
 }
 

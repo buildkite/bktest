@@ -161,6 +161,7 @@ class JestOtelContext {
     this.bridgeApi = null
     this.worker = null
     this.resolved = new Map()
+    this.loading = new Set()
     this.loads = new WeakMap()
     this.records = []
     this.traces = new Set()
@@ -198,32 +199,28 @@ class JestOtelContext {
     }
   }
 
-  // Called by the runtime with every module a test file's code requires.
-  // Modules of packages that sandboxed instrumentation patches are patched as
-  // they load, before the file's provider is decided, so that what an app
-  // sets up as it loads (Express routes and middleware) is instrumented too.
-  // The patches record nothing unless the collector manages the file. As in
-  // require-in-the-middle, each file is patched under its own name, once per
-  // evaluation: a package's main module can export an internal file's
-  // exports unchanged (Express 4's index.js), and instrumentation patches the
-  // two differently.
-  loaded(from, moduleName, exports) {
-    const packages = this.instrumentations?.packages
-    if (!packages?.size || (this.mode !== null && this.mode !== 'managed')) return exports
-    if (exports === null || (typeof exports !== 'object' && typeof exports !== 'function')) return exports
-    if (!moduleName || isBuiltin(moduleName) || !mayMatch(from, moduleName, packages)) return exports
-    const key = `${from}\0${moduleName}`
-    if (!this.resolved.has(key)) {
-      let module = null
-      try {
-        module = describeModule(from, moduleName, packages)
-      } catch {
-        module = null
-      }
-      this.resolved.set(key, module)
+  // Called by the runtime for every module a test file's code requires, with
+  // a function that loads it. Modules of packages that sandboxed
+  // instrumentation patches are patched as they load, before the file's
+  // provider is decided, so that what an app sets up as it loads (Express
+  // routes and middleware) is instrumented too. The patches record nothing
+  // unless the collector manages the file. As in require-in-the-middle, each
+  // file is patched under its own name, once per evaluation and only once it
+  // has finished loading: a package's main module can export an internal
+  // file's exports unchanged (Express 4's index.js), and a circular require
+  // returns a module that is still loading (node-redis's pool.js requires its
+  // unfinished index.js).
+  load(from, moduleName, load) {
+    const module = this._instrumented(from, moduleName)
+    if (!module || this.loading.has(module.path)) return load()
+    this.loading.add(module.path)
+    let exports
+    try {
+      exports = load()
+    } finally {
+      this.loading.delete(module.path)
     }
-    const module = this.resolved.get(key)
-    if (!module) return exports
+    if (exports === null || (typeof exports !== 'object' && typeof exports !== 'function')) return exports
     let byPath = this.loads.get(exports)
     if (!byPath) {
       byPath = new Map()
@@ -237,6 +234,24 @@ class JestOtelContext {
       this._patch(record)
     }
     return record.exports
+  }
+
+  // The module a require loads, when it belongs to an instrumented package.
+  _instrumented(from, moduleName) {
+    const packages = this.instrumentations?.packages
+    if (!packages?.size || (this.mode !== null && this.mode !== 'managed')) return null
+    if (!moduleName || isBuiltin(moduleName) || !mayMatch(from, moduleName, packages)) return null
+    const key = `${from}\0${moduleName}`
+    if (!this.resolved.has(key)) {
+      let module = null
+      try {
+        module = describeModule(from, moduleName, packages)
+      } catch {
+        module = null
+      }
+      this.resolved.set(key, module)
+    }
+    return this.resolved.get(key)
   }
 
   setup() {
