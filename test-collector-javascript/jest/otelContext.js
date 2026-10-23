@@ -200,11 +200,13 @@ class JestOtelContext {
 
   // Called by the runtime with every module a test file's code requires.
   // Modules of packages that sandboxed instrumentation patches are patched as
-  // they load once the collector owns the provider; those loaded earlier are
-  // patched when it takes ownership. As in require-in-the-middle, each file
-  // is patched under its own name, once per evaluation: a package's main
-  // module can export an internal file's exports unchanged (Express 4's
-  // index.js), and instrumentation patches the two differently.
+  // they load, before the file's provider is decided, so that what an app
+  // sets up as it loads (Express routes and middleware) is instrumented too.
+  // The patches record nothing unless the collector manages the file. As in
+  // require-in-the-middle, each file is patched under its own name, once per
+  // evaluation: a package's main module can export an internal file's
+  // exports unchanged (Express 4's index.js), and instrumentation patches the
+  // two differently.
   loaded(from, moduleName, exports) {
     const packages = this.instrumentations?.packages
     if (!packages?.size || (this.mode !== null && this.mode !== 'managed')) return exports
@@ -232,7 +234,7 @@ class JestOtelContext {
       record = { ...module, exports, patchedBy: new Set() }
       byPath.set(module.path, record)
       this.records.push(record)
-      if (this.mode === 'managed') this._patch(record)
+      this._patch(record)
     }
     return record.exports
   }
@@ -291,7 +293,19 @@ class JestOtelContext {
     for (const record of this.records) this._patch(record)
   }
 
+  // Before setup, a provider already registered settles that the suite owns
+  // this file, so nothing is patched for it.
+  _ownedElsewhere() {
+    if (hasTracerProvider(this.session.api)) return true
+    try {
+      return hasTracerProvider(this.runtime.requireModule(this.testPath, '@opentelemetry/api'))
+    } catch {
+      return false
+    }
+  }
+
   _patch(record) {
+    if (this.mode === null && this._ownedElsewhere()) return
     for (const entry of this.instrumentations.sandboxed) {
       if (!entry.packages.has(record.name) || record.patchedBy.has(entry.name)) continue
       record.patchedBy.add(entry.name)
