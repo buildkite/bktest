@@ -1,7 +1,7 @@
-// A second file in the same worker: built-in modules were patched for the
-// previous file and unpatched at its teardown, and must be patched exactly
-// once again. Also covers test shapes that run a body more than once or
-// outside an ordinary async call.
+// A second file in the same worker: built-in modules stay patched once for
+// the whole worker, so each request is recorded exactly once. Also covers
+// test shapes that run a body more than once or outside an ordinary async
+// call.
 const http = require('http')
 const { trace } = require('@opentelemetry/api')
 
