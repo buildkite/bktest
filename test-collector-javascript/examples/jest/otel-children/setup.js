@@ -38,7 +38,7 @@ if (mode?.startsWith('suite')) {
     const spans = exported.getFinishedSpans()
     if (mode === 'suite-off') expect(spans).toHaveLength(0)
     else {
-      if (expect.getState().testPath.endsWith('io.test.js')) expect(spans.some((s) => s.name === 'callback-child')).toBe(true)
+      if (expect.getState().testPath.endsWith('/io.js')) expect(spans.some((s) => s.name === 'callback-child')).toBe(true)
       expect(spans.every((s) => s.resource === resource)).toBe(true)
       expect(spans.some((s) => s.name === 'test.execution')).toBe(false)
     }

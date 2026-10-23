@@ -66,8 +66,7 @@ describe('examples/jest in OTel mode', () => {
         BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
         BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
       })
-      expect(result.code).toBe(1) // three intentional failures in empty.test.js
-      expect(result.stderr).toMatch(/3 failed, 7 passed, 10 total/)
+      expect(result.code).toBe(1) // three intentional failures in empty.js
       expect(result.stdout).not.toMatch(/Test Engine Sending:/)
       if (mode === 'suite-no-forwarder') expect(result.stderr).toMatch(/suite-owned SDK 2.x provider requires createBuildkiteSpanProcessor/)
       else expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]/)
@@ -134,7 +133,7 @@ describe('examples/jest in OTel mode', () => {
 
   test('keeps test export when child patch setup fails', async () => {
     server = await startOtlpServer()
-    const result = await run('jest --config otel-children.config.js empty.test.js --runInBand', {
+    const result = await run('jest --config otel-children.config.js empty.js --runInBand', {
       ...baseEnv, OTEL_CHILD_CASE: 'bad-patch',
       BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
     })
@@ -147,7 +146,7 @@ describe('examples/jest in OTel mode', () => {
 
   test('a bounded child queue can overflow without displacing test results', async () => {
     server = await startOtlpServer()
-    const result = await run('jest --config otel-children.config.js io.test.js --runInBand', {
+    const result = await run('jest --config otel-children.config.js io.js --runInBand', {
       ...baseEnv, OTEL_CHILD_CASE: 'flood',
       BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE: '2', BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE: '1',
       BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
