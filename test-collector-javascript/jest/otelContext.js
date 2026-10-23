@@ -112,12 +112,14 @@ const packageVersion = (basedir) => {
 const packageOf = (specifier) => specifier.split('/').slice(0, specifier.startsWith('@') ? 2 : 1).join('/')
 const isPath = (specifier) => specifier.startsWith('.') || path.isAbsolute(specifier)
 
+// Whether a require could load a module of an instrumented package, without
+// resolving it.
+const mayMatch = (from, moduleName, packages) => {
+  if (!isPath(moduleName)) return packages.has(packageOf(moduleName))
+  return !moduleName.startsWith('.') || packages.has(moduleDetails(from)?.name)
+}
+
 const describeModule = (from, moduleName, packages) => {
-  if (isPath(moduleName)) {
-    if (moduleName.startsWith('.') && !packages.has(moduleDetails(from)?.name)) return null
-  } else if (!packages.has(packageOf(moduleName))) {
-    return null
-  }
   let file
   try {
     file = isPath(moduleName)
@@ -135,11 +137,11 @@ const describeModule = (from, moduleName, packages) => {
     main = false
   }
   return {
+    path: file,
     name: details.name,
     file: main ? details.name : path.join(details.name, details.relative),
     main,
     version: packageVersion(details.basedir),
-    patchedBy: new Set(),
   }
 }
 
@@ -197,6 +199,7 @@ class JestOtelContext {
     this.mode = null
     this.runtime = null
     this.bridgeApi = null
+    this.resolved = new Map()
     this.loads = new WeakMap()
     this.records = []
     this.traces = new Set()
@@ -237,25 +240,39 @@ class JestOtelContext {
   // Called by the runtime with every module a test file's code requires.
   // Modules of packages that sandboxed instrumentation patches are patched as
   // they load once the collector owns the provider; those loaded earlier are
-  // patched when it takes ownership.
+  // patched when it takes ownership. As in require-in-the-middle, each file
+  // is patched under its own name, once per evaluation: a package's main
+  // module can export an internal file's exports unchanged (Express 4's
+  // index.js), and instrumentation patches the two differently.
   loaded(from, moduleName, exports) {
     const packages = this.instrumentations?.packages
     if (!packages?.size || (this.mode !== null && this.mode !== 'managed')) return exports
     if (exports === null || (typeof exports !== 'object' && typeof exports !== 'function')) return exports
-    const known = this.loads.get(exports)
-    if (known) return known.exports
-    if (!moduleName || isBuiltin(moduleName)) return exports
-    let record = null
-    try {
-      record = describeModule(from, moduleName, packages)
-    } catch {
-      record = null
+    if (!moduleName || isBuiltin(moduleName) || !mayMatch(from, moduleName, packages)) return exports
+    const key = `${from}\0${moduleName}`
+    if (!this.resolved.has(key)) {
+      let module = null
+      try {
+        module = describeModule(from, moduleName, packages)
+      } catch {
+        module = null
+      }
+      this.resolved.set(key, module)
     }
-    if (!record) return exports
-    record.exports = exports
-    this.loads.set(exports, record)
-    this.records.push(record)
-    if (this.mode === 'managed') this._patch(record)
+    const module = this.resolved.get(key)
+    if (!module) return exports
+    let byPath = this.loads.get(exports)
+    if (!byPath) {
+      byPath = new Map()
+      this.loads.set(exports, byPath)
+    }
+    let record = byPath.get(module.path)
+    if (!record) {
+      record = { ...module, exports, patchedBy: new Set() }
+      byPath.set(module.path, record)
+      this.records.push(record)
+      if (this.mode === 'managed') this._patch(record)
+    }
     return record.exports
   }
 
