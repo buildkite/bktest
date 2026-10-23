@@ -8,7 +8,8 @@ const { startOtlpServer } = require('./support/otlpServer')
 // otel/outcomes.js (9) and otel/retries.js (2 tests, 2 attempts each).
 const EXPECTED_SPANS = 16
 const EXPECTED_JSON_RESULTS = 14
-const jestMajor = Number(require(require.resolve('jest/package.json', { paths: [path.join(__dirname, '../examples/jest')] })).version.split('.')[0])
+const jestVersion = require(require.resolve('jest/package.json', { paths: [path.join(__dirname, '../examples/jest')] })).version
+const jestMajor = Number(jestVersion.split('.')[0])
 
 const run = (command, env) => new Promise((resolve) => {
   const cwd = path.join(__dirname, '../examples/jest')
@@ -56,109 +57,271 @@ describe('examples/jest in OTel mode', () => {
     server = null
   })
 
-  test.each(['managed', 'managed-workers', 'suite', 'suite-off', 'suite-no-forwarder'])(
-    'exports correctly parented instrumentation with a %s provider', async (mode) => {
-      server = await startOtlpServer()
-      const flags = mode === 'managed-workers' ? '--maxWorkers=2 --no-cache' : '--runInBand'
-      const result = await run(`jest --config otel-children.config.js ${flags}`, {
-        ...baseEnv,
-        OTEL_CHILD_CASE: mode,
-        BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
-        BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
-      })
-      expect(result.code).toBe(1) // three intentional failures in empty.js
-      expect(result.stdout).not.toMatch(/Test Engine Sending:/)
-      if (mode === 'suite-no-forwarder') expect(result.stderr).toMatch(/suite-owned SDK 2.x provider requires createBuildkiteSpanProcessor/)
-      else expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]/)
+  // The CI matrix sets the version it installed into examples/jest.
+  test('runs the selected Jest version', () => {
+    expect(jestVersion).toBe(process.env.EXPECTED_JEST_VERSION || jestVersion)
+  })
 
-      const roots = server.spans().filter((s) => s.name === 'test.execution')
-      expect(roots).toHaveLength(10)
-      expect(roots.filter((s) => s.attributes['test.case.result.status'] === 'fail')).toHaveLength(3)
-      const byName = new Map(roots.map((s) => [s.attributes['buildkite.test.name'], s]))
-      const children = server.spans().filter((s) => s.name !== 'test.execution')
-      const byId = new Map(server.spans().map((s) => [s.spanId, s]))
-      for (const request of server.requests) {
-        expect(request.decodeError).toBeNull()
-        expect(request.headers.authorization).toBe('Token token="relay-token"')
-        for (const span of request.decoded.resourceSpans.flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))) {
-          expect(request.headers['buildkite-tests-span-stream']).toBe(span.name === 'test.execution' ? 'test' : 'child')
-        }
-      }
-      for (const root of roots) expect(root.parentSpanId).toBe('')
-      if (['suite-off', 'suite-no-forwarder'].includes(mode)) {
-        expect(children).toHaveLength(0)
-        return
-      }
-      const assertUnder = (span, testName) => {
-        const root = byName.get(testName)
-        expect(span.traceId).toBe(root.traceId)
-        let current = span
-        const visited = new Set()
-        while (current.parentSpanId) {
-          expect(visited.has(current.spanId)).toBe(false)
-          visited.add(current.spanId)
-          current = byId.get(current.parentSpanId)
-          expect(current).toBeDefined()
-        }
-        expect(current.spanId).toBe(root.spanId)
-      }
-      expect(children.length).toBeGreaterThanOrEqual(20)
-      expect(children.some((s) => s.name === 'outside-test')).toBe(false)
-      for (const child of children) expect(roots.some((root) => root.traceId === child.traceId)).toBe(true)
-      for (const name of ['http I/O', 'undici I/O']) {
-        const io = children.filter((s) => s.name === 'GET' && s.traceId === byName.get(name).traceId)
-        expect(io).toHaveLength(1)
-        assertUnder(io[0], name)
-      }
-      const gql = children.filter((s) => s.name.startsWith('graphql.'))
-      expect(gql.length).toBeGreaterThanOrEqual(4)
-      for (const child of gql) assertUnder(child, 'graphql resolver I/O')
-      for (const name of ['slow', 'fast']) {
-        const child = children.filter((s) => s.name === `concurrent-${name}`)
-        expect(child).toHaveLength(1)
-        assertUnder(child[0], `concurrent ${name}`)
-      }
-      const callback = children.filter((s) => s.name === 'callback-child')
-      expect(callback).toHaveLength(1)
-      assertUnder(callback[0], 'callback body')
-      for (const name of ['http I/O', 'undici I/O', 'graphql resolver I/O', 'callback body']) {
-        for (const hook of ['setup-child', 'teardown-child']) {
-          const child = children.filter((s) => s.name === hook && s.traceId === byName.get(name).traceId)
-          expect(child).toHaveLength(1)
-          assertUnder(child[0], name)
-        }
-      }
-    }, 30000,
-  )
+  // examples/jest/otel-children.config.js: 16 tests in io.js, again.js,
+  // empty.js and owner.js; again.js retries one test, which fails once.
+  const CHILD_FIXTURE_ROOTS = 17
+  const CLIENT = 3
+  const SERVER = 2
 
-  test('keeps test export when child patch setup fails', async () => {
-    server = await startOtlpServer()
-    const result = await run('jest --config otel-children.config.js empty.js --runInBand', {
-      ...baseEnv, OTEL_CHILD_CASE: 'bad-patch',
-      BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+  // Runs the child span fixtures against a fresh receiver and indexes what
+  // arrived. `ownRequests` are spans of the collector's own OTLP requests,
+  // which must never be recorded, whoever's instrumentation sees them.
+  const runChildren = async (mode, { args = '--runInBand', env = {}, respond } = {}) => {
+    server = await startOtlpServer({ respond })
+    const port = new URL(server.url).port
+    const result = await run(`jest --config otel-children.config.js ${args}`, {
+      ...baseEnv,
+      OTEL_CHILD_CASE: mode,
+      BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
+      BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+      ...env,
     })
-    expect(result.code).toBe(1)
-    expect(result.stderr).toMatch(/OpenTelemetry child span export disabled: .*no module patch definition.*test.execution export remains enabled/)
-    expect(result.stdout).not.toMatch(/Test Engine Sending:/)
-    expect(server.spans()).toHaveLength(4)
-    expect(server.spans().every((s) => s.name === 'test.execution')).toBe(true)
-  }, 30000)
+    const spans = server.spans()
+    const roots = spans.filter((s) => s.name === 'test.execution')
+    const children = spans.filter((s) => s.name !== 'test.execution')
+    const byId = new Map(spans.map((s) => [s.spanId, s]))
+    const rootsNamed = (name) => roots.filter((s) => s.attributes['buildkite.test.name'] === name)
+    const isOwnRequest = (span) => span.name.startsWith('POST') ||
+      Object.values(span.attributes).some((value) => String(value) === port || String(value).includes(`:${port}/`))
+    // The test span a child descends from, following parent links.
+    const rootOf = (span) => {
+      const visited = new Set()
+      let current = span
+      while (current && current.parentSpanId) {
+        if (visited.has(current.spanId)) return null
+        visited.add(current.spanId)
+        current = byId.get(current.parentSpanId)
+      }
+      return current && current.name === 'test.execution' && current.traceId === span.traceId ? current : null
+    }
+    const childrenOf = (root, predicate = () => true) => children.filter((s) => rootOf(s) === root && predicate(s))
+    const warnings = result.stderr.split('\n').filter((line) => line.includes('[buildkite-test-collector]'))
+    return { result, port, roots, children, rootsNamed, childrenOf, rootOf, isOwnRequest, warnings }
+  }
 
-  test('a bounded child queue can overflow without displacing test results', async () => {
+  const named = (name) => (span) => span.name === name
+  const clientGet = (span) => span.name === 'GET' && span.kind === CLIENT
+
+  const expectAllResults = ({ result, roots }) => {
+    expect(result.code).toBe(1) // intentional failures in empty.js
+    expect(result.stdout).not.toMatch(/Test Engine Sending:/)
+    expect(result.stderr).not.toMatch(/TEST RESULTS MISSING/)
+    expect(roots).toHaveLength(CHILD_FIXTURE_ROOTS)
+    for (const root of roots) expect(root.parentSpanId).toBe('')
+  }
+
+  const expectStreams = () => {
+    for (const request of server.requests) {
+      expect(request.decodeError).toBeNull()
+      expect(request.headers.authorization).toBe('Token token="relay-token"')
+      for (const span of request.decoded.resourceSpans.flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))) {
+        expect(request.headers['buildkite-tests-span-stream']).toBe(span.name === 'test.execution' ? 'test' : 'child')
+      }
+    }
+  }
+
+  const childResources = () => server.requests
+    .filter((r) => r.headers['buildkite-tests-span-stream'] === 'child')
+    .flatMap((r) => r.decoded.resourceSpans.map((rs) => rs.resource))
+
+  // Spans a suite's own exporter wrote to OTEL_SUITE_SPANS_FILE.
+  const readSpansFile = (file) => (fs.existsSync(file)
+    ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    : [])
+  const spansFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'otel-suite-')), 'spans.jsonl')
+  const ownClientRequests = (recorded, port) => recorded.filter((s) => s.kind === 2 /* SDK CLIENT */ &&
+    Object.values(s.attributes).some((value) => String(value) === port || String(value).includes(`:${port}/`)))
+
+  // Children each test is expected to have under its own test span, in both
+  // the collector-managed and suite-owned setups.
+  const expectManualChildren = ({ rootsNamed, childrenOf, children }, { instrumented = true } = {}) => {
+    for (const [test, child] of [
+      ['concurrent slow', 'concurrent-slow'], ['concurrent fast', 'concurrent-fast'],
+      ['callback body', 'callback-child'], ['fake timers', 'fake-timer-child'],
+      ['generator body', 'generator-child'], ['failing body', 'failing-child'],
+    ]) {
+      expect([test, childrenOf(rootsNamed(test)[0], named(child))]).toEqual([test, [expect.anything()]])
+    }
+    for (const test of ['http I/O', 'undici I/O', 'graphql resolver I/O', 'callback body']) {
+      for (const hook of ['setup-child', 'teardown-child']) {
+        expect([test, hook, childrenOf(rootsNamed(test)[0], named(hook)).length]).toEqual([test, hook, 1])
+      }
+    }
+    // One test span per attempt, each with the children of its own attempt.
+    const attempts = rootsNamed('retried I/O')
+    expect(attempts.map((root) => root.attributes['test.case.result.status']).sort()).toEqual(['fail', 'pass'])
+    for (const root of attempts) {
+      const attempt = root.attributes['test.case.result.status'] === 'fail' ? 1 : 2
+      expect(childrenOf(root, (s) => s.name.startsWith('attempt-')).map((s) => s.name)).toEqual([`attempt-${attempt}`])
+      expect(childrenOf(root, clientGet)).toHaveLength(instrumented ? 1 : 0)
+    }
+    expect(children.filter(named('outside-test'))).toHaveLength(0)
+  }
+
+  test.each([
+    ['in one process', '--runInBand'],
+    ['in worker processes', '--maxWorkers=2 --no-cache'],
+  ])('exports instrumented children under the test that ran them %s', async (_, args) => {
+    // Batches of one export each span as it ends, so the collector's own
+    // requests start inside running tests, with their instrumentation active.
+    const outcome = await runChildren('managed', {
+      args, env: { BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE: '1', BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE: '1' },
+    })
+    const { roots, children, rootsNamed, childrenOf, rootOf, isOwnRequest, warnings } = outcome
+    expectAllResults(outcome)
+    expectStreams()
+    // owner.js registers its own provider without the Buildkite processor.
+    expect(warnings).toEqual([expect.stringMatching(/the suite registers its own tracer provider, so add createBuildkiteSpanProcessor\(\)/)])
+
+    for (const child of children) expect([child.name, rootOf(child) && roots.includes(rootOf(child))]).toEqual([child.name, true])
+    expect(children.filter(isOwnRequest)).toEqual([])
+    expectManualChildren(outcome)
+
+    // Built-in modules are patched once per file, also in the second file of
+    // a worker: one client span per request, and the in-process server
+    // continues the test's trace.
+    for (const test of ['http I/O', 'undici I/O', 'http again']) {
+      const [client] = childrenOf(rootsNamed(test)[0], clientGet)
+      expect([test, childrenOf(rootsNamed(test)[0], clientGet).length]).toEqual([test, 1])
+      expect(childrenOf(rootsNamed(test)[0], (s) => s.kind === SERVER && s.parentSpanId === client.spanId)).toHaveLength(1)
+    }
+    const [manual] = childrenOf(rootsNamed('http I/O')[0], named('manual-parent'))
+    expect(childrenOf(rootsNamed('http I/O')[0], clientGet)[0].parentSpanId).toBe(manual.spanId)
+
+    // graphql is patched as the test file loads it; the resolver's fetch
+    // nests under the resolver.
+    const graphqlRoot = rootsNamed('graphql resolver I/O')[0]
+    const [resolve] = childrenOf(graphqlRoot, named('graphql.resolve message'))
+    expect(resolve).toBeDefined()
+    expect(childrenOf(graphqlRoot, (s) => clientGet(s) && s.parentSpanId === resolve.spanId)).toHaveLength(1)
+
+    // A file that owns its provider gets no forwarding and no instrumentation.
+    expect(childrenOf(rootsNamed('own provider')[0])).toEqual([])
+    expect(children.filter(named('owner-child'))).toEqual([])
+
+    // Children carry the collector's resource, as test spans do.
+    const testResource = server.requests.find((r) => r.headers['buildkite-tests-span-stream'] === 'test').decoded.resourceSpans[0].resource
+    for (const resource of childResources()) expect(resource).toEqual(testResource)
+  }, 60000)
+
+  test.each(['suite', 'suite-off', 'suite-no-forwarder'])('leaves a provider the suite registers alone (%s)', async (mode) => {
+    const file = spansFile()
+    const outcome = await runChildren(mode, { env: { OTEL_SUITE_SPANS_FILE: file } })
+    const { children, rootsNamed, childrenOf, isOwnRequest, warnings, port } = outcome
+    expectAllResults(outcome)
+    expectStreams()
+    const recorded = readSpansFile(file)
+    // The suite's own exporter never sees the collector's requests.
+    expect(ownClientRequests(recorded, port)).toEqual([])
+    expect(children.filter(isOwnRequest)).toEqual([])
+    if (mode === 'suite-no-forwarder') {
+      expect(warnings).toEqual([expect.stringMatching(/the suite registers its own tracer provider, so add createBuildkiteSpanProcessor\(\)/)])
+    } else {
+      expect(warnings).toEqual([])
+    }
+    if (mode !== 'suite') {
+      expect(children).toEqual([])
+      return
+    }
+    expectManualChildren(outcome)
+    // Only the suite's instrumentation runs: its http, no graphql, and its
+    // resource rather than the collector's.
+    expect(children.filter((s) => s.name.startsWith('graphql.'))).toEqual([])
+    expect(childrenOf(rootsNamed('http I/O')[0], clientGet)).toHaveLength(1)
+    expect(childrenOf(rootsNamed('own provider')[0], named('owner-child'))).toHaveLength(1)
+    for (const resource of childResources()) expect(resource['service.name']).toBe('customer-service')
+    // The suite's sampler and exporter still see everything it recorded.
+    for (const child of children) expect(recorded.some((s) => s.name === child.name)).toBe(true)
+  }, 60000)
+
+  test('leaves OpenTelemetry configured outside the test sandbox alone', async () => {
+    const file = spansFile()
+    const preload = path.join(__dirname, '../examples/jest/otel-children/preload.js')
+    const outcome = await runChildren('preload', {
+      args: '--maxWorkers=2 --no-cache',
+      env: { OTEL_SUITE_SPANS_FILE: file, NODE_OPTIONS: `--require ${JSON.stringify(preload)}` },
+    })
+    expectAllResults(outcome)
+    expect(outcome.warnings.filter((w) => !/registers its own tracer provider/.test(w))).toEqual([
+      expect.stringMatching(/OpenTelemetry is configured outside the Jest test sandbox/),
+    ])
+    expect(outcome.children).toEqual([])
+    const recorded = readSpansFile(file)
+    expect(recorded.some((s) => s.name === 'GET')).toBe(true)
+    expect(ownClientRequests(recorded, outcome.port)).toEqual([])
+  }, 60000)
+
+  test('exports test spans only, with one warning, without the collector runtime', async () => {
+    const outcome = await runChildren('no-runtime', { args: '--maxWorkers=2 --no-cache' })
+    expectAllResults(outcome)
+    expect(outcome.warnings).toEqual([
+      expect.stringMatching(/otelInstrumentations needs the collector's Jest runtime: set runtime: 'buildkite-test-collector\/jest\/runtime'/),
+    ])
+    expect(outcome.children).toEqual([])
+  }, 60000)
+
+  test('keeps manual children and test spans when otelInstrumentations is invalid', async () => {
+    const outcome = await runChildren('bad-option')
+    expectAllResults(outcome)
+    expect(outcome.warnings.filter((w) => !/registers its own tracer provider/.test(w))).toEqual([
+      expect.stringMatching(/otelInstrumentations is ignored: options for @opentelemetry\/instrumentation-http must be a plain JSON object/),
+    ])
+    expectManualChildren(outcome, { instrumented: false })
+    expect(outcome.children.filter((s) => s.name === 'GET' || s.name.startsWith('graphql.'))).toEqual([])
+  }, 60000)
+
+  test('skips instrumentation that is missing, disabled in its options, or disabled with OTEL_NODE_DISABLED_INSTRUMENTATIONS', async () => {
+    const outcome = await runChildren('missing-package', { env: { OTEL_NODE_DISABLED_INSTRUMENTATIONS: 'undici' } })
+    const { rootsNamed, childrenOf, warnings } = outcome
+    expectAllResults(outcome)
+    expect(warnings.filter((w) => !/registers its own tracer provider/.test(w))).toEqual([
+      expect.stringMatching(/OpenTelemetry instrumentation @opentelemetry\/instrumentation-not-installed could not be loaded .*continuing without it/),
+    ])
+    expect(childrenOf(rootsNamed('http I/O')[0], clientGet)).toHaveLength(1)
+    expect(childrenOf(rootsNamed('undici I/O')[0], (s) => s.name === 'GET')).toEqual([])
+    expect(outcome.children.filter((s) => s.name.startsWith('graphql.'))).toEqual([])
+  }, 60000)
+
+  test('overflows the bounded child queue without displacing test results or tracing its own exports', async () => {
     server = await startOtlpServer()
+    const port = new URL(server.url).port
     const result = await run('jest --config otel-children.config.js io.js --runInBand', {
       ...baseEnv, OTEL_CHILD_CASE: 'flood',
+      // Batches of one export from inside the tests that end the spans.
       BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE: '2', BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE: '1',
+      BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE: '1',
       BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
     })
     expect(result.code).toBe(0)
     expect(result.stderr).toMatch(/OpenTelemetry dropped \d+ child span\(s\).*test.execution results are unaffected/)
     expect(result.stderr).not.toMatch(/TEST RESULTS MISSING/)
     expect(result.stdout).not.toMatch(/Test Engine Sending:/)
-    expect(server.spans().filter((s) => s.name === 'test.execution')).toHaveLength(6)
-    expect(server.spans().filter((s) => s.name === 'flood-child').length).toBeLessThan(100)
-    expect(server.spans().filter((s) => s.name === 'POST')).toHaveLength(0)
-  }, 30000)
+    const spans = server.spans()
+    expect(spans.filter((s) => s.name === 'test.execution')).toHaveLength(6)
+    expect(spans.filter((s) => s.name === 'flood-child').length).toBeLessThan(100)
+    expect(spans.filter((s) => s.name === 'GET').length).toBeGreaterThan(0)
+    const own = spans.filter((s) => s.name.startsWith('POST') || Object.values(s.attributes).some((value) => String(value) === port))
+    expect(own).toEqual([])
+  }, 60000)
+
+  test('stops child export with one warning per run when Buildkite refuses child spans', async () => {
+    const outcome = await runChildren('managed', {
+      args: '--maxWorkers=2 --no-cache',
+      respond: (index, headers) => (headers['buildkite-tests-span-stream'] === 'child' ? 403 : 200),
+    })
+    expectAllResults(outcome)
+    expect(outcome.warnings.filter((w) => !/registers its own tracer provider/.test(w))).toEqual([
+      expect.stringMatching(/Buildkite Test Engine refused OpenTelemetry child spans \(HTTP 403\).*child span export has stopped\. test\.execution results are unaffected\./),
+    ])
+    const childRequests = server.requests.filter((r) => r.headers['buildkite-tests-span-stream'] === 'child')
+    expect(childRequests.length).toBeGreaterThan(0)
+    expect(childRequests.length).toBeLessThanOrEqual(2) // the first batch from each worker
+  }, 60000)
 
   describe('with a relay token and a receiver that fails the first request', () => {
     let flakyServer

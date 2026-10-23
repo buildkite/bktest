@@ -167,8 +167,29 @@ describe('resolveSettings', () => {
       tags: { hello: 'world' },
       testRunner: 'jest',
       frameworkVersion: '29.0.0',
+      instrumentations: [],
     })
     expect(resolve({ tags: undefined }).tags).toEqual({})
+  })
+
+  it('carries otelInstrumentations as package names with JSON options, and ignores an invalid list with a warning', () => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+
+    expect(resolve({ instrumentations: ['@opentelemetry/instrumentation-http', ['other-instrumentation', { depth: 2, ignore: ['a'] }]] }).instrumentations)
+      .toEqual([{ name: '@opentelemetry/instrumentation-http', config: {} }, { name: 'other-instrumentation', config: { depth: 2, ignore: ['a'] } }])
+    expect(warnings()).toEqual([])
+    for (const invalid of [
+      '@opentelemetry/instrumentation-http',
+      [['@opentelemetry/instrumentation-http', { requestHook: () => {} }]],
+      [['@opentelemetry/instrumentation-http', { at: new Date() }]],
+      [['@opentelemetry/instrumentation-http', {}, 'extra']],
+      ['@opentelemetry/instrumentation-http', '@opentelemetry/instrumentation-http'],
+      [42],
+    ]) {
+      consoleWarnSpy.mockClear()
+      expect(resolve({ instrumentations: invalid }).instrumentations).toEqual([])
+      expect(warnings()).toEqual([expect.stringMatching(/^\[buildkite-test-collector\] otelInstrumentations is ignored: .*; test\.execution export remains enabled$/)])
+    }
   })
 
   it('stringifies tag values and drops null or undefined ones', () => {

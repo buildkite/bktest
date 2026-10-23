@@ -5,7 +5,7 @@ const vm = require('vm')
 const { SETTINGS_ENV, publishSettings, readSettings } = require('../util/otel/config')
 
 jest.mock('../util/otel/session', () => ({
-  sessionFor: jest.fn(() => ({ fake: true })),
+  sessionFor: jest.fn(() => ({ fake: true, connectSandbox: () => () => {} })),
   createSession: jest.fn(() => ({ shutdown: () => Promise.resolve() })),
 }))
 const { sessionFor } = require('../util/otel/session')
@@ -60,7 +60,7 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     expect(environment.config).toEqual({ rootDir: '/proj', cwd: '/elsewhere' })
     expect(environment._buildkite.testPath).toBe('app/pkg/sum.test.js')
     expect(sessionFor).toHaveBeenCalledWith(settings)
-    expect(environment._buildkite.session).toEqual({ fake: true })
+    expect(environment._buildkite.session).toMatchObject({ fake: true })
     expect(warnings()).toEqual([])
   })
 
@@ -81,7 +81,7 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     const environment = new Environment(config, context)
 
     expect(environment._buildkite.testPath).toBe('app/pkg/sum.test.js')
-    expect(environment._buildkite.session).toEqual({ fake: true })
+    expect(environment._buildkite.session).toMatchObject({ fake: true })
     expect(warnings()).toEqual([])
   })
 
@@ -107,7 +107,7 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
 
   it('records the file as exported before its first span, so the reporter skips its JSON', async () => {
     publishSettings(settings)
-    const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn() }
+    const session = { connectSandbox: () => () => {}, startTestSpan: jest.fn(), finishTestSpan: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
     const project = { rootDir: '/proj', id: 'project-a' }
     const environment = new Environment(project, context)
@@ -120,7 +120,7 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
 
   it('exports nothing from a file it cannot record, leaving it to the JSON upload', async () => {
     publishSettings({ ...settings, exportRecords: path.join(exportRecords, 'missing', 'dir') })
-    const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn() }
+    const session = { connectSandbox: () => () => {}, startTestSpan: jest.fn(), finishTestSpan: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
     const environment = new Environment({ rootDir: '/proj', id: 'project-a' }, context)
     const test = { name: 'sums', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: new Error() }
@@ -189,7 +189,7 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
 
     it('uploads both as JSON when only one exported, rather than losing the other', async () => {
       const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-      sessionFor.mockReturnValueOnce({ fake: true }).mockImplementationOnce(() => { throw new Error('the SDK is unavailable in this worker') })
+      sessionFor.mockReturnValueOnce({ fake: true, connectSandbox: () => () => {} }).mockImplementationOnce(() => { throw new Error('the SDK is unavailable in this worker') })
 
       await run(reporter)
 
@@ -276,7 +276,7 @@ const STACKS = [
 describe('BuildkiteTestEngineEnvironment test locations', () => {
   it.each(STACKS)('reports the line Jest reports for a %s', async (_, line, asyncErrorStack) => {
     publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
-    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
+    const session = { connectSandbox: () => () => {}, startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
     const environment = new Environment({ rootDir: '/repo', id: 'project' }, { testPath: '/repo/each.test.js' })
     const test = { name: 'each 1', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: { stack: asyncErrorStack } }
@@ -343,7 +343,7 @@ const FAILURES = [
 describe('BuildkiteTestEngineEnvironment failure text', () => {
   it.each(FAILURES)('%s', async (_, version, messageUtil, errors, text) => {
     publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
-    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
+    const session = { connectSandbox: () => () => {}, startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
     const project = projectWithJestCircus(version, messageUtil)
     const environment = new Environment(project, { testPath: '/repo/fail.test.js' })
@@ -361,7 +361,7 @@ describe('BuildkiteTestEngineEnvironment failure text', () => {
 
   it('formats failures as the jest-circus dispatching events does, not the one beside a custom testRunner', async () => {
     publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
-    const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
+    const session = { connectSandbox: () => () => {}, startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
     const host = projectWithJestCircus('30.5.2', FLATTEN_ERROR_STACK)
     const delegate = projectWithJestCircus('30.4.1', '')
