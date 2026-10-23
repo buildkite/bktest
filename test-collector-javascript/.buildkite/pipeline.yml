@@ -57,9 +57,13 @@ steps:
           - "30.5.2"
         command:
           - "cd test-collector-javascript"
-          - "npm pkg set 'devDependencies.jest={{matrix}}' --workspace examples/jest"
+          # npm otherwise keeps the lockfile's Jest 28 under examples/jest when
+          # the root already has the requested version (29.7.0), and leaves
+          # that version's jest-environment-node out of examples/jest's reach.
+          - "npm pkg set 'devDependencies.jest={{matrix}}' 'devDependencies.jest-environment-node={{matrix}}' --workspace examples/jest"
+          - "node -e 'const fs = require(\"fs\"); const lock = JSON.parse(fs.readFileSync(\"package-lock.json\")); for (const key of Object.keys(lock.packages)) if (key.startsWith(\"examples/jest/node_modules/\")) delete lock.packages[key]; fs.writeFileSync(\"package-lock.json\", JSON.stringify(lock))'"
           - "npm install --ignore-scripts --legacy-peer-deps"
-          - "npm test -- --runInBand e2e/jest-otel.test.js"
+          - "EXPECTED_JEST_VERSION={{matrix}} npm test -- --runInBand e2e/jest-otel.test.js"
         plugins:
           - docker#v3.7.0:
               image: node:22.15.0
