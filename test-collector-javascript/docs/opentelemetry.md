@@ -155,6 +155,7 @@ module.exports = {
         '@opentelemetry/instrumentation-undici',
         ['@opentelemetry/instrumentation-graphql', { mergeItems: true }],
         '@opentelemetry/instrumentation-express',
+        '@opentelemetry/instrumentation-pg',
       ],
     }],
   ],
@@ -173,12 +174,46 @@ npm install --save-dev '@opentelemetry/context-async-hooks@^2.0.0' \
   '@opentelemetry/instrumentation-http@0.223.0' \
   '@opentelemetry/instrumentation-undici@0.33.0' \
   '@opentelemetry/instrumentation-graphql@0.69.0' \
-  '@opentelemetry/instrumentation-express@0.71.1'
+  '@opentelemetry/instrumentation-express@0.71.1' \
+  '@opentelemetry/instrumentation-pg@0.76.0'
 ```
 
-The e2e tests run these four on Jest 27, 29 and 30. Other instrumentation built
-on `@opentelemetry/instrumentation` is expected to work the same way but is not
-tested yet.
+Use instrumentation releases built on `@opentelemetry/instrumentation` 0.2xx,
+the line that matches the 2.x SDK; most current releases have moved to 0.300
+and the 3.x SDK.
+
+The collector's e2e tests run the `http`, `undici`, `graphql`, `express` and
+`redis` instrumentation on Jest 27, 29 and 30. A wider probe against real
+PostgreSQL, MariaDB, Redis and MongoDB servers produced the same child spans in
+Jest 27, 29 and 30 as in plain Node for the packages below (for Redis,
+Mongoose, Prisma, Knex, Sequelize, TypeORM, Fastify and NestJS, also with the
+client or app set up in `beforeAll`). Newer majors such as GraphQL 17 and
+NestJS 12 are outside these instrumentation packages' supported ranges, and
+ESM-only releases need a Jest setup that can load them:
+
+| Package | Instrumentation |
+| --- | --- |
+| Axios, node-fetch 2, Got 11, Supertest 7 | `@opentelemetry/instrumentation-http` |
+| Node's `fetch` | `@opentelemetry/instrumentation-undici` |
+| `pg` 8, also through Drizzle, Kysely 0.28, Knex 3, Sequelize 6 and TypeORM 0.3 | `@opentelemetry/instrumentation-pg` (and the ORM's own, for ORM spans) |
+| `mysql2` 3 | `@opentelemetry/instrumentation-mysql2` |
+| `ioredis` 5, `redis` 5 | `@opentelemetry/instrumentation-ioredis`, `@opentelemetry/instrumentation-redis` |
+| `mongodb` 6, Mongoose 8 | `@opentelemetry/instrumentation-mongodb`, `@opentelemetry/instrumentation-mongoose` |
+| GraphQL 16 | `@opentelemetry/instrumentation-graphql` |
+| Express 4 and 5, NestJS 11 | `@opentelemetry/instrumentation-express`, `@opentelemetry/instrumentation-nestjs-core` |
+| Fastify 5 | `['@fastify/otel', { registerOnInitialization: true }]` |
+| Prisma 6 | `@prisma/instrumentation` |
+| AWS SDK v3 (S3, against a local fake) | `@opentelemetry/instrumentation-aws-sdk` |
+
+Libraries that create spans through the OpenTelemetry API themselves, such as
+BullMQ with `bullmq-otel`, need no entry: their spans are children too.
+
+Child spans are billed, so choose instrumentation for what you want to see. One
+request to an in-process server is two spans (client and server), a cold pooled
+`pg` query three, one cold Prisma query fourteen, and GraphQL records a span per
+resolved field unless you set options such as `{ mergeItems: true }` or
+`{ ignoreResolveSpans: true }`. Instrumenting both an ORM and its driver records
+each query twice.
 
 Each `otelInstrumentations` entry is a package name, or `[name, options]` where
 `options` is the instrumentation's own configuration as plain JSON: the reporter
@@ -198,10 +233,12 @@ Jest loads every module a test file uses itself, so the `require` hooks that
 instrumentation normally relies on never see them; the collector's runtime
 extends Jest's own and patches each module of an instrumented package as Jest
 loads it, including fresh copies after `jest.resetModules()`. Modules are
-patched as soon as they load, so routes and middleware an app registers while
-a test file requires it are instrumented. Node's built-in modules, which every
-test file shares, are patched once per worker process, as a `--require`
-preload would patch them, and stay patched until the worker exits. With
+patched as soon as they finish loading, so routes and middleware an app
+registers while a test file requires it are instrumented. Node's built-in
+modules, which every test file shares, are patched once per worker process, as
+a `--require` preload would patch them, and stay patched until the worker
+exits; instrumentation that listens on diagnostics channels is enabled before
+the first test file loads. With
 `otelInstrumentations` set but no runtime, the run warns once that it needs the
 runtime and exports test spans only. If your project already uses a custom
 runtime, build one with `extend`:
