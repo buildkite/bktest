@@ -58,6 +58,7 @@ const failureFormatting = (projectConfig, circusDir) => {
     format: prettyFormat ? (value) => prettyFormat.format(value, { maxDepth: 3 }) : String,
     errorText,
     wrapsThrownValues: Boolean(flattenErrorStack),
+    major,
   }
 }
 
@@ -175,11 +176,20 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
 
   async handleTestEvent(event, state) {
     if (this._buildkite.session && !this._buildkite.started) this._start(new Error().stack)
+    // Recorded before any await: Jest dispatches add_test synchronously, and
+    // the test.concurrent wrapper reads it as soon as registration returns.
+    if (event.name === 'add_test') {
+      const siblings = state.currentDescribeBlock.children
+      this._buildkite.added = siblings[siblings.length - 1]
+    }
     if (super.handleTestEvent) await super.handleTestEvent(event, state)
     const { session, spans, children } = this._buildkite
     if (!session) return
 
     switch (event.name) {
+      case 'setup':
+        if (this._buildkite.formatting?.major === 27 && event.runtimeGlobals?.test?.concurrent) this._wrapJest27Concurrent(event.runtimeGlobals.test, state)
+        break
       case 'run_start':
         if (children.canExportChildren) this._wrapFunctions(state.rootDescribeBlock)
         break
@@ -225,6 +235,41 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
     spans.set(test, started)
     children.began(started)
     return started
+  }
+
+  // Jest 27 starts a test.concurrent body as the file registers it, before
+  // the test exists, and the test it registers only awaits that promise. The
+  // body is wrapped here instead, and its test span starts with it: under a
+  // stand-in with the test's name and describe blocks until registration
+  // returns the test itself. The collector then sets up as the first body
+  // starts, while the file is still being collected.
+  _wrapJest27Concurrent(test, state) {
+    const env = this
+    const wrap = (register) => {
+      const wrapped = function (testName, testFn, timeout) {
+        if (typeof testFn !== 'function') return register.call(this, testName, testFn, timeout)
+        let owner = { name: testName, parent: state.currentDescribeBlock, errors: [] }
+        const body = function (...args) {
+          const { children } = env._buildkite
+          if (!children.canExportChildren) return testFn.apply(this, args)
+          return children.run(env._begin(owner), testFn, this, args)
+        }
+        env._buildkite.added = null
+        const result = register.call(this, testName, body, timeout)
+        const registered = env._buildkite.added
+        if (registered && registered.type === 'test') {
+          const { spans } = env._buildkite
+          if (spans.has(owner)) spans.set(registered, spans.get(owner))
+          spans.delete(owner)
+          owner = registered
+        }
+        return result
+      }
+      return Object.assign(wrapped, register)
+    }
+    const concurrent = wrap(test.concurrent)
+    if (typeof test.concurrent.only === 'function') concurrent.only = wrap(test.concurrent.only)
+    test.concurrent = concurrent
   }
 
   _wrapFunctions(block) {
