@@ -154,6 +154,7 @@ module.exports = {
         '@opentelemetry/instrumentation-http',
         '@opentelemetry/instrumentation-undici',
         ['@opentelemetry/instrumentation-graphql', { mergeItems: true }],
+        '@opentelemetry/instrumentation-express',
       ],
     }],
   ],
@@ -171,8 +172,13 @@ SDK line:
 npm install --save-dev '@opentelemetry/context-async-hooks@^2.0.0' \
   '@opentelemetry/instrumentation-http@0.223.0' \
   '@opentelemetry/instrumentation-undici@0.33.0' \
-  '@opentelemetry/instrumentation-graphql@0.69.0'
+  '@opentelemetry/instrumentation-graphql@0.69.0' \
+  '@opentelemetry/instrumentation-express@0.71.1'
 ```
+
+The e2e tests run these four on Jest 27, 29 and 30. Other instrumentation built
+on `@opentelemetry/instrumentation` is expected to work the same way but is not
+tested yet.
 
 Each `otelInstrumentations` entry is a package name, or `[name, options]` where
 `options` is the instrumentation's own configuration as plain JSON: the reporter
@@ -187,26 +193,35 @@ the `@opentelemetry/instrumentation-` prefix (for example `http,undici`, as
 `{ enabled: false }` as the package's options. Instrumentation from other
 publishers is listed by its full package name.
 
-The runtime (`moduleLoader` in Jest 27) is what makes children possible. Jest
-loads every module a test file uses itself, so the `require` hooks that
+The runtime (`moduleLoader` in Jest 27) is what makes package spans possible.
+Jest loads every module a test file uses itself, so the `require` hooks that
 instrumentation normally relies on never see them; the collector's runtime
 extends Jest's own and patches each module of an instrumented package as Jest
-loads it, including fresh copies after `jest.resetModules()`. Node's built-in
-modules, which Jest shares between test files, are patched in the worker
-process. With `otelInstrumentations` set but no runtime, the run warns once that
-it needs the runtime and exports test spans only. If your project already uses
-a custom runtime, build one with `extend`:
+loads it, including fresh copies after `jest.resetModules()`. Modules are
+patched as soon as they load, so routes and middleware an app registers while
+a test file requires it are instrumented. Node's built-in modules, which every
+test file shares, are patched once per worker process, as a `--require`
+preload would patch them, and stay patched until the worker exits. With
+`otelInstrumentations` set but no runtime, the run warns once that it needs the
+runtime and exports test spans only. If your project already uses a custom
+runtime, build one with `extend`:
 `module.exports = require('buildkite-test-collector/jest/runtime').extend(MyRuntime)`.
 
-Nothing is configured until a test file's first test or `beforeEach` hook runs,
-after setup files, the file's own top-level code and `beforeAll` hooks. If the
-file's OpenTelemetry API has no tracer provider by then, the collector registers
-a provider for children with the collector's resource and random ids from
-`crypto.randomBytes`, an async context manager and W3C trace-context
-propagation (each only where none is registered), and enables the named
-instrumentation. Children otherwise use the SDK's defaults and `OTEL_*`
-settings, as Ruby's do: `OTEL_TRACES_SAMPLER=traceidratio` can sample children
-out, but never test spans, whose provider is separate and always samples.
+Each worker process has one tracer provider for children, with the collector's
+resource and random ids from `crypto.randomBytes`. Who owns a test file's
+provider is decided when its first test or `beforeEach` hook runs, after setup
+files, the file's own top-level code and `beforeAll` hooks. If the file's
+OpenTelemetry API has no tracer provider by then, the collector registers the
+worker's provider in it, with an async context manager and W3C trace-context
+propagation (each only where none is registered). The collector's
+instrumentation records only while a file it manages runs. In any other file,
+such as one that opts out of the collector's environment with
+`@jest-environment` or one that owns its provider, it behaves as instrumentation
+does with no SDK registered: it records nothing and adds no trace headers
+unless a trace is already current. Children otherwise use the SDK's defaults
+and `OTEL_*` settings, as Ruby's do: `OTEL_TRACES_SAMPLER=traceidratio` can
+sample children out, but never test spans, whose provider is separate and
+always samples.
 
 Inside a test, or a `beforeEach`/`afterEach` hook, the test span is current:
 
@@ -230,6 +245,11 @@ Spans from `beforeAll`, `afterAll`, file loading or roots you start yourself are
 in traces of their own and are not exported. Each child is exported when it
 ends; end child spans before the test file finishes.
 
+Jest 27 starts a `test.concurrent` body as the file registers it, while the
+file is still being collected. On Jest 27 such a test's span starts with its
+body and ends when Jest finishes the test, and the collector decides who owns
+the provider when the first such body starts, before `beforeAll` hooks run.
+
 Jest 27 does not copy Node's `fetch` into the test sandbox. To use `fetch` on
 that version, extend the collector's environment and set
 `this.global.fetch = globalThis.fetch` after `super(...)`.
@@ -242,11 +262,16 @@ publish its module definitions (`getModuleDefinitions()`, part of
 ### Suites that configure OpenTelemetry
 
 A tracer provider the suite registers itself, in a setup file, the test file or
-a `beforeAll` hook, is never replaced or reconfigured, and the collector then
-installs no instrumentation for that file: configure instrumentation there as
-you normally would. Unlike Ruby's SDK, the 2.x JavaScript SDK cannot add a span
-processor to a provider after it is constructed, so add the collector's when
-you construct yours:
+a `beforeAll` hook, is never replaced or reconfigured, and the collector's
+instrumentation records nothing for that file. Inside Jest, your own
+instrumentation only reaches Node's built-in modules, which you patch yourself
+(for example `for (const d of http.getModuleDefinitions()) d.patch(require(d.name))`),
+and spans your code creates. Package instrumentation you register, directly or
+through `NodeSDK`, does not patch the packages a test file loads, because Jest
+bypasses the `require` hooks it relies on. For package spans, let the collector
+own the provider and list the packages in `otelInstrumentations`. Unlike Ruby's
+SDK, the 2.x JavaScript SDK cannot add a span processor to a provider after it
+is constructed, so add the collector's when you construct yours:
 
 ```js
 // otel.setup.js, in setupFilesAfterEnv
@@ -425,8 +450,8 @@ a 5,000 ms schedule delay and a 30-second export timeout. Set
 `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` and
 `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` to override these sizes, with the
 same validation as test sizes. A child flood can drop children but never
-displace test results. Both paths share the worker's flush budget, test spans
-first. Dropped children warn that `test.execution results are unaffected`;
+displace test results. Each path has its own 30-second flush budget in the
+worker, and test spans flush first. Dropped children warn that `test.execution results are unaffected`;
 SDK 2.x does not expose immediate queue-overflow callbacks, so accounting is
 reported at flush, not the moment a queue fills.
 
