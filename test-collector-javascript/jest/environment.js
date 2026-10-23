@@ -161,7 +161,12 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
       this._buildkite.record = () => recordExport(settings.exportRecords, recordKey(projectConfig, context.testPath))
       this._buildkite.fallback = fallback
       this._buildkite.session = sessionFor(settings)
-      this._buildkite.children = new JestOtelContext(this._buildkite.session)
+      // The collector's exports run with tracing suppressed in this sandbox.
+      this._buildkite.disconnect = this._buildkite.session.connectSandbox(this.global)
+      this._buildkite.children = new JestOtelContext({
+        session: this._buildkite.session, settings, testPath: context.testPath, rootDir: projectConfig.rootDir,
+      })
+      // For createBuildkiteSpanProcessor() in the sandbox's setup files.
       this.global.__buildkiteOtel = this._buildkite.children
     } catch (error) {
       warn(`OpenTelemetry could not be set up in this test worker (${describeError(error)}); for ${this._buildkite.testPath}, ${fallback}.`)
@@ -176,7 +181,7 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
 
     switch (event.name) {
       case 'run_start':
-        if (children.sdk) this._wrapFunctions(state.rootDescribeBlock)
+        if (children.canExportChildren) this._wrapFunctions(state.rootDescribeBlock)
         break
       case 'include_test_location_in_result':
         this._buildkite.includeLocation = true
@@ -213,12 +218,12 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   _begin(test) {
     const { session, spans, children, testPath } = this._buildkite
     if (spans.has(test)) return spans.get(test)
-    children.setup()
     const result = this._assertionResult(test, undefined)
     const record = { id: randomUUID(), ...testEngineRecord(result, testPath) }
     const handle = session.startTestSpan(record, { startTime: Date.now() })
     const started = { handle, id: record.id }
     spans.set(test, started)
+    children.began(started)
     return started
   }
 
@@ -304,6 +309,7 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
         }
       }
     } finally {
+      if (this._buildkite.disconnect) this._buildkite.disconnect()
       await super.teardown()
     }
   }
