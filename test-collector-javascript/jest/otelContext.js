@@ -171,13 +171,25 @@ class JestOtelContext {
     this.warnOnce = (key, message) => warnOncePerRun(settings.exportRecords, key, message)
   }
 
-  // Called by the collector's Jest runtime when it is created for this file.
+  // Called by the collector's Jest runtime when it is created for this file,
+  // before setup files and the test file load. The worker's instrumentation
+  // is enabled from here, unless OpenTelemetry is configured for the whole
+  // process: instrumentation that listens on diagnostics channels must be
+  // listening when an app is built (@fastify/otel hooks each Fastify
+  // instance as it initializes). If the worker cannot record children,
+  // setup reports why.
   attachRuntime(runtime) {
     this.runtime = runtime
     try {
       this.instrumentations = this.entries.length ? instrumentationSet(this.entries, this.rootDir, this.warnOnce) : null
     } catch (error) {
       warn(`OpenTelemetry instrumentation could not be loaded (${describeError(error)}); test.execution export remains enabled.`)
+    }
+    if (!this.instrumentations || hasTracerProvider(this.session.api)) return
+    try {
+      this._worker()
+    } catch {
+      // reported by setup
     }
   }
 
