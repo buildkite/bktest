@@ -243,7 +243,7 @@ const createSession = (settings) => {
   }
   // Children keep the collector's resource and CSPRNG ids but, as in Ruby,
   // the SDK's own sampler and limits, including OTEL_TRACES_SAMPLER.
-  const childProviderConfig = { resource: providerConfig.resource, idGenerator }
+  const createChildProvider = (spanProcessors) => new trace.BasicTracerProvider({ resource: providerConfig.resource, idGenerator, spanProcessors })
   let propagator
   const childPropagator = () => {
     propagator = propagator || new sdk.core.CompositePropagator({
@@ -457,7 +457,7 @@ const createSession = (settings) => {
     if (drained) process.off('exit', onExit)
   }
 
-  return { api, runKey, metrics, startTestSpan, finishTestSpan, forceFlush, shutdown, childExport, childProviderConfig, childPropagator, connectSandbox }
+  return { api, runKey, metrics, startTestSpan, finishTestSpan, forceFlush, shutdown, childExport, createChildProvider, childPropagator, connectSandbox }
 }
 
 // One session per process: a run's identity is fixed once export is
