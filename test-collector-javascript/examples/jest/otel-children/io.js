@@ -33,6 +33,12 @@ describe('per-test hooks', () => {
   })
 
   test('http I/O', async () => {
+    // Overflows the 2-span child queue, then lets it drain, so the request's
+    // spans that follow show instrumentation was active.
+    if (process.env.OTEL_CHILD_CASE === 'flood') {
+      for (let i = 0; i < 100; i++) tracer.startSpan('flood-child').end()
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    }
     await tracer.startActiveSpan('manual-parent', async (span) => {
       try {
         expect(await get(url)).toBe('real I/O')
@@ -43,9 +49,6 @@ describe('per-test hooks', () => {
         span.end()
       }
     })
-    if (process.env.OTEL_CHILD_CASE === 'flood') {
-      for (let i = 0; i < 100; i++) tracer.startSpan('flood-child').end()
-    }
   })
 
   test('undici I/O', async () => {
