@@ -6,6 +6,12 @@ const mode = process.env.OTEL_CHILD_CASE || 'managed'
 
 const instrumentations = {
   'bad-option': [['@opentelemetry/instrumentation-http', { requestHook: 'not JSON-safe', hook: new Date() }]],
+  // Instrumentation that patches a package is skipped, wherever it is listed.
+  'package-instrumentation': [
+    ['@opentelemetry/instrumentation-graphql', { mergeItems: true }],
+    '@opentelemetry/instrumentation-http',
+    '@opentelemetry/instrumentation-undici',
+  ],
   // With OTEL_NODE_DISABLED_INSTRUMENTATIONS=undici in the e2e test.
   'missing-package': [
     '@opentelemetry/instrumentation-not-installed',
@@ -16,8 +22,6 @@ const instrumentations = {
 }[mode] || [
   '@opentelemetry/instrumentation-http',
   '@opentelemetry/instrumentation-undici',
-  ['@opentelemetry/instrumentation-graphql', { mergeItems: true }],
-  '@opentelemetry/instrumentation-express',
 ]
 
 // OTEL_CHILD_CASE=optout runs a managed file, then one that opted out of the

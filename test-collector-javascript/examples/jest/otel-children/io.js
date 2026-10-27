@@ -1,9 +1,5 @@
 const http = require('http')
 const { trace } = require('@opentelemetry/api')
-const { graphql, buildSchema } = require('graphql')
-// Express 4's main module exports lib/express.js unchanged, which loads
-// first. Both load before the collector decides who owns the provider.
-const express = require('express')
 
 // Obtained before the collector registers its provider at the first test.
 const tracer = trace.getTracer('fixture')
@@ -57,31 +53,9 @@ describe('per-test hooks', () => {
     expect(await response.text()).toBe('real I/O')
   })
 
-  test('graphql resolver I/O', async () => {
-    const schema = buildSchema('type Query { message: String }')
-    const result = await graphql({
-      schema, source: '{ message }',
-      rootValue: { message: async () => (await fetch(url)).text() },
-    })
-    expect(result).toEqual({ data: { message: 'real I/O' } })
-  })
-
   test('callback body', (done) => {
     setImmediate(() => { tracer.startSpan('callback-child').end(); done() })
   })
-})
-
-// Instrumentation wraps routes as they are registered, so the app is built
-// once the collector owns the provider.
-test('express route I/O', async () => {
-  const app = express()
-  app.get('/route', (req, res) => res.send('express I/O'))
-  const routeServer = await new Promise((resolve) => { const listening = app.listen(0, '127.0.0.1', () => resolve(listening)) })
-  try {
-    expect(await get(`http://127.0.0.1:${routeServer.address().port}/route`)).toBe('express I/O')
-  } finally {
-    await new Promise((resolve) => routeServer.close(resolve))
-  }
 })
 
 // Different delays ensure a single mutable "current test" implementation

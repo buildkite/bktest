@@ -62,9 +62,9 @@ describe('examples/jest in OTel mode', () => {
     expect(jestVersion).toBe(process.env.EXPECTED_JEST_VERSION || jestVersion)
   })
 
-  // examples/jest/otel-children.config.js: 19 tests in io.js, again.js,
+  // examples/jest/otel-children.config.js: 17 tests in io.js, again.js,
   // empty.js and owner.js; again.js retries one test, which fails once.
-  const CHILD_FIXTURE_ROOTS = 20
+  const CHILD_FIXTURE_ROOTS = 18
   const CLIENT = 3
   const SERVER = 2
 
@@ -149,7 +149,7 @@ describe('examples/jest in OTel mode', () => {
     ]) {
       expect([test, childrenOf(rootsNamed(test)[0], named(child))]).toEqual([test, [expect.anything()]])
     }
-    for (const test of ['http I/O', 'undici I/O', 'graphql resolver I/O', 'callback body']) {
+    for (const test of ['http I/O', 'undici I/O', 'callback body']) {
       for (const hook of ['setup-child', 'teardown-child']) {
         expect([test, hook, childrenOf(rootsNamed(test)[0], named(hook)).length]).toEqual([test, hook, 1])
       }
@@ -197,21 +197,6 @@ describe('examples/jest in OTel mode', () => {
     const [manual] = childrenOf(rootsNamed('http I/O')[0], named('manual-parent'))
     expect(childrenOf(rootsNamed('http I/O')[0], clientGet)[0].parentSpanId).toBe(manual.spanId)
 
-    // graphql is patched as the test file loads it; the resolver's fetch
-    // nests under the resolver.
-    const graphqlRoot = rootsNamed('graphql resolver I/O')[0]
-    const [resolve] = childrenOf(graphqlRoot, named('graphql.resolve message'))
-    expect(resolve).toBeDefined()
-    expect(childrenOf(graphqlRoot, (s) => clientGet(s) && s.parentSpanId === resolve.spanId)).toHaveLength(1)
-
-    // Express is patched under its main module's name, although the file it
-    // re-exports loaded first: its spans nest under the in-process server.
-    const expressRoot = rootsNamed('express route I/O')[0]
-    const [expressServer] = childrenOf(expressRoot, (s) => s.kind === SERVER)
-    const [handler] = childrenOf(expressRoot, (s) => s.attributes['express.type'] === 'request_handler')
-    expect(handler).toEqual(expect.objectContaining({ name: 'request handler - /route', parentSpanId: expressServer.spanId }))
-    expect(childrenOf(expressRoot, (s) => s.attributes['express.type'] === 'middleware').length).toBeGreaterThan(0)
-
     // A file that owns its provider gets no forwarding and no instrumentation.
     expect(childrenOf(rootsNamed('own provider')[0])).toEqual([])
     expect(children.filter(named('owner-child'))).toEqual([])
@@ -241,9 +226,8 @@ describe('examples/jest in OTel mode', () => {
       return
     }
     expectManualChildren(outcome)
-    // Only the suite's instrumentation runs: its http, no graphql, and its
-    // resource rather than the collector's.
-    expect(children.filter((s) => s.name.startsWith('graphql.') || s.attributes['express.type'])).toEqual([])
+    // Only the suite's instrumentation runs: one http client span per
+    // request, and the suite's resource rather than the collector's.
     expect(childrenOf(rootsNamed('http I/O')[0], clientGet)).toHaveLength(1)
     expect(childrenOf(rootsNamed('own provider')[0], named('owner-child'))).toHaveLength(1)
     for (const resource of childResources()) expect(resource['service.name']).toBe('customer-service')
@@ -301,7 +285,24 @@ describe('examples/jest in OTel mode', () => {
       expect.stringMatching(/otelInstrumentations is ignored: options for @opentelemetry\/instrumentation-http must be a plain JSON object/),
     ])
     expectManualChildren(outcome, { instrumented: false })
-    expect(outcome.children.filter((s) => s.name === 'GET' || s.name.startsWith('graphql.'))).toEqual([])
+    expect(outcome.children.filter((s) => s.name === 'GET')).toEqual([])
+  }, 60000)
+
+  // Jest loads a test file's packages itself, so instrumentation that patches
+  // packages is skipped with one warning per run, across workers, and the
+  // built-in instrumentation listed after it still records.
+  test('skips instrumentation that patches packages with one warning and keeps http and fetch children', async () => {
+    const outcome = await runChildren('package-instrumentation', { args: '--maxWorkers=2 --no-cache' })
+    const { rootsNamed, childrenOf, warnings } = outcome
+    expectAllResults(outcome)
+    expect(warnings.filter((w) => !/registers its own tracer provider/.test(w))).toEqual([
+      expect.stringMatching(/OpenTelemetry instrumentation @opentelemetry\/instrumentation-graphql is not supported in Jest yet and was skipped: .*Test results are unaffected\.$/),
+    ])
+    expectManualChildren(outcome)
+    for (const test of ['http I/O', 'undici I/O']) {
+      const [client] = childrenOf(rootsNamed(test)[0], clientGet)
+      expect([test, client && childrenOf(rootsNamed(test)[0], (s) => s.kind === SERVER && s.parentSpanId === client.spanId).length]).toEqual([test, 1])
+    }
   }, 60000)
 
   test('skips instrumentation that is missing, disabled in its options, or disabled with OTEL_NODE_DISABLED_INSTRUMENTATIONS', async () => {
@@ -313,7 +314,6 @@ describe('examples/jest in OTel mode', () => {
     ])
     expect(childrenOf(rootsNamed('http I/O')[0], clientGet)).toHaveLength(1)
     expect(childrenOf(rootsNamed('undici I/O')[0], (s) => s.name === 'GET')).toEqual([])
-    expect(outcome.children.filter((s) => s.name.startsWith('graphql.'))).toEqual([])
   }, 60000)
 
   test('overflows the bounded child queue without displacing test results or tracing its own exports', async () => {
@@ -331,7 +331,7 @@ describe('examples/jest in OTel mode', () => {
     expect(result.stderr).not.toMatch(/TEST RESULTS MISSING/)
     expect(result.stdout).not.toMatch(/Test Engine Sending:/)
     const spans = server.spans()
-    expect(spans.filter((s) => s.name === 'test.execution')).toHaveLength(9) // io.js
+    expect(spans.filter((s) => s.name === 'test.execution')).toHaveLength(7) // io.js
     expect(spans.filter((s) => s.name === 'flood-child').length).toBeLessThan(100)
     expect(spans.filter((s) => s.name === 'GET').length).toBeGreaterThan(0)
     const own = spans.filter((s) => s.name.startsWith('POST') || Object.values(s.attributes).some((value) => String(value) === port))
