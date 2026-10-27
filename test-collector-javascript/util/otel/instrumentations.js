@@ -61,10 +61,12 @@ const createInstrumentation = (requireModule, { name, config }) => {
   return new Instrumentation({ ...options, enabled: false })
 }
 
-// The upstream public, experimental API that compile-time instrumentation uses.
-const moduleDefinitions = (instrumentation) => {
-  const definitions = typeof instrumentation.getModuleDefinitions === 'function' ? instrumentation.getModuleDefinitions() : []
-  return Array.isArray(definitions) ? definitions : [definitions]
+// The modules an instrumentation patches, through @opentelemetry/instrumentation's
+// public (experimental) getModuleDefinitions().
+const patchedModules = (instrumentation) => {
+  const definitions = typeof instrumentation.getModuleDefinitions === 'function' ? instrumentation.getModuleDefinitions() : null
+  if (definitions === null || definitions === undefined) return null
+  return (Array.isArray(definitions) ? definitions : [definitions]).map((definition) => definition.name)
 }
 
 module.exports = {
@@ -72,5 +74,5 @@ module.exports = {
   parseInstrumentations,
   enabledInstrumentations,
   createInstrumentation,
-  moduleDefinitions,
+  patchedModules,
 }

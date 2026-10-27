@@ -18,21 +18,15 @@ const BaseRuntime = (() => {
 })()
 
 // Lets the collector's test environment connect the file's sandbox to
-// OpenTelemetry: it loads the OpenTelemetry API and SDK into the sandbox's
-// module registry, and patches packages as test code requires them, which
-// require-in-the-middle cannot do because Jest loads modules itself.
-// Without the collector's environment it behaves exactly like its base.
+// OpenTelemetry: the environment uses it to load the OpenTelemetry API and
+// SDK into the sandbox's module registry, which a test environment cannot
+// reach on its own. Without the collector's environment it behaves exactly
+// like its base.
 const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
   constructor(config, environment, ...rest) {
     super(config, environment, ...rest)
-    this._buildkiteChildren = environment?._buildkite?.children || null
-    if (this._buildkiteChildren) this._buildkiteChildren.attachRuntime(this)
-  }
-
-  requireModule(from, moduleName, options, isRequireActual) {
-    const exports = super.requireModule(from, moduleName, options, isRequireActual)
-    if (!this._buildkiteChildren || options?.isInternalModule) return exports
-    return this._buildkiteChildren.loaded(from, moduleName, exports)
+    const children = environment?._buildkite?.children
+    if (children) children.attachRuntime(this)
   }
 }
 
