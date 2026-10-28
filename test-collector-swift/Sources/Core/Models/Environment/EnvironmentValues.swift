@@ -48,9 +48,24 @@ struct EnvironmentValues {
     return dictionary
   }
 
-  func string(for key: String, private: Bool = false) -> String? {
+  /// How `string(for:logged:)` shows a value in debug logs.
+  enum LoggedValue {
+    case plain
+    case redacted
+    /// Only the scheme, host, port and path; see `URL.redactedForLogs`.
+    case endpoint
+  }
+
+  func string(for key: String, logged: LoggedValue = .plain) -> String? {
     func description(for value: String) -> String {
-      `private` ? "<redacted>" : value
+      switch logged {
+      case .plain:
+        return value
+      case .redacted:
+        return "<redacted>"
+      case .endpoint:
+        return URL(string: value)?.redactedForLogs ?? "<redacted>"
+      }
     }
 
     if let value = self.values[key]?.trimmed() {
@@ -80,19 +95,26 @@ struct EnvironmentValues {
 
 extension EnvironmentValues {
   var isAnalyticsEnabled: Bool { self.bool(for: "BUILDKITE_ANALYTICS_ENABLED") ?? true }
-  var analyticsToken: String? { self.string(for: "BUILDKITE_ANALYTICS_TOKEN", private: true) }
-  var legacyAnalyticsBaseURL: String? { self.string(for: "BUILDKITE_ANALYTICS_BASE_URL") }
-  var analyticsOTLPEndpoint: String? { self.string(for: "BUILDKITE_ANALYTICS_OTLP_ENDPOINT") }
+  var analyticsToken: String? { self.string(for: "BUILDKITE_ANALYTICS_TOKEN", logged: .redacted) }
+  var otlpToken: String? { self.string(for: "BUILDKITE_TESTS_OTLP_TOKEN", logged: .redacted) }
+  var legacyAnalyticsBaseURL: String? {
+    self.string(for: "BUILDKITE_ANALYTICS_BASE_URL", logged: .endpoint)
+  }
+  var analyticsOTLPEndpoint: String? {
+    self.string(for: "BUILDKITE_ANALYTICS_OTLP_ENDPOINT", logged: .endpoint)
+  }
 
   var isAnalyticsDebugEnabled: Bool { self.bool(for: "BUILDKITE_ANALYTICS_DEBUG_ENABLED") ?? false }
   var analyticsTags: [String: String]? { self.stringDictionary(for: "BUILDKITE_ANALYTICS_TAGS") }
 
-  var otelEndpoint: String? { self.string(for: "OTEL_EXPORTER_OTLP_ENDPOINT") }
-  var otelHeaders: String? { self.string(for: "OTEL_EXPORTER_OTLP_HEADERS", private: true) }
+  var otelEndpoint: String? { self.string(for: "OTEL_EXPORTER_OTLP_ENDPOINT", logged: .endpoint) }
+  var otelHeaders: String? { self.string(for: "OTEL_EXPORTER_OTLP_HEADERS", logged: .redacted) }
   var otelProtocol: String? { self.string(for: "OTEL_EXPORTER_OTLP_PROTOCOL") }
-  var otelTracesEndpoint: String? { self.string(for: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") }
+  var otelTracesEndpoint: String? {
+    self.string(for: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", logged: .endpoint)
+  }
   var otelTracesHeaders: String? {
-    self.string(for: "OTEL_EXPORTER_OTLP_TRACES_HEADERS", private: true)
+    self.string(for: "OTEL_EXPORTER_OTLP_TRACES_HEADERS", logged: .redacted)
   }
   var otelTracesProtocol: String? { self.string(for: "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL") }
 

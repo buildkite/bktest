@@ -33,12 +33,35 @@ enum BuildkiteTelemetryAttribute {
   static let testName = "buildkite.test.name"
 }
 
+/// Per-value length caps applied before export so one oversized value cannot
+/// push a request past the receiver's size limit. The failure reason and each
+/// exception message follow the receiver's code-point budgets (the message
+/// marker `...` shows the collector cut it); the span and event attribute caps
+/// follow the SDK limits in the collector specification, where 10,243 keeps
+/// long test names within the receiver's 10,240-code-point identity limit.
+enum TelemetryLimit {
+  static let attributeValueLength = 10_243
+  static let eventAttributeValueLength = 16_384
+  static let exceptionMessageLength = 10_240
+  static let failureReasonLength = 1_024
+
+  static let rootSpanLimits = SpanLimits()
+    .settingAttributeValueLengthLimit(UInt(attributeValueLength))
+}
+
 private enum TelemetryValue {
   static let executionVia = "otlp"
   static let frameworkName = "xctest"
   static let rootSpanName = "test.execution"
   static let skippedResult = "skipped"
   static let unsetResult = "unset"
+}
+
+/// `Buildkite-Tests-Span-Stream` values. Each exporter sends exactly one, so
+/// execution roots never share a request with child spans.
+enum SpanStream: String {
+  case test
+  case child
 }
 
 struct CollectorOTLPConfiguration {
@@ -53,74 +76,104 @@ struct CollectorOTLPConfiguration {
     var runEnvironment = environment.runEnvironment()
     runEnvironment.applyCustomEnvironmentOverrides()
     let rawHeaders = environment.otelTracesHeaders ?? environment.otelHeaders
-    // Standard headers alone must not enable collection or select the OTLP
-    // specification's localhost default. They may be process-wide settings for
-    // unrelated telemetry and are safe to use only with an explicit standard endpoint.
-    let hasExplicitConfiguration = environment.otelTracesEndpoint != nil
-      || environment.otelEndpoint != nil
-      || environment.analyticsOTLPEndpoint != nil
-
-    guard environment.analyticsToken != nil || hasExplicitConfiguration else { return nil }
-
-    let endpoint: URL
-    let usesBuildkiteCredentials: Bool
-    if let value = environment.otelTracesEndpoint {
-      guard let url = Self.absoluteURL(value) else {
-        logger?.error("OpenTelemetry traces endpoint is not a valid absolute URL")
-        return nil
+    // Buildkite settings always win: an app's own OTEL_EXPORTER_OTLP_* values
+    // must not redirect test results away from Test Engine. The standard
+    // variables select an endpoint only when no Buildkite credential is set,
+    // and headers alone never enable collection or select the OTLP
+    // specification's localhost default.
+    // bktec's relay sets BUILDKITE_TESTS_OTLP_TOKEN and can leave the upload
+    // token blank, so the OTLP token comes first.
+    let token = environment.otlpToken ?? environment.analyticsToken
+    let usesBuildkiteCredentials = token != nil || environment.analyticsOTLPEndpoint != nil
+    let standardEndpoint = environment.otelTracesEndpoint.map { (value: $0, appendsPath: false) }
+      ?? environment.otelEndpoint.map { (value: $0, appendsPath: true) }
+    let standardURL = standardEndpoint.flatMap { standard in
+      Self.absoluteURL(standard.value).map {
+        standard.appendsPath ? $0.appendingPathComponent("v1/traces") : $0
       }
-      endpoint = url
-      usesBuildkiteCredentials = false
-    } else if let value = environment.analyticsOTLPEndpoint {
-      guard let url = Self.absoluteURL(value) else {
-        logger?.error("OpenTelemetry traces endpoint is not a valid absolute URL")
-        return nil
-      }
-      endpoint = url
-      usesBuildkiteCredentials = true
-    } else if let value = environment.otelEndpoint {
-      guard let url = Self.absoluteURL(value) else {
-        logger?.error("OpenTelemetry endpoint is not a valid absolute URL")
-        return nil
-      }
-      endpoint = url.appendingPathComponent("v1/traces")
-      usesBuildkiteCredentials = false
-    } else {
-      endpoint = URL(string: TestCollector.endpoint)!
-      usesBuildkiteCredentials = true
     }
 
-    if !usesBuildkiteCredentials,
-       let protocolName = environment.otelTracesProtocol ?? environment.otelProtocol,
-       protocolName.lowercased() != "http/protobuf" {
-      logger?.error(
-        "Unsupported OpenTelemetry traces protocol \(protocolName); expected http/protobuf"
+    guard usesBuildkiteCredentials || standardEndpoint != nil else {
+      logger?.info(
+        "TestCollector requires an API token or OpenTelemetry exporter configuration. Test results will not be exported."
       )
       return nil
     }
 
+    // The receiver rejects the whole request with 400 for an invalid run key,
+    // and a relay forwards the key as-is, so disable export up front rather
+    // than fail every export.
+    guard Self.isValidRunKey(runEnvironment.key) else {
+      logger?.warning(
+        "OpenTelemetry span export disabled: run key \(runEnvironment.key.debugDescription) is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); it must be 1-255 printable ASCII characters without spaces."
+      )
+      return nil
+    }
+
+    var endpoint = URL(string: TestCollector.endpoint)!
     var headers = [(String, String)]()
     if usesBuildkiteCredentials {
+      if let value = environment.analyticsOTLPEndpoint {
+        guard let url = Self.absoluteURL(value) else {
+          logger?.error("OpenTelemetry traces endpoint is not a valid absolute URL")
+          return nil
+        }
+        endpoint = url
+      }
       headers.append(("Buildkite-Tests-Run-Key", runEnvironment.key))
-      if let token = environment.analyticsToken {
+      if let token {
         headers.append(("Authorization", "Token token=\"\(token)\""))
       }
-      if rawHeaders != nil {
+      // bktec points the standard variables at the same relay endpoint, so
+      // they only need a warning when they name somewhere else.
+      if standardURL != endpoint, standardEndpoint != nil || rawHeaders != nil {
         logger?.warning(
-          "Standard OpenTelemetry exporter headers are ignored for endpoints that receive Buildkite credentials; use OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT to send custom headers."
+          "Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN, BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(endpoint.redactedForLogs) with Buildkite credentials."
         )
       }
-    } else if let rawHeaders {
-      guard let parsedHeaders = Self.parseHeaders(rawHeaders) else {
-        logger?.error("OpenTelemetry exporter headers are invalid")
+    } else if standardEndpoint != nil {
+      guard let standardURL else {
+        logger?.error("OpenTelemetry traces endpoint is not a valid absolute URL")
         return nil
       }
-      headers = parsedHeaders
+      endpoint = standardURL
+
+      if let protocolName = environment.otelTracesProtocol ?? environment.otelProtocol,
+         protocolName.lowercased() != "http/protobuf" {
+        logger?.error(
+          "Unsupported OpenTelemetry traces protocol \(protocolName); expected http/protobuf"
+        )
+        return nil
+      }
+      if let rawHeaders {
+        guard let parsedHeaders = Self.parseHeaders(rawHeaders) else {
+          logger?.error("OpenTelemetry exporter headers are invalid")
+          return nil
+        }
+        headers = parsedHeaders
+      }
+      logger?.info(
+        "Sending test executions to \(endpoint.redactedForLogs) from OTEL_EXPORTER_OTLP_* without Buildkite credentials; they reach Buildkite Test Engine only if that endpoint forwards them."
+      )
     }
 
     self.endpoint = endpoint
     self.headers = headers
     self.runEnvironment = runEnvironment
+  }
+
+  /// The exporter owns the stream header; a copy in configured headers would
+  /// be sent as a second value.
+  func headers(for stream: SpanStream) -> [(String, String)] {
+    var headers = self.headers
+    headers.removeAll { $0.0.caseInsensitiveCompare("Buildkite-Tests-Span-Stream") == .orderedSame }
+    headers.append(("Buildkite-Tests-Span-Stream", stream.rawValue))
+    return headers
+  }
+
+  // The receiver accepts `/\A[!-~]{1,255}\z/`.
+  private static func isValidRunKey(_ key: String) -> Bool {
+    !key.isEmpty && key.count <= 255 && key.unicodeScalars.allSatisfy { (33...126).contains($0.value) }
   }
 
   private static func absoluteURL(_ value: String) -> URL? {
@@ -150,7 +203,7 @@ struct CollectorOTLPConfiguration {
   }
 }
 
-private final class SynchronousOtlpTraceExporter: SpanExporter, @unchecked Sendable {
+private final class SynchronousOtlpTraceExporter: FailureReportingSpanExporter, @unchecked Sendable {
   private let exporter: OtlpHttpTraceExporter
   private let httpClient: SynchronousHTTPClient
 
@@ -165,10 +218,47 @@ private final class SynchronousOtlpTraceExporter: SpanExporter, @unchecked Senda
     )
   }
 
+  var lastFailure: SpanExportFailure? {
+    if case let .failure(failure) = self.httpClient.outcome { return failure }
+    return nil
+  }
+
   func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
-    self.httpClient.prepare()
+    self.httpClient.prepare(timeout: explicitTimeout)
     _ = self.exporter.export(spans: spans, explicitTimeout: explicitTimeout)
-    return self.httpClient.result
+    if case .success = self.httpClient.outcome { return .success }
+    return .failure
+  }
+
+  func flush(explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
+    self.exporter.flush(explicitTimeout: explicitTimeout)
+  }
+
+  func shutdown(explicitTimeout: TimeInterval?) {
+    self.exporter.shutdown(explicitTimeout: explicitTimeout)
+  }
+}
+
+/// Counts the child spans the endpoint accepted so a flush can report the
+/// ones it did not.
+private final class CountingSpanExporter: SpanExporter, @unchecked Sendable {
+  private let exporter: any SpanExporter
+  private let exported = LockIsolated(0)
+
+  init(exporter: any SpanExporter) {
+    self.exporter = exporter
+  }
+
+  var exportedSpanCount: Int {
+    self.exported.value
+  }
+
+  func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
+    let result = self.exporter.export(spans: spans, explicitTimeout: explicitTimeout)
+    if case .success = result {
+      self.exported.withValue { $0 += spans.count }
+    }
+    return result
   }
 
   func flush(explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
@@ -183,7 +273,9 @@ private final class SynchronousOtlpTraceExporter: SpanExporter, @unchecked Senda
 private final class SynchronousHTTPClient: HTTPClient {
   private let lock = NSLock()
   private let session: URLSession
-  private var wasAccepted: Bool?
+  private var _outcome: Result<Void, SpanExportFailure>?
+  private let requestTimeout: TimeInterval
+  private var _timeout: TimeInterval?
 
   init(timeout: TimeInterval) {
     let configuration = URLSessionConfiguration.ephemeral
@@ -191,32 +283,45 @@ private final class SynchronousHTTPClient: HTTPClient {
     configuration.timeoutIntervalForResource = timeout
     configuration.urlCache = nil
     self.session = URLSession(configuration: configuration)
+    self.requestTimeout = timeout
   }
 
-  func prepare() {
+  /// Clears the previous outcome and bounds the next request to the
+  /// session's limit, or to `timeout` when that is shorter, so a flush
+  /// deadline is not overrun by one slow request. The explicit bound matters
+  /// on Linux, where a flush request otherwise ran until the flush deadline.
+  func prepare(timeout: TimeInterval?) {
     self.lock.lock()
-    self.wasAccepted = nil
+    self._outcome = nil
+    self._timeout = min(timeout ?? self.requestTimeout, self.requestTimeout)
     self.lock.unlock()
   }
 
-  var result: SpanExporterResultCode {
+  /// The outcome of the request sent since `prepare()`; nil until it completes.
+  var outcome: Result<Void, SpanExportFailure>? {
     self.lock.lock()
     defer { self.lock.unlock() }
-    return self.wasAccepted == true ? .success : .failure
+    return self._outcome
   }
 
   func send(
     request: URLRequest,
     completion: @escaping (Result<HTTPURLResponse, Error>) -> Void
   ) {
+    var request = request
+    self.lock.lock()
+    if let timeout = self._timeout, timeout > 0 {
+      request.timeoutInterval = min(request.timeoutInterval, timeout)
+    }
+    self.lock.unlock()
+
     let semaphore = DispatchSemaphore(value: 0)
-    let task = self.session.dataTask(with: request) { [weak self] _, response, error in
+    let task = self.session.dataTask(with: request) { [weak self, request] _, response, error in
       let httpResponse = response as? HTTPURLResponse
-      let accepted = error == nil
-        && httpResponse.map { (200..<300).contains($0.statusCode) } == true
+      let outcome = Self.classify(response: httpResponse, error: error)
 
       self?.lock.lock()
-      self?.wasAccepted = accepted
+      self?._outcome = outcome
       self?.lock.unlock()
 
       // The collector owns failed-span requeueing. Always report transport
@@ -232,6 +337,19 @@ private final class SynchronousHTTPClient: HTTPClient {
     task.resume()
     semaphore.wait()
   }
+
+  private static func classify(
+    response: HTTPURLResponse?,
+    error: Error?
+  ) -> Result<Void, SpanExportFailure> {
+    if let error {
+      return .failure((error as? URLError)?.code == .timedOut ? .timeout : .transportError)
+    }
+    guard let status = response?.statusCode else {
+      return .failure(.transportError)
+    }
+    return (200..<300).contains(status) ? .success(()) : .failure(.httpStatus(status))
+  }
 }
 
 extension TelemetryClient {
@@ -241,33 +359,34 @@ extension TelemetryClient {
     logger: Logger?,
     rootExporter: (any SpanExporter)? = nil,
     childExporter: (any SpanExporter)? = nil,
-    rootSpanLimits: SpanLimits = SpanLimits()
+    rootSpanLimits: SpanLimits = TelemetryLimit.rootSpanLimits,
+    flushBudget: TimeInterval = 30
   ) -> TelemetryClient? {
     guard let configuration = CollectorOTLPConfiguration(
       environment: environment,
       logger: logger
     ) else { return nil }
 
-    let exporterConfiguration = OtlpConfiguration(
-      timeout: 10,
-      compression: .gzip,
-      headers: configuration.headers,
-      exportAsJson: false
-    )
-    let makeExporter = {
+    func makeExporter(for stream: SpanStream) -> any SpanExporter {
       SynchronousOtlpTraceExporter(
         endpoint: configuration.endpoint,
-        configuration: exporterConfiguration
-      ) as any SpanExporter
+        configuration: OtlpConfiguration(
+          timeout: 10,
+          compression: .gzip,
+          headers: configuration.headers(for: stream),
+          exportAsJson: false
+        )
+      )
     }
     let live = LiveTelemetryClient(
       configuration: configuration,
       environment: environment,
       uploadTags: uploadTags,
       logger: logger,
-      rootExporter: rootExporter ?? makeExporter(),
-      childExporter: childExporter ?? makeExporter(),
-      rootSpanLimits: rootSpanLimits
+      rootExporter: rootExporter ?? makeExporter(for: .test),
+      childExporter: childExporter ?? makeExporter(for: .child),
+      rootSpanLimits: rootSpanLimits,
+      flushBudget: flushBudget
     )
 
     return TelemetryClient(
@@ -283,12 +402,15 @@ private final class LiveTelemetryClient {
   private static let providerEnvironmentLock = NSLock()
 
   private let attachedChildProviders = LockIsolated([TracerProviderSdk]())
+  private let childExporter: CountingSpanExporter
   private let childForwarder: ExecutionChildSpanProcessor
   private let childProviderResource: Resource
+  private let childSpansWrittenOff = LockIsolated(0)
   private let executionProvider: TracerProviderSdk
   private let executionNamePrefix: String?
   private let executionNameSuffix: String?
   private let executionAttributes: [String: AttributeValue]
+  private let flushBudget: TimeInterval
   private let runKey: String
   private let logger: Logger?
   private let registry = ExecutionTraceRegistry()
@@ -305,10 +427,12 @@ private final class LiveTelemetryClient {
     logger: Logger?,
     rootExporter: any SpanExporter,
     childExporter: any SpanExporter,
-    rootSpanLimits: SpanLimits
+    rootSpanLimits: SpanLimits,
+    flushBudget: TimeInterval
   ) {
     self.executionNamePrefix = configuration.runEnvironment.executionNamePrefix
     self.executionNameSuffix = configuration.runEnvironment.executionNameSuffix
+    self.flushBudget = flushBudget
     self.runKey = configuration.runEnvironment.key
     self.logger = logger
     self.jobSpanContext = Self.jobSpanContext(environment: environment)
@@ -334,8 +458,10 @@ private final class LiveTelemetryClient {
       instrumentationVersion: TestCollector.version
     )
 
+    let countingChildExporter = CountingSpanExporter(exporter: childExporter)
+    self.childExporter = countingChildExporter
     let childProcessor = BatchSpanProcessor(
-      spanExporter: childExporter,
+      spanExporter: countingChildExporter,
       scheduleDelay: 1,
       exportTimeout: 30,
       maxQueueSize: 8192,
@@ -364,36 +490,39 @@ private final class LiveTelemetryClient {
     let builder = self.tracer.spanBuilder(spanName: TelemetryValue.rootSpanName)
     builder.setNoParent()
 
-    for (key, value) in self.executionAttributes {
-      builder.setAttribute(key: key, value: value)
+    // The SDK's span builder applies the attribute count limit but not the
+    // value length limit, and the span keeps the builder's values unchanged,
+    // so start-time values are capped here. Values set after start are capped
+    // by the span itself.
+    func set(_ key: String, _ value: AttributeValue) {
+      if case .string(let string) = value {
+        builder.setAttribute(
+          key: key,
+          value: string.truncated(toUnicodeScalars: TelemetryLimit.attributeValueLength)
+        )
+      } else {
+        builder.setAttribute(key: key, value: value)
+      }
     }
 
-    builder.setAttribute(key: BuildkiteTelemetryAttribute.executionScope, value: test.className)
-    builder.setAttribute(key: BuildkiteTelemetryAttribute.testName, value: test.testName)
-    builder.setAttribute(
-      key: BuildkiteTelemetryAttribute.executionExternalID,
-      value: test.id.uuidString
-    )
-    builder.setAttribute(
-      key: SemanticConventions.Test.caseName.rawValue,
-      value: qualifiedTestName
-    )
-    builder.setAttribute(key: SemanticConventions.Test.suiteName.rawValue, value: test.className)
+    for (key, value) in self.executionAttributes {
+      set(key, value)
+    }
+
+    set(BuildkiteTelemetryAttribute.executionScope, .string(test.className))
+    set(BuildkiteTelemetryAttribute.testName, .string(test.testName))
+    set(BuildkiteTelemetryAttribute.executionExternalID, .string(test.id.uuidString))
+    set(SemanticConventions.Test.caseName.rawValue, .string(qualifiedTestName))
+    set(SemanticConventions.Test.suiteName.rawValue, .string(test.className))
 
     // The Swift SDK keeps the most recently set attributes when the span's
     // start-time attribute limit is exceeded. Set the three synthesis fields
     // last so even a limit of three still produces a usable execution.
-    builder.setAttribute(
-      key: BuildkiteTelemetryAttribute.executionVia,
-      value: TelemetryValue.executionVia
-    )
-    builder.setAttribute(key: BuildkiteTelemetryAttribute.runKey, value: self.runKey)
+    set(BuildkiteTelemetryAttribute.executionVia, .string(TelemetryValue.executionVia))
+    set(BuildkiteTelemetryAttribute.runKey, .string(self.runKey))
     // Reserve the result's place before test code can consume the remaining
     // attribute budget. finishExecution replaces this placeholder.
-    builder.setAttribute(
-      key: SemanticConventions.Test.caseResultStatus.rawValue,
-      value: TelemetryValue.unsetResult
-    )
+    set(SemanticConventions.Test.caseResultStatus.rawValue, .string(TelemetryValue.unsetResult))
 
     if let jobSpanContext = self.jobSpanContext {
       builder.addLink(spanContext: jobSpanContext)
@@ -410,7 +539,11 @@ private final class LiveTelemetryClient {
     guard let span = self.spans.withValue({ $0[executionID] }) else { return }
     span.addEvent(
       name: "test.annotation",
-      attributes: [BuildkiteTelemetryAttribute.annotation: .string(content)]
+      attributes: [
+        BuildkiteTelemetryAttribute.annotation: .string(
+          content.truncated(toUnicodeScalars: TelemetryLimit.eventAttributeValueLength)
+        ),
+      ]
     )
   }
 
@@ -428,7 +561,8 @@ private final class LiveTelemetryClient {
     )
 
     if let location = test.issues.first?.sourceCodeContext.location {
-      span.setAttribute(key: SemanticConventions.Code.filePath.rawValue, value: location.filePath)
+      // The 0.x JSON collector sent the file name, not the full path.
+      span.setAttribute(key: SemanticConventions.Code.filePath.rawValue, value: location.fileName)
       span.setAttribute(key: SemanticConventions.Code.lineNumber.rawValue, value: Int(location.line))
       span.setAttribute(
         key: BuildkiteTelemetryAttribute.executionLocation,
@@ -437,17 +571,23 @@ private final class LiveTelemetryClient {
     }
 
     if result == .failed {
-      let reason = Self.failureReason(test.issues)
-      span.status = .error(description: reason)
+      span.status = .error(
+        description: Self.failureReason(test.issues)
+          .truncated(toUnicodeScalars: TelemetryLimit.failureReasonLength)
+      )
       for issue in test.issues {
         var attributes: [String: AttributeValue] = [
-          SemanticConventions.Exception.message.rawValue: .string(issue.description),
+          SemanticConventions.Exception.message.rawValue: .string(
+            issue.description.truncated(toUnicodeScalars: TelemetryLimit.exceptionMessageLength, marker: "...")
+          ),
         ]
         let backtrace = issue.sourceCodeContext.callStack.enumerated()
           .map { "\($0.offset) \($0.element)" }
           .joined(separator: "\n")
         if !backtrace.isEmpty {
-          attributes[SemanticConventions.Exception.stacktrace.rawValue] = .string(backtrace)
+          attributes[SemanticConventions.Exception.stacktrace.rawValue] = .string(
+            backtrace.truncated(toUnicodeScalars: TelemetryLimit.eventAttributeValueLength)
+          )
         }
         if let error = issue.associatedError {
           attributes[SemanticConventions.Exception.type.rawValue] = .string(
@@ -466,9 +606,38 @@ private final class LiveTelemetryClient {
     span.end()
   }
 
+  /// Flushes both streams against one deadline: test executions first, then
+  /// child spans with whatever budget remains. The SDK's batch processor does
+  /// not honour its flush timeout, so the child flush runs on its own thread
+  /// and is abandoned at the deadline; it keeps exporting until the process
+  /// exits, but nothing waits for it.
   func forceFlush() {
-    self.executionProvider.forceFlush(timeout: 30)
-    self.childForwarder.forceFlush(timeout: 30)
+    let start = ProcessInfo.processInfo.systemUptime
+    self.executionProvider.forceFlush(timeout: self.flushBudget)
+
+    let remaining = max(self.flushBudget - (ProcessInfo.processInfo.systemUptime - start), 0)
+    let childFlushDone = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+      self.childForwarder.forceFlush(timeout: remaining)
+      childFlushDone.signal()
+    }
+    _ = childFlushDone.wait(timeout: .now() + remaining)
+
+    // Spans still in flight after the deadline are reported once; a later
+    // flush in the same process counts only what arrived after this one.
+    let unexported = self.childSpansWrittenOff.withValue { writtenOff in
+      let unexported = max(
+        self.childForwarder.forwardedSpanCount - self.childExporter.exportedSpanCount - writtenOff,
+        0
+      )
+      writtenOff += unexported
+      return unexported
+    }
+    if unexported > 0 {
+      self.logger?.warning(
+        "\(unexported) OpenTelemetry child span(s) were not exported within the \(Int(self.flushBudget)) s flush budget or were rejected by the endpoint; test.execution results are unaffected."
+      )
+    }
   }
 
   private func attachChildForwarder() {
@@ -674,5 +843,12 @@ private final class LiveTelemetryClient {
     func get(carrier: [String: String], key: String) -> [String]? {
       carrier[key].map { [$0] }
     }
+  }
+}
+
+extension String {
+  fileprivate func truncated(toUnicodeScalars limit: Int, marker: String = "") -> String {
+    guard self.unicodeScalars.count > limit else { return self }
+    return String(self.unicodeScalars.prefix(limit)) + marker
   }
 }
