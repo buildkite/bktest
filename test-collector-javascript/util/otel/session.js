@@ -12,9 +12,6 @@ const TEST_SPAN_NAME = 'test.execution'
 const SPAN_STREAM = 'test'
 const FLUSH_BUDGET_MILLISECONDS = 30000
 const TIMED_OUT = Symbol('timed out')
-// Where every copy of @opentelemetry/api 1.x keeps its globals, on the global
-// object of the realm that loaded it.
-const API_REGISTRY = Symbol.for('opentelemetry.js.api.1')
 
 // The span's own string attributes are cut to 10,243 code points here: the
 // server truncates test names to 10,240 before deriving the test ID, so a
@@ -125,44 +122,6 @@ const createSession = (settings) => {
   }
   assertCanExport(sdk, providerConfig)
 
-  // The collector's own work (scheduling and sending exports) runs with
-  // tracing suppressed and no test in context, in every context manager that
-  // instrumentation may read: this process's and each test sandbox's, which
-  // the sandbox's copy of the API keeps on the sandbox's global object.
-  // Otherwise HTTP instrumentation records the collector's OTLP requests, as
-  // children of a test (billed) or in a suite's own traces. A sandbox's
-  // manager stays covered after its file ends for as long as anything, such
-  // as a patch it left on Node's http module, still holds it.
-  const suppressed = sdk.core.suppressTracing(api.ROOT_CONTEXT)
-  const sandboxes = new Set()
-  let retired = []
-  const contextManagers = () => {
-    const managers = new Set()
-    for (const global of [globalThis, ...sandboxes]) {
-      const manager = global[API_REGISTRY]?.context
-      if (manager) managers.add(manager)
-    }
-    retired = retired.filter((ref) => {
-      const manager = ref.deref()
-      if (manager) managers.add(manager)
-      return manager !== undefined
-    })
-    return [...managers]
-  }
-  const inCollectorContext = (fn) => {
-    const managers = contextManagers()
-    const enter = (index) => (index === managers.length ? fn() : managers[index].with(suppressed, () => enter(index + 1)))
-    return enter(0)
-  }
-  const connectSandbox = (global) => {
-    sandboxes.add(global)
-    return () => {
-      const manager = global[API_REGISTRY]?.context
-      if (manager) retired.push(new WeakRef(manager))
-      sandboxes.delete(global)
-    }
-  }
-
   const metrics = {
     started: 0,
     startFailures: 0,
@@ -215,7 +174,6 @@ const createSession = (settings) => {
     stream: SPAN_STREAM,
     metrics,
     onSettled: settle,
-    runExport: inCollectorContext,
   })
   const processor = new trace.BatchSpanProcessor(exporter, {
     maxQueueSize: sizes.queue,
@@ -228,7 +186,7 @@ const createSession = (settings) => {
     onEnd: (span) => {
       unsettled.add(span)
       held.push(span)
-      inCollectorContext(feedHeldSpans)
+      feedHeldSpans()
     },
     forceFlush: () => processor.forceFlush(),
     shutdown: () => processor.shutdown(),
@@ -238,7 +196,7 @@ const createSession = (settings) => {
   const run = runAttributes(settings)
   let children
   const childExport = () => {
-    if (!children) children = createChildExport({ sdk, settings, processorSizes, inCollectorContext })
+    if (!children) children = createChildExport({ sdk, settings, processorSizes })
     return children
   }
   // Children keep the collector's resource and CSPRNG ids but, as in Ruby,
@@ -393,7 +351,7 @@ const createSession = (settings) => {
       // loop flushes once more until a flush fed nothing and held none back.
       const queuedBefore = queued
       try {
-        if (!await awaitWithinBudget(inCollectorContext(() => processor.forceFlush()).finally(() => exporter.forceFlush()))) return { drained: false, failure }
+        if (!await awaitWithinBudget(processor.forceFlush().finally(() => exporter.forceFlush()))) return { drained: false, failure }
       } catch (error) {
         failure = error
       }
@@ -413,17 +371,9 @@ const createSession = (settings) => {
     const { drained, failure } = await drain()
     warnUnlessCounted('flush OpenTelemetry spans', failure)
     reportUndelivered({ drained })
-    if (children) children.report(await flushChildren())
-  }
-
-  // A rejected flush means a batch failed, which the exporter has counted and
-  // report() warns about.
-  const flushChildren = async () => {
-    try {
-      return await awaitWithinBudget(children.flush(), children.metrics)
-    } catch {
-      return true
-    }
+    // A rejected flush means a batch failed, which the exporter has counted
+    // and report() warns about.
+    if (children) children.report(await awaitWithinBudget(children.flush(), children.metrics).catch(() => true))
   }
 
   const onExit = () => {
@@ -436,28 +386,18 @@ const createSession = (settings) => {
   const shutdown = async () => {
     if (shutDown) return
     shutDown = true
-    if (children) children.deactivate()
     let { drained, failure } = await drain()
     warnUnlessCounted('flush OpenTelemetry spans', failure)
-    const childrenDrained = children ? await flushChildren() : true
     try {
       drained = await awaitWithinBudget(provider.shutdown()) && drained
     } catch (error) {
       warnUnlessCounted('shut down OpenTelemetry span export', error)
     }
-    if (children) {
-      try {
-        await awaitWithinBudget(children.shutdown(), children.metrics)
-      } catch (error) {
-        warn(`Could not shut down OpenTelemetry child spans: ${describeError(error)}`)
-      }
-      children.report(childrenDrained, { final: true })
-    }
     reportUndelivered({ drained })
     if (drained) process.off('exit', onExit)
   }
 
-  return { api, runKey, metrics, startTestSpan, finishTestSpan, forceFlush, shutdown, childExport, childProviderConfig, childPropagator, connectSandbox }
+  return { api, runKey, metrics, startTestSpan, finishTestSpan, forceFlush, shutdown, childExport, childProviderConfig, childPropagator }
 }
 
 // One session per process: a run's identity is fixed once export is
