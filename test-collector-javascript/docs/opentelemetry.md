@@ -86,6 +86,15 @@ OpenTelemetry submission supports Jest 29 and newer. On Jest 28 and older the
 reporter warns `otelEnabled is set, but OpenTelemetry submission needs Jest 29
 or newer` once and uploads results as JSON.
 
+1.13.0-beta.1 also exported spans on Jest 27 and 28; beta.2 does not. The
+JSON upload needs `BUILDKITE_ANALYTICS_TOKEN` (or the reporter's `token`), so
+a Jest 27 or 28 run whose only credential is `BUILDKITE_TESTS_OTLP_TOKEN`, as
+with bktec's OTLP relay, now reports no results and warns
+`otelEnabled is set, but OpenTelemetry submission needs Jest 29 or newer, not
+28.1.3; results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not
+set`. Upgrade to Jest 29, or set `BUILDKITE_ANALYTICS_TOKEN` to keep
+reporting.
+
 The reporter options (`token`, `tags`, `otelEnabled`) are the same as before.
 `otelEnabled` is on only for `true` and the case-insensitive string `'true'`;
 `'false'`, `'1'` and `1` are off, so a value passed through from a CLI or the
