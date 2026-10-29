@@ -50,6 +50,20 @@ steps:
           - docker#v3.7.0:
               image: node:22.15.0
               mount-buildkite-agent: false
+      - label: ":opentelemetry: OTel tests against the oldest OpenTelemetry versions the collector supports"
+        # The peer dependencies and instrumentation gates are minimums; this
+        # step installs exactly those minimums.
+        command:
+          - "cd test-collector-javascript"
+          - "npm ci"
+          # npm ls would call these invalid against the root's devDependencies,
+          # so the installed versions are checked directly.
+          - "node -e 'const floors = { \"@opentelemetry/api\": \"1.9.0\", \"@opentelemetry/sdk-trace-base\": \"2.0.0\", \"@opentelemetry/resources\": \"2.0.0\", \"@opentelemetry/context-async-hooks\": \"2.0.0\", \"@opentelemetry/exporter-trace-otlp-proto\": \"0.200.0\", \"@opentelemetry/instrumentation-http\": \"0.200.0\", \"@opentelemetry/instrumentation-undici\": \"0.11.0\" }; require(\"child_process\").execFileSync(\"npm\", [\"install\", \"--no-save\", ...Object.entries(floors).map(([name, version]) => name + \"@\" + version)], { stdio: \"inherit\" }); for (const [name, version] of Object.entries(floors)) { const installed = JSON.parse(require(\"fs\").readFileSync(\"node_modules/\" + name + \"/package.json\")).version; console.log(name, installed); if (installed !== version) process.exit(1) }'"
+          - "EXPECTED_JEST_VERSION=29.7.0 npm test -- --runInBand e2e/jest-otel.test.js"
+        plugins:
+          - docker#v3.7.0:
+              image: node:22.15.0
+              mount-buildkite-agent: false
       - label: ":jest: Jest {{matrix}} OTel compatibility"
         # 28.1.3 checks that unsupported Jest falls back to JSON.
         matrix:
