@@ -447,7 +447,12 @@ private final class LiveTelemetryClient {
       uploadTags: uploadTags
     )
     self.childProviderResource = resource
-    let rootProcessor = ExecutionSpanProcessor(exporter: rootExporter, logger: logger, environment: environment)
+    let rootProcessor = ExecutionSpanProcessor(
+      exporter: rootExporter,
+      logger: logger,
+      environment: environment,
+      synchronous: environment.otlpToken != nil
+    )
     self.executionProvider = Self.makeProvider(
       resource: resource,
       processor: rootProcessor,

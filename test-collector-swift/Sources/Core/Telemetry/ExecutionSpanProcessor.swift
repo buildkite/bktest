@@ -37,8 +37,9 @@ protocol FailureReportingSpanExporter: SpanExporter {
   var lastFailure: SpanExportFailure? { get }
 }
 
-/// Exports finished `test.execution` spans off the test thread, at the batch
-/// threshold or one second after the first queued span. Spans a
+/// Exports finished `test.execution` spans at the batch threshold or one second
+/// after the first queued span, or synchronously hands each test to bktec's
+/// long-lived relay before returning to XCTest. Spans a
 /// transient failure leaves behind are retried after a backoff; a terminal
 /// failure drops only the batch it rejected.
 final class ExecutionSpanProcessor: SpanProcessor {
@@ -68,6 +69,7 @@ final class ExecutionSpanProcessor: SpanProcessor {
   private let timer: DispatchSourceTimer
   private let batchSize: Int
   private let queueSize: Int
+  private let synchronous: Bool
   private var exportScheduled = false
   private var stopped = false
   private let logger: Logger?
@@ -82,6 +84,7 @@ final class ExecutionSpanProcessor: SpanProcessor {
     exporter: any SpanExporter,
     logger: Logger?,
     environment: EnvironmentValues = EnvironmentValues(),
+    synchronous: Bool = false,
     worker: DispatchQueue = DispatchQueue(label: "BuildkiteTestCollector.execution-export"),
     now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
   ) {
@@ -91,6 +94,7 @@ final class ExecutionSpanProcessor: SpanProcessor {
     let sizes = Self.processorSizes(environment: environment, logger: logger)
     self.batchSize = sizes.batch
     self.queueSize = sizes.queue
+    self.synchronous = synchronous
     self.worker = worker
     self.timer = DispatchSource.makeTimerSource(queue: worker)
     self.now = now
@@ -127,7 +131,14 @@ final class ExecutionSpanProcessor: SpanProcessor {
 
   func onEnd(span: any ReadableSpan) {
     self.exporterLock.lock()
-    defer { self.exporterLock.unlock() }
+    defer {
+      self.exporterLock.unlock()
+      if self.synchronous {
+        // Serialize with flush and other tests, without holding the queue lock
+        // during the relay request. Backoff still leaves spans queued.
+        self.worker.sync { self.exportQueued(minimumBatchSize: 1) }
+      }
+    }
 
     guard !self.stopped else { return }
     let data = span.toSpanData()
@@ -136,7 +147,7 @@ final class ExecutionSpanProcessor: SpanProcessor {
       self.reportDropped(count: 1, detail: "queue full", batch: [PendingSpan(data: data, encodedSize: 0, queuedAt: self.now())][...])
       return
     }
-    if self.pending.isEmpty {
+    if !self.synchronous, self.pending.isEmpty {
       self.timer.schedule(deadline: .now() + 1)
     }
     self.pending.append(PendingSpan(data: data, encodedSize: Self.encodedSize(of: data), queuedAt: self.now()))
@@ -154,7 +165,7 @@ final class ExecutionSpanProcessor: SpanProcessor {
   // Called with exporterLock held. Coalesce threshold notifications and yield
   // between requests so a final flush can take over an active backlog.
   private func scheduleFullBatch() {
-    if self.pending.count >= self.batchSize, !self.exportScheduled {
+    if !self.synchronous, self.pending.count >= self.batchSize, !self.exportScheduled {
       self.exportScheduled = true
       self.worker.async { [weak self] in
         guard let self else { return }
@@ -174,10 +185,12 @@ final class ExecutionSpanProcessor: SpanProcessor {
     self.timer.schedule(deadline: .distantFuture)
     guard !self.stopped, !self.pending.isEmpty else { return }
     if let retryNotBefore = self.retryNotBefore, self.now() < retryNotBefore {
-      self.timer.schedule(deadline: .now() + (retryNotBefore - self.now()))
+      if !self.synchronous {
+        self.timer.schedule(deadline: .now() + (retryNotBefore - self.now()))
+      }
       return
     }
-    switch self.exportPending(minimumBatchSize: minimumBatchSize, drain: false) {
+    switch self.exportPending(minimumBatchSize: minimumBatchSize, drain: self.synchronous) {
     case .exported:
       self.logger?.debug("Exported queued OpenTelemetry test executions")
     case .retryLater:
@@ -188,6 +201,7 @@ final class ExecutionSpanProcessor: SpanProcessor {
     case .dropped:
       break
     }
+    guard !self.synchronous else { return }
     if !self.pending.isEmpty, let retryNotBefore = self.retryNotBefore {
       self.timer.schedule(deadline: .now() + max(retryNotBefore - self.now(), 0))
     } else if let first = self.pending.first {

@@ -100,12 +100,24 @@ enable the collector or select an endpoint. Logged endpoints, including debug
 output, show only the scheme, host, port and path; user info, query and
 fragment are left out because they can carry credentials.
 
-Test execution spans export in the background when 120 are queued, or within
-1 s of the first queued span. The queue holds 8,192 spans; when full, new spans
-are dropped with a `TEST RESULTS MISSING` warning. Export does not wait on the
+When sending direct, test execution spans export in the background when 120
+are queued, or within 1 s of the first queued span. Export does not wait on the
 test thread; only the final test-bundle flush waits for pending results.
-A killed runner can lose roughly 1 s of completed results (up to about 120
-with the defaults and a healthy endpoint); an outage can leave more queued.
+A killed runner can lose roughly 1 s of completed direct results (up to about
+120 with the defaults and a healthy endpoint); an outage can leave more queued.
+
+When `BUILDKITE_TESTS_OTLP_TOKEN` is set (blank = unset), the collector instead
+hands off each test synchronously to the bktec relay before returning to
+XCTest. The relay replies 200 once the long-lived bktec process holds the
+request, keeping acknowledged executions safe from a test-runner restart.
+This costs a relay round trip per test. Detection uses only that token, not
+the endpoint host: a relay configured with just `BUILDKITE_ANALYTICS_TOKEN`
+uses the direct-mode batching fallback. Failed handoffs still obey backoff,
+so unsent results queued during an outage can be lost on runner restart.
+
+Both modes use an 8,192-span queue; when full, new spans are dropped with a
+`TEST RESULTS MISSING` warning. The overrides below apply in both modes,
+including the batch cap when a relay handoff drains a backlog after failure.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -114,12 +126,12 @@ with the defaults and a healthy endpoint); an outage can leave more queued.
 
 Both overrides must contain only decimal digits and be integers from 1 to
 2,147,483,647. Invalid values warn and use that setting's default. If batch
-exceeds queue, both revert to their defaults with a warning. The 1 s timer
-is fixed; there is no delay override, and `OTEL_BSP_*` is ignored. A full batch
-still triggers an early send. Requests also retain the 512 KiB encoded-size
-cap (a single larger span is sent alone) and the existing retry/backoff rules.
-Child spans keep their separate 1 s batching settings because XCTest can kill
-runners.
+exceeds queue, both revert to their defaults with a warning. The direct-mode
+1 s timer is fixed; there is no delay override, and `OTEL_BSP_*` is ignored.
+A full direct-mode batch still triggers an early send. Requests also retain the
+512 KiB encoded-size cap (a single larger span is sent alone) and the existing
+retry/backoff rules. Child spans keep their separate 1 s batching settings
+because XCTest can kill runners.
 
 Each test process is one Test Engine run, identified by `BUILDKITE_ANALYTICS_KEY`
 or, on a supported CI system, the build and job. Outside recognised CI,
@@ -141,7 +153,8 @@ flush makes one immediate pass without waiting out retry backoff. Each request
 waits up to 10 s for a response, including requests for batches of up to 512
 child spans. The bundle-end flush shares a 30 s budget across test executions
 and child spans; an already in-flight request finishes first and consumes that
-budget. Tests themselves do not wait for those requests. During an outage, set
+budget. Direct-mode tests do not wait for requests; relay-mode tests wait for
+their handoff, except during backoff. During an outage, set
 `BUILDKITE_ANALYTICS_ENABLED=false` to run the suite without the collector.
 
 ### Step 3

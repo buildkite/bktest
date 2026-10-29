@@ -348,6 +348,37 @@ final class TelemetryClientTests: XCTestCase {
     XCTAssertEqual(messages.value, [])
   }
 
+  func testOnlyANonblankOTLPTokenSelectsSynchronousRelayHandoff() throws {
+    for (token, endpoint, synchronous) in [
+      (nil, "http://127.0.0.1:4318/v1/traces", false),
+      ("", "http://127.0.0.1:4318/v1/traces", false),
+      (" \t\n", "http://127.0.0.1:4318/v1/traces", false),
+      ("relay-token", "http://127.0.0.1:4318/v1/traces", true),
+      ("relay-token", "https://relay.example/v1/traces", true),
+    ] as [(String?, String, Bool)] {
+      let exporter = InMemoryExporter()
+      var values = [
+        "BUILDKITE_ANALYTICS_TOKEN": "analytics-token",
+        "BUILDKITE_ANALYTICS_KEY": "run-key",
+        "BUILDKITE_ANALYTICS_OTLP_ENDPOINT": endpoint,
+      ]
+      values["BUILDKITE_TESTS_OTLP_TOKEN"] = token
+      let client = try XCTUnwrap(TelemetryClient.live(
+        environment: EnvironmentValues(
+          values: values, getFromEnvironment: { _ in nil }, getFromInfoDictionary: { _ in nil }
+        ),
+        uploadTags: [:], logger: nil, rootExporter: exporter, childExporter: InMemoryExporter()
+      ))
+      var test = TestState(id: UUID(), className: "RelayTests", testName: "testHandoff")
+      let executionID = client.startExecution(test)
+      test.result = .passed
+      client.finishExecution(executionID, test: test, tags: nil)
+      XCTAssertEqual(exporter.getFinishedSpanItems().count, synchronous ? 1 : 0, "endpoint: \(endpoint)")
+      client.forceFlush()
+      XCTAssertEqual(exporter.getFinishedSpanItems().count, 1)
+    }
+  }
+
   func testLogsEndpointsWithoutCredentials() throws {
     let endpoint = "http://url-user:url-secret@127.0.0.1:4318/v1/traces?api_key=query-secret#fragment-secret"
     let cases: [(values: [String: String], line: String)] = [

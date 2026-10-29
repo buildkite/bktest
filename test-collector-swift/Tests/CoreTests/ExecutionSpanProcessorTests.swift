@@ -7,6 +7,50 @@ import XCTest
 final class ExecutionSpanProcessorTests: XCTestCase {
   private let worker = DispatchQueue(label: "ExecutionSpanProcessorTests")
 
+  func testRelayExportsEachExecutionBeforeReturning() {
+    let exporter = SequencedExporter(results: [])
+    let processor = self.processor(exporter, synchronous: true)
+    let tracer = self.tracer(processor)
+    for name in ["one", "two"] {
+      // Unlike the direct-mode helper, do not join the worker after end().
+      tracer.spanBuilder(spanName: name).setNoParent().startSpan().end()
+      XCTAssertEqual(exporter.exports.last?.map(\.name), [name])
+    }
+    XCTAssertEqual(exporter.exports.map(\.count), [1, 1])
+  }
+
+  func testRelayQueuesDuringBackoffAndRecoversIn120SpanBatchesBeforeReturning() {
+    let clock = LockIsolated(TimeInterval(0))
+    let exporter = SequencedExporter(results: [.failure(.httpStatus(503))])
+    let processor = self.processor(exporter, synchronous: true, now: { clock.value })
+    let tracer = self.tracer(processor)
+    for index in 1...122 {
+      clock.setValue(index == 122 ? 9 : 0)
+      tracer.spanBuilder(spanName: "test\(index)").setNoParent().startSpan().end()
+      XCTAssertEqual(exporter.exports.count, 1)
+    }
+    clock.setValue(10)
+    tracer.spanBuilder(spanName: "test123").setNoParent().startSpan().end()
+    XCTAssertEqual(exporter.exports.map(\.count), [1, 120, 3])
+    XCTAssertEqual(exporter.exports.dropFirst().flatMap { $0.map(\.name) }, (1...123).map { "test\($0)" })
+  }
+
+  func testRelayHonorsBatchAndQueueOverridesAndDrainsAFullQueueAfterBackoff() {
+    let clock = LockIsolated(TimeInterval(0))
+    let exporter = SequencedExporter(results: [.failure(.transportError)])
+    let processor = self.processor(exporter, batch: "2", queue: "3", synchronous: true, now: { clock.value })
+    let tracer = self.tracer(processor)
+    for name in ["one", "two", "three", "dropped"] {
+      tracer.spanBuilder(spanName: name).setNoParent().startSpan().end()
+    }
+    XCTAssertEqual(exporter.exports.map(\.count), [1])
+    clock.setValue(10)
+    tracer.spanBuilder(spanName: "alsoDropped").setNoParent().startSpan().end()
+    XCTAssertEqual(exporter.exports.map { $0.map(\.name) }, [["one"], ["one", "two"], ["three"]])
+    tracer.spanBuilder(spanName: "afterRecovery").setNoParent().startSpan().end()
+    XCTAssertEqual(exporter.exports.last?.map(\.name), ["afterRecovery"])
+  }
+
   func testSendsAt120SpansWithoutWaitingForTheTimer() {
     let exporter = SequencedExporter(results: [])
     let processor = self.processor(exporter)
@@ -268,13 +312,14 @@ final class ExecutionSpanProcessorTests: XCTestCase {
 
   private func processor(
     _ exporter: SequencedExporter, batch: String? = nil, queue: String? = nil,
+    synchronous: Bool = false,
     logger: Core.Logger? = nil,
     now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
   ) -> ExecutionSpanProcessor {
     var values = [String: String]()
     values["BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE"] = batch
     values["BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE"] = queue
-    return ExecutionSpanProcessor(exporter: exporter, logger: logger, environment: self.environment(values), worker: self.worker, now: now)
+    return ExecutionSpanProcessor(exporter: exporter, logger: logger, environment: self.environment(values), synchronous: synchronous, worker: self.worker, now: now)
   }
 
   private func tracer(_ processor: ExecutionSpanProcessor) -> any Tracer {
