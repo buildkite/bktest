@@ -41,6 +41,11 @@ reporter warns `otelEnabled is set, but test environment "…" is not
 buildkite-test-collector/jest/environment …` once per environment and uploads
 those files' results as JSON.
 
+Setting the `testEnvironment` or `runtime` changes the project config, which
+babel-jest and other transformers hash into their cache keys, so the first run
+after enabling them transforms every file from cold and a transform cache
+warmed under a different config is not reused.
+
 `buildkite-test-collector/jest/environment` extends `jest-environment-node`.
 With Yarn Plug'n'Play, add `jest-environment-node` (the same version as
 `jest`) to your devDependencies so the collector can load it. If your suite
@@ -191,6 +196,11 @@ prefix, so `OTEL_NODE_DISABLED_INSTRUMENTATIONS=undici` keeps HTTP and HTTPS
 and turns off `fetch`. Child spans are billed by the decoded gigabytes
 Buildkite receives, and each instrumented request adds spans to every test
 that makes it; `test.execution` spans are unaffected by these settings.
+
+Instrumented requests carry a W3C `traceparent` header, which is how an
+in-process server continues the test's trace, so a test that asserts or
+snapshots a request's exact headers can see a new one. Set
+`OTEL_NODE_DISABLED_INSTRUMENTATIONS=http,undici` to send requests unchanged.
 
 Instrumentation of packages, such as GraphQL, Express or database clients, is
 not supported in Jest yet: Jest loads each test file's packages itself,
