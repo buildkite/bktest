@@ -21,7 +21,7 @@ final class TelemetryClientTests: XCTestCase {
     super.tearDown()
   }
 
-  func testExportsExecutionRootSynchronouslyWithAttributesAndRunTags() throws {
+  func testExportsExecutionRootWithAttributesAndRunTagsAtFlush() throws {
     let rootExporter = InMemoryExporter()
     let childExporter = InMemoryExporter()
     let environment = EnvironmentValues(
@@ -147,6 +147,7 @@ final class TelemetryClientTests: XCTestCase {
 
     let executionID = client.startExecution(test)
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.attributes["test.case.result.status"], .string("fail"))
@@ -192,6 +193,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertNil(span.parentSpanId)
@@ -554,6 +556,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     client.annotate(String(repeating: "a", count: 16_385), executionID: executionID)
     client.finishExecution(executionID, test: test, tags: ["long": String(repeating: "t", count: 10_244)])
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.status, .error(description: String(repeating: combining, count: 512)))
@@ -605,6 +608,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.attributes["test.case.name"], .string("[ios] PaymentTests.testChargeCard [debug]"))
@@ -696,6 +700,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: ["execution": "optional"])
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.attributes, [
@@ -715,21 +720,24 @@ final class TelemetryClientTests: XCTestCase {
       childExporter: InMemoryExporter()
     ))
 
-    for name in ["testOne", "testTwo"] {
+    for index in 1...121 {
+      let name = "test\(index)"
       var test = TestState(id: UUID(), className: "RetryTests", testName: name)
       let executionID = client.startExecution(test)
       test.result = .passed
       client.finishExecution(executionID, test: test, tags: nil)
+      if index == 120 {
+        XCTAssertEqual(rootExporter.exported.wait(timeout: .now() + 1), .success)
+      }
     }
 
     XCTAssertEqual(rootExporter.exports.count, 1)
     client.forceFlush()
 
-    XCTAssertEqual(rootExporter.exports.count, 2)
-    XCTAssertEqual(rootExporter.exports[0].map(\.name), ["test.execution"])
+    XCTAssertEqual(rootExporter.exports.map(\.count), [120, 120, 1])
     XCTAssertEqual(
-      rootExporter.exports[1].map(\.attributes[BuildkiteTelemetryAttribute.testName]),
-      [.string("testOne"), .string("testTwo")]
+      rootExporter.exports.dropFirst().flatMap { $0.map(\.attributes[BuildkiteTelemetryAttribute.testName]) },
+      (1...121).map { .string("test\($0)") }
     )
   }
 
@@ -822,6 +830,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     return try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
   }
@@ -841,9 +850,11 @@ private extension CollectorOTLPConfiguration {
 
 private final class FailOnceExporter: SpanExporter, @unchecked Sendable {
   var exports = [[SpanData]]()
+  let exported = DispatchSemaphore(value: 0)
 
   func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
     self.exports.append(spans)
+    self.exported.signal()
     return self.exports.count == 1 ? .failure : .success
   }
 

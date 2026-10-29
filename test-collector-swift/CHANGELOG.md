@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.0-beta.3
+
+- Export root `test.execution` spans in the background at 120 queued spans or within 1 s of the first queued span, instead of making every test wait for its own request; flush remaining results at test bundle finish
+- Bound the test-span queue to 8,192 spans and report overflow as `TEST RESULTS MISSING`; a killed runner can lose roughly 1 s of completed results (up to about 120 with the defaults and a healthy endpoint)
+- Add `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` (max spans per request; lowering it does not send results sooner) and `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE`, with the same validation and defaults as Ruby and JavaScript; keep the 1 s timer fixed and ignore `OTEL_BSP_*`
+- Retain the 512 KiB encoded-size cap, retry/backoff rules and separate 1 s child-span settings
+
 ## 2.0.0-beta.2
 
 - Label execution root requests `Buildkite-Tests-Span-Stream: test` and child span requests `child`

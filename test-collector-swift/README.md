@@ -46,7 +46,7 @@ To use the Buildkite Test Collector with a SwiftPM project, add this repository 
 let package = Package(
   name: "MyProject",
   dependencies: [
-    .package(url: "https://github.com/buildkite/test-collector-swift", exact: "2.0.0-beta.2")
+    .package(url: "https://github.com/buildkite/test-collector-swift", exact: "2.0.0-beta.3")
   ],
   targets: [
     .target(name: "MyProject"),
@@ -100,6 +100,27 @@ enable the collector or select an endpoint. Logged endpoints, including debug
 output, show only the scheme, host, port and path; user info, query and
 fragment are left out because they can carry credentials.
 
+Test execution spans export in the background when 120 are queued, or within
+1 s of the first queued span. The queue holds 8,192 spans; when full, new spans
+are dropped with a `TEST RESULTS MISSING` warning. Export does not wait on the
+test thread; only the final test-bundle flush waits for pending results.
+A killed runner can lose roughly 1 s of completed results (up to about 120
+with the defaults and a healthy endpoint); an outage can leave more queued.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | `120` | Max spans per request; lowering it does not send results sooner. |
+| `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` | `8192` | Max queued test execution spans, including an in-flight batch. |
+
+Both overrides must contain only decimal digits and be integers from 1 to
+2,147,483,647. Invalid values warn and use that setting's default. If batch
+exceeds queue, both revert to their defaults with a warning. The 1 s timer
+is fixed; there is no delay override, and `OTEL_BSP_*` is ignored. A full batch
+still triggers an early send. Requests also retain the 512 KiB encoded-size
+cap (a single larger span is sent alone) and the existing retry/backoff rules.
+Child spans keep their separate 1 s batching settings because XCTest can kill
+runners.
+
 Each test process is one Test Engine run, identified by `BUILDKITE_ANALYTICS_KEY`
 or, on a supported CI system, the build and job. Outside recognised CI,
 `swift test --parallel` spreads tests across several worker processes, so set
@@ -115,13 +136,12 @@ fails, so under `swift test --parallel` the collector's warnings, including
 skipped. `BUILDKITE_ANALYTICS_DEBUG_ENABLED` does not change that. To see them,
 add `--verbose` or run without `--parallel`.
 
-Each worker process also sends and flushes its results on its own. When the
-endpoint refuses connections or returns errors, that costs one extra immediate
-request per process. When it accepts connections but never answers, each
-process waits up to 10 s as its test finishes and up to 10 s more at the flush.
-Each batch of up to 512 OpenTelemetry child spans also waits up to 10 s, so a
-test that created thousands of child spans can hold its process for the whole
-30 s flush budget, about 40 s in total. During such an outage, set
+Each worker process also sends and flushes its results on its own. The final
+flush makes one immediate pass without waiting out retry backoff. Each request
+waits up to 10 s for a response, including requests for batches of up to 512
+child spans. The bundle-end flush shares a 30 s budget across test executions
+and child spans; an already in-flight request finishes first and consumes that
+budget. Tests themselves do not wait for those requests. During an outage, set
 `BUILDKITE_ANALYTICS_ENABLED=false` to run the suite without the collector.
 
 ### Step 3
@@ -136,6 +156,7 @@ value:
 
 To reach the bktec relay from an Xcode test run, map
 `BUILDKITE_TESTS_OTLP_TOKEN` and `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` the same way.
+Map either `BUILDKITE_TESTS_OTEL_TEST_SPAN_*` override the same way when used.
 
 If you configure a standard OTLP endpoint, map that endpoint and its associated
 `OTEL_EXPORTER_OTLP_TRACES_*` header or protocol variables into the test runner
