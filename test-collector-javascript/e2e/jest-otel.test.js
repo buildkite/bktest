@@ -256,8 +256,8 @@ const otelSupported = jestMajor >= 29
       expect([child, childrenOf(rootsNamed('reset second')[0], named(child)).length]).toEqual([child, 1])
     }
     expect(children.filter(isOwnRequest)).toEqual([])
-    expect(roots).toHaveLength(4)
-    expect([result.code, result.stderr]).toEqual([0, expect.stringMatching(/Tests: +4 passed, 4 total/)])
+    expect(result.code).toBe(0)
+    expect(roots.map((root) => root.attributes['test.case.result.status'])).toEqual(['pass', 'pass', 'pass', 'pass'])
   }, 60000)
 
   // Built-in modules are unpatched at each file's teardown. A later file that
