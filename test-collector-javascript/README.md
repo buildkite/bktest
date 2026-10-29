@@ -54,9 +54,9 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ];
     ```
 
-    To submit results as OpenTelemetry spans instead of a JSON upload (experimental), set `otelEnabled: true` in the reporter options (only `true` and the case-insensitive string `'true'` turn it on; `'false'`, `'1'` and `1` are off) and use the collector's test environment. Both settings are required: without the `testEnvironment` (or a custom environment not built with the collector's `extend()`), the reporter warns and uploads results as JSON. OpenTelemetry submission supports Jest 27 and newer. See [OpenTelemetry submission](docs/opentelemetry.md).
+    To submit results as OpenTelemetry spans instead of a JSON upload (experimental), set `otelEnabled: true` in the reporter options (only `true` and the case-insensitive string `'true'` turn it on; `'false'`, `'1'` and `1` are off) and use the collector's test environment. Both settings are required: without the `testEnvironment` (or a custom environment not built with the collector's `extend()`), the reporter warns and uploads results as JSON. OpenTelemetry submission supports Jest 29 and newer; on older versions the reporter warns once and uploads JSON.
 
-    To include manual child spans and HTTP, HTTPS and `fetch` requests under each test, also set the collector's Jest `runtime` and list `@opentelemetry/instrumentation-http` and `@opentelemetry/instrumentation-undici` in `otelInstrumentations`. Instrumentation of packages (GraphQL, Express, database clients and so on) is not supported in Jest yet and is skipped with a warning. Child spans are billed by decoded GB; turn off instrumentation you don't need with `OTEL_NODE_DISABLED_INSTRUMENTATIONS`. See [instrumentation and manual child spans](docs/opentelemetry.md#instrumentation-and-manual-child-spans), including suites that configure OpenTelemetry themselves.
+    Setting the collector's Jest `runtime` as well adds child spans under each test: spans your tests create and, when your project can load `@opentelemetry/instrumentation-http` and `@opentelemetry/instrumentation-undici` (directly or through `@opentelemetry/auto-instrumentations-node`), HTTP, HTTPS and `fetch` requests. Child spans are billed by decoded GB. See [OpenTelemetry submission](docs/opentelemetry.md).
 
     ```js
     // jest.config.js
@@ -66,6 +66,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
         ["buildkite-test-collector/jest/reporter", { otelEnabled: true }],
       ],
       testEnvironment: "buildkite-test-collector/jest/environment",
+      runtime: "buildkite-test-collector/jest/runtime", // child spans
       testLocationInResults: true,
     };
     ```
