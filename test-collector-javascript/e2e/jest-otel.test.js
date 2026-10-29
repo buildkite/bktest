@@ -347,7 +347,8 @@ const otelSupported = jestMajor >= 29
   test('overflows the bounded child queue without displacing test results or tracing its own exports', async () => {
     server = await startOtlpServer()
     const port = new URL(server.url).port
-    const result = await run('jest --config otel-children.config.js io.js --runInBand', {
+    // io.js and again.js each overflow the queue with 100 children.
+    const result = await run('jest --config otel-children.config.js io.js again.js --runInBand', {
       ...baseEnv, OTEL_CHILD_CASE: 'flood',
       // Batches of one export from inside the tests that end the spans.
       BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE: '2', BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE: '1',
@@ -355,12 +356,20 @@ const otelSupported = jestMajor >= 29
       BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
     })
     expect(result.code).toBe(0)
-    expect(result.stderr).toMatch(/OpenTelemetry dropped \d+ child span\(s\) \(not-exported: \d+\); test.execution results are unaffected/)
-    expect(result.stderr).not.toMatch(/TEST RESULTS MISSING/)
     expect(result.stdout).not.toMatch(/Test Engine Sending:/)
     const spans = server.spans()
-    expect(spans.filter((s) => s.name === 'test.execution')).toHaveLength(7) // io.js
-    expect(spans.filter((s) => s.name === 'flood-child').length).toBeLessThan(100)
+    expect(spans.filter((s) => s.name === 'test.execution')).toHaveLength(16) // io.js and again.js
+    // The first file's drops warn as the file ends; the total, with the
+    // second file's drops and again.js's late child, warns as the process
+    // exits. Drops are never reported again as pending.
+    const warnings = result.stderr.split('\n').filter((line) => line.includes('[buildkite-test-collector]'))
+    expect(warnings).toEqual([
+      expect.stringMatching(/OpenTelemetry dropped \d+ child span\(s\) \(not-exported: \d+(, still open when their test file finished: 1)?\); test\.execution results are unaffected\.$/),
+      expect.stringMatching(/OpenTelemetry dropped \d+ child span\(s\) so far this run \(not-exported: \d+, still open when their test file finished: 1\); test\.execution results are unaffected\.$/),
+    ])
+    const [first, total] = warnings.map((warning) => Number(warning.match(/not-exported: (\d+)/)[1]))
+    expect(total).toBeGreaterThan(first)
+    expect(total).toBeGreaterThanOrEqual(200 - spans.filter((s) => s.name === 'flood-child').length)
     expect(spans.filter((s) => s.name === 'GET').length).toBeGreaterThan(0)
     const own = spans.filter((s) => s.name.startsWith('POST') || Object.values(s.attributes).some((value) => String(value) === port))
     expect(own).toEqual([])

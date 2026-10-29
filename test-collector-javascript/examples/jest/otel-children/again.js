@@ -26,6 +26,8 @@ const get = () => new Promise((resolve, reject) => {
 })
 
 test('http again', async () => {
+  // A second file that overflows the child queue adds to the run's total.
+  if (process.env.OTEL_CHILD_CASE === 'flood') for (let i = 0; i < 100; i++) tracer.startSpan('flood-child').end()
   await get()
 })
 

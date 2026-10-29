@@ -81,10 +81,13 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
   // stream keeps sending.
   let warned = 0
   let finished = false
+  let notExported = 0
   const report = (drained, { final = false } = {}) => {
     if (finished) return
     finished = final
-    const notExported = drained ? offered - metrics.handed : 0
+    // After a drained flush, a child that never reached the exporter was
+    // dropped from the full queue; the count stands until the next one.
+    if (drained) notExported = offered - metrics.handed
     const lost = notExported + metrics.failed + late
     if (lost > warned && (warned === 0 || final)) {
       const cause = metrics.lastFailure ? `, last OTLP failure: ${metrics.lastFailure}` : ''
@@ -96,7 +99,7 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
       warn(`OpenTelemetry dropped ${lost} child span(s)${warned ? ' so far this run' : ''} (${reasons}); test.execution results are unaffected.`)
       warned = lost
     }
-    const pending = offered - metrics.exported - metrics.failed
+    const pending = offered - metrics.exported - metrics.failed - notExported
     if (final && !drained && pending > 0) {
       warn(`${pending} OpenTelemetry child span(s) are pending; test.execution results are unaffected.`)
     }
