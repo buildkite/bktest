@@ -215,14 +215,13 @@ resource and random ids from `crypto.randomBytes`, and enables the
 instrumentation. It never registers that provider in the file's sandbox,
 which would refuse a provider the suite registers later: it becomes the
 delegate of the API's proxy provider, which tracers obtained earlier and later
-`getTracer()` calls both use, until the suite registers its own. Before each
-test and per-test hook, the collector also registers an async context manager
-in the sandbox if none works, and becomes the proxy's delegate again if the
-suite has reset OpenTelemetry since, for example with `trace.disable()` and
-`context.disable()` in `afterEach`. A context manager the suite registers
-while the collector's is registered is refused, as any second registration is;
-the collector's is an `AsyncLocalStorageContextManager`, so spans nest the
-same way. W3C trace-context and baggage propagation are registered in the
+`getTracer()` calls both use, until the suite registers its own. Nor does it
+register a context manager in the sandbox: while none is registered, the API
+falls back to the collector's `AsyncLocalStorageContextManager`, and one the
+suite registers takes over until the suite disables it. Before each test and
+per-test hook, the collector becomes the proxy's delegate again if the suite
+has reset OpenTelemetry since, for example with `trace.disable()` in
+`afterEach`. W3C trace-context and baggage propagation are registered in the
 worker for the instrumentation, not in the sandbox, so a propagator the suite
 registers is used as is. Children otherwise use the SDK's defaults and `OTEL_*`
 settings, as Ruby's do: `OTEL_TRACES_SAMPLER=traceidratio` can sample children

@@ -69,12 +69,10 @@ const loadInstrumentations = (rootDir, warnOnce) => {
   return instances
 }
 
-// One async context manager per worker, registered wherever no working one
-// is: the sandbox (for the tests' API) and the environment's realm (for
-// instrumentation). It must be the same instance in both so that a
-// test's context is visible to instrumentation in either realm. The sandbox
-// registers it behind a disable() of its own, so a suite's context.disable()
-// unregisters it there without disabling it in the environment's realm.
+// One async context manager per worker, used by the sandbox (for the tests'
+// API) and the environment's realm (for instrumentation). It must be the same
+// instance in both so that a test's context is visible to instrumentation in
+// either realm.
 let sharedContextManager = null
 const contextManager = () => {
   if (!sharedContextManager) {
@@ -83,7 +81,6 @@ const contextManager = () => {
   }
   return sharedContextManager
 }
-const sandboxContextManager = () => Object.assign(Object.create(contextManager()), { disable() { return this } })
 
 const PROBE = Symbol.for('buildkite.test.execution.probe')
 const hasContextManager = (api) => {
@@ -91,9 +88,24 @@ const hasContextManager = (api) => {
   return api.context.with(probe, () => api.context.active().getValue(PROBE)) === true
 }
 
-const ensureContextManager = (api, manager) => {
+// Registered in the environment's realm, where no suite code runs.
+const ensureContextManager = (api) => {
   if (hasContextManager(api)) return
-  if (!api.context.setGlobalContextManager(manager())) throw new Error('could not register an async context manager')
+  if (!api.context.setGlobalContextManager(contextManager())) throw new Error('could not register an async context manager')
+}
+
+// The sandbox never gets a registered context manager either, which would
+// refuse the suite's own. Each copy of the API falls back to a context manager
+// that does nothing when none is registered, and the collector makes that one
+// use its own. One the suite registers takes over until it disables it.
+const fillContextManager = (api) => {
+  if (hasContextManager(api)) return
+  const fallback = api.context._getContextManager()
+  if (fallback.constructor.name === 'NoopContextManager') {
+    const manager = contextManager()
+    for (const method of ['active', 'with', 'bind']) fallback[method] = manager[method].bind(manager)
+  }
+  if (!hasContextManager(api)) throw new Error('could not set up an async context manager')
 }
 
 // The collector never registers a tracer provider in the sandbox, which
@@ -198,7 +210,7 @@ class JestOtelContext {
         return
       }
       const trace = this.runtime.requireModule(this.testPath, '@opentelemetry/sdk-trace-base')
-      ensureContextManager(this.session.api, contextManager)
+      ensureContextManager(this.session.api)
       // As OpenTelemetry's SDK setup does, so that an in-process server
       // handling a test's request continues the test's trace. Instrumentation
       // propagates in the environment's realm, so the sandbox's propagator is
@@ -230,7 +242,7 @@ class JestOtelContext {
         this.warnOnce('suite-provider', SUITE_PROVIDER)
         return false
       }
-      ensureContextManager(this.api, sandboxContextManager)
+      for (const api of this.apis) fillContextManager(api)
       for (const proxy of empty) proxy.setDelegate(this.provider)
       return true
     } catch (error) {
