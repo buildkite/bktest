@@ -7,7 +7,7 @@
     "buildkite-test-analytics",
     "buildkite-test-collector"
   ],
-  "version": "1.13.0-beta.1",
+  "version": "1.13.0-beta.2",
   "homepage": "https://buildkite.com/platform/test-engine",
   "bugs": "https://github.com/buildkite/test-collector-javascript/issues",
   "license": "MIT",
@@ -30,10 +30,11 @@
     "strip-ansi": "^6.0.0"
   },
   "peerDependencies": {
-    "@opentelemetry/api": ">=1.9.0 <1.10.0",
-    "@opentelemetry/exporter-trace-otlp-proto": ">=0.200.0 <0.300.0",
-    "@opentelemetry/resources": "^2.0.0",
-    "@opentelemetry/sdk-trace-base": "^2.0.0"
+    "@opentelemetry/api": ">=1.9.0",
+    "@opentelemetry/context-async-hooks": ">=2.0.0",
+    "@opentelemetry/exporter-trace-otlp-proto": ">=0.200.0",
+    "@opentelemetry/resources": ">=2.0.0",
+    "@opentelemetry/sdk-trace-base": ">=2.0.0"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/api": {
@@ -47,6 +48,9 @@
     },
     "@opentelemetry/sdk-trace-base": {
       "optional": true
+    },
+    "@opentelemetry/context-async-hooks": {
+      "optional": true
     }
   },
   "overrides": {
@@ -54,7 +58,10 @@
   },
   "devDependencies": {
     "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/context-async-hooks": "^2.12.0",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.223.0",
+    "@opentelemetry/instrumentation-http": "^0.223.0",
+    "@opentelemetry/instrumentation-undici": "^0.33.0",
     "@opentelemetry/resources": "^2.12.0",
     "@opentelemetry/sdk-trace-base": "^2.12.0",
     "@playwright/test": "^1.43.0",

@@ -5,6 +5,7 @@ const { createExporter, EXPORT_TIMEOUT_MILLISECONDS } = require('./exporter')
 const { resourceAttributes, runAttributes } = require('./attributes')
 const { describeTest, truncate } = require('./describeTest')
 const { warn, describeError, PREFIX } = require('./warn')
+const { createChildExport } = require('./children')
 
 const TRACER_NAME = 'buildkite-test-collector'
 const TEST_SPAN_NAME = 'test.execution'
@@ -47,14 +48,14 @@ const processorSize = (name, fallback) => {
   return fallback
 }
 
-const processorSizes = () => {
-  const queueName = 'BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE'
-  const batchName = 'BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE'
-  const queue = processorSize(queueName, PROCESSOR_DEFAULTS.queue)
-  const batch = processorSize(batchName, PROCESSOR_DEFAULTS.batch)
+const processorSizes = (stream = 'TEST', defaults = PROCESSOR_DEFAULTS) => {
+  const queueName = `BUILDKITE_TESTS_OTEL_${stream}_SPAN_QUEUE_SIZE`
+  const batchName = `BUILDKITE_TESTS_OTEL_${stream}_SPAN_BATCH_SIZE`
+  const queue = processorSize(queueName, defaults.queue)
+  const batch = processorSize(batchName, defaults.batch)
   if (batch > queue) {
-    warn(`${batchName} must be <= ${queueName}; using defaults (batch ${PROCESSOR_DEFAULTS.batch}, queue ${PROCESSOR_DEFAULTS.queue})`)
-    return PROCESSOR_DEFAULTS
+    warn(`${batchName} must be <= ${queueName}; using defaults (batch ${defaults.batch}, queue ${defaults.queue})`)
+    return defaults
   }
   return { queue, batch }
 }
@@ -193,6 +194,21 @@ const createSession = (settings) => {
   const provider = new trace.BasicTracerProvider({ ...providerConfig, spanProcessors: [holdingProcessor] })
   const tracer = provider.getTracer(TRACER_NAME, version)
   const run = runAttributes(settings)
+  let children
+  const childExport = () => {
+    if (!children) children = createChildExport({ sdk, settings, processorSizes })
+    return children
+  }
+  // Children keep the collector's resource and CSPRNG ids but, as in Ruby,
+  // the SDK's own sampler and limits, including OTEL_TRACES_SAMPLER.
+  const childProviderConfig = { resource: providerConfig.resource, idGenerator }
+  let propagator
+  const childPropagator = () => {
+    propagator = propagator || new sdk.core.CompositePropagator({
+      propagators: [new sdk.core.W3CTraceContextPropagator(), new sdk.core.W3CBaggagePropagator()],
+    })
+    return propagator
+  }
 
   const startTestSpan = (record, { line, startTime } = {}) => {
     try {
@@ -268,20 +284,23 @@ const createSession = (settings) => {
   // the processor timer handed over before the flush fails inside
   // exporter.forceFlush(), which resolves, so a rejected promise alone would
   // let an outage charge every test file the full retry delay.
-  const awaitWithinBudget = async (promise) => {
-    if (metrics.flushBudget <= 0) {
+  //
+  // `account` is the stream's metrics: test spans and children each spend
+  // their own budget, so trouble with children never costs test spans time.
+  const awaitWithinBudget = async (promise, account = metrics) => {
+    if (account.flushBudget <= 0) {
       promise.catch(() => {})
       return false
     }
     const startedAt = Date.now()
-    const failedBefore = metrics.failed
+    const failedBefore = account.failed
     let rejected = false
     let timer
-    const expiry = new Promise((resolve) => { timer = setTimeout(resolve, metrics.flushBudget, TIMED_OUT) })
+    const expiry = new Promise((resolve) => { timer = setTimeout(resolve, account.flushBudget, TIMED_OUT) })
     try {
       const outcome = await Promise.race([promise, expiry])
       if (outcome === TIMED_OUT) {
-        metrics.flushBudget = 0
+        account.flushBudget = 0
         return false
       }
       return true
@@ -290,8 +309,8 @@ const createSession = (settings) => {
       throw error
     } finally {
       clearTimeout(timer)
-      if (rejected || metrics.failed > failedBefore) {
-        metrics.flushBudget = Math.max(0, metrics.flushBudget - (Date.now() - startedAt))
+      if (rejected || account.failed > failedBefore) {
+        account.flushBudget = Math.max(0, account.flushBudget - (Date.now() - startedAt))
       }
     }
   }
@@ -352,9 +371,15 @@ const createSession = (settings) => {
     const { drained, failure } = await drain()
     warnUnlessCounted('flush OpenTelemetry spans', failure)
     reportUndelivered({ drained })
+    // A rejected flush means a batch failed, which the exporter has counted
+    // and report() warns about.
+    if (children) children.report(await awaitWithinBudget(children.flush(), children.metrics).catch(() => true))
   }
 
-  const onExit = () => reportUndelivered({ drained: false })
+  const onExit = () => {
+    reportUndelivered({ drained: false })
+    if (children) children.report(false, { final: true })
+  }
   process.on('exit', onExit)
 
   let shutDown = false
@@ -372,7 +397,7 @@ const createSession = (settings) => {
     if (drained) process.off('exit', onExit)
   }
 
-  return { runKey, metrics, startTestSpan, finishTestSpan, forceFlush, shutdown }
+  return { api, runKey, metrics, startTestSpan, finishTestSpan, forceFlush, shutdown, childExport, childProviderConfig, childPropagator }
 }
 
 // One session per process: a run's identity is fixed once export is

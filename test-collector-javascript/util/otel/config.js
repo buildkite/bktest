@@ -70,13 +70,19 @@ const resolveSettings = (options) => {
   return settings
 }
 
-const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runEnv, tags, probe = buildSession }) => {
+// `unsupported` names why the framework version in use cannot export spans.
+const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runEnv, tags, unsupported, probe = buildSession }) => {
   if (!isOtelEnabled(otelEnabled)) return null
 
   const jsonToken = jsonTokenFor(token)
   const relayToken = (process.env.BUILDKITE_TESTS_OTLP_TOKEN || '').trim()
   const credential = relayToken || jsonToken
   if (!credential) return null
+
+  if (unsupported) {
+    warn(`otelEnabled is set, but ${unsupported}; ${fallbackOutcome({ token })}`)
+    return null
+  }
 
   const couldNotConfigure = () => {
     warn(`otelEnabled is set, but OpenTelemetry could not be configured (see the warning above); ${fallbackOutcome({ token })}`)

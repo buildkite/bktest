@@ -7,6 +7,7 @@ const { sessionFor } = require('../util/otel/session')
 const { warn, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
 const { recordKey, recordExport } = require('./exportRecords')
+const JestOtelContext = require('./otelContext')
 
 const ROOT_DESCRIBE_BLOCK_NAME = 'ROOT_DESCRIBE_BLOCK'
 const STACK_LINE = /^(?:\s*at )?(?:new )?(?:.*? \()?(?:eval at [^ ]+ \(.+?:\d+:\d+\), )?(.+?):(\d+):(\d+)\)?$/
@@ -142,24 +143,26 @@ const BaseEnvironment = (() => {
 const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   static buildkiteTestEngine = true
 
-  // Jest 28 passes { globalConfig, projectConfig }; Jest 27 passes the
-  // project config alone. Nothing after super() may stop the tests from
-  // running: without a session the file is simply not recorded as exported,
-  // and the reporter uploads its results as JSON.
+  // Nothing after super() may stop the tests from running: without a session
+  // the file is simply not recorded as exported, and the reporter uploads its
+  // results as JSON.
   constructor(config, context) {
     super(config, context)
-    const projectConfig = config.projectConfig || config
+    const { globalConfig, projectConfig } = config
     this._buildkite = { session: null, started: false, spans: new Map(), includeLocation: false, formatting: null, projectConfig, testPath: context?.testPath }
     let fallback = 'its results go to the JSON upload instead'
     try {
       const settings = readSettings()
       if (!settings) return
       fallback = settings.fallback
-      const paths = new Paths({ rootDir: settings.rootDir }, settings.runEnv.location_prefix)
+      const paths = new Paths({ rootDir: globalConfig.rootDir }, settings.runEnv.location_prefix)
       this._buildkite.testPath = paths.prefixTestPath(context.testPath)
       this._buildkite.record = () => recordExport(settings.exportRecords, recordKey(projectConfig, context.testPath))
       this._buildkite.fallback = fallback
       this._buildkite.session = sessionFor(settings)
+      this._buildkite.children = new JestOtelContext({
+        session: this._buildkite.session, settings, testPath: context.testPath, rootDir: projectConfig.rootDir,
+      })
     } catch (error) {
       warn(`OpenTelemetry could not be set up in this test worker (${describeError(error)}); for ${this._buildkite.testPath}, ${fallback}.`)
     }
@@ -168,19 +171,26 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   async handleTestEvent(event, state) {
     if (this._buildkite.session && !this._buildkite.started) this._start(new Error().stack)
     if (super.handleTestEvent) await super.handleTestEvent(event, state)
-    const { session, spans } = this._buildkite
+    const { session, spans, children } = this._buildkite
     if (!session) return
 
     switch (event.name) {
+      case 'run_start':
+        if (children.canExportChildren) this._wrapFunctions(state.rootDescribeBlock)
+        break
       case 'include_test_location_in_result':
         this._buildkite.includeLocation = true
         break
       case 'test_start': {
-        this._finish(event.test)
-        const result = this._assertionResult(event.test, undefined)
-        const record = { id: randomUUID(), ...testEngineRecord(result, this._buildkite.testPath) }
-        const handle = session.startTestSpan(record, { startTime: Date.now() })
-        spans.set(event.test, { handle, id: record.id })
+        // Circus starts test.concurrent bodies before their test_start, and
+        // their wrappers already started the test's span; only a previous
+        // attempt's span is finished here.
+        if (spans.get(event.test)?.endTime !== undefined) this._finish(event.test)
+        this._begin(event.test)
+        break
+      }
+      case 'hook_start': {
+        this._buildkite.hookTest = state.currentlyRunningTest
         break
       }
       case 'test_skip':
@@ -198,6 +208,45 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
         }
         break
       }
+    }
+  }
+
+  _begin(test) {
+    const { session, spans, children, testPath } = this._buildkite
+    if (spans.has(test)) return spans.get(test)
+    const result = this._assertionResult(test, undefined)
+    const record = { id: randomUUID(), ...testEngineRecord(result, testPath) }
+    const handle = session.startTestSpan(record, { startTime: Date.now() })
+    const started = { handle, id: record.id }
+    spans.set(test, started)
+    children.began(started)
+    return started
+  }
+
+  _wrapFunctions(block) {
+    const env = this
+    const { children, spans } = this._buildkite
+    const wrap = (entry, test) => {
+      const fn = entry.fn
+      if (!fn) return
+      const invoke = (receiver, args) => {
+        const owner = test || env._buildkite.hookTest
+        if (!owner || (!test && !['beforeEach', 'afterEach'].includes(entry.type))) return fn.apply(receiver, args)
+        const started = test ? env._begin(owner) : spans.get(owner)
+        return children.run(started, fn, receiver, args)
+      }
+      // Circus uses .length to distinguish callback tests/hooks. Do not
+      // replace a done-style function with a zero-arity rest wrapper.
+      entry.fn = fn.length
+        ? function (done) { return invoke(this, [done]) }
+        : function () { return invoke(this, []) }
+      // Circus recognises generator tests by their function prototype.
+      Object.setPrototypeOf(entry.fn, Object.getPrototypeOf(fn))
+    }
+    for (const hook of block.hooks) wrap(hook)
+    for (const child of block.children) {
+      if (child.type === 'describeBlock') this._wrapFunctions(child)
+      else wrap(child, child)
     }
   }
 
@@ -247,7 +296,13 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
         // Late test-owned rejections can arrive during afterAll. Circus has
         // settled the file's results before tearing down its environment.
         for (const test of spans.keys()) this._finish(test)
-        await session.forceFlush()
+        try {
+          await this._buildkite.children.teardown()
+        } catch (error) {
+          warn(`Could not shut down OpenTelemetry child instrumentation: ${describeError(error)}`)
+        } finally {
+          await session.forceFlush()
+        }
       }
     } finally {
       await super.teardown()

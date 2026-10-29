@@ -69,20 +69,20 @@ class JestBuildkiteTestEngineReporter {
     this._tags = options?.tags;
     this._paths = new Paths(globalConfig, this._testEnv.location_prefix)
     this._fallback = fallbackOutcome({ token: options?.token })
+    const frameworkVersion = jestVersion(globalConfig.rootDir)
     this._otel = resolveSettings({
       otelEnabled: options?.otelEnabled,
       token: options?.token,
       testRunner: 'jest',
-      frameworkVersion: jestVersion(globalConfig.rootDir),
+      frameworkVersion,
       runEnv: this._testEnv,
       tags: this._tags,
+      unsupported: Number(frameworkVersion?.split('.')[0]) < 29 ? `OpenTelemetry submission needs Jest 29 or newer, not ${frameworkVersion}` : undefined,
     })
     if (this._otel) {
       try {
         this._exportRecords = createRecords()
-        // Jest 27 gives a test environment only its own project's config, so the
-        // workers learn the rootDir the JSON upload's locations are relative to here.
-        publishSettings({ ...this._otel, rootDir: globalConfig.rootDir, exportRecords: this._exportRecords, fallback: this._fallback })
+        publishSettings({ ...this._otel, exportRecords: this._exportRecords, fallback: this._fallback })
       } catch (error) {
         warn(`OpenTelemetry span export disabled: could not create a temporary directory (${describeError(error)}); ${this._fallback}.`)
         publishSettings(null)

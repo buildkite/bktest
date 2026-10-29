@@ -31,9 +31,11 @@ const Environment = extend(Base)
 const exportRecords = fs.mkdtempSync(path.join(os.tmpdir(), 'bk-export-records-'))
 const settings = {
   endpoint: 'http://127.0.0.1:9/v1/traces', token: 'secret', runEnv: { key: 'run-1', location_prefix: 'app' }, tags: {},
-  rootDir: '/proj', exportRecords, fallback: 'uploading results as JSON instead',
+  exportRecords, fallback: 'uploading results as JSON instead',
 }
 const context = { testPath: '/proj/pkg/sum.test.js' }
+// What Jest passes a test environment for a project in a run rooted at rootDir.
+const configFor = (projectConfig, rootDir = projectConfig.rootDir) => ({ globalConfig: { rootDir }, projectConfig })
 
 const OLD_ENV = process.env
 
@@ -51,41 +53,18 @@ afterAll(() => {
 })
 
 describe('BuildkiteTestEngineEnvironment constructor', () => {
-  it('accepts the Jest 27 config shape (the project config alone)', () => {
+  it('makes paths relative to the run\'s rootDir, as the JSON upload does, not the project\'s or the worker\'s cwd', () => {
     publishSettings(settings)
-    // Paths are relative to rootDir, as the reporter's are, not to the worker's cwd.
-    const environment = new Environment({ rootDir: '/proj', cwd: '/elsewhere' }, context)
+    const environment = new Environment(configFor({ rootDir: '/proj/pkg', cwd: '/elsewhere' }, '/proj'), context)
 
-    expect(environment.config).toEqual({ rootDir: '/proj', cwd: '/elsewhere' })
     expect(environment._buildkite.testPath).toBe('app/pkg/sum.test.js')
     expect(sessionFor).toHaveBeenCalledWith(settings)
     expect(environment._buildkite.session).toEqual({ fake: true })
     expect(warnings()).toEqual([])
   })
 
-  it('makes paths relative to the reporter\'s rootDir in a Jest 27 multi-project run, as the JSON upload does', async () => {
-    process.env.BUILDKITE_ANALYTICS_TOKEN = 'secret'
-    const reporter = new Reporter({ rootDir: '/repo' }, { otelEnabled: true })
-    const projectConfig = { rootDir: '/repo/packages/a', cwd: '/repo/packages/a' }
-    const environment = new Environment(projectConfig, { testPath: '/repo/packages/a/same.test.js' })
-    await reporter.onRunComplete()
-
-    expect(environment._buildkite.testPath).toBe('packages/a/same.test.js')
-    expect(warnings()).toEqual([])
-  })
-
-  it('accepts the Jest 28+ config shape ({ globalConfig, projectConfig })', () => {
-    publishSettings(settings)
-    const config = { globalConfig: { rootDir: '/proj' }, projectConfig: { rootDir: '/proj/pkg' } }
-    const environment = new Environment(config, context)
-
-    expect(environment._buildkite.testPath).toBe('app/pkg/sum.test.js')
-    expect(environment._buildkite.session).toEqual({ fake: true })
-    expect(warnings()).toEqual([])
-  })
-
   it('runs the tests as the base environment would when OTel mode is off', async () => {
-    const environment = new Environment({ rootDir: '/proj' }, context)
+    const environment = new Environment(configFor({ rootDir: '/proj' }), context)
 
     expect(environment._buildkite.session).toBeNull()
     expect(sessionFor).not.toHaveBeenCalled()
@@ -95,7 +74,7 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
 
   it('still constructs, and names the file, when OTel cannot be set up in the worker', async () => {
     process.env[SETTINGS_ENV] = '{not json'
-    const environment = new Environment({ rootDir: '/proj' }, context)
+    const environment = new Environment(configFor({ rootDir: '/proj' }), context)
 
     expect(environment._buildkite.session).toBeNull()
     await expect(environment.handleTestEvent({ name: 'test_start', test: {} }, {})).resolves.toBeUndefined()
@@ -109,7 +88,7 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
     const project = { rootDir: '/proj', id: 'project-a' }
-    const environment = new Environment(project, context)
+    const environment = new Environment(configFor(project), context)
 
     expect(exportCount(exportRecords, recordKey(project, context.testPath))).toBe(0)
     await environment.handleTestEvent({ name: 'setup' }, {})
@@ -121,7 +100,7 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     publishSettings({ ...settings, exportRecords: path.join(exportRecords, 'missing', 'dir') })
     const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
-    const environment = new Environment({ rootDir: '/proj', id: 'project-a' }, context)
+    const environment = new Environment(configFor({ rootDir: '/proj', id: 'project-a' }), context)
     const test = { name: 'sums', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: new Error() }
 
     await environment.handleTestEvent({ name: 'test_start', test }, {})
@@ -147,12 +126,12 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'secret'
   })
 
-  // Jest accepts the same explicit project name (Jest 27) or id (Jest 28+) twice.
-  it.each(['name', 'id'])('uploads JSON for a project running a file another project with the same %s exported', async (key) => {
+  // Jest accepts the same explicit project id twice.
+  it('uploads JSON for a project running a file another project with the same id exported', async () => {
     const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-    const collectorProject = { [key]: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/buildkite-test-collector/jest/environment.js' }
-    const plainProject = { [key]: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/jest-environment-node/build/index.js' }
-    await new Environment(collectorProject, { testPath }).handleTestEvent({ name: 'setup' }, {})
+    const collectorProject = { id: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/buildkite-test-collector/jest/environment.js' }
+    const plainProject = { id: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/jest-environment-node/build/index.js' }
+    await new Environment(configFor(collectorProject), { testPath }).handleTestEvent({ name: 'setup' }, {})
 
     await reporter.onTestResult({ path: testPath, context: { config: collectorProject } }, testResult)
     await reporter.onTestResult({ path: testPath, context: { config: plainProject } }, testResult)
@@ -163,10 +142,10 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
 
   it('finds the record a worker wrote from its copy of the project config', async () => {
     const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-    const project = { id: 'a', rootDir: '/proj', testEnvironmentOptions: { url: 'http://a' }, moduleLoader: undefined, testRegex: ['\\.test\\.js$'] }
+    const project = { id: 'a', rootDir: '/proj', testEnvironmentOptions: { url: 'http://a' }, resolver: undefined, testRegex: ['\\.test\\.js$'] }
     // The worker gets the config as JSON, with the file's @jest-environment-options merged in.
     const workerCopy = { ...JSON.parse(JSON.stringify(project)), testEnvironmentOptions: { url: 'http://a', from: 'docblock' } }
-    await new Environment({ globalConfig: { rootDir: '/proj' }, projectConfig: workerCopy }, { testPath }).handleTestEvent({ name: 'setup' }, {})
+    await new Environment(configFor(workerCopy), { testPath }).handleTestEvent({ name: 'setup' }, {})
 
     await reporter.onTestResult({ path: testPath, context: { config: project } }, testResult)
     await reporter.onRunComplete()
@@ -178,7 +157,7 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
     const projects = ['one', 'two'].map((which) => ({ id: 'same', rootDir: '/proj', testEnvironmentOptions: { which } }))
     const run = async (reporter) => {
       for (const project of projects) {
-        await new Environment(project, { testPath }).handleTestEvent({ name: 'setup' }, {})
+        await new Environment(configFor(project), { testPath }).handleTestEvent({ name: 'setup' }, {})
       }
       for (const project of projects) {
         await reporter.onTestResult({ path: testPath, context: { config: project } }, testResult)
@@ -235,13 +214,6 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
 // Jest itself reports for that test in the JSON upload.
 const stack = (...frames) => ['Error', ...frames.map((frame) => `    at ${frame}`)].join('\n')
 const STACKS = [
-  ['Jest 27 test.each', 1, stack(
-    '/repo/node_modules/jest-each/build/bind.js:43:11',
-    'Array.forEach (<anonymous>)',
-    'eachBind (/repo/node_modules/jest-each/build/bind.js:42:22)',
-    'Object.<anonymous> (/repo/each.test.js:1:36)',
-    'Runtime._execModule (/repo/node_modules/jest-runtime/build/index.js:1646:24)',
-  )],
   ['Jest 29 test.each', 1, stack(
     '/repo/node_modules/jest-each/build/bind.js:47:15',
     'Array.forEach (<anonymous>)',
@@ -274,10 +246,10 @@ const STACKS = [
 
 describe('BuildkiteTestEngineEnvironment test locations', () => {
   it.each(STACKS)('reports the line Jest reports for a %s', async (_, line, asyncErrorStack) => {
-    publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
+    publishSettings({ ...settings, runEnv: { key: 'run-1' } })
     const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
-    const environment = new Environment({ rootDir: '/repo', id: 'project' }, { testPath: '/repo/each.test.js' })
+    const environment = new Environment(configFor({ rootDir: '/repo', id: 'project' }), { testPath: '/repo/each.test.js' })
     const test = { name: 'each 1', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: { stack: asyncErrorStack } }
 
     await environment.handleTestEvent({ name: 'include_test_location_in_result' }, {})
@@ -341,11 +313,11 @@ const FAILURES = [
 
 describe('BuildkiteTestEngineEnvironment failure text', () => {
   it.each(FAILURES)('%s', async (_, version, messageUtil, errors, text) => {
-    publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
+    publishSettings({ ...settings, runEnv: { key: 'run-1' } })
     const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
     const project = projectWithJestCircus(version, messageUtil)
-    const environment = new Environment(project, { testPath: '/repo/fail.test.js' })
+    const environment = new Environment(configFor(project, '/repo'), { testPath: '/repo/fail.test.js' })
     const test = { name: 'fails', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [errors], asyncError: errors[1] }
     const dispatch = dispatcherIn(project)
     const handler = environment.handleTestEvent.bind(environment)
@@ -359,13 +331,13 @@ describe('BuildkiteTestEngineEnvironment failure text', () => {
   })
 
   it('formats failures as the jest-circus dispatching events does, not the one beside a custom testRunner', async () => {
-    publishSettings({ ...settings, rootDir: '/repo', runEnv: { key: 'run-1' } })
+    publishSettings({ ...settings, runEnv: { key: 'run-1' } })
     const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
     sessionFor.mockReturnValueOnce(session)
     const host = projectWithJestCircus('30.5.2', FLATTEN_ERROR_STACK)
     const delegate = projectWithJestCircus('30.4.1', '')
     const dispatch = dispatcherIn(delegate)
-    const environment = new Environment(host, { testPath: '/repo/fail.test.js' })
+    const environment = new Environment(configFor(host, '/repo'), { testPath: '/repo/fail.test.js' })
     const errors = ['oops', asyncError()]
     const test = { name: 'fails', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [errors], asyncError: errors[1] }
     const handler = environment.handleTestEvent.bind(environment)
