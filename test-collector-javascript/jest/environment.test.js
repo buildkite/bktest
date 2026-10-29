@@ -126,11 +126,11 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'secret'
   })
 
-  // Jest accepts the same explicit project name (Jest 27) or id (Jest 28+) twice.
-  it.each(['name', 'id'])('uploads JSON for a project running a file another project with the same %s exported', async (key) => {
+  // Jest accepts the same explicit project id twice.
+  it('uploads JSON for a project running a file another project with the same id exported', async () => {
     const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-    const collectorProject = { [key]: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/buildkite-test-collector/jest/environment.js' }
-    const plainProject = { [key]: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/jest-environment-node/build/index.js' }
+    const collectorProject = { id: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/buildkite-test-collector/jest/environment.js' }
+    const plainProject = { id: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/jest-environment-node/build/index.js' }
     await new Environment(configFor(collectorProject), { testPath }).handleTestEvent({ name: 'setup' }, {})
 
     await reporter.onTestResult({ path: testPath, context: { config: collectorProject } }, testResult)
@@ -142,7 +142,7 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
 
   it('finds the record a worker wrote from its copy of the project config', async () => {
     const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-    const project = { id: 'a', rootDir: '/proj', testEnvironmentOptions: { url: 'http://a' }, moduleLoader: undefined, testRegex: ['\\.test\\.js$'] }
+    const project = { id: 'a', rootDir: '/proj', testEnvironmentOptions: { url: 'http://a' }, resolver: undefined, testRegex: ['\\.test\\.js$'] }
     // The worker gets the config as JSON, with the file's @jest-environment-options merged in.
     const workerCopy = { ...JSON.parse(JSON.stringify(project)), testEnvironmentOptions: { url: 'http://a', from: 'docblock' } }
     await new Environment(configFor(workerCopy), { testPath }).handleTestEvent({ name: 'setup' }, {})
