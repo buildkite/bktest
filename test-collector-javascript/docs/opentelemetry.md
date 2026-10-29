@@ -217,9 +217,10 @@ test('does work', async () => {
 })
 ```
 
-Tracers obtained at module load, in the test file or in application code it
-requires, record children too, as do modules loaded again after
-`jest.resetModules()` or inside `jest.isolateModules()`. Async work inherits
+Tracers obtained at module load, in the test file, a setup file or
+application code it requires, record children too, as do modules loaded again
+after `jest.resetModules()` or inside `jest.isolateModules()`, including a reset
+in `beforeAll`. Async work inherits
 the test's context across `await`, timers (including Jest's fake timers) and
 callback APIs, and concurrent tests keep separate contexts. A test retried
 with `jest.retryTimes` gets one test span per attempt, each with the children

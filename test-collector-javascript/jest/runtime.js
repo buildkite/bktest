@@ -24,8 +24,16 @@ const BaseRuntime = (() => {
 const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
   constructor(config, environment, ...rest) {
     super(config, environment, ...rest)
-    const children = environment?._buildkite?.children
-    if (children) children.attachRuntime(this)
+    this._buildkiteChildren = environment?._buildkite?.children
+    if (this._buildkiteChildren) this._buildkiteChildren.attachRuntime(this)
+  }
+
+  // The test file's require: tells the environment about each copy of the
+  // OpenTelemetry API it loads, which jest.resetModules() can multiply.
+  requireModuleOrMock(from, moduleName) {
+    const exports = super.requireModuleOrMock(from, moduleName)
+    if (moduleName === '@opentelemetry/api') this._buildkiteChildren?.loadedApi(exports)
+    return exports
   }
 }
 

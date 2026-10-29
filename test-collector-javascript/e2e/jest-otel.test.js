@@ -168,9 +168,11 @@ const otelSupported = jestMajor >= 29
     ]) {
       expect([test, childrenOf(rootsNamed(test)[0], named(child))]).toEqual([test, [expect.anything()]])
     }
-    // The file's own hooks and those of a setupFilesAfterEnv file.
-    for (const test of ['http I/O', 'undici I/O', 'callback body']) {
-      for (const hook of ['setup-child', 'teardown-child', 'setup-file-before', 'setup-file-after']) {
+    // The file's own hooks and those of a setupFilesAfterEnv file, also in a
+    // file that resets its modules before the collector sets up (again.js).
+    for (const test of ['http I/O', 'undici I/O', 'callback body', 'http again']) {
+      const hooks = test === 'http again' ? ['setup-file-before', 'setup-file-after'] : ['setup-child', 'teardown-child', 'setup-file-before', 'setup-file-after']
+      for (const hook of hooks) {
         expect([test, hook, childrenOf(rootsNamed(test)[0], named(hook)).length]).toEqual([test, hook, 1])
       }
     }

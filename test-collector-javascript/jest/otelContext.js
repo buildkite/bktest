@@ -139,6 +139,7 @@ class JestOtelContext {
     this.mode = null
     this.runtime = null
     this.traces = new Set()
+    this.proxies = new Set()
     this.cleanups = []
     // Conditions every worker would hit are reported once per run.
     this.warnOnce = (key, message) => warnOncePerRun(settings.exportRecords, key, message)
@@ -151,6 +152,20 @@ class JestOtelContext {
       this.instrumentations = loadInstrumentations(this.rootDir, this.warnOnce)
     } catch (error) {
       warn(`OpenTelemetry instrumentation could not be loaded (${describeError(error)}); test.execution export remains enabled.`)
+    }
+  }
+
+  // Called by the collector's Jest runtime for each copy of the API the file
+  // requires. Until setup registers the child provider, a copy's tracers use
+  // that copy's own proxy provider. Setup points every proxy seen at the child
+  // provider, because after a jest.resetModules() it registers through a
+  // newer copy than the one earlier tracers came from.
+  loadedApi(api) {
+    try {
+      const provider = api.trace.getTracerProvider()
+      if (this.mode === null && typeof provider.setDelegate === 'function') this.proxies.add(provider)
+    } catch {
+      // a mocked API
     }
   }
 
@@ -189,6 +204,7 @@ class JestOtelContext {
     this.forwarder = this.session.childExport().createForwarder()
     this.provider = new trace.BasicTracerProvider({ ...this.session.childProviderConfig, spanProcessors: [this.forwarder] })
     if (!api.trace.setGlobalTracerProvider(this.provider)) throw new Error('could not register the child tracer provider')
+    for (const proxy of this.proxies) proxy.setDelegate(this.provider)
     for (const instance of this.instrumentations || []) {
       this.cleanups.push(() => instance.disable())
       enable(instance, this.provider)

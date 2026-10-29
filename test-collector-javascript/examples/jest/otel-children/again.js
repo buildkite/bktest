@@ -2,7 +2,9 @@
 // previous file and unpatched at its teardown, and must be patched exactly
 // once again. Also covers test shapes that run a body more than once or
 // outside an ordinary async call, fresh module registries, and a child the
-// test leaves open.
+// test leaves open. beforeAll resets the module registry before the collector
+// sets up, so setup loads a newer copy of the API than the one this file's
+// tracer, the app's and the setup file's were obtained from.
 const http = require('http')
 const { trace } = require('@opentelemetry/api')
 const app = require('./support/app')
@@ -12,6 +14,7 @@ let server
 let url
 
 beforeAll(async () => {
+  jest.resetModules()
   server = app.createServer()
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   url = `http://127.0.0.1:${server.address().port}`
