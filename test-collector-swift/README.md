@@ -121,7 +121,7 @@ including the batch cap when a relay handoff drains a backlog after failure.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | `120` | Max spans per request; lowering it does not send results sooner. |
+| `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | `120` | Max spans per request and direct-mode early-send threshold; lowering it does not shorten the 1 s timer. |
 | `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` | `8192` | Max queued test execution spans, including an in-flight batch. |
 
 Both overrides must contain only decimal digits and be integers from 1 to
@@ -305,17 +305,20 @@ The collector prioritizes `buildkite.execution.via`, `buildkite.run_key`, and
 OpenTelemetry SDK span attribute limit is constrained.
 
 While the endpoint is healthy, finishing a test waits for its root span to be
-accepted by the configured OTLP endpoint. After a transient failure (a network
-error, timeout, or an HTTP 408, 429, 502, 503 or 504 response), subsequent
+accepted only in relay mode, selected by a nonblank `BUILDKITE_TESTS_OTLP_TOKEN`.
+In direct mode, the test returns while its root span is buffered for the next
+background batch or bundle-end flush; a runner restart can lose buffered
+results. After a transient failure (a network error, timeout, or an HTTP 408,
+429, 502, 503 or 504 response), subsequent
 roots stay in the collector's in-memory queue while export attempts back off
 for 10, 20, 30, and then at most 60 seconds. The bundle-end flush makes one
 immediate final attempt without waiting out the backoff; each request times
 out after 10 s, and the whole flush is capped at 30 s. Any other HTTP error
 (for example 401 or 403 for a bad token, or 413 for an oversized request) is not
-retried: the queued executions are dropped and a `TEST RESULTS MISSING` warning
+retried: the rejected batch is dropped and a `TEST RESULTS MISSING` warning
 names the status. When the endpoint is the Test Engine Client relay, acceptance
-transfers the span to the longer-lived parent process, which protects completed
-executions from an XCTest runner restart.
+transfers the span to the longer-lived parent process, which protects
+acknowledged executions from an XCTest runner restart.
 
 This is not disk-backed delivery. A hard exit before a test finishes, a process
 exit while the endpoint remains unavailable, or a machine restart can still
