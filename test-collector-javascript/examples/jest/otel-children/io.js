@@ -1,5 +1,6 @@
 const http = require('http')
 const { trace } = require('@opentelemetry/api')
+const app = require('./support/app')
 
 // Obtained before the collector registers its provider at the first test.
 const tracer = trace.getTracer('fixture')
@@ -9,7 +10,7 @@ let url
 beforeAll(async () => {
   // A detached trace outside any test must never be forwarded.
   tracer.startSpan('outside-test', { root: true }).end()
-  server = http.createServer((req, res) => res.end('real I/O'))
+  server = app.createServer()
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   url = `http://127.0.0.1:${server.address().port}`
 })
@@ -62,9 +63,8 @@ describe('per-test hooks', () => {
 })
 
 // Different delays ensure a single mutable "current test" implementation
-// misparents at least one child's continuation. Jest 27 runs .each as
-// ordinary tests, and starts plain test.concurrent bodies while the file is
-// still being collected.
+// misparents at least one child's continuation. Circus starts these bodies
+// before any of them gets its test_start.
 test.concurrent.each([['slow', 35], ['fast', 5]])('concurrent %s', async (name, delay) => {
   await new Promise((resolve) => setTimeout(resolve, delay))
   tracer.startSpan(`concurrent-${name}`).end()

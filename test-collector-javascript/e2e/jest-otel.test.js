@@ -42,31 +42,48 @@ const spanRecord = (span) => {
 
 const sortedBy = (records, key) => [...records].sort((a, b) => key(a).localeCompare(key(b)))
 
-describe('examples/jest in OTel mode', () => {
-  let server
-  const baseEnv = {
-    BUILDKITE_ANALYTICS_TOKEN: undefined,
-    BUILDKITE_ANALYTICS_DEBUG_ENABLED: 'true',
-    BUILDKITE_ANALYTICS_KEY: 'otel-e2e-run',
-    BUILDKITE_AGENT_ID: 'agent-e2e',
-    TRACEPARENT: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
-  }
+let server
+const baseEnv = {
+  BUILDKITE_ANALYTICS_TOKEN: undefined,
+  BUILDKITE_ANALYTICS_DEBUG_ENABLED: 'true',
+  BUILDKITE_ANALYTICS_KEY: 'otel-e2e-run',
+  BUILDKITE_AGENT_ID: 'agent-e2e',
+  TRACEPARENT: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
+}
 
-  afterEach(async () => {
-    if (server) await server.close()
-    server = null
+afterEach(async () => {
+  if (server) await server.close()
+  server = null
+})
+
+// The CI matrix sets the version it installed into examples/jest.
+test('runs the selected Jest version', () => {
+  expect(jestVersion).toBe(process.env.EXPECTED_JEST_VERSION || jestVersion)
+})
+
+// OpenTelemetry submission needs Jest 29 or newer; older versions upload JSON.
+const otelSupported = jestMajor >= 29
+
+;(otelSupported ? test.skip : test)('warns once and uploads JSON on Jest 28 and older', async () => {
+  server = await startOtlpServer()
+  const result = await run('jest --config otel-children.config.js', {
+    ...baseEnv, BUILDKITE_ANALYTICS_TOKEN: 'xyz', BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
   })
+  expect(result.stderr.split('\n').filter((line) => line.includes('[buildkite-test-collector]'))).toEqual([
+    `[buildkite-test-collector] otelEnabled is set, but OpenTelemetry submission needs Jest 29 or newer, not ${jestVersion}; uploading results as JSON instead`,
+  ])
+  expect(jsonUpload(result.stdout)).toHaveLength(20) // every test in otel-children
+  expect(server.requests).toHaveLength(0)
+}, 60000)
 
-  // The CI matrix sets the version it installed into examples/jest.
-  test('runs the selected Jest version', () => {
-    expect(jestVersion).toBe(process.env.EXPECTED_JEST_VERSION || jestVersion)
-  })
-
-  // examples/jest/otel-children.config.js: 17 tests in io.js, again.js,
+;(otelSupported ? describe : describe.skip)('examples/jest in OTel mode', () => {
+  // examples/jest/otel-children.config.js: 20 tests in io.js, again.js,
   // empty.js and owner.js; again.js retries one test, which fails once.
-  const CHILD_FIXTURE_ROOTS = 18
+  const CHILD_FIXTURE_ROOTS = 21
   const CLIENT = 3
   const SERVER = 2
+  const SUITE_PROVIDER_WARNING = /OpenTelemetry child spans are not exported because the suite registers its own tracer provider; to get them, let the collector provide the provider under Jest\./
+  const LATE_WARNING = /OpenTelemetry dropped 1 child span\(s\) \(still open when their test file finished: 1\); test\.execution results are unaffected\./
 
   // Runs the child span fixtures against a fresh receiver and indexes what
   // arrived. `ownRequests` are spans of the collector's own OTLP requests,
@@ -107,11 +124,13 @@ describe('examples/jest in OTel mode', () => {
   const named = (name) => (span) => span.name === name
   const clientGet = (span) => span.name === 'GET' && span.kind === CLIENT
 
-  const expectAllResults = ({ result, roots }) => {
-    expect(result.code).toBe(1) // intentional failures in empty.js
+  // io.js alone has 7 tests, which pass.
+  const IO_ROOTS = 7
+  const expectAllResults = ({ result, roots }, count = CHILD_FIXTURE_ROOTS) => {
+    expect(result.code).toBe(count === IO_ROOTS ? 0 : 1) // intentional failures in empty.js
     expect(result.stdout).not.toMatch(/Test Engine Sending:/)
     expect(result.stderr).not.toMatch(/TEST RESULTS MISSING/)
-    expect(roots).toHaveLength(CHILD_FIXTURE_ROOTS)
+    expect(roots).toHaveLength(count)
     for (const root of roots) expect(root.parentSpanId).toBe('')
   }
 
@@ -129,7 +148,7 @@ describe('examples/jest in OTel mode', () => {
     .filter((r) => r.headers['buildkite-tests-span-stream'] === 'child')
     .flatMap((r) => r.decoded.resourceSpans.map((rs) => rs.resource))
 
-  // Spans a suite's own exporter wrote to OTEL_SUITE_SPANS_FILE.
+  // Spans the preloaded provider wrote to OTEL_SUITE_SPANS_FILE.
   const readSpansFile = (file) => (fs.existsSync(file)
     ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))
     : [])
@@ -137,8 +156,7 @@ describe('examples/jest in OTel mode', () => {
   const ownClientRequests = (recorded, port) => recorded.filter((s) => s.kind === 2 /* SDK CLIENT */ &&
     Object.values(s.attributes).some((value) => String(value) === port || String(value).includes(`:${port}/`)))
 
-  // Children each test is expected to have under its own test span, in both
-  // the collector-managed and suite-owned setups.
+  // Manual children each test is expected to have under its own test span.
   const expectManualChildren = ({ rootsNamed, childrenOf, children }, { instrumented = true } = {}) => {
     for (const [test, child] of [
       ['concurrent slow', 'concurrent-slow'], ['concurrent fast', 'concurrent-fast'],
@@ -146,11 +164,13 @@ describe('examples/jest in OTel mode', () => {
       ['concurrent plain fast', 'concurrent-plain-fast'],
       ['callback body', 'callback-child'], ['fake timers', 'fake-timer-child'],
       ['generator body', 'generator-child'], ['failing body', 'failing-child'],
+      ['after jest.resetModules', 'reset-modules-child'], ['in jest.isolateModules', 'isolated-modules-child'],
     ]) {
       expect([test, childrenOf(rootsNamed(test)[0], named(child))]).toEqual([test, [expect.anything()]])
     }
+    // The file's own hooks and those of a setupFilesAfterEnv file.
     for (const test of ['http I/O', 'undici I/O', 'callback body']) {
-      for (const hook of ['setup-child', 'teardown-child']) {
+      for (const hook of ['setup-child', 'teardown-child', 'setup-file-before', 'setup-file-after']) {
         expect([test, hook, childrenOf(rootsNamed(test)[0], named(hook)).length]).toEqual([test, hook, 1])
       }
     }
@@ -162,13 +182,24 @@ describe('examples/jest in OTel mode', () => {
       expect(childrenOf(root, (s) => s.name.startsWith('attempt-')).map((s) => s.name)).toEqual([`attempt-${attempt}`])
       expect(childrenOf(root, clientGet)).toHaveLength(instrumented ? 1 : 0)
     }
+    // beforeAll spans start traces of their own.
     expect(children.filter(named('outside-test'))).toHaveLength(0)
+  }
+
+  // A request to the fixture app nests client GET > server GET > the
+  // handler's manual span under the test that made it.
+  const expectRequest = ({ rootsNamed, childrenOf }, test) => {
+    const root = rootsNamed(test)[0]
+    const clients = childrenOf(root, clientGet)
+    const servers = childrenOf(root, (s) => s.kind === SERVER && s.parentSpanId === clients[0]?.spanId)
+    const handlers = childrenOf(root, (s) => s.name === 'handle-request' && s.parentSpanId === servers[0]?.spanId)
+    expect([test, clients.length, servers.length, handlers.length]).toEqual([test, 1, 1, 1])
   }
 
   test.each([
     ['in one process', '--runInBand'],
     ['in worker processes', '--maxWorkers=2 --no-cache'],
-  ])('exports instrumented children under the test that ran them %s', async (_, args) => {
+  ])('exports children under the test that ran them %s', async (_, args) => {
     // Batches of one export each span as it ends, so the collector's own
     // requests start inside running tests, with their instrumentation active.
     const outcome = await runChildren('managed', {
@@ -177,8 +208,8 @@ describe('examples/jest in OTel mode', () => {
     const { roots, children, rootsNamed, childrenOf, rootOf, isOwnRequest, warnings } = outcome
     expectAllResults(outcome)
     expectStreams()
-    // owner.js registers its own provider without the Buildkite processor.
-    expect(warnings).toEqual([expect.stringMatching(/the suite registers its own tracer provider, so add createBuildkiteSpanProcessor\(\)/)])
+    // owner.js registers its own provider; again.js leaves a child open.
+    expect(warnings.sort()).toEqual([expect.stringMatching(SUITE_PROVIDER_WARNING), expect.stringMatching(LATE_WARNING)])
     // Each patch is undone exactly once: shimmer complains about a second unwrap.
     expect(outcome.result.stderr).not.toMatch(/already been unwrapped/)
 
@@ -189,50 +220,18 @@ describe('examples/jest in OTel mode', () => {
     // Built-in modules are patched once per file, also in the second file of
     // a worker: one client span per request, and the in-process server
     // continues the test's trace.
-    for (const test of ['http I/O', 'undici I/O', 'http again']) {
-      const [client] = childrenOf(rootsNamed(test)[0], clientGet)
-      expect([test, childrenOf(rootsNamed(test)[0], clientGet).length]).toEqual([test, 1])
-      expect(childrenOf(rootsNamed(test)[0], (s) => s.kind === SERVER && s.parentSpanId === client.spanId)).toHaveLength(1)
-    }
+    for (const test of ['http I/O', 'undici I/O', 'http again']) expectRequest(outcome, test)
     const [manual] = childrenOf(rootsNamed('http I/O')[0], named('manual-parent'))
     expect(childrenOf(rootsNamed('http I/O')[0], clientGet)[0].parentSpanId).toBe(manual.spanId)
 
     // A file that owns its provider gets no forwarding and no instrumentation.
     expect(childrenOf(rootsNamed('own provider')[0])).toEqual([])
     expect(children.filter(named('owner-child'))).toEqual([])
+    expect(children.filter(named('late-child'))).toEqual([])
 
     // Children carry the collector's resource, as test spans do.
     const testResource = server.requests.find((r) => r.headers['buildkite-tests-span-stream'] === 'test').decoded.resourceSpans[0].resource
     for (const resource of childResources()) expect(resource).toEqual(testResource)
-  }, 60000)
-
-  test.each(['suite', 'suite-off', 'suite-no-forwarder'])('leaves a provider the suite registers alone (%s)', async (mode) => {
-    const file = spansFile()
-    const outcome = await runChildren(mode, { env: { OTEL_SUITE_SPANS_FILE: file } })
-    const { children, rootsNamed, childrenOf, isOwnRequest, warnings, port } = outcome
-    expectAllResults(outcome)
-    expectStreams()
-    const recorded = readSpansFile(file)
-    // The suite's own exporter never sees the collector's requests.
-    expect(ownClientRequests(recorded, port)).toEqual([])
-    expect(children.filter(isOwnRequest)).toEqual([])
-    if (mode === 'suite-no-forwarder') {
-      expect(warnings).toEqual([expect.stringMatching(/the suite registers its own tracer provider, so add createBuildkiteSpanProcessor\(\)/)])
-    } else {
-      expect(warnings).toEqual([])
-    }
-    if (mode !== 'suite') {
-      expect(children).toEqual([])
-      return
-    }
-    expectManualChildren(outcome)
-    // Only the suite's instrumentation runs: one http client span per
-    // request, and the suite's resource rather than the collector's.
-    expect(childrenOf(rootsNamed('http I/O')[0], clientGet)).toHaveLength(1)
-    expect(childrenOf(rootsNamed('own provider')[0], named('owner-child'))).toHaveLength(1)
-    for (const resource of childResources()) expect(resource['service.name']).toBe('customer-service')
-    // The suite's sampler and exporter still see everything it recorded.
-    for (const child of children) expect(recorded.some((s) => s.name === child.name)).toBe(true)
   }, 60000)
 
   // Built-in modules are unpatched at each file's teardown. A later file that
@@ -240,7 +239,7 @@ describe('examples/jest in OTel mode', () => {
   // trace headers, also when a require hook saw http before any
   // instrumentation registered for it, so the collector patched it itself.
   test('unpatches built-ins before a later file that opted out of the collector environment', async () => {
-    const prime = path.join(__dirname, '../examples/jest/otel-children/prime.js')
+    const prime = path.join(__dirname, '../examples/jest/otel-children/support/prime.js')
     const outcome = await runChildren('optout', {
       env: { BUILDKITE_ANALYTICS_TOKEN: 'xyz', NODE_OPTIONS: `--require ${JSON.stringify(prime)}` },
     })
@@ -252,68 +251,95 @@ describe('examples/jest in OTel mode', () => {
     for (const child of children) expect(roots).toContain(outcome.rootOf(child))
   }, 60000)
 
-  test('leaves OpenTelemetry configured outside the test sandbox alone', async () => {
+  test('leaves OpenTelemetry configured outside the test sandbox alone, with one warning', async () => {
     const file = spansFile()
-    const preload = path.join(__dirname, '../examples/jest/otel-children/preload.js')
+    const preload = path.join(__dirname, '../examples/jest/otel-children/support/preload.js')
     const outcome = await runChildren('preload', {
       args: '--maxWorkers=2 --no-cache',
       env: { OTEL_SUITE_SPANS_FILE: file, NODE_OPTIONS: `--require ${JSON.stringify(preload)}` },
     })
     expectAllResults(outcome)
-    expect(outcome.warnings.filter((w) => !/registers its own tracer provider/.test(w))).toEqual([
-      expect.stringMatching(/OpenTelemetry is configured outside the Jest test sandbox/),
-    ])
+    expect(outcome.warnings).toEqual([expect.stringMatching(SUITE_PROVIDER_WARNING)])
     expect(outcome.children).toEqual([])
     const recorded = readSpansFile(file)
     expect(recorded.some((s) => s.name === 'GET')).toBe(true)
+    // The preloaded instrumentation never records the collector's requests.
     expect(ownClientRequests(recorded, outcome.port)).toEqual([])
   }, 60000)
 
-  test('exports test spans only, with one warning, without the collector runtime', async () => {
+  test('exports test spans only, without a warning, without the collector runtime', async () => {
     const outcome = await runChildren('no-runtime', { args: '--maxWorkers=2 --no-cache' })
     expectAllResults(outcome)
-    expect(outcome.warnings).toEqual([
-      expect.stringMatching(/otelInstrumentations needs the collector's Jest runtime: set runtime: 'buildkite-test-collector\/jest\/runtime'/),
-    ])
+    expect(outcome.warnings).toEqual([])
     expect(outcome.children).toEqual([])
   }, 60000)
 
-  test('keeps manual children and test spans when otelInstrumentations is invalid', async () => {
-    const outcome = await runChildren('bad-option')
-    expectAllResults(outcome)
-    expect(outcome.warnings.filter((w) => !/registers its own tracer provider/.test(w))).toEqual([
-      expect.stringMatching(/otelInstrumentations is ignored: options for @opentelemetry\/instrumentation-http must be a plain JSON object/),
-    ])
-    expectManualChildren(outcome, { instrumented: false })
-    expect(outcome.children.filter((s) => s.name === 'GET')).toEqual([])
-  }, 60000)
-
-  // Jest loads a test file's packages itself, so instrumentation that patches
-  // packages is skipped with one warning per run, across workers, and the
-  // built-in instrumentation listed after it still records.
-  test('skips instrumentation that patches packages with one warning and keeps http and fetch children', async () => {
-    const outcome = await runChildren('package-instrumentation', { args: '--maxWorkers=2 --no-cache' })
-    const { rootsNamed, childrenOf, warnings } = outcome
-    expectAllResults(outcome)
-    expect(warnings.filter((w) => !/registers its own tracer provider/.test(w))).toEqual([
-      expect.stringMatching(/OpenTelemetry instrumentation @opentelemetry\/instrumentation-graphql is not supported in Jest yet and was skipped: .*Test results are unaffected\.$/),
-    ])
-    expectManualChildren(outcome)
-    for (const test of ['http I/O', 'undici I/O']) {
-      const [client] = childrenOf(rootsNamed(test)[0], clientGet)
-      expect([test, client && childrenOf(rootsNamed(test)[0], (s) => s.kind === SERVER && s.parentSpanId === client.spanId).length]).toEqual([test, 1])
+  // As @opentelemetry/auto-instrumentations-node reads them: short names, the
+  // enabled list first, then the disabled list.
+  test.each([
+    ['OTEL_NODE_ENABLED_INSTRUMENTATIONS', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'undici' }, { 'http I/O': 0, 'undici I/O': 1 }],
+    ['both variables', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: ' http , undici', OTEL_NODE_DISABLED_INSTRUMENTATIONS: 'undici' }, { 'http I/O': 1, 'undici I/O': 0 }],
+  ])('narrows the instrumentation with %s', async (_, env, clients) => {
+    const outcome = await runChildren('managed', { args: 'io.js --runInBand', env })
+    expectAllResults(outcome, IO_ROOTS)
+    expect(outcome.warnings).toEqual([])
+    for (const [test, count] of Object.entries(clients)) {
+      expect([test, outcome.childrenOf(outcome.rootsNamed(test)[0], clientGet).length]).toEqual([test, count])
     }
+    expect(outcome.childrenOf(outcome.rootsNamed('callback body')[0], named('callback-child'))).toHaveLength(1)
   }, 60000)
 
-  test('skips instrumentation that is missing, disabled in its options, or disabled with OTEL_NODE_DISABLED_INSTRUMENTATIONS', async () => {
-    const outcome = await runChildren('missing-package', { env: { OTEL_NODE_DISABLED_INSTRUMENTATIONS: 'undici' } })
-    const { rootsNamed, childrenOf, warnings } = outcome
-    expectAllResults(outcome)
-    expect(warnings.filter((w) => !/registers its own tracer provider/.test(w))).toEqual([
-      expect.stringMatching(/OpenTelemetry instrumentation @opentelemetry\/instrumentation-not-installed could not be loaded .*continuing without it/),
-    ])
-    expect(childrenOf(rootsNamed('http I/O')[0], clientGet)).toHaveLength(1)
-    expect(childrenOf(rootsNamed('undici I/O')[0], (s) => s.name === 'GET')).toEqual([])
+  // A project that can load the instrumentation only through
+  // @opentelemetry/auto-instrumentations-node, as under pnpm, which keeps a
+  // package's dependencies beside it rather than in the project's node_modules.
+  const projectWithAutoInstrumentations = (packages) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-auto-'))
+    const auto = path.join(root, 'node_modules/@opentelemetry/auto-instrumentations-node')
+    fs.mkdirSync(path.join(auto, 'node_modules/@opentelemetry'), { recursive: true })
+    fs.writeFileSync(path.join(auto, 'package.json'), JSON.stringify({ name: '@opentelemetry/auto-instrumentations-node', version: '0.0.0', main: 'index.js' }))
+    fs.writeFileSync(path.join(auto, 'index.js'), '')
+    for (const [name, source] of Object.entries(packages)) {
+      const target = path.join(auto, 'node_modules', name)
+      if (typeof source === 'string') {
+        fs.symlinkSync(source, target)
+      } else {
+        // A stand-in for an instrumentation release from another SDK line.
+        fs.mkdirSync(target)
+        fs.writeFileSync(path.join(target, 'package.json'), JSON.stringify({ name, version: source.version, main: 'index.js' }))
+        fs.writeFileSync(path.join(target, 'index.js'), `exports.${source.className} = class { constructor() { this.instrumentationVersion = '${source.version}' } }`)
+      }
+    }
+    return root
+  }
+  const installed = (name) => path.dirname(require.resolve(`${name}/package.json`, { paths: [path.join(__dirname, '../examples/jest')] }))
+
+  test.each([
+    ['records http and fetch with the 2.x SDK line', {
+      '@opentelemetry/instrumentation-http': installed('@opentelemetry/instrumentation-http'),
+      '@opentelemetry/instrumentation-undici': installed('@opentelemetry/instrumentation-undici'),
+    }],
+    ['skips another SDK line with one warning', {
+      '@opentelemetry/instrumentation-http': { version: '0.300.0', className: 'HttpInstrumentation' },
+      '@opentelemetry/instrumentation-undici': { version: '0.34.0', className: 'UndiciInstrumentation' },
+    }],
+  ])('with only @opentelemetry/auto-instrumentations-node installed, %s', async (_, packages) => {
+    const root = projectWithAutoInstrumentations(packages)
+    try {
+      const outcome = await runChildren('managed', { args: 'io.js --maxWorkers=2 --no-cache', env: { OTEL_PROJECT_ROOT: root } })
+      expectAllResults(outcome, IO_ROOTS)
+      expect(outcome.childrenOf(outcome.rootsNamed('callback body')[0], named('callback-child'))).toHaveLength(1)
+      if (typeof packages['@opentelemetry/instrumentation-http'] === 'string') {
+        expect(outcome.warnings).toEqual([])
+        for (const test of ['http I/O', 'undici I/O']) expectRequest(outcome, test)
+      } else {
+        expect(outcome.warnings).toEqual([expect.stringMatching(
+          /OpenTelemetry instrumentation skipped: @opentelemetry\/instrumentation-http 0\.300\.0, @opentelemetry\/instrumentation-undici 0\.34\.0\. .*2\.x SDK line.*test\.execution export remains enabled\./,
+        )])
+        expect(outcome.children.filter((s) => s.name === 'GET')).toEqual([])
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   }, 60000)
 
   test('overflows the bounded child queue without displacing test results or tracing its own exports', async () => {
@@ -327,7 +353,7 @@ describe('examples/jest in OTel mode', () => {
       BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
     })
     expect(result.code).toBe(0)
-    expect(result.stderr).toMatch(/OpenTelemetry dropped \d+ child span\(s\).*test.execution results are unaffected/)
+    expect(result.stderr).toMatch(/OpenTelemetry dropped \d+ child span\(s\) \(not-exported: \d+\); test.execution results are unaffected/)
     expect(result.stderr).not.toMatch(/TEST RESULTS MISSING/)
     expect(result.stdout).not.toMatch(/Test Engine Sending:/)
     const spans = server.spans()
@@ -338,18 +364,24 @@ describe('examples/jest in OTel mode', () => {
     expect(own).toEqual([])
   }, 60000)
 
-  test('stops child export with one warning per run when Buildkite refuses child spans', async () => {
+  // As in Ruby: a refused batch counts as dropped, the first drop warns, the
+  // process warns its total when it finishes, and the stream keeps sending.
+  test('counts child batches Buildkite refuses with HTTP 403 as dropped and keeps sending', async () => {
     const outcome = await runChildren('managed', {
-      args: '--maxWorkers=2 --no-cache',
+      env: { BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE: '1' },
       respond: (index, headers) => (headers['buildkite-tests-span-stream'] === 'child' ? 403 : 200),
     })
     expectAllResults(outcome)
-    expect(outcome.warnings.filter((w) => !/registers its own tracer provider/.test(w))).toEqual([
-      expect.stringMatching(/Buildkite Test Engine refused OpenTelemetry child spans \(HTTP 403\).*child span export has stopped\. test\.execution results are unaffected\./),
-    ])
     const childRequests = server.requests.filter((r) => r.headers['buildkite-tests-span-stream'] === 'child')
-    expect(childRequests.length).toBeGreaterThan(0)
-    expect(childRequests.length).toBeLessThanOrEqual(2) // the first batch from each worker
+    const refused = childRequests.flatMap((r) => r.decoded.resourceSpans.flatMap((rs) => rs.scopeSpans.flatMap((ss) => ss.spans)))
+    // Requests continue through every file that has children.
+    expect(refused.map((s) => s.name)).toEqual(expect.arrayContaining(['manual-parent', 'reset-modules-child']))
+    expect(childRequests.every((r) => r.status === 403)).toBe(true)
+    expect(outcome.warnings.filter((w) => !SUITE_PROVIDER_WARNING.test(w))).toEqual([
+      expect.stringMatching(/OpenTelemetry dropped \d+ child span\(s\) \(export-failure: \d+, last OTLP failure: 403(, still open when their test file finished: 1)?\); test\.execution results are unaffected\./),
+      `[buildkite-test-collector] OpenTelemetry dropped ${refused.length + 1} child span(s) so far this run ` +
+        `(export-failure: ${refused.length}, last OTLP failure: 403, still open when their test file finished: 1); test.execution results are unaffected.`,
+    ])
   }, 60000)
 
   describe('with a relay token and a receiver that fails the first request', () => {

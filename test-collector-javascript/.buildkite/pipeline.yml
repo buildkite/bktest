@@ -36,14 +36,14 @@ steps:
               mount-buildkite-agent: false
       - label: ":opentelemetry: OTel tests against the newest published OpenTelemetry SDK (soft fail: early warning that an SDK release broke the collector)"
         # The lockfile pins the SDK the collector was built against. This
-        # step installs the newest versions the peer ranges allow, so a new
-        # SDK release that breaks span export shows up here before a
-        # customer finds it. It never fails the build.
+        # step installs the newest versions of the SDK line the collector
+        # supports, so a new SDK release that breaks span export shows up
+        # here before a customer finds it. It never fails the build.
         soft_fail: true
         command:
           - "cd test-collector-javascript"
           - "npm ci"
-          - "node -e 'const peers = Object.entries(require(\"./package.json\").peerDependencies).map(([name, range]) => name + \"@\" + range); require(\"child_process\").execFileSync(\"npm\", [\"install\", \"--no-save\", ...peers], { stdio: \"inherit\" })'"
+          - "node -e 'const specs = Object.entries(require(\"./util/otel/sdk\").SUPPORTED_VERSIONS).map(([name, range]) => name + \"@\" + range); require(\"child_process\").execFileSync(\"npm\", [\"install\", \"--no-save\", ...specs], { stdio: \"inherit\" })'"
           - "npm ls @opentelemetry/api @opentelemetry/sdk-trace-base @opentelemetry/resources @opentelemetry/exporter-trace-otlp-proto"
           - "npm test -- otel"
         plugins:
@@ -51,15 +51,15 @@ steps:
               image: node:22.15.0
               mount-buildkite-agent: false
       - label: ":jest: Jest {{matrix}} OTel compatibility"
+        # 28.1.3 checks that unsupported Jest falls back to JSON.
         matrix:
-          - "27.5.1"
+          - "28.1.3"
           - "29.7.0"
           - "30.5.2"
         command:
           - "cd test-collector-javascript"
-          # npm otherwise keeps the lockfile's Jest 28 under examples/jest when
-          # the root already has the requested version (29.7.0), and leaves
-          # that version's jest-environment-node out of examples/jest's reach.
+          # npm otherwise keeps the lockfile's nested copies under
+          # examples/jest, which may not match the requested version.
           - "npm pkg set 'devDependencies.jest={{matrix}}' 'devDependencies.jest-environment-node={{matrix}}' --workspace examples/jest"
           - "node -e 'const fs = require(\"fs\"); const lock = JSON.parse(fs.readFileSync(\"package-lock.json\")); for (const key of Object.keys(lock.packages)) if (key.startsWith(\"examples/jest/node_modules/\")) delete lock.packages[key]; fs.writeFileSync(\"package-lock.json\", JSON.stringify(lock))'"
           - "npm install --ignore-scripts --legacy-peer-deps"
