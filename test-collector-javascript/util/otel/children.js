@@ -1,11 +1,6 @@
 const { createExporter, EXPORT_TIMEOUT_MILLISECONDS } = require('./exporter')
 const { warn, describeError } = require('./warn')
 
-// Set on the context a test runs in, with the test span's trace ID, alongside
-// the test span itself. Symbol.for keys are shared by every copy of
-// @opentelemetry/api in every realm.
-const TEST_CONTEXT = Symbol.for('buildkite.test.execution')
-
 const FLUSH_BUDGET_MILLISECONDS = 30000
 
 // One child stream per process: a bounded queue and an exporter labelled
@@ -113,4 +108,4 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
   }
 }
 
-module.exports = { createChildExport, TEST_CONTEXT }
+module.exports = { createChildExport }

@@ -1,6 +1,5 @@
 const path = require('path')
 const { createRequire } = require('module')
-const { TEST_CONTEXT } = require('../util/otel/children')
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 
 const disabledMessage = (error) => `OpenTelemetry child span export disabled: ${describeError(error).split('\n')[0]}; test.execution export remains enabled`
@@ -232,8 +231,7 @@ class JestOtelContext {
     this.setup()
     if (this.mode !== 'managed' || !started?.handle) return fn.apply(receiver, args)
     const { span } = started.handle
-    const traceId = span.spanContext().traceId
-    const contexts = [...new Set([this.api, this.session.api])].map((api) => [api, api.trace.setSpan(api.context.active(), span).setValue(TEST_CONTEXT, traceId)])
+    const contexts = [...new Set([this.api, this.session.api])].map((api) => [api, api.trace.setSpan(api.context.active(), span)])
     const enter = (index) => (index === contexts.length
       ? fn.apply(receiver, args)
       : contexts[index][0].context.with(contexts[index][1], () => enter(index + 1)))
