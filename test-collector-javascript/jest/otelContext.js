@@ -3,6 +3,8 @@ const { createRequire } = require('module')
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 
 const disabledMessage = (error) => `OpenTelemetry child span export disabled: ${describeError(error).split('\n')[0]}; test.execution export remains enabled`
+const SUITE_PROVIDER = 'OpenTelemetry child spans are not exported because the suite registers its own tracer provider; ' +
+  'to get them, let the collector provide the provider under Jest. test.execution export remains enabled.'
 
 // OpenTelemetry's instrumentation of Node's http and https modules and of
 // fetch, from the 2.x SDK line the collector exports with: version 0.2xx, which
@@ -70,7 +72,9 @@ const loadInstrumentations = (rootDir, warnOnce) => {
 // One async context manager per worker, registered wherever no working one
 // is: the sandbox (for the tests' API) and the environment's realm (for
 // instrumentation). It must be the same instance in both so that a
-// test's context is visible to instrumentation in either realm.
+// test's context is visible to instrumentation in either realm. The sandbox
+// registers it behind a disable() of its own, so a suite's context.disable()
+// unregisters it there without disabling it in the environment's realm.
 let sharedContextManager = null
 const contextManager = () => {
   if (!sharedContextManager) {
@@ -79,6 +83,7 @@ const contextManager = () => {
   }
   return sharedContextManager
 }
+const sandboxContextManager = () => Object.assign(Object.create(contextManager()), { disable() { return this } })
 
 const PROBE = Symbol.for('buildkite.test.execution.probe')
 const hasContextManager = (api) => {
@@ -86,21 +91,26 @@ const hasContextManager = (api) => {
   return api.context.with(probe, () => api.context.active().getValue(PROBE)) === true
 }
 
-const ensureContextManager = (api) => {
+const ensureContextManager = (api, manager) => {
   if (hasContextManager(api)) return
-  if (!api.context.setGlobalContextManager(contextManager())) throw new Error('could not register an async context manager')
+  if (!api.context.setGlobalContextManager(manager())) throw new Error('could not register an async context manager')
 }
 
-// As OpenTelemetry's SDK setup does, so that an in-process server handling a
-// test's request continues the test's trace. A registered propagator is
-// never replaced.
-const ensurePropagator = (api, propagator) => {
-  if (api.propagation.fields().length === 0) api.propagation.setGlobalPropagator(propagator)
-}
-
-const hasTracerProvider = (api) => {
-  const provider = api.trace.getTracerProvider()
-  return !(provider instanceof api.ProxyTracerProvider) || provider.getDelegate() !== new api.ProxyTracerProvider().getDelegate()
+// The collector never registers a tracer provider in the sandbox, which
+// would refuse the suite's own registration. It becomes the delegate of each
+// copy of the API's proxy provider that has none, which serves both tracers
+// obtained earlier and later getTracer() calls; a provider the suite
+// registers replaces it. Returns those proxies, or null when the suite has a
+// provider of its own.
+const emptyProxies = (apis, ours) => {
+  const empty = []
+  for (const api of apis) {
+    const proxy = api.trace.getTracerProvider()
+    const delegate = proxy.getDelegate()
+    if (delegate === new api.ProxyTracerProvider().getDelegate()) empty.push(proxy)
+    else if (delegate !== ours) return null
+  }
+  return empty
 }
 
 // Some instrumentation (undici) also checks its config on every operation.
@@ -129,7 +139,8 @@ const enable = (instance, provider) => {
 // runtime is set. Nothing is decided until its first test or beforeEach hook
 // runs, after setup files, the file's own top-level code and beforeAll hooks.
 // A provider the suite registers by then is never replaced or reconfigured,
-// and the file exports test spans only.
+// and the file exports test spans only; one it registers later takes over
+// from the collector's until the suite removes it.
 class JestOtelContext {
   constructor({ session, settings, testPath, rootDir }) {
     this.session = session
@@ -138,7 +149,7 @@ class JestOtelContext {
     this.mode = null
     this.runtime = null
     this.traces = new Set()
-    this.proxies = new Set()
+    this.apis = new Set()
     this.cleanups = []
     // Conditions every worker would hit are reported once per run.
     this.warnOnce = (key, message) => warnOncePerRun(settings.exportRecords, key, message)
@@ -155,17 +166,17 @@ class JestOtelContext {
   }
 
   // Called by the collector's Jest runtime for each copy of the API the file
-  // requires. Until setup registers the child provider, a copy's tracers use
-  // that copy's own proxy provider. Setup points every proxy seen at the child
-  // provider, because after a jest.resetModules() it registers through a
-  // newer copy than the one earlier tracers came from.
+  // requires, of which jest.resetModules() and jest.isolateModules() make
+  // more. A copy loaded during a test records children at once.
   loadedApi(api) {
+    if (this.apis.has(api)) return
     try {
-      const provider = api.trace.getTracerProvider()
-      if (this.mode === null && typeof provider.setDelegate === 'function') this.proxies.add(provider)
+      if (typeof api.trace.getTracerProvider().setDelegate !== 'function') return
     } catch {
-      // a mocked API
+      return // a mocked API
     }
+    this.apis.add(api)
+    if (this.mode === 'managed') this._fill()
   }
 
   // Test bodies and hooks are only wrapped when children are possible.
@@ -178,15 +189,29 @@ class JestOtelContext {
     this.mode = 'off'
     if (!this.runtime) return
     try {
-      const api = this.runtime.requireModule(this.testPath, '@opentelemetry/api')
+      this.api = this.runtime.requireModule(this.testPath, '@opentelemetry/api')
+      this.loadedApi(this.api)
       // Also a provider registered outside the sandbox, for example with
       // NODE_OPTIONS=--require: instrumentation there sees every file's tests.
-      if (hasTracerProvider(api) || hasTracerProvider(this.session.api)) {
-        this.warnOnce('suite-provider', 'OpenTelemetry child spans are not exported because the suite registers its own tracer provider; ' +
-          'to get them, let the collector provide the provider under Jest. test.execution export remains enabled.')
+      if (!emptyProxies([...this.apis, this.session.api])) {
+        this.warnOnce('suite-provider', SUITE_PROVIDER)
         return
       }
-      this._useCollectorProvider(api)
+      const trace = this.runtime.requireModule(this.testPath, '@opentelemetry/sdk-trace-base')
+      ensureContextManager(this.session.api, contextManager)
+      // As OpenTelemetry's SDK setup does, so that an in-process server
+      // handling a test's request continues the test's trace. Instrumentation
+      // propagates in the environment's realm, so the sandbox's propagator is
+      // left to the suite.
+      if (this.session.api.propagation.fields().length === 0) this.session.api.propagation.setGlobalPropagator(this.session.childPropagator())
+      this.forwarder = this.session.childExport().createForwarder()
+      this.provider = new trace.BasicTracerProvider({ ...this.session.childProviderConfig, spanProcessors: [this.forwarder] })
+      for (const instance of this.instrumentations || []) {
+        this.cleanups.push(() => instance.disable())
+        enable(instance, this.provider)
+      }
+      this.mode = 'managed'
+      for (const traceId of this.traces) this.forwarder.addTrace(traceId)
     } catch (error) {
       this._cleanUp()
       this.mode = 'off'
@@ -194,23 +219,24 @@ class JestOtelContext {
     }
   }
 
-  _useCollectorProvider(api) {
-    const trace = this.runtime.requireModule(this.testPath, '@opentelemetry/sdk-trace-base')
-    ensureContextManager(this.session.api)
-    ensureContextManager(api)
-    ensurePropagator(this.session.api, this.session.childPropagator())
-    ensurePropagator(api, this.session.childPropagator())
-    this.forwarder = this.session.childExport().createForwarder()
-    this.provider = new trace.BasicTracerProvider({ ...this.session.childProviderConfig, spanProcessors: [this.forwarder] })
-    if (!api.trace.setGlobalTracerProvider(this.provider)) throw new Error('could not register the child tracer provider')
-    for (const proxy of this.proxies) proxy.setDelegate(this.provider)
-    for (const instance of this.instrumentations || []) {
-      this.cleanups.push(() => instance.disable())
-      enable(instance, this.provider)
+  // Before each test body and per-test hook, and for a copy of the API loaded
+  // during one: fills in what the sandbox lacks for children, which the suite
+  // may have reset since, without replacing anything it registered. Returns
+  // false while the suite has a provider.
+  _fill() {
+    try {
+      const empty = emptyProxies(this.apis, this.provider)
+      if (!empty) {
+        this.warnOnce('suite-provider', SUITE_PROVIDER)
+        return false
+      }
+      ensureContextManager(this.api, sandboxContextManager)
+      for (const proxy of empty) proxy.setDelegate(this.provider)
+      return true
+    } catch (error) {
+      this.warnOnce(`setup:${describeError(error)}`, disabledMessage(error))
+      return false
     }
-    this.api = api
-    this.mode = 'managed'
-    for (const traceId of this.traces) this.forwarder.addTrace(traceId)
   }
 
   // Each test span's trace is the set of spans the forwarder accepts.
@@ -229,7 +255,7 @@ class JestOtelContext {
   // API and SDK into the sandbox.
   run(started, fn, receiver, args) {
     this.setup()
-    if (this.mode !== 'managed' || !started?.handle) return fn.apply(receiver, args)
+    if (this.mode !== 'managed' || !started?.handle || !this._fill()) return fn.apply(receiver, args)
     const { span } = started.handle
     const contexts = [...new Set([this.api, this.session.api])].map((api) => [api, api.trace.setSpan(api.context.active(), span)])
     const enter = (index) => (index === contexts.length

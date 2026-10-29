@@ -236,6 +236,30 @@ const otelSupported = jestMajor >= 29
     for (const resource of childResources()) expect(resource).toEqual(testResource)
   }, 60000)
 
+  // Files that register, and reset, their own OpenTelemetry per test
+  // (examples/jest/otel-children/suite). Batches of one export while tests
+  // run, after the suite's resets.
+  test('never blocks or replaces what a suite registers, and fills in what it resets', async () => {
+    const outcome = await runChildren('suite', { env: { BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE: '1' } })
+    const { result, roots, children, rootsNamed, childrenOf, isOwnRequest, warnings } = outcome
+    // From the first test the suite's provider records.
+    expect(warnings).toEqual([expect.stringMatching(SUITE_PROVIDER_WARNING)])
+    expect(children.filter((s) => s.name.startsWith('own-'))).toEqual([])
+    for (const test of ['reset first', 'reset second']) {
+      const root = rootsNamed(test)[0]
+      const [manual] = childrenOf(root, named(test.replace(' ', '-')))
+      const [client] = childrenOf(root, (s) => clientGet(s) && s.parentSpanId === manual?.spanId)
+      const [server] = childrenOf(root, (s) => s.kind === SERVER && s.parentSpanId === client?.spanId)
+      expect([test, childrenOf(root, (s) => s.name === 'handle-request' && s.parentSpanId === server?.spanId).length]).toEqual([test, 1])
+    }
+    for (const child of ['reset-second-app', 'reset-second-manual', 'setup-file-before']) {
+      expect([child, childrenOf(rootsNamed('reset second')[0], named(child)).length]).toEqual([child, 1])
+    }
+    expect(children.filter(isOwnRequest)).toEqual([])
+    expect(roots).toHaveLength(4)
+    expect([result.code, result.stderr]).toEqual([0, expect.stringMatching(/Tests: +4 passed, 4 total/)])
+  }, 60000)
+
   // Built-in modules are unpatched at each file's teardown. A later file that
   // opted out of the collector's environment finds no wrappers and sends no
   // trace headers, also when a require hook saw http before any

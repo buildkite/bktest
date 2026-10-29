@@ -200,11 +200,21 @@ used.
 
 Nothing is configured until a test file's first test or `beforeEach` hook runs,
 after setup files, the file's own top-level code and `beforeAll` hooks. The
-collector then registers, in the file's sandbox, a tracer provider for
-children with the collector's resource and random ids from
-`crypto.randomBytes`, an async context manager and W3C trace-context
-propagation (each only where none is registered), and enables the
-instrumentation. Children otherwise use the SDK's defaults and `OTEL_*`
+collector then creates a tracer provider for children with the collector's
+resource and random ids from `crypto.randomBytes`, and enables the
+instrumentation. It never registers that provider in the file's sandbox,
+which would refuse a provider the suite registers later: it becomes the
+delegate of the API's proxy provider, which tracers obtained earlier and later
+`getTracer()` calls both use, until the suite registers its own. Before each
+test and per-test hook, the collector also registers an async context manager
+in the sandbox if none works, and becomes the proxy's delegate again if the
+suite has reset OpenTelemetry since, for example with `trace.disable()` and
+`context.disable()` in `afterEach`. A context manager the suite registers
+while the collector's is registered is refused, as any second registration is;
+the collector's is an `AsyncLocalStorageContextManager`, so spans nest the
+same way. W3C trace-context and baggage propagation are registered in the
+worker for the instrumentation, not in the sandbox, so a propagator the suite
+registers is used as is. Children otherwise use the SDK's defaults and `OTEL_*`
 settings, as Ruby's do: `OTEL_TRACES_SAMPLER=traceidratio` can sample children
 out, but never test spans, whose provider is separate and always samples.
 Node's built-in modules, which Jest shares between test files, are patched in
@@ -261,7 +271,11 @@ file, the test file, a module it loads or a `beforeAll` hook, is never
 replaced or reconfigured. That file exports test spans only, and the run warns
 once: `OpenTelemetry child spans are not exported because the suite registers
 its own tracer provider; to get them, let the collector provide the provider
-under Jest`. Unlike Ruby's SDK, the 2.x JavaScript SDK cannot add a span
+under Jest`. A provider the suite registers later, in a `beforeEach` hook or a
+test, takes over from the collector's: its spans go to the suite's provider
+alone, children are not exported while it is registered, the run warns the
+same way, and children resume after the suite removes it with
+`trace.disable()`. Unlike Ruby's SDK, the 2.x JavaScript SDK cannot add a span
 processor to a provider after it is constructed, so to get children, don't
 register your provider when your code runs under Jest (Jest sets
 `JEST_WORKER_ID`) and let the collector's take its place. OpenTelemetry

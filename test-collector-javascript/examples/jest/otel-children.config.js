@@ -16,8 +16,9 @@ module.exports = {
   setupFilesAfterEnv: [path.join(fixtures, 'support/hooks.setup.js')],
   testLocationInResults: true,
   // OTEL_CHILD_CASE=optout runs a managed file, then one that opted out of the
-  // collector's environment, in that order in one process.
+  // collector's environment, in that order in one process. OTEL_CHILD_CASE=suite
+  // runs files that configure OpenTelemetry themselves.
   ...(mode === 'optout'
     ? { testMatch: [path.join(fixtures, 'io.js'), path.join(fixtures, 'optout/*.js')], testSequencer: path.join(fixtures, 'support/sequencer.js') }
-    : { testMatch: [path.join(fixtures, '*.js')] }),
+    : { testMatch: [path.join(fixtures, mode === 'suite' ? 'suite/*.js' : '*.js')] }),
 }
