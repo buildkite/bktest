@@ -222,13 +222,14 @@ final class ExecutionSpanProcessor: SpanProcessor {
   }
 
   func shutdown(explicitTimeout: TimeInterval?) {
+    let deadline = explicitTimeout.map { self.now() + $0 }
     self.worker.sync {
       self.exporterLock.lock()
       defer { self.exporterLock.unlock() }
       self.stopped = true
       self.timer.cancel()
-      self.flush(timeout: explicitTimeout)
-      self.exporter.shutdown(explicitTimeout: explicitTimeout)
+      self.flush(timeout: deadline.map { max($0 - self.now(), 0) })
+      self.exporter.shutdown(explicitTimeout: deadline.map { max($0 - self.now(), 0) })
     }
   }
 
@@ -240,10 +241,10 @@ final class ExecutionSpanProcessor: SpanProcessor {
   // as dropped.
   private func flush(timeout: TimeInterval?) {
     let deadline = timeout.map { self.now() + $0 }
-    var attempted = false
     while !self.pending.isEmpty {
-      if attempted, let deadline, self.now() >= deadline { break }
-      attempted = true
+      // Waiting for an in-flight request also consumes the flush budget.
+      // Do not start another request with an already exhausted timeout.
+      if let deadline, self.now() >= deadline { break }
       guard self.exportPending(deadline: deadline) == .dropped else { break }
     }
     if !self.pending.isEmpty {
@@ -262,7 +263,7 @@ final class ExecutionSpanProcessor: SpanProcessor {
     // Each flush closes a run; the next one starts a fresh count.
     self.droppedCount = 0
     self.reportedDroppedCount = 0
-    if case .failure = self.exporter.flush(explicitTimeout: timeout) {
+    if case .failure = self.exporter.flush(explicitTimeout: deadline.map { max($0 - self.now(), 0) }) {
       self.logger?.error("OpenTelemetry export failed while flushing pending test executions")
     }
   }

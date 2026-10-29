@@ -51,6 +51,33 @@ final class ExecutionSpanProcessorTests: XCTestCase {
     XCTAssertEqual(exporter.exports.last?.map(\.name), ["afterRecovery"])
   }
 
+  func testConcurrentTestsAndFlushesExportEveryExecutionExactlyOnceInBothModes() {
+    for synchronous in [false, true] {
+      let exporter = SequencedExporter(results: [])
+      let processor = self.processor(exporter, batch: "7", synchronous: synchronous)
+      let tracer = self.tracer(processor)
+      let finished = DispatchGroup()
+      for producer in 0..<4 {
+        DispatchQueue.global().async(group: finished) {
+          for index in 0..<200 {
+            tracer.spanBuilder(spanName: "\(producer)-\(index)").setNoParent().startSpan().end()
+          }
+        }
+      }
+      DispatchQueue.global().async(group: finished) {
+        for _ in 0..<20 { processor.forceFlush(timeout: 5) }
+      }
+      XCTAssertEqual(finished.wait(timeout: .now() + 10), .success)
+      processor.shutdown(explicitTimeout: 5)
+      let names = exporter.exports.flatMap { $0.map(\.name) }
+      XCTAssertEqual(names.count, 800)
+      XCTAssertEqual(Set(names), Set((0..<4).flatMap { producer in
+        (0..<200).map { "\(producer)-\($0)" }
+      }))
+      XCTAssertTrue(exporter.exports.allSatisfy { $0.count <= 7 })
+    }
+  }
+
   func testSendsAt120SpansWithoutWaitingForTheTimer() {
     let exporter = SequencedExporter(results: [])
     let processor = self.processor(exporter)
@@ -304,6 +331,39 @@ final class ExecutionSpanProcessorTests: XCTestCase {
     processor.forceFlush(timeout: 5)
     XCTAssertEqual(exporter.exports.map { $0.map(\.name) }, [["last"]])
     XCTAssertTrue(exporter.didShutdown)
+  }
+
+  func testFlushAndShutdownDoNotStartAnotherRequestAfterWaitingExhaustsTheirBudget() {
+    for shutdown in [false, true] {
+      let clock = LockIsolated(TimeInterval(0))
+      let flushing = LockIsolated(false)
+      let started = DispatchSemaphore(value: 0)
+      let release = DispatchSemaphore(value: 0)
+      let exporter = SequencedExporter(results: [])
+      let messages = LockIsolated([String]())
+      let logger = Logger(printer: { message in messages.withValue { $0.append(message) } })
+      let processor = self.processor(exporter, logger: logger, now: {
+        let time = clock.value
+        if flushing.value { release.signal() }
+        return time
+      })
+      self.endSpan("unsent", with: self.tracer(processor))
+      self.worker.async {
+        started.signal()
+        _ = release.wait(timeout: .now() + 5)
+        clock.setValue(5)
+      }
+      XCTAssertEqual(started.wait(timeout: .now() + 1), .success)
+      flushing.setValue(true)
+      if shutdown {
+        processor.shutdown(explicitTimeout: 5)
+      } else {
+        processor.forceFlush(timeout: 5)
+      }
+      logger.waitForLogs()
+      XCTAssertTrue(exporter.exports.isEmpty)
+      XCTAssertTrue(messages.value.contains { $0.contains("dropped 1") && $0.contains("unsent at flush") })
+    }
   }
 
   private func environment(_ values: [String: String]) -> EnvironmentValues {
