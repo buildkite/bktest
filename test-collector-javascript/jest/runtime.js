@@ -29,10 +29,11 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
   }
 
   // The test file's require: tells the environment about each copy of the
-  // OpenTelemetry API it loads, which jest.resetModules() can multiply.
+  // OpenTelemetry API it loads, which jest.resetModules() can multiply. An ES
+  // module's import of it arrives here as the resolved file.
   requireModuleOrMock(from, moduleName) {
     const exports = super.requireModuleOrMock(from, moduleName)
-    if (moduleName === '@opentelemetry/api') this._buildkiteChildren?.loadedApi(exports)
+    if (/^@opentelemetry\/api$|[\\/]@opentelemetry[\\/]api[\\/]/.test(moduleName)) this._buildkiteChildren?.loadedApi(exports)
     return exports
   }
 }

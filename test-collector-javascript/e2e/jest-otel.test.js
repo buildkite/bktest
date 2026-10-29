@@ -260,6 +260,14 @@ const otelSupported = jestMajor >= 29
     expect(roots.map((root) => root.attributes['test.case.result.status'])).toEqual(['pass', 'pass', 'pass', 'pass'])
   }, 60000)
 
+  // Under native ESM, Jest loads the API's CommonJS build for an import by its
+  // resolved file, with no CommonJS require of it to share that copy.
+  test('exports children from a tracer an ES module obtained before a reset in beforeAll', async () => {
+    const outcome = await runChildren('esm', { env: { NODE_OPTIONS: '--experimental-vm-modules' } })
+    expect([outcome.result.code, outcome.warnings, outcome.roots.length]).toEqual([0, [], 1])
+    expect(outcome.childrenOf(outcome.rootsNamed('esm after reset')[0], named('esm-child'))).toHaveLength(1)
+  }, 60000)
+
   // Built-in modules are unpatched at each file's teardown. A later file that
   // opted out of the collector's environment finds no wrappers and sends no
   // trace headers, also when a require hook saw http before any
