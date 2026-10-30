@@ -223,6 +223,8 @@ private final class SynchronousOtlpTraceExporter: FailureReportingSpanExporter, 
     return nil
   }
 
+  var retryAfter: TimeInterval? { self.httpClient.retryAfter }
+
   func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
     self.httpClient.prepare(timeout: explicitTimeout)
     _ = self.exporter.export(spans: spans, explicitTimeout: explicitTimeout)
@@ -274,6 +276,7 @@ private final class SynchronousHTTPClient: HTTPClient {
   private let lock = NSLock()
   private let session: URLSession
   private var _outcome: Result<Void, SpanExportFailure>?
+  private var _retryAfter: TimeInterval?
   private let requestTimeout: TimeInterval
   private var _timeout: TimeInterval?
 
@@ -293,6 +296,7 @@ private final class SynchronousHTTPClient: HTTPClient {
   func prepare(timeout: TimeInterval?) {
     self.lock.lock()
     self._outcome = nil
+    self._retryAfter = nil
     self._timeout = min(timeout ?? self.requestTimeout, self.requestTimeout)
     self.lock.unlock()
   }
@@ -302,6 +306,12 @@ private final class SynchronousHTTPClient: HTTPClient {
     self.lock.lock()
     defer { self.lock.unlock() }
     return self._outcome
+  }
+
+  var retryAfter: TimeInterval? {
+    self.lock.lock()
+    defer { self.lock.unlock() }
+    return self._retryAfter
   }
 
   func send(
@@ -322,6 +332,9 @@ private final class SynchronousHTTPClient: HTTPClient {
 
       self?.lock.lock()
       self?._outcome = outcome
+      // bktec sends a delay in seconds. Missing or nonnumeric headers use the
+      // processor's 1 s fallback; the processor also caps excessive delays.
+      self?._retryAfter = httpResponse?.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
       self?.lock.unlock()
 
       // The collector owns failed-span requeueing. Always report transport
@@ -366,6 +379,9 @@ extension TelemetryClient {
       environment: environment,
       logger: logger
     ) else { return nil }
+
+    let mode = environment.otlpToken != nil ? "synchronous bktec relay handoff" : "batched direct export"
+    logger?.info("OpenTelemetry test execution mode: \(mode) to \(configuration.endpoint.redactedForLogs)")
 
     func makeExporter(for stream: SpanStream) -> any SpanExporter {
       SynchronousOtlpTraceExporter(
@@ -447,7 +463,12 @@ private final class LiveTelemetryClient {
       uploadTags: uploadTags
     )
     self.childProviderResource = resource
-    let rootProcessor = SynchronousExecutionSpanProcessor(exporter: rootExporter, logger: logger)
+    let rootProcessor = ExecutionSpanProcessor(
+      exporter: rootExporter,
+      logger: logger,
+      environment: environment,
+      synchronous: environment.otlpToken != nil
+    )
     self.executionProvider = Self.makeProvider(
       resource: resource,
       processor: rootProcessor,

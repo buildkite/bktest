@@ -21,7 +21,7 @@ final class TelemetryClientTests: XCTestCase {
     super.tearDown()
   }
 
-  func testExportsExecutionRootSynchronouslyWithAttributesAndRunTags() throws {
+  func testExportsExecutionRootWithAttributesAndRunTagsAtFlush() throws {
     let rootExporter = InMemoryExporter()
     let childExporter = InMemoryExporter()
     let environment = EnvironmentValues(
@@ -147,6 +147,7 @@ final class TelemetryClientTests: XCTestCase {
 
     let executionID = client.startExecution(test)
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.attributes["test.case.result.status"], .string("fail"))
@@ -192,6 +193,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertNil(span.parentSpanId)
@@ -344,6 +346,47 @@ final class TelemetryClientTests: XCTestCase {
       #"Authorization: Token token="relay-token""#,
     ])
     XCTAssertEqual(messages.value, [])
+  }
+
+  func testOnlyANonblankOTLPTokenSelectsSynchronousRelayHandoff() throws {
+    for (token, endpoint, synchronous) in [
+      (nil, "http://127.0.0.1:4318/v1/traces", false),
+      ("", "http://127.0.0.1:4318/v1/traces", false),
+      (" \t\n", "http://127.0.0.1:4318/v1/traces", false),
+      ("relay-token", "http://127.0.0.1:4318/v1/traces", true),
+      ("relay-token", "https://url-user:url-secret@relay.example/v1/traces?api_key=query-secret#fragment-secret", true),
+    ] as [(String?, String, Bool)] {
+      let exporter = InMemoryExporter()
+      let messages = LockIsolated([String]())
+      let logger = Logger(printer: { message in messages.withValue { $0.append(message) } })
+      var values = [
+        "BUILDKITE_ANALYTICS_TOKEN": "analytics-token",
+        "BUILDKITE_ANALYTICS_KEY": "run-key",
+        "BUILDKITE_ANALYTICS_OTLP_ENDPOINT": endpoint,
+      ]
+      values["BUILDKITE_TESTS_OTLP_TOKEN"] = token
+      let client = try XCTUnwrap(TelemetryClient.live(
+        environment: EnvironmentValues(
+          values: values, getFromEnvironment: { _ in nil }, getFromInfoDictionary: { _ in nil }
+        ),
+        uploadTags: [:], logger: logger, rootExporter: exporter, childExporter: InMemoryExporter()
+      ))
+      var test = TestState(id: UUID(), className: "RelayTests", testName: "testHandoff")
+      let executionID = client.startExecution(test)
+      test.result = .passed
+      client.finishExecution(executionID, test: test, tags: nil)
+      XCTAssertEqual(exporter.getFinishedSpanItems().count, synchronous ? 1 : 0, "endpoint: \(endpoint)")
+      client.forceFlush()
+      XCTAssertEqual(exporter.getFinishedSpanItems().count, 1)
+      logger.waitForLogs()
+      let modeLines = messages.value.filter { $0.contains("OpenTelemetry test execution mode:") }
+      let mode = synchronous ? "synchronous bktec relay handoff" : "batched direct export"
+      let redactedEndpoint = endpoint.hasPrefix("https:") ? "https://relay.example/v1/traces" : endpoint
+      XCTAssertEqual(modeLines, ["[BuildkiteTestCollector] info: OpenTelemetry test execution mode: \(mode) to \(redactedEndpoint)"])
+      for secret in ["relay-token", "analytics-token", "url-user", "url-secret", "query-secret", "fragment-secret"] {
+        XCTAssertFalse(messages.value.contains { $0.contains(secret) })
+      }
+    }
   }
 
   func testLogsEndpointsWithoutCredentials() throws {
@@ -554,6 +597,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     client.annotate(String(repeating: "a", count: 16_385), executionID: executionID)
     client.finishExecution(executionID, test: test, tags: ["long": String(repeating: "t", count: 10_244)])
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.status, .error(description: String(repeating: combining, count: 512)))
@@ -605,6 +649,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.attributes["test.case.name"], .string("[ios] PaymentTests.testChargeCard [debug]"))
@@ -696,6 +741,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: ["execution": "optional"])
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.attributes, [
@@ -715,21 +761,24 @@ final class TelemetryClientTests: XCTestCase {
       childExporter: InMemoryExporter()
     ))
 
-    for name in ["testOne", "testTwo"] {
+    for index in 1...121 {
+      let name = "test\(index)"
       var test = TestState(id: UUID(), className: "RetryTests", testName: name)
       let executionID = client.startExecution(test)
       test.result = .passed
       client.finishExecution(executionID, test: test, tags: nil)
+      if index == 120 {
+        XCTAssertEqual(rootExporter.exported.wait(timeout: .now() + 1), .success)
+      }
     }
 
     XCTAssertEqual(rootExporter.exports.count, 1)
     client.forceFlush()
 
-    XCTAssertEqual(rootExporter.exports.count, 2)
-    XCTAssertEqual(rootExporter.exports[0].map(\.name), ["test.execution"])
+    XCTAssertEqual(rootExporter.exports.map(\.count), [120, 120, 1])
     XCTAssertEqual(
-      rootExporter.exports[1].map(\.attributes[BuildkiteTelemetryAttribute.testName]),
-      [.string("testOne"), .string("testTwo")]
+      rootExporter.exports.dropFirst().flatMap { $0.map(\.attributes[BuildkiteTelemetryAttribute.testName]) },
+      (1...121).map { .string("test\($0)") }
     )
   }
 
@@ -764,7 +813,7 @@ final class TelemetryClientTests: XCTestCase {
     logger.waitForLogs()
 
     XCTAssertLessThan(elapsed, 2)
-    XCTAssertEqual(messages.value, [
+    XCTAssertEqual(messages.value.filter { $0.contains("warning:") }, [
       "[BuildkiteTestCollector] warning: 1 OpenTelemetry child span(s) were not exported within the 1 s flush budget or were rejected by the endpoint; test.execution results are unaffected.",
     ])
   }
@@ -822,6 +871,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     return try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
   }
@@ -841,9 +891,11 @@ private extension CollectorOTLPConfiguration {
 
 private final class FailOnceExporter: SpanExporter, @unchecked Sendable {
   var exports = [[SpanData]]()
+  let exported = DispatchSemaphore(value: 0)
 
   func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
     self.exports.append(spans)
+    self.exported.signal()
     return self.exports.count == 1 ? .failure : .success
   }
 
