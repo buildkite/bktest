@@ -25,29 +25,51 @@ class VitestBuildkiteTestEngineReporter {
       const tests = Array.from(testModule.children.allTests());
       const { startTime, endTime } = this.fileTimings(tests, originStart);
 
-      return tests.map((test) => {
+      return tests.flatMap((test) => {
         const result = test.result();
+        const diagnostic = test.diagnostic();
         const failureMessages = this.testEngineFailureMessages(result);
-
-        return {
-          id: randomUUID(),
+        const identity = {
           scope: this.ancestorTitles(test).join(' ').trim(),
           name: test.name,
           location: (prefixedTestPath && test.location)
             ? `${prefixedTestPath}:${test.location.line}`
             : null,
           file_name: prefixedTestPath,
-          result: result.state === 'skipped' && test.options.mode === 'todo' ? 'pending' : result.state,
+        };
+        const failure = {
           failure_reason: failureMessages[0],
           failure_expanded: [{ expanded: failureMessages.slice(1) }],
-          history: {
-            section: 'top',
-            start_at: (startTime - originStart) / 1000,
-            end_at: (endTime - originStart) / 1000,
-            // Preserve null in JSON for tests with no execution timing.
-            duration: test.diagnostic()?.duration / 1000,
-          },
         };
+        const history = {
+          section: 'top',
+          start_at: (startTime - originStart) / 1000,
+          end_at: (endTime - originStart) / 1000,
+        };
+
+        // Vitest reports a retried test once, with its retry count and the
+        // errors of every attempt, so each retried attempt is a failure here.
+        const retriedAttempts = Array.from({ length: diagnostic?.retryCount ?? 0 }, () => ({
+          id: randomUUID(),
+          ...identity,
+          result: 'failed',
+          ...failure,
+          // Vitest times the test across all of its attempts, so the whole
+          // duration stays on the final one.
+          history: { ...history, duration: null },
+        }));
+
+        return [...retriedAttempts, {
+          id: randomUUID(),
+          ...identity,
+          result: result.state === 'skipped' && test.options.mode === 'todo' ? 'pending' : result.state,
+          ...failure,
+          history: {
+            ...history,
+            // Preserve null in JSON for tests with no execution timing.
+            duration: diagnostic?.duration / 1000,
+          },
+        }];
       });
     });
 
