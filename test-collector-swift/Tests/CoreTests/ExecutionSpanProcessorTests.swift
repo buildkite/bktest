@@ -21,7 +21,7 @@ final class ExecutionSpanProcessorTests: XCTestCase {
 
   func testRelayQueuesDuringBackoffAndRecoversIn120SpanBatchesBeforeReturning() {
     let clock = LockIsolated(TimeInterval(0))
-    let exporter = SequencedExporter(results: [.failure(.httpStatus(503))])
+    let exporter = SequencedExporter(results: [.failure(.transportError)])
     let processor = self.processor(exporter, synchronous: true, now: { clock.value })
     let tracer = self.tracer(processor)
     for index in 1...122 {
@@ -33,6 +33,47 @@ final class ExecutionSpanProcessorTests: XCTestCase {
     tracer.spanBuilder(spanName: "test123").setNoParent().startSpan().end()
     XCTAssertEqual(exporter.exports.map(\.count), [1, 120, 3])
     XCTAssertEqual(exporter.exports.dropFirst().flatMap { $0.map(\.name) }, (1...123).map { "test\($0)" })
+  }
+
+  func testRelay429WaitsOneSecondAndExportsBeforeReturningToTheTest() {
+    let exporter = SequencedExporter(results: [.failure(.httpStatus(429))])
+    let processor = self.processor(exporter, synchronous: true)
+    let start = ProcessInfo.processInfo.systemUptime
+    self.tracer(processor).spanBuilder(spanName: "backpressured").setNoParent().startSpan().end()
+    let elapsed = ProcessInfo.processInfo.systemUptime - start
+    XCTAssertGreaterThanOrEqual(elapsed, 0.95)
+    XCTAssertLessThan(elapsed, 2.5)
+    XCTAssertEqual(exporter.exports.map { $0.map(\.name) }, [["backpressured"], ["backpressured"]])
+    XCTAssertNil(exporter.lastFailure)
+  }
+
+  func testRelayBackpressureHonorsRetryAfterAndFallsBackToBackoffAfterTenSeconds() {
+    for status in [429, 503] {
+      for (header, delay, attempts) in [(nil, 1.0, 10), (2.0, 2.0, 5), (4.0, 4.0, 3), (99.0, 5.0, 2)] as [(Double?, Double, Int)] {
+        let clock = LockIsolated(TimeInterval(0))
+        let waits = LockIsolated([TimeInterval]())
+        let exporter = SequencedExporter(results: Array(repeating: .failure(.httpStatus(status)), count: attempts))
+        exporter.retryAfter = header
+        let processor = self.processor(exporter, synchronous: true, now: { clock.value }, sleep: { delay in
+          waits.withValue { $0.append(delay) }
+          clock.withValue { $0 += delay }
+        })
+        let tracer = self.tracer(processor)
+        tracer.spanBuilder(spanName: "one").setNoParent().startSpan().end()
+        XCTAssertEqual(waits.value, header == 4 ? [4, 4, 2] : Array(repeating: delay, count: attempts))
+        XCTAssertEqual(clock.value, 10)
+        XCTAssertEqual(exporter.exports.count, attempts)
+        // The exhausted handoff falls back to the normal 10 s outage backoff.
+        tracer.spanBuilder(spanName: "two").setNoParent().startSpan().end()
+        clock.setValue(19)
+        tracer.spanBuilder(spanName: "three").setNoParent().startSpan().end()
+        XCTAssertEqual(exporter.exports.count, attempts)
+        clock.setValue(20)
+        tracer.spanBuilder(spanName: "four").setNoParent().startSpan().end()
+        XCTAssertEqual(exporter.exports.last?.map(\.name), ["one", "two", "three", "four"])
+        XCTAssertNil(exporter.lastFailure)
+      }
+    }
   }
 
   func testRelayHonorsBatchAndQueueOverridesAndDrainsAFullQueueAfterBackoff() {
@@ -235,17 +276,44 @@ final class ExecutionSpanProcessorTests: XCTestCase {
     XCTAssertEqual(exporter.exports.last?[0].name, "retry")
   }
 
-  func testFlushBypassesBackoffButDoesNotWaitOrRetryAnotherTransientFailure() {
-    let exporter = SequencedExporter(results: [.failure(.transportError), .failure(.httpStatus(503))])
-    let processor = self.processor(exporter, batch: "2")
-    let tracer = self.tracer(processor)
-    for name in ["one", "two", "three"] { self.endSpan(name, with: tracer) }
-    let start = Date()
-    processor.forceFlush(timeout: 30)
-    XCTAssertLessThan(Date().timeIntervalSince(start), 1)
-    XCTAssertEqual(exporter.exports.map { $0.map(\.name) }, [["one", "two"], ["one", "two"]])
-    processor.forceFlush(timeout: 30)
-    XCTAssertEqual(exporter.exports.count, 2)
+  func testFlushBypassesExistingBackoffAndRetriesTransientFailuresWithinItsBudget() {
+    for synchronous in [false, true] {
+      let clock = LockIsolated(TimeInterval(0))
+      let waits = LockIsolated([TimeInterval]())
+      let exporter = SequencedExporter(results: [.failure(.transportError), .failure(.httpStatus(503))])
+      let processor = self.processor(exporter, batch: "2", synchronous: synchronous, now: { clock.value }, sleep: { delay in
+        waits.withValue { $0.append(delay) }
+        clock.withValue { $0 += delay }
+      })
+      let tracer = self.tracer(processor)
+      for name in ["one", "two", "three"] { self.endSpan(name, with: tracer) }
+      processor.forceFlush(timeout: 30)
+      XCTAssertEqual(waits.value, [synchronous ? 1 : 20])
+      XCTAssertEqual(exporter.exports.dropFirst().map { $0.map(\.name) }, [["one", "two"], ["one", "two"], ["three"]])
+      XCTAssertNil(exporter.lastFailure)
+      processor.forceFlush(timeout: 30)
+      XCTAssertEqual(exporter.exports.count, 4)
+    }
+  }
+
+  func testFlushCapsRetryWaitsAtItsDeadlineAndReportsUnsentSpans() {
+    for synchronous in [false, true] {
+      let clock = LockIsolated(TimeInterval(0))
+      let exporter = SequencedExporter(results: [.failure(.transportError)]) { _ in .failure(.httpStatus(503)) }
+      let messages = LockIsolated([String]())
+      let logger = Logger(printer: { message in messages.withValue { $0.append(message) } })
+      let processor = self.processor(exporter, batch: "1", synchronous: synchronous, logger: logger, now: { clock.value }, sleep: { delay in
+        clock.withValue { $0 += delay }
+      })
+      self.endSpan("unsent", with: self.tracer(processor))
+      processor.forceFlush(timeout: 5)
+      logger.waitForLogs()
+      XCTAssertEqual(clock.value, 5)
+      XCTAssertEqual(exporter.exports.count, synchronous ? 6 : 2)
+      XCTAssertTrue(messages.value.contains { $0.contains("dropped 1") && $0.contains("unsent at flush") })
+      processor.forceFlush(timeout: 5)
+      XCTAssertEqual(exporter.exports.count, synchronous ? 6 : 2)
+    }
   }
 
   func testByteCapAndTerminalRejectionsDropOnlyRejectedBatches() throws {
@@ -374,12 +442,13 @@ final class ExecutionSpanProcessorTests: XCTestCase {
     _ exporter: SequencedExporter, batch: String? = nil, queue: String? = nil,
     synchronous: Bool = false,
     logger: Core.Logger? = nil,
-    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+    sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
   ) -> ExecutionSpanProcessor {
     var values = [String: String]()
     values["BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE"] = batch
     values["BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE"] = queue
-    return ExecutionSpanProcessor(exporter: exporter, logger: logger, environment: self.environment(values), synchronous: synchronous, worker: self.worker, now: now)
+    return ExecutionSpanProcessor(exporter: exporter, logger: logger, environment: self.environment(values), synchronous: synchronous, worker: self.worker, now: now, sleep: sleep)
   }
 
   private func tracer(_ processor: ExecutionSpanProcessor) -> any Tracer {
@@ -397,6 +466,7 @@ private final class SequencedExporter: FailureReportingSpanExporter, @unchecked 
   private var results: [Result<Void, SpanExportFailure>]
   private let handler: ([SpanData]) -> Result<Void, SpanExportFailure>
   private(set) var lastFailure: SpanExportFailure?
+  var retryAfter: TimeInterval?
   var exports = [[SpanData]]()
   var timeouts = [TimeInterval?]()
   var didShutdown = false

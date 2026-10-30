@@ -354,9 +354,11 @@ final class TelemetryClientTests: XCTestCase {
       ("", "http://127.0.0.1:4318/v1/traces", false),
       (" \t\n", "http://127.0.0.1:4318/v1/traces", false),
       ("relay-token", "http://127.0.0.1:4318/v1/traces", true),
-      ("relay-token", "https://relay.example/v1/traces", true),
+      ("relay-token", "https://url-user:url-secret@relay.example/v1/traces?api_key=query-secret#fragment-secret", true),
     ] as [(String?, String, Bool)] {
       let exporter = InMemoryExporter()
+      let messages = LockIsolated([String]())
+      let logger = Logger(printer: { message in messages.withValue { $0.append(message) } })
       var values = [
         "BUILDKITE_ANALYTICS_TOKEN": "analytics-token",
         "BUILDKITE_ANALYTICS_KEY": "run-key",
@@ -367,7 +369,7 @@ final class TelemetryClientTests: XCTestCase {
         environment: EnvironmentValues(
           values: values, getFromEnvironment: { _ in nil }, getFromInfoDictionary: { _ in nil }
         ),
-        uploadTags: [:], logger: nil, rootExporter: exporter, childExporter: InMemoryExporter()
+        uploadTags: [:], logger: logger, rootExporter: exporter, childExporter: InMemoryExporter()
       ))
       var test = TestState(id: UUID(), className: "RelayTests", testName: "testHandoff")
       let executionID = client.startExecution(test)
@@ -376,6 +378,14 @@ final class TelemetryClientTests: XCTestCase {
       XCTAssertEqual(exporter.getFinishedSpanItems().count, synchronous ? 1 : 0, "endpoint: \(endpoint)")
       client.forceFlush()
       XCTAssertEqual(exporter.getFinishedSpanItems().count, 1)
+      logger.waitForLogs()
+      let modeLines = messages.value.filter { $0.contains("OpenTelemetry test execution mode:") }
+      let mode = synchronous ? "synchronous bktec relay handoff" : "batched direct export"
+      let redactedEndpoint = endpoint.hasPrefix("https:") ? "https://relay.example/v1/traces" : endpoint
+      XCTAssertEqual(modeLines, ["[BuildkiteTestCollector] info: OpenTelemetry test execution mode: \(mode) to \(redactedEndpoint)"])
+      for secret in ["relay-token", "analytics-token", "url-user", "url-secret", "query-secret", "fragment-secret"] {
+        XCTAssertFalse(messages.value.contains { $0.contains(secret) })
+      }
     }
   }
 
@@ -803,7 +813,7 @@ final class TelemetryClientTests: XCTestCase {
     logger.waitForLogs()
 
     XCTAssertLessThan(elapsed, 2)
-    XCTAssertEqual(messages.value, [
+    XCTAssertEqual(messages.value.filter { $0.contains("warning:") }, [
       "[BuildkiteTestCollector] warning: 1 OpenTelemetry child span(s) were not exported within the 1 s flush budget or were rejected by the endpoint; test.execution results are unaffected.",
     ])
   }

@@ -115,6 +115,14 @@ the endpoint host: a relay configured with just `BUILDKITE_ANALYTICS_TOKEN`
 uses the direct-mode batching fallback. Failed handoffs still obey backoff,
 so unsent results queued during an outage can be lost on runner restart.
 
+Relay HTTP 429 and 503 responses mean backpressure: the test keeps waiting
+while the collector retries the handoff using `Retry-After` seconds (1 s if
+absent or invalid, at most 5 s per wait). A handoff has a 10 s budget for
+requests and waits; if it cannot complete, it falls back to normal outage
+backoff and queueing. Transport errors still enter outage backoff immediately.
+At startup, an info log names the selected mode (`synchronous bktec relay
+handoff` or `batched direct export`) and the endpoint, with credentials redacted.
+
 Both modes use an 8,192-span queue; when full, new spans are dropped with a
 `TEST RESULTS MISSING` warning. The overrides below apply in both modes,
 including the batch cap when a relay handoff drains a backlog after failure.
@@ -129,9 +137,8 @@ Both overrides must contain only decimal digits and be integers from 1 to
 exceeds queue, both revert to their defaults with a warning. The direct-mode
 1 s timer is fixed; there is no delay override, and `OTEL_BSP_*` is ignored.
 A full direct-mode batch still triggers an early send. Requests also retain the
-512 KiB encoded-size cap (a single larger span is sent alone) and the existing
-retry/backoff rules. Child spans keep their separate 1 s batching settings
-because XCTest can kill runners.
+512 KiB encoded-size cap (a single larger span is sent alone). Child spans keep
+their separate 1 s batching settings because XCTest can kill runners.
 
 Each test process is one Test Engine run, identified by `BUILDKITE_ANALYTICS_KEY`
 or, on a supported CI system, the build and job. Outside recognised CI,
@@ -149,7 +156,10 @@ skipped. `BUILDKITE_ANALYTICS_DEBUG_ENABLED` does not change that. To see them,
 add `--verbose` or run without `--parallel`.
 
 Each worker process also sends and flushes its results on its own. The final
-flush makes one immediate pass without waiting out retry backoff. Each request
+flush makes an immediate attempt without waiting out existing retry backoff,
+then retries transient failures within its remaining budget: 1 s between
+relay-mode attempts, or the normal direct-mode backoff capped at that budget.
+Permanent failures still drop only the rejected batch. Each request
 waits up to 10 s for a response, including requests for batches of up to 512
 child spans. The bundle-end flush shares a 30 s budget across test executions
 and child spans; an already in-flight request finishes first and consumes that
@@ -308,12 +318,15 @@ While the endpoint is healthy, finishing a test waits for its root span to be
 accepted only in relay mode, selected by a nonblank `BUILDKITE_TESTS_OTLP_TOKEN`.
 In direct mode, the test returns while its root span is buffered for the next
 background batch or bundle-end flush; a runner restart can lose buffered
-results. After a transient failure (a network error, timeout, or an HTTP 408,
-429, 502, 503 or 504 response), subsequent
-roots stay in the collector's in-memory queue while export attempts back off
-for 10, 20, 30, and then at most 60 seconds. The bundle-end flush makes one
-immediate final attempt without waiting out the backoff; each request times
-out after 10 s, and the whole flush is capped at 30 s. Any other HTTP error
+results. Transient failures (a network error, timeout, or an HTTP 408, 429, 502,
+503 or 504 response) normally queue roots while export attempts back off for
+10, 20, 30, and then at most 60 seconds. Relay-mode 429/503 backpressure instead
+keeps the test waiting and retries within the 10 s handoff budget described
+above, before falling back to outage backoff. The bundle-end flush bypasses
+existing backoff on its first attempt and retries transient failures until its
+budget expires: 1 s between relay attempts, or direct-mode backoff capped at
+the remaining budget. Each request times out after at most 10 s, and the whole
+flush is capped at 30 s. Any other HTTP error
 (for example 401 or 403 for a bad token, or 413 for an oversized request) is not
 retried: the rejected batch is dropped and a `TEST RESULTS MISSING` warning
 names the status. When the endpoint is the Test Engine Client relay, acceptance

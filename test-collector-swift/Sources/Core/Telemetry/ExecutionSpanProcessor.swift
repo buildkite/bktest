@@ -35,6 +35,11 @@ enum SpanExportFailure: Error {
 
 protocol FailureReportingSpanExporter: SpanExporter {
   var lastFailure: SpanExportFailure? { get }
+  var retryAfter: TimeInterval? { get }
+}
+
+extension FailureReportingSpanExporter {
+  var retryAfter: TimeInterval? { nil }
 }
 
 /// Exports finished `test.execution` spans at the batch threshold or one second
@@ -74,6 +79,7 @@ final class ExecutionSpanProcessor: SpanProcessor {
   private var stopped = false
   private let logger: Logger?
   private let now: () -> TimeInterval
+  private let sleep: (TimeInterval) -> Void
   private var pending = [PendingSpan]()
   private var retryDelayIndex = 0
   private var retryNotBefore: TimeInterval?
@@ -86,7 +92,8 @@ final class ExecutionSpanProcessor: SpanProcessor {
     environment: EnvironmentValues = EnvironmentValues(),
     synchronous: Bool = false,
     worker: DispatchQueue = DispatchQueue(label: "BuildkiteTestCollector.execution-export"),
-    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+    sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
   ) {
     self.exporter = exporter
     self.failureReporter = exporter as? any FailureReportingSpanExporter
@@ -98,6 +105,7 @@ final class ExecutionSpanProcessor: SpanProcessor {
     self.worker = worker
     self.timer = DispatchSource.makeTimerSource(queue: worker)
     self.now = now
+    self.sleep = sleep
     self.timer.setEventHandler { [weak self] in self?.exportQueued(minimumBatchSize: 1) }
     self.timer.resume()
   }
@@ -190,7 +198,11 @@ final class ExecutionSpanProcessor: SpanProcessor {
       }
       return
     }
-    switch self.exportPending(minimumBatchSize: minimumBatchSize, drain: self.synchronous) {
+    switch self.exportPending(
+      minimumBatchSize: minimumBatchSize,
+      drain: self.synchronous,
+      handoffDeadline: self.synchronous ? self.now() + 10 : nil
+    ) {
     case .exported:
       self.logger?.debug("Exported queued OpenTelemetry test executions")
     case .retryLater:
@@ -233,19 +245,20 @@ final class ExecutionSpanProcessor: SpanProcessor {
     }
   }
 
-  // The flush is the last chance before the process exits, and under
-  // `swift test --parallel` every worker process pays for it, so it makes one
-  // immediate pass over the queue and never waits out a backoff. A terminal
-  // failure rejected only its own batch, so the pass goes on; a transient
-  // failure or the deadline ends it. Anything still unsent is lost; count it
-  // as dropped.
+  // The flush is the last chance before the process exits. Bypass any existing
+  // backoff for the first attempt, then retry transient failures within the
+  // remaining budget. A terminal failure rejects only its own batch.
   private func flush(timeout: TimeInterval?) {
-    let deadline = timeout.map { self.now() + $0 }
+    let deadline = self.now() + (timeout ?? 30)
     while !self.pending.isEmpty {
       // Waiting for an in-flight request also consumes the flush budget.
       // Do not start another request with an already exhausted timeout.
-      if let deadline, self.now() >= deadline { break }
-      guard self.exportPending(deadline: deadline) == .dropped else { break }
+      if self.now() >= deadline { break }
+      let outcome = self.exportPending(deadline: deadline)
+      if outcome == .retryLater, !self.pending.isEmpty {
+        let delay = self.synchronous ? 1 : max((self.retryNotBefore ?? self.now()) - self.now(), 0)
+        self.waitForRetry(min(delay, max(deadline - self.now(), 0)))
+      }
     }
     if !self.pending.isEmpty {
       let batch = self.pending[...]
@@ -263,7 +276,7 @@ final class ExecutionSpanProcessor: SpanProcessor {
     // Each flush closes a run; the next one starts a fresh count.
     self.droppedCount = 0
     self.reportedDroppedCount = 0
-    if case .failure = self.exporter.flush(explicitTimeout: deadline.map { max($0 - self.now(), 0) }) {
+    if case .failure = self.exporter.flush(explicitTimeout: max(deadline - self.now(), 0)) {
       self.logger?.error("OpenTelemetry export failed while flushing pending test executions")
     }
   }
@@ -280,10 +293,16 @@ final class ExecutionSpanProcessor: SpanProcessor {
   /// failure additionally drops that batch, and the rest stay queued for the
   /// next attempt.
   @discardableResult
-  private func exportPending(deadline: TimeInterval? = nil, minimumBatchSize: Int = 1, drain: Bool = true) -> ExportOutcome {
+  private func exportPending(
+    deadline: TimeInterval? = nil,
+    minimumBatchSize: Int = 1,
+    drain: Bool = true,
+    handoffDeadline: TimeInterval? = nil
+  ) -> ExportOutcome {
     while self.pending.count >= minimumBatchSize {
+      if let limit = deadline ?? handoffDeadline, self.now() >= limit { return .retryLater }
       let batch = self.nextBatch()
-      let timeout = deadline.map { max($0 - self.now(), 0) }
+      let timeout = (deadline ?? handoffDeadline).map { max($0 - self.now(), 0) }
       // Only the serial worker calls the exporter. Keep the bounded queue
       // available to test threads while the network request is in flight.
       self.exporterLock.unlock()
@@ -298,10 +317,20 @@ final class ExecutionSpanProcessor: SpanProcessor {
         continue
       }
 
+      let failure = self.failureReporter?.lastFailure
+      if let handoffDeadline,
+        case let .httpStatus(status) = failure,
+        status == 429 || status == 503,
+        self.now() < handoffDeadline {
+        // A full relay should slow tests down, not buffer their completed
+        // results in the runner. A stuck relay gets at most a 10 s handoff.
+        self.waitForRetry(min(self.relayRetryDelay, handoffDeadline - self.now()))
+        if self.now() < handoffDeadline { continue }
+      }
+
       let delay = Self.retryDelays[self.retryDelayIndex]
       self.retryNotBefore = self.now() + delay
       self.retryDelayIndex = min(self.retryDelayIndex + 1, Self.retryDelays.count - 1)
-      let failure = self.failureReporter?.lastFailure
       guard let failure, !failure.isRetryable else { return .retryLater }
       self.reportDropped(
         count: self.drop(batch),
@@ -311,6 +340,18 @@ final class ExecutionSpanProcessor: SpanProcessor {
       return .dropped
     }
     return .exported
+  }
+
+  private var relayRetryDelay: TimeInterval {
+    guard let delay = self.failureReporter?.retryAfter, delay.isFinite, delay > 0 else { return 1 }
+    return min(delay, 5)
+  }
+
+  // Only the serial export worker waits; test threads can still enqueue spans.
+  private func waitForRetry(_ delay: TimeInterval) {
+    self.exporterLock.unlock()
+    self.sleep(delay)
+    self.exporterLock.lock()
   }
 
   private func nextBatch() -> ArraySlice<PendingSpan> {
