@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.0-beta.3
+
+- When sending direct, export root `test.execution` spans in the background at 120 queued spans or within 1 s of the first queued span, instead of making every test wait for its own request; flush remaining results at test bundle finish
+- When `BUILDKITE_TESTS_OTLP_TOKEN` is set (blank = unset), hand off each test synchronously to the bktec relay so acknowledged executions survive a test-runner restart; detect by token, not endpoint host, and retain queueing during export backoff
+- Retry relay 429/503 backpressure before returning to the test, using `Retry-After` seconds (default 1 s, capped at 5 s) within a 10 s handoff budget before falling back to outage backoff; transport failures still back off immediately
+- Retry transient failures during bundle-end flush until its budget expires, waiting 1 s between relay attempts or the normal direct-mode backoff capped at the remaining budget; permanent failures still drop only the rejected batch
+- Log the selected synchronous-relay or batched-direct mode once at info level with the redacted endpoint
+- Bound the test-span queue to 8,192 spans in both modes and report overflow as `TEST RESULTS MISSING`; when sending direct, a killed runner can lose roughly 1 s of completed results (up to about 120 with the defaults and a healthy endpoint)
+- Add `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` (max spans per request and direct-mode early-send threshold; lowering it does not shorten the 1 s timer) and `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` in both modes, with the same validation and defaults as Ruby and JavaScript; keep the direct-mode 1 s timer fixed and ignore `OTEL_BSP_*`
+- Retain the 512 KiB encoded-size cap and separate 1 s child-span settings
+
 ## 2.0.0-beta.2
 
 - Label execution root requests `Buildkite-Tests-Span-Stream: test` and child span requests `child`

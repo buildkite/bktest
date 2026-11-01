@@ -56,7 +56,10 @@ struct EnvironmentValues {
     case endpoint
   }
 
-  func string(for key: String, logged: LoggedValue = .plain) -> String? {
+  func string(for key: String, logged: LoggedValue = .plain, trimWhitespace: Bool = true) -> String? {
+    func normalize(_ value: String?) -> String? {
+      trimWhitespace ? value?.trimmed() : value
+    }
     func description(for value: String) -> String {
       switch logged {
       case .plain:
@@ -68,13 +71,13 @@ struct EnvironmentValues {
       }
     }
 
-    if let value = self.values[key]?.trimmed() {
+    if let value = normalize(self.values[key]) {
       self.logger?.debug("\(key)=\(description(for: value)) (from values)")
       return value
-    } else if let value = self.getFromEnvironment(key)?.trimmed() {
+    } else if let value = normalize(self.getFromEnvironment(key)) {
       self.logger?.debug("\(key)=\(description(for: value)) (from environment)")
       return value
-    } else if let value = self.getFromInfoDictionary(key)?.trimmed() {
+    } else if let value = normalize(self.getFromInfoDictionary(key)) {
       self.logger?.debug("\(key)=\(description(for: value)) (from Info.plist)")
       return value
     } else {
