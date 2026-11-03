@@ -1,75 +1,11 @@
-const path = require('path')
-const { createRequire } = require('module')
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 const { workerFor } = require('./otelWorker')
 const JestOtelPackages = require('./otelPackages')
+const { loadInstrumentations } = require('./otelInstrumentations')
 
 const disabledMessage = (error) => `OpenTelemetry child span export disabled: ${describeError(error).split('\n')[0]}; test.execution export remains enabled`
 const SUITE_PROVIDER = 'OpenTelemetry child spans are not exported because the suite registers its own tracer provider; ' +
   'to get them, let the collector provide the provider under Jest. test.execution export remains enabled.'
-
-// OpenTelemetry's instrumentation of Node's http and https modules and of
-// fetch, from the 2.x SDK line the collector exports with: version 0.2xx, which
-// instrumentation-undici numbers 0.11 to 0.33.
-const INSTRUMENTATIONS = [
-  { name: 'http', className: 'HttpInstrumentation', minors: [200, 300] },
-  { name: 'undici', className: 'UndiciInstrumentation', minors: [11, 34] },
-]
-
-// The switches and short names of @opentelemetry/auto-instrumentations-node:
-// a non-empty OTEL_NODE_ENABLED_INSTRUMENTATIONS keeps only the names it
-// lists, then OTEL_NODE_DISABLED_INSTRUMENTATIONS removes the names it lists.
-const listedIn = (variable, name) => (process.env[variable] || '').split(',').some((entry) => entry.trim() === name)
-const enabledByEnv = (name) => (!process.env.OTEL_NODE_ENABLED_INSTRUMENTATIONS || listedIn('OTEL_NODE_ENABLED_INSTRUMENTATIONS', name)) &&
-  !listedIn('OTEL_NODE_DISABLED_INSTRUMENTATIONS', name)
-
-// Instrumentation is loaded once per worker, in the environment's realm (that
-// of the built-in modules it patches), from the project, or else from the
-// dependencies of @opentelemetry/auto-instrumentations-node, which pnpm does
-// not hoist. Anything else is skipped with one warning per run.
-const instrumentationSets = new Map()
-const loadInstrumentations = (rootDir, warnOnce) => {
-  if (instrumentationSets.has(rootDir)) return instrumentationSets.get(rootDir)
-  const fromProject = createRequire(path.join(rootDir, 'package.json'))
-  const loaders = [fromProject]
-  try {
-    loaders.push(createRequire(fromProject.resolve('@opentelemetry/auto-instrumentations-node')))
-  } catch {
-    // not installed
-  }
-  const instances = []
-  const skipped = []
-  for (const { name, className, minors } of INSTRUMENTATIONS.filter((entry) => enabledByEnv(entry.name))) {
-    const packageName = `@opentelemetry/instrumentation-${name}`
-    const rejected = []
-    for (const load of loaders) {
-      let instance
-      try {
-        instance = new (load(packageName)[className])({ enabled: false })
-      } catch (error) {
-        if (!(error.code === 'MODULE_NOT_FOUND' && error.message.startsWith(`Cannot find module '${packageName}'`))) {
-          rejected.push(`${packageName} (${describeError(error).split('\n')[0]})`)
-        }
-        continue
-      }
-      const [major, minor] = String(instance.instrumentationVersion).split('.').map(Number)
-      if (major === 0 && minor >= minors[0] && minor < minors[1]) {
-        instances.push(instance)
-        rejected.length = 0
-        break
-      }
-      rejected.push(`${packageName} ${instance.instrumentationVersion}`)
-    }
-    skipped.push(...rejected)
-  }
-  if (skipped.length) {
-    warnOnce('instrumentation', `OpenTelemetry instrumentation skipped: ${skipped.join(', ')}. The collector records child spans with ` +
-      'instrumentation from the OpenTelemetry JavaScript 2.x SDK line: @opentelemetry/instrumentation-http 0.200 to 0.2xx and ' +
-      '@opentelemetry/instrumentation-undici 0.11 to 0.33. test.execution export remains enabled.')
-  }
-  instrumentationSets.set(rootDir, instances)
-  return instances
-}
 
 // One async context manager per worker, used by the sandbox (for the tests'
 // API) and the environment's realm (for instrumentation). It must be the same
@@ -150,16 +86,16 @@ class JestOtelContext {
   // Called by the collector's Jest runtime when it is created for this file.
   attachRuntime(runtime) {
     this.runtime = runtime
-    this.packages = new JestOtelPackages(this, enabledByEnv)
     try {
       this.instrumentations = loadInstrumentations(this.rootDir, this.warnOnce)
     } catch (error) {
       warn(`OpenTelemetry instrumentation could not be loaded (${describeError(error)}); test.execution export remains enabled.`)
     }
+    this.packages = new JestOtelPackages(this, this.instrumentations || [])
   }
 
   _worker() {
-    if (!this.worker) this.worker = workerFor(this.session, this.instrumentations || [])
+    if (!this.worker) this.worker = workerFor(this.session, (this.instrumentations || []).map((entry) => entry.instance))
     return this.worker
   }
 
@@ -284,8 +220,9 @@ class JestOtelContext {
     this.cleanups = []
   }
 
-  // Close the worker's gate and this file's forwarding before destroying
-  // its sandbox. Only sandbox package instrumentation is disabled here.
+  // Close the worker's gate before destroying the sandbox. Children that
+  // already started keep forwarding when they end. Only sandbox package
+  // instrumentation is disabled here.
   async teardown() {
     this.mode = 'done'
     this.worker?.close(this)

@@ -82,7 +82,7 @@ const otelSupported = jestMajor >= 29
   const CLIENT = 3
   const SERVER = 2
   const SUITE_PROVIDER_WARNING = /OpenTelemetry child spans are not exported because the suite registers its own tracer provider; to get them, let the collector provide the provider under Jest\./
-  const LATE_WARNING = /OpenTelemetry dropped 1 child span\(s\) \(still open when their test file finished: 1\); test\.execution results are unaffected\./
+  const LATE_WARNING = /OpenTelemetry dropped 1 child span\(s\) \(still open when the worker exited: 1\); test\.execution results are unaffected\./
 
   // Runs the child span fixtures against a fresh receiver and indexes what
   // arrived. `ownRequests` are spans of the collector's own OTLP requests,
@@ -122,6 +122,32 @@ const otelSupported = jestMajor >= 29
 
   const named = (name) => (span) => span.name === name
   const clientGet = (span) => span.name === 'GET' && span.kind === CLIENT
+
+  test.each([
+    ['all installed', {}, true],
+    ['enabled list', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pg' }, true],
+    ['disabled wins', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pg', OTEL_NODE_DISABLED_INSTRUMENTATIONS: 'pg' }, false],
+  ])('discovers pg instrumentation with %s selection', async (_, env, enabled) => {
+    const outcome = await runChildren('pg', { args: '--runInBand', env })
+    expect([outcome.result.code, outcome.warnings, outcome.roots.length]).toEqual([0, [], 1])
+    const root = outcome.rootsNamed('pg connect and query')[0]
+    const spans = outcome.childrenOf(root, (span) => span.name.startsWith('pg.'))
+    expect(spans.map((span) => span.name).sort()).toEqual(enabled ? ['pg.connect', 'pg.query:SELECT fixture'] : [])
+    for (const span of spans) expect(span.parentSpanId).toBe(root.spanId)
+  }, 60000)
+
+  test('exports a child ending in the next file under its original test, and counts only never-ended children', async () => {
+    const outcome = await runChildren('late', { args: '--runInBand' })
+    expect([outcome.result.code, outcome.roots.length]).toEqual([0, 2])
+    expect(outcome.warnings).toEqual([expect.stringMatching(LATE_WARNING)])
+    const first = outcome.rootsNamed('starts children for later')[0]
+    const second = outcome.rootsNamed('ends the previous file child')[0]
+    expect(outcome.childrenOf(first, named('ends-in-next-file'))).toEqual([
+      expect.objectContaining({ parentSpanId: first.spanId, traceId: first.traceId }),
+    ])
+    expect(outcome.childrenOf(second, named('next-file-child'))).toHaveLength(1)
+    expect(outcome.children.filter(named('never-ends'))).toEqual([])
+  }, 60000)
 
   test('instruments Jest aliases by resolved path, but not mapped package mocks', async () => {
     const outcome = await runChildren('aliases', { args: 'web.js --runInBand' })
@@ -368,6 +394,17 @@ const otelSupported = jestMajor >= 29
   }
   const installed = (name) => path.dirname(require.resolve(`${name}/package.json`, { paths: [path.join(__dirname, '../examples/jest')] }))
 
+  test('discovers package instrumentation in non-hoisted auto-instrumentations dependencies', async () => {
+    const root = projectWithAutoInstrumentations({ '@opentelemetry/instrumentation-pg': installed('@opentelemetry/instrumentation-pg') })
+    try {
+      const outcome = await runChildren('pg', { args: '--runInBand', env: { OTEL_PROJECT_ROOT: root } })
+      expect([outcome.result.code, outcome.warnings, outcome.roots.length]).toEqual([0, [], 1])
+      const testRoot = outcome.rootsNamed('pg connect and query')[0]
+      expect(outcome.childrenOf(testRoot, (span) => span.name.startsWith('pg.')).map((span) => span.name).sort())
+        .toEqual(['pg.connect', 'pg.query:SELECT fixture'])
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  }, 60000)
+
   test.each([
     ['records http and fetch with the 2.x SDK line', {
       '@opentelemetry/instrumentation-http': installed('@opentelemetry/instrumentation-http'),
@@ -388,7 +425,7 @@ const otelSupported = jestMajor >= 29
         for (const test of ['http I/O', 'undici I/O']) expectRequest(outcome, test)
       } else {
         expect(outcome.warnings).toEqual([expect.stringMatching(
-          /OpenTelemetry instrumentation skipped: @opentelemetry\/instrumentation-http 0\.300\.0, @opentelemetry\/instrumentation-undici 0\.34\.0\. .*2\.x SDK line.*test\.execution export remains enabled\./,
+          /OpenTelemetry instrumentation skipped: @opentelemetry\/instrumentation-http .*0\.300\.0.*@opentelemetry\/instrumentation-undici .*0\.34\.0.*2\.x SDK line.*test\.execution export remains enabled\./,
         )])
         expect(outcome.children.filter((s) => s.name === 'GET')).toEqual([])
       }
@@ -417,8 +454,8 @@ const otelSupported = jestMajor >= 29
     // exits. Drops are never reported again as pending.
     const warnings = result.stderr.split('\n').filter((line) => line.includes('[buildkite-test-collector]'))
     expect(warnings).toEqual([
-      expect.stringMatching(/OpenTelemetry dropped \d+ child span\(s\) \(not-exported: \d+(, still open when their test file finished: 1)?\); test\.execution results are unaffected\.$/),
-      expect.stringMatching(/OpenTelemetry dropped \d+ child span\(s\) so far this run \(not-exported: \d+, still open when their test file finished: 1\); test\.execution results are unaffected\.$/),
+      expect.stringMatching(/OpenTelemetry dropped \d+ child span\(s\) \(not-exported: \d+\); test\.execution results are unaffected\.$/),
+      expect.stringMatching(/OpenTelemetry dropped \d+ child span\(s\) so far this run \(not-exported: \d+, still open when the worker exited: 1\); test\.execution results are unaffected\.$/),
     ])
     const [first, total] = warnings.map((warning) => Number(warning.match(/not-exported: (\d+)/)[1]))
     expect(total).toBeGreaterThan(first)
@@ -442,9 +479,9 @@ const otelSupported = jestMajor >= 29
     expect(refused.map((s) => s.name)).toEqual(expect.arrayContaining(['manual-parent', 'reset-modules-child']))
     expect(childRequests.every((r) => r.status === 403)).toBe(true)
     expect(outcome.warnings.filter((w) => !SUITE_PROVIDER_WARNING.test(w))).toEqual([
-      expect.stringMatching(/OpenTelemetry dropped \d+ child span\(s\) \(export-failure: \d+, last OTLP failure: 403(, still open when their test file finished: 1)?\); test\.execution results are unaffected\./),
+      expect.stringMatching(/OpenTelemetry dropped \d+ child span\(s\) \(export-failure: \d+, last OTLP failure: 403\); test\.execution results are unaffected\./),
       `[buildkite-test-collector] OpenTelemetry dropped ${refused.length + 1} child span(s) so far this run ` +
-        `(export-failure: ${refused.length}, last OTLP failure: 403, still open when their test file finished: 1); test.execution results are unaffected.`,
+        `(export-failure: ${refused.length}, last OTLP failure: 403, still open when the worker exited: 1); test.execution results are unaffected.`,
     ])
   }, 60000)
 

@@ -1,5 +1,7 @@
 // A worker's built-ins stay patched, but only record while a managed file
 // owns the gate. Spans retain the forwarder of the file where they began.
+const { isBuiltin } = require('module')
+
 let worker
 const workerFor = (session, instances) => {
   if (worker) {
@@ -37,14 +39,14 @@ const workerFor = (session, instances) => {
     // Preload before enabling require-in-the-middle, then patch definitions
     // it did not see. Use the instance's actual definitions, not fresh ones.
     for (const instance of instances) {
-      for (const definition of instance._modules || []) require(definition.name)
+      for (const definition of instance._modules || []) if (isBuiltin(definition.name)) require(definition.name)
     }
     for (const instance of instances) {
       instance.setTracerProvider(tracerProvider)
       instance.setConfig({ ...instance.getConfig(), enabled: true })
       instance.enable()
       for (const definition of instance._modules || []) {
-        if (typeof definition.patch !== 'function') continue
+        if (!isBuiltin(definition.name) || typeof definition.patch !== 'function') continue
         const exports = require(definition.name)
         if (definition.moduleExports === exports) continue
         definition.moduleExports = exports

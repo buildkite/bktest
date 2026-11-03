@@ -202,19 +202,47 @@ in-process server continues the test's trace, so a test that asserts or
 snapshots a request's exact headers can see a new one. Set
 `OTEL_NODE_DISABLED_INSTRUMENTATIONS=http,undici` to send requests unchanged.
 
-**Draft prototype:** this branch additionally patches CommonJS Express,
-GraphQL and node-redis packages as Jest loads them, including apps whose
-routes are registered at file load. Install the corresponding optional
-`@opentelemetry/instrumentation-express`, `-graphql` or `-redis` package,
-directly or through `@opentelemetry/auto-instrumentations-node`. The same
-environment switches select the short names `express`, `graphql`, `redis`.
-There is no `otelInstrumentations` option or `jest/otel` bridge. Other package
-instrumentations and native ESM package patching are not supported by this
-prototype. Verified instrumentation versions are Express 0.71.1, GraphQL
-0.69.0 and Redis 0.71.0, against Express 4.22.3, GraphQL 16.14.2 and redis
-5.12.1. Package spans increase billed volume: an Express route adds middleware
-and handler spans, GraphQL adds execution and resolver spans, and a Redis
-connect/SET/GET adds three spans.
+Starting with **1.13.0-beta.3**, every installed
+`@opentelemetry/instrumentation-*` package from the 2.x SDK line is selected
+by default, including packages inside non-hoisted
+`@opentelemetry/auto-instrumentations-node` dependencies. The same environment
+switches narrow that selection; for example,
+`OTEL_NODE_DISABLED_INSTRUMENTATIONS=express,graphql,redis,pg` turns off those
+package spans without turning off test results or HTTP spans. No new reporter
+option, `otelInstrumentations` option or `jest/otel` bridge is needed.
+
+CommonJS packages are patched from the upstream instrumentation's module and
+file definitions as Jest loads them, including routes registered at file
+load and imports resolved through `moduleNameMapper`. A package mapped to a
+local mock is not mistaken for the real package. Native ESM package patching
+is not supported. Verified package combinations are Express 4.22.3 with
+instrumentation 0.71.1, GraphQL 16.14.2 with 0.69.0, redis 5.12.1 with 0.71.0,
+and pg 8.23.1 with 0.69.0, on Jest 29.7.0 and 30.x. Other installed
+instrumentations use their upstream definitions and supported-version ranges;
+they are not all individually verified by this collector.
+
+Child spans add billed decoded GB, not additional test executions. Counts
+depend on the operation and instrumentation version/configuration. The
+verified default examples add the following children, in addition to the one
+`test.execution` root:
+
+| Instrumentation | Children per operation |
+| --- | --- |
+| `http` | 1 client span per HTTP/HTTPS request; another server span when the server runs in the instrumented worker |
+| `undici` | 1 client span per `fetch`; an in-process server can add an `http` server span |
+| `express` | 1 span per middleware/handler run: the simple Express 4 route has 3 (query, expressInit, handler), plus the 2 HTTP spans when `http` is enabled |
+| `graphql` | Parse + validate + execute + resolver spans: 4 for the one-field async query; more resolved fields can add more spans |
+| `redis` | 1 connect span and 1 per command: connect/SET/GET adds 3 |
+| `pg` | 1 connect span and 1 per query: a direct connect/SELECT adds 2; acquiring a pooled connection can add a pool-connect span |
+| Manual spans | 1 per ended span in the test's trace |
+
+Built-in instrumentation may not be active until the first test/per-test
+hook. A top-level `const { get } = require('http')` or native ESM
+`import { get } from 'node:http'` evaluated before activation captures the
+unpatched function: requests through that binding have no client span or
+`traceparent` header.
+Use the module object instead: `const http = require('http')` followed by
+`http.get(...)`, or `import http from 'node:http'` followed by `http.get(...)`.
 
 Package patches are prepared at file load but record only during managed
 tests. One child provider per worker uses the collector's resource and random
@@ -267,10 +295,15 @@ propagation, such as an in-process server handling a request the test made.
 Spans from `beforeAll`, `afterAll`, file loading or roots you start yourself
 are in traces of their own and are not exported.
 
-Each child is exported when it ends. A child still open when its test file
-finishes is not exported: the worker counts it in its `OpenTelemetry dropped
-N child span(s)` warning as `still open when their test file finished`. End
-child spans before the test that started them finishes.
+Each child is exported when it ends, including a child that ends after its
+test file finishes but before the worker exits. It retains its original
+test's trace and parent even while the worker runs a later file. Ending such
+a child triggers a flush rather than waiting for another file's teardown.
+Only children still open at worker exit are counted in the `OpenTelemetry
+dropped N child span(s)` warning as `still open when the worker exited`.
+Jest clears sandbox timers at teardown and can force-exit workers: the
+collector cannot export a span that never gets to end. Close long-lived
+connections and end spans when their work completes.
 
 The collector's own requests to Buildkite are sent with tracing suppressed, so
 no instrumentation records them, as children or in traces of your own.
@@ -485,7 +518,7 @@ dropped children as `OpenTelemetry dropped N child span(s) (…); test.execution
 results are unaffected` when it notices them, and the total as `OpenTelemetry
 dropped N child span(s) so far this run (…)` when it exits. The reasons are
 `not-exported` (the queue was full), `export-failure` with the last OTLP
-failure, and `still open when their test file finished`. A batch Buildkite
+failure, and `still open when the worker exited`. A batch Buildkite
 refuses with HTTP 403, for example because the organization has reached its
 child span limit, counts as an export failure, and later batches are still
 sent.

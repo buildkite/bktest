@@ -1,23 +1,18 @@
 const fs = require('fs')
 const path = require('path')
-const { createRequire } = require('module')
+const { isBuiltin } = require('module')
 const semver = require('semver')
-
-const PACKAGES = [
-  ['express', 'ExpressInstrumentation'],
-  ['graphql', 'GraphQLInstrumentation'],
-  ['redis', 'RedisInstrumentation'],
-]
 
 // Mirror require-in-the-middle's package/file names, retaining file identity
 // even when an entry point re-exports an internal file (Express).
-const describe = (file, runtime) => {
+const describe = (file, runtime, names) => {
   const segments = file.split(path.sep)
   const index = segments.lastIndexOf('node_modules')
   if (index < 0) return null
   const width = segments[index + 1].startsWith('@') ? 2 : 1
   const basedir = segments.slice(0, index + 1 + width).join(path.sep)
   const packageName = segments.slice(index + 1, index + 1 + width).join('/')
+  if (!names.has(packageName)) return null
   const from = path.join(basedir, 'package.json')
   const entry = runtime._resolution ? runtime._resolution.resolveCjs(from, packageName) : runtime._resolveCjsModule(from, packageName)
   return {
@@ -29,26 +24,26 @@ const describe = (file, runtime) => {
 }
 
 class JestOtelPackages {
-  constructor(context, enabledByEnv) {
+  constructor(context, entries) {
     this.context = context
-    this.entries = PACKAGES.filter(([name]) => enabledByEnv(name))
+    this.entries = entries.map((entry) => ({ ...entry,
+      modules: new Set(entry.instance.getModuleDefinitions().map((definition) => definition.name).filter((name) => !isBuiltin(name))),
+    })).filter((entry) => entry.modules.size)
+    this.names = new Set(this.entries.flatMap((entry) => [...entry.modules]))
     this.instances = new Map()
     this.loading = new Set()
     this.loads = new WeakMap()
     this.resolved = new Map()
-    this.fromProject = createRequire(path.join(context.rootDir, 'package.json'))
   }
 
   load(file, load) {
     if (!this.entries.length) return load()
-    // Filter the actual Jest-resolved path, never the import specifier.
-    if (!/(^|[/\\])node_modules[/\\](express|graphql|redis|@redis|@node-redis)([/\\]|$)/.test(file)) return load()
     let record
     if (!this.resolved.has(file)) {
-      try { this.resolved.set(file, describe(file, this.context.runtime)) } catch { this.resolved.set(file, null) }
+      try { this.resolved.set(file, describe(file, this.context.runtime, this.names)) } catch { this.resolved.set(file, null) }
     }
     record = this.resolved.get(file)
-    if (!record || !this.entries.some(([name]) => record.name === name || (name === 'redis' && record.name === '@redis/client')) || this.loading.has(record.path)) return load()
+    if (!record || this.loading.has(record.path)) return load()
     this.loading.add(record.path)
     let exports
     try { exports = load() } finally { this.loading.delete(record.path) }
@@ -58,25 +53,12 @@ class JestOtelPackages {
     if (files.has(record.path)) return files.get(record.path)
     // Mark before constructing instrumentation, which also loads packages.
     files.set(record.path, exports)
-    for (const [name, className] of this.entries) {
-      if (record.name !== name && !(name === 'redis' && record.name === '@redis/client')) continue
+    for (const { name, className, resolved, modules } of this.entries) {
+      if (!modules.has(record.name)) continue
       try {
         if (!this.instances.has(name)) {
           this.instances.set(name, null)
           const { context } = this
-          const packageName = `@opentelemetry/instrumentation-${name}`
-          let resolved
-          try {
-            resolved = this.fromProject.resolve(packageName)
-          } catch (error) {
-            if (error.code !== 'MODULE_NOT_FOUND') throw error
-            try {
-              resolved = createRequire(this.fromProject.resolve('@opentelemetry/auto-instrumentations-node')).resolve(packageName)
-            } catch (error) {
-              if (error.code === 'MODULE_NOT_FOUND') continue // optional
-              throw error
-            }
-          }
           const mod = context.runtime.requireModule(context.testPath, resolved)
           const instance = new mod[className]({ enabled: false })
           instance.setTracerProvider(context._worker().tracerProvider)

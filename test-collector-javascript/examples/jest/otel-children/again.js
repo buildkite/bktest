@@ -70,7 +70,7 @@ test('in jest.isolateModules', () => {
   jest.isolateModules(() => require('./support/app').work('isolated-modules-child'))
 })
 
-// Ends after the file has finished, so it is counted as dropped.
+// Jest clears this sandbox timer at teardown, so the child never ends.
 test('leaves a child open', () => {
   const span = tracer.startSpan('late-child')
   setTimeout(() => span.end(), 1000).unref()

@@ -26,6 +26,7 @@ module.exports = {
   // modules, untransformed.
   ...(mode === 'optout'
     ? { testMatch: [path.join(fixtures, 'io.js'), path.join(fixtures, 'optout/*.js')], testSequencer: path.join(fixtures, 'support/sequencer.js') }
-    : { testMatch: [path.join(fixtures, { suite: 'suite/*.js', esm: 'esm/*.mjs', aliases: 'aliases/*.js' }[mode] || '*.js')] }),
+    : { testMatch: [path.join(fixtures, { suite: 'suite/*.js', esm: 'esm/*.mjs', aliases: 'aliases/*.js', late: 'late/*.js', pg: 'pg/*.js' }[mode] || '*.js')] }),
+  ...(mode === 'late' ? { testSequencer: path.join(fixtures, 'support/sequencer.js') } : {}),
   ...(mode === 'esm' ? { transform: {} } : {}),
 }
