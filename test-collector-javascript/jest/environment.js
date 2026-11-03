@@ -58,7 +58,6 @@ const failureFormatting = (projectConfig, circusDir) => {
     format: prettyFormat ? (value) => prettyFormat.format(value, { maxDepth: 3 }) : String,
     errorText,
     wrapsThrownValues: Boolean(flattenErrorStack),
-    major,
   }
 }
 
@@ -144,31 +143,26 @@ const BaseEnvironment = (() => {
 const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   static buildkiteTestEngine = true
 
-  // Jest 28 passes { globalConfig, projectConfig }; Jest 27 passes the
-  // project config alone. Nothing after super() may stop the tests from
-  // running: without a session the file is simply not recorded as exported,
-  // and the reporter uploads its results as JSON.
+  // Nothing after super() may stop the tests from running: without a session
+  // the file is simply not recorded as exported, and the reporter uploads its
+  // results as JSON.
   constructor(config, context) {
     super(config, context)
-    const projectConfig = config.projectConfig || config
+    const { globalConfig, projectConfig } = config
     this._buildkite = { session: null, started: false, spans: new Map(), includeLocation: false, formatting: null, projectConfig, testPath: context?.testPath }
     let fallback = 'its results go to the JSON upload instead'
     try {
       const settings = readSettings()
       if (!settings) return
       fallback = settings.fallback
-      const paths = new Paths({ rootDir: settings.rootDir }, settings.runEnv.location_prefix)
+      const paths = new Paths({ rootDir: globalConfig.rootDir }, settings.runEnv.location_prefix)
       this._buildkite.testPath = paths.prefixTestPath(context.testPath)
       this._buildkite.record = () => recordExport(settings.exportRecords, recordKey(projectConfig, context.testPath))
       this._buildkite.fallback = fallback
       this._buildkite.session = sessionFor(settings)
-      // The collector's exports run with tracing suppressed in this sandbox.
-      this._buildkite.disconnect = this._buildkite.session.connectSandbox(this.global)
       this._buildkite.children = new JestOtelContext({
         session: this._buildkite.session, settings, testPath: context.testPath, rootDir: projectConfig.rootDir,
       })
-      // For createBuildkiteSpanProcessor() in the sandbox's setup files.
-      this.global.__buildkiteOtel = this._buildkite.children
     } catch (error) {
       warn(`OpenTelemetry could not be set up in this test worker (${describeError(error)}); for ${this._buildkite.testPath}, ${fallback}.`)
     }
@@ -176,20 +170,11 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
 
   async handleTestEvent(event, state) {
     if (this._buildkite.session && !this._buildkite.started) this._start(new Error().stack)
-    // Recorded before any await: Jest dispatches add_test synchronously, and
-    // the test.concurrent wrapper reads it as soon as registration returns.
-    if (event.name === 'add_test') {
-      const siblings = state.currentDescribeBlock.children
-      this._buildkite.added = siblings[siblings.length - 1]
-    }
     if (super.handleTestEvent) await super.handleTestEvent(event, state)
     const { session, spans, children } = this._buildkite
     if (!session) return
 
     switch (event.name) {
-      case 'setup':
-        if (this._buildkite.formatting?.major === 27 && event.runtimeGlobals?.test?.concurrent) this._wrapJest27Concurrent(event.runtimeGlobals.test, state)
-        break
       case 'run_start':
         if (children.canExportChildren) this._wrapFunctions(state.rootDescribeBlock)
         break
@@ -197,8 +182,9 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
         this._buildkite.includeLocation = true
         break
       case 'test_start': {
-        // Older Circus launches concurrent bodies before test_start. Their
-        // wrappers already own a root; never replace it here.
+        // Circus starts test.concurrent bodies before their test_start, and
+        // their wrappers already started the test's span; only a previous
+        // attempt's span is finished here.
         if (spans.get(event.test)?.endTime !== undefined) this._finish(event.test)
         this._begin(event.test)
         break
@@ -235,41 +221,6 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
     spans.set(test, started)
     children.began(started)
     return started
-  }
-
-  // Jest 27 starts a test.concurrent body as the file registers it, before
-  // the test exists, and the test it registers only awaits that promise. The
-  // body is wrapped here instead, and its test span starts with it: under a
-  // stand-in with the test's name and describe blocks until registration
-  // returns the test itself. The collector then sets up as the first body
-  // starts, while the file is still being collected.
-  _wrapJest27Concurrent(test, state) {
-    const env = this
-    const wrap = (register) => {
-      const wrapped = function (testName, testFn, timeout) {
-        if (typeof testFn !== 'function') return register.call(this, testName, testFn, timeout)
-        let owner = { name: testName, parent: state.currentDescribeBlock, errors: [] }
-        const body = function (...args) {
-          const { children } = env._buildkite
-          if (!children.canExportChildren) return testFn.apply(this, args)
-          return children.run(env._begin(owner), testFn, this, args)
-        }
-        env._buildkite.added = null
-        const result = register.call(this, testName, body, timeout)
-        const registered = env._buildkite.added
-        if (registered && registered.type === 'test') {
-          const { spans } = env._buildkite
-          if (spans.has(owner)) spans.set(registered, spans.get(owner))
-          spans.delete(owner)
-          owner = registered
-        }
-        return result
-      }
-      return Object.assign(wrapped, register)
-    }
-    const concurrent = wrap(test.concurrent)
-    if (typeof test.concurrent.only === 'function') concurrent.only = wrap(test.concurrent.only)
-    test.concurrent = concurrent
   }
 
   _wrapFunctions(block) {
@@ -354,7 +305,6 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
         }
       }
     } finally {
-      if (this._buildkite.disconnect) this._buildkite.disconnect()
       await super.teardown()
     }
   }

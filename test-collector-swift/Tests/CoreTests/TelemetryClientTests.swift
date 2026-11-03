@@ -21,7 +21,7 @@ final class TelemetryClientTests: XCTestCase {
     super.tearDown()
   }
 
-  func testExportsExecutionRootSynchronouslyWithAttributesAndRunTags() throws {
+  func testExportsExecutionRootWithAttributesAndRunTagsAtFlush() throws {
     let rootExporter = InMemoryExporter()
     let childExporter = InMemoryExporter()
     let environment = EnvironmentValues(
@@ -147,10 +147,11 @@ final class TelemetryClientTests: XCTestCase {
 
     let executionID = client.startExecution(test)
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.attributes["test.case.result.status"], .string("fail"))
-    XCTAssertEqual(span.attributes["code.file.path"], .string("/src/FailureTests.swift"))
+    XCTAssertEqual(span.attributes["code.file.path"], .string("FailureTests.swift"))
     XCTAssertEqual(span.attributes["code.line.number"], .int(42))
     XCTAssertEqual(span.status, .error(description: "Expected true but was false"))
     XCTAssertEqual(span.events.only?.name, "exception")
@@ -192,6 +193,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertNil(span.parentSpanId)
@@ -236,24 +238,200 @@ final class TelemetryClientTests: XCTestCase {
   }
 
   func testUsesOnlyConfiguredHeadersForStandardTraceEndpoint() throws {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
     let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
       environment: EnvironmentValues(
         values: [
           "BUILDKITE_ANALYTICS_KEY": "run-key",
-          "BUILDKITE_ANALYTICS_TOKEN": "collector-token",
           "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:1234/v1/traces",
           "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "authorization=Bearer%20relay-token,x-test=value%2Fone",
         ],
         getFromEnvironment: { _ in nil },
         getFromInfoDictionary: { _ in nil }
       ),
-      logger: nil
+      logger: logger
     ))
+    logger.waitForLogs()
 
     XCTAssertEqual(configuration.endpoint.absoluteString, "http://127.0.0.1:1234/v1/traces")
     XCTAssertNil(configuration.header(named: "Buildkite-Tests-Run-Key"))
     XCTAssertEqual(configuration.header(named: "Authorization"), "Bearer relay-token")
     XCTAssertEqual(configuration.header(named: "x-test"), "value/one")
+    XCTAssertEqual(messages.value, [
+      "[BuildkiteTestCollector] info: Sending test executions to http://127.0.0.1:1234/v1/traces from OTEL_EXPORTER_OTLP_* without Buildkite credentials; they reach Buildkite Test Engine only if that endpoint forwards them.",
+    ])
+  }
+
+  func testBuildkiteTokenWinsOverStandardEndpoint() throws {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
+    let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
+      environment: EnvironmentValues(
+        values: [
+          "BUILDKITE_ANALYTICS_KEY": "run-key",
+          "BUILDKITE_ANALYTICS_TOKEN": "collector-token",
+          "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318",
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:1234/v1/traces",
+          "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "authorization=Bearer%20app-token",
+        ],
+        getFromEnvironment: { _ in nil },
+        getFromInfoDictionary: { _ in nil }
+      ),
+      logger: logger
+    ))
+    logger.waitForLogs()
+
+    XCTAssertEqual(configuration.endpoint.absoluteString, TestCollector.endpoint)
+    XCTAssertEqual(configuration.headers.map { "\($0.0): \($0.1)" }, [
+      "Buildkite-Tests-Run-Key: run-key",
+      #"Authorization: Token token="collector-token""#,
+    ])
+    XCTAssertEqual(messages.value, [
+      "[BuildkiteTestCollector] warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN, BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(TestCollector.endpoint) with Buildkite credentials.",
+    ])
+  }
+
+  func testPrefersTheOTLPTokenOverTheUploadToken() throws {
+    for (otlpToken, expected) in [("otlp-token", "otlp-token"), ("   ", "upload-token")] {
+      let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
+        environment: EnvironmentValues(
+          values: [
+            "BUILDKITE_ANALYTICS_KEY": "run-key",
+            "BUILDKITE_ANALYTICS_TOKEN": "upload-token",
+            "BUILDKITE_TESTS_OTLP_TOKEN": otlpToken,
+          ],
+          getFromEnvironment: { _ in nil },
+          getFromInfoDictionary: { _ in nil }
+        ),
+        logger: nil
+      ))
+
+      XCTAssertEqual(configuration.header(named: "Authorization"), #"Token token="\#(expected)""#)
+    }
+  }
+
+  func testSendsTheRelayTokenQuietlyUnderBktecWhenTheUploadTokenIsBlank() throws {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
+    // What bktec's relay sets for the test process; the upload token is blank
+    // when bktec could not mint one.
+    let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
+      environment: EnvironmentValues(
+        values: [
+          "BUILDKITE_ANALYTICS_KEY": "run-key",
+          "BUILDKITE_ANALYTICS_TOKEN": "",
+          "BUILDKITE_ANALYTICS_OTLP_ENDPOINT": "http://127.0.0.1:50123/v1/traces",
+          "BUILDKITE_TESTS_OTLP_TOKEN": "relay-token",
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:50123/v1/traces",
+          "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "authorization=Bearer%20relay-token",
+          "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+        ],
+        getFromEnvironment: { _ in nil },
+        getFromInfoDictionary: { _ in nil }
+      ),
+      logger: logger
+    ))
+    logger.waitForLogs()
+
+    XCTAssertEqual(configuration.endpoint.absoluteString, "http://127.0.0.1:50123/v1/traces")
+    XCTAssertEqual(configuration.headers.map { "\($0.0): \($0.1)" }, [
+      "Buildkite-Tests-Run-Key: run-key",
+      #"Authorization: Token token="relay-token""#,
+    ])
+    XCTAssertEqual(messages.value, [])
+  }
+
+  func testOnlyANonblankOTLPTokenSelectsSynchronousRelayHandoff() throws {
+    for (token, endpoint, synchronous) in [
+      (nil, "http://127.0.0.1:4318/v1/traces", false),
+      ("", "http://127.0.0.1:4318/v1/traces", false),
+      (" \t\n", "http://127.0.0.1:4318/v1/traces", false),
+      ("relay-token", "http://127.0.0.1:4318/v1/traces", true),
+      ("relay-token", "https://url-user:url-secret@relay.example/v1/traces?api_key=query-secret#fragment-secret", true),
+    ] as [(String?, String, Bool)] {
+      let exporter = InMemoryExporter()
+      let messages = LockIsolated([String]())
+      let logger = Logger(printer: { message in messages.withValue { $0.append(message) } })
+      var values = [
+        "BUILDKITE_ANALYTICS_TOKEN": "analytics-token",
+        "BUILDKITE_ANALYTICS_KEY": "run-key",
+        "BUILDKITE_ANALYTICS_OTLP_ENDPOINT": endpoint,
+      ]
+      values["BUILDKITE_TESTS_OTLP_TOKEN"] = token
+      let client = try XCTUnwrap(TelemetryClient.live(
+        environment: EnvironmentValues(
+          values: values, getFromEnvironment: { _ in nil }, getFromInfoDictionary: { _ in nil }
+        ),
+        uploadTags: [:], logger: logger, rootExporter: exporter, childExporter: InMemoryExporter()
+      ))
+      var test = TestState(id: UUID(), className: "RelayTests", testName: "testHandoff")
+      let executionID = client.startExecution(test)
+      test.result = .passed
+      client.finishExecution(executionID, test: test, tags: nil)
+      XCTAssertEqual(exporter.getFinishedSpanItems().count, synchronous ? 1 : 0, "endpoint: \(endpoint)")
+      client.forceFlush()
+      XCTAssertEqual(exporter.getFinishedSpanItems().count, 1)
+      logger.waitForLogs()
+      let modeLines = messages.value.filter { $0.contains("OpenTelemetry test execution mode:") }
+      let mode = synchronous ? "synchronous bktec relay handoff" : "batched direct export"
+      let redactedEndpoint = endpoint.hasPrefix("https:") ? "https://relay.example/v1/traces" : endpoint
+      XCTAssertEqual(modeLines, ["[BuildkiteTestCollector] info: OpenTelemetry test execution mode: \(mode) to \(redactedEndpoint)"])
+      for secret in ["relay-token", "analytics-token", "url-user", "url-secret", "query-secret", "fragment-secret"] {
+        XCTAssertFalse(messages.value.contains { $0.contains(secret) })
+      }
+    }
+  }
+
+  func testLogsEndpointsWithoutCredentials() throws {
+    let endpoint = "http://url-user:url-secret@127.0.0.1:4318/v1/traces?api_key=query-secret#fragment-secret"
+    let cases: [(values: [String: String], line: String)] = [
+      (
+        ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": endpoint],
+        "info: Sending test executions to http://127.0.0.1:4318/v1/traces from OTEL_EXPORTER_OTLP_* without Buildkite credentials; they reach Buildkite Test Engine only if that endpoint forwards them."
+      ),
+      (
+        [
+          "BUILDKITE_ANALYTICS_TOKEN": "collector-token",
+          "BUILDKITE_ANALYTICS_OTLP_ENDPOINT": endpoint,
+          "OTEL_EXPORTER_OTLP_ENDPOINT": endpoint,
+        ],
+        "warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN, BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to http://127.0.0.1:4318/v1/traces with Buildkite credentials."
+      ),
+    ]
+
+    for (values, line) in cases {
+      let messages = LockIsolated([String]())
+      let logger = Logger(logLevel: .debug, printer: { message in
+        messages.withValue { $0.append(message) }
+      })
+      let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
+        environment: EnvironmentValues(
+          values: values.merging(["BUILDKITE_ANALYTICS_KEY": "run-key"]) { $1 },
+          getFromEnvironment: { _ in nil },
+          getFromInfoDictionary: { _ in nil },
+          logger: logger
+        ),
+        logger: logger
+      ))
+      logger.waitForLogs()
+
+      XCTAssertEqual(configuration.endpoint.absoluteString, endpoint)
+      XCTAssertTrue(messages.value.contains("[BuildkiteTestCollector] \(line)"), "\(messages.value)")
+      XCTAssertTrue(
+        messages.value.contains(where: { $0.hasSuffix("_ENDPOINT=http://127.0.0.1:4318/v1/traces (from values)") }),
+        "\(messages.value)"
+      )
+      for secret in ["url-user", "url-secret", "query-secret", "fragment-secret"] {
+        XCTAssertFalse(messages.value.contains(where: { $0.contains(secret) }), "\(secret) in \(messages.value)")
+      }
+    }
   }
 
   func testHeadersAloneDoNotEnableCollector() {
@@ -300,7 +478,7 @@ final class TelemetryClientTests: XCTestCase {
     XCTAssertNil(configuration.header(named: "x-test"))
     XCTAssertTrue(messages.withValue { messages in
       messages.contains(
-        "[BuildkiteTestCollector] warning: Standard OpenTelemetry exporter headers are ignored for endpoints that receive Buildkite credentials; use OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT to send custom headers."
+        "[BuildkiteTestCollector] warning: Standard OpenTelemetry exporter settings (OTEL_EXPORTER_OTLP_*) are ignored while BUILDKITE_ANALYTICS_TOKEN, BUILDKITE_TESTS_OTLP_TOKEN or BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set; test results are sent to \(TestCollector.endpoint) with Buildkite credentials."
       )
     })
   }
@@ -324,6 +502,125 @@ final class TelemetryClientTests: XCTestCase {
     XCTAssertEqual(
       configuration.header(named: "Authorization"),
       #"Token token="collector-token""#
+    )
+  }
+
+  func testLabelsEachSpanStreamOnTheWire() throws {
+    let configuration = try XCTUnwrap(CollectorOTLPConfiguration(
+      environment: self.configuredEnvironment,
+      logger: nil
+    ))
+
+    XCTAssertEqual(configuration.headers(for: .test).map { "\($0.0): \($0.1)" }, [
+      "Buildkite-Tests-Run-Key: run-key",
+      #"Authorization: Token token="SECRET""#,
+      "Buildkite-Tests-Span-Stream: test",
+    ])
+    XCTAssertEqual(configuration.headers(for: .child).map { "\($0.0): \($0.1)" }, [
+      "Buildkite-Tests-Run-Key: run-key",
+      #"Authorization: Token token="SECRET""#,
+      "Buildkite-Tests-Span-Stream: child",
+    ])
+
+    let relay = try XCTUnwrap(CollectorOTLPConfiguration(
+      environment: EnvironmentValues(
+        values: [
+          "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://relay.example/v1/traces",
+          "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "x-relay=1,BUILDKITE-TESTS-SPAN-STREAM=test",
+        ],
+        getFromEnvironment: { _ in nil },
+        getFromInfoDictionary: { _ in nil }
+      ),
+      logger: nil
+    ))
+    XCTAssertEqual(relay.headers(for: .child).map { "\($0.0): \($0.1)" }, [
+      "x-relay: 1",
+      "Buildkite-Tests-Span-Stream: child",
+    ])
+  }
+
+  func testDisablesExportForInvalidRunKey() {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
+    XCTAssertEqual(
+      self.configuration(runKey: String(repeating: "k", count: 255), logger: logger)?
+        .header(named: "Buildkite-Tests-Run-Key"),
+      String(repeating: "k", count: 255)
+    )
+    XCTAssertNil(self.configuration(runKey: String(repeating: "k", count: 256), logger: logger))
+    XCTAssertNil(self.configuration(runKey: "", logger: logger))
+    XCTAssertNil(self.configuration(runKey: "run key", logger: logger))
+    XCTAssertNil(self.configuration(runKey: "run-kéy", logger: logger))
+    XCTAssertNotNil(self.configuration(runKey: "run-key", relay: true, logger: logger))
+    XCTAssertNil(self.configuration(runKey: "run key", relay: true, logger: logger))
+    logger.waitForLogs()
+
+    XCTAssertTrue(messages.withValue { messages in
+      messages.contains(
+        #"[BuildkiteTestCollector] warning: OpenTelemetry span export disabled: run key "run key" is invalid. Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); it must be 1-255 printable ASCII characters without spaces."#
+      )
+    })
+  }
+
+  func testCapsOversizedValuesBeforeExport() throws {
+    let rootExporter = InMemoryExporter()
+    let client = try XCTUnwrap(TelemetryClient.live(
+      environment: self.configuredEnvironment,
+      // Set at span start, where the SDK applies no value length limit.
+      uploadTags: ["configured": String(repeating: "c", count: 10_244)],
+      logger: nil,
+      rootExporter: rootExporter,
+      childExporter: InMemoryExporter()
+    ))
+    var test = TestState(id: UUID(), className: "LongTests", testName: "testLongFailure")
+    test.result = .failed
+    // Limits count Unicode scalars, so a combining mark counts separately.
+    let combining = "e\u{301}"
+    test.issues = [
+      TestIssue(
+        compactDescription: String(repeating: combining, count: 1_025),
+        description: String(repeating: "m", count: 10_241),
+        sourceCodeContext: SourceCodeContext(callStack: [
+          SourceCodeFrame(
+            address: 0,
+            symbolInfo: SourceCodeSymbolInfo(
+              imageName: "Tests",
+              symbolName: String(repeating: "f", count: 16_384)
+            )
+          ),
+        ])
+      ),
+    ]
+
+    let executionID = client.startExecution(test)
+    client.annotate(String(repeating: "a", count: 16_385), executionID: executionID)
+    client.finishExecution(executionID, test: test, tags: ["long": String(repeating: "t", count: 10_244)])
+    client.forceFlush()
+
+    let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
+    XCTAssertEqual(span.status, .error(description: String(repeating: combining, count: 512)))
+    XCTAssertEqual(
+      span.attributes[BuildkiteTelemetryAttribute.tagPrefix + "long"],
+      .string(String(repeating: "t", count: 10_243))
+    )
+    XCTAssertEqual(
+      span.attributes[BuildkiteTelemetryAttribute.tagPrefix + "configured"],
+      .string(String(repeating: "c", count: 10_243))
+    )
+    XCTAssertEqual(span.events.count, 2)
+    XCTAssertEqual(
+      span.events.first?.attributes[BuildkiteTelemetryAttribute.annotation],
+      .string(String(repeating: "a", count: 16_384))
+    )
+    XCTAssertEqual(
+      span.events.last?.attributes["exception.message"],
+      .string(String(repeating: "m", count: 10_240) + "...")
+    )
+    XCTAssertEqual(
+      span.events.last?.attributes["exception.stacktrace"],
+      .string("0 " + String(repeating: "f", count: 16_382))
     )
   }
 
@@ -352,6 +649,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.attributes["test.case.name"], .string("[ios] PaymentTests.testChargeCard [debug]"))
@@ -443,6 +741,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: ["execution": "optional"])
+    client.forceFlush()
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.attributes, [
@@ -462,22 +761,61 @@ final class TelemetryClientTests: XCTestCase {
       childExporter: InMemoryExporter()
     ))
 
-    for name in ["testOne", "testTwo"] {
+    for index in 1...121 {
+      let name = "test\(index)"
       var test = TestState(id: UUID(), className: "RetryTests", testName: name)
       let executionID = client.startExecution(test)
       test.result = .passed
       client.finishExecution(executionID, test: test, tags: nil)
+      if index == 120 {
+        XCTAssertEqual(rootExporter.exported.wait(timeout: .now() + 1), .success)
+      }
     }
 
     XCTAssertEqual(rootExporter.exports.count, 1)
     client.forceFlush()
 
-    XCTAssertEqual(rootExporter.exports.count, 2)
-    XCTAssertEqual(rootExporter.exports[0].map(\.name), ["test.execution"])
+    XCTAssertEqual(rootExporter.exports.map(\.count), [120, 120, 1])
     XCTAssertEqual(
-      rootExporter.exports[1].map(\.attributes[BuildkiteTelemetryAttribute.testName]),
-      [.string("testOne"), .string("testTwo")]
+      rootExporter.exports.dropFirst().flatMap { $0.map(\.attributes[BuildkiteTelemetryAttribute.testName]) },
+      (1...121).map { .string("test\($0)") }
     )
+  }
+
+  func testFlushSharesOneBudgetAcrossStreamsAndReportsChildSpansLeftBehind() throws {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in
+      messages.withValue { $0.append(message) }
+    })
+    let childExporter = SlowExporter(delay: 3)
+    let client = try XCTUnwrap(TelemetryClient.live(
+      environment: self.configuredEnvironment,
+      uploadTags: [:],
+      logger: logger,
+      rootExporter: InMemoryExporter(),
+      childExporter: childExporter,
+      flushBudget: 1
+    ))
+    var test = TestState(id: UUID(), className: "SlowChildTests", testName: "testChild")
+
+    let executionID = client.startExecution(test)
+    OpenTelemetry.instance.tracerProvider
+      .get(instrumentationName: "example-app")
+      .spanBuilder(spanName: "database.query")
+      .startSpan()
+      .end()
+    test.result = .passed
+    client.finishExecution(executionID, test: test, tags: nil)
+
+    let started = Date()
+    client.forceFlush()
+    let elapsed = Date().timeIntervalSince(started)
+    logger.waitForLogs()
+
+    XCTAssertLessThan(elapsed, 2)
+    XCTAssertEqual(messages.value.filter { $0.contains("warning:") }, [
+      "[BuildkiteTestCollector] warning: 1 OpenTelemetry child span(s) were not exported within the 1 s flush budget or were rejected by the endpoint; test.execution results are unaffected.",
+    ])
   }
 
   private var configuredEnvironment: EnvironmentValues {
@@ -488,6 +826,27 @@ final class TelemetryClientTests: XCTestCase {
       ],
       getFromEnvironment: { _ in nil },
       getFromInfoDictionary: { _ in nil }
+    )
+  }
+
+  private func configuration(
+    runKey: String,
+    relay: Bool = false,
+    logger: Core.Logger?
+  ) -> CollectorOTLPConfiguration? {
+    var values = ["BUILDKITE_ANALYTICS_ENVIRONMENT": #"{"key":"\#(runKey)"}"#]
+    if relay {
+      values["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] = "http://relay.example/v1/traces"
+    } else {
+      values["BUILDKITE_ANALYTICS_TOKEN"] = "collector-token"
+    }
+    return CollectorOTLPConfiguration(
+      environment: EnvironmentValues(
+        values: values,
+        getFromEnvironment: { _ in nil },
+        getFromInfoDictionary: { _ in nil }
+      ),
+      logger: logger
     )
   }
 
@@ -512,6 +871,7 @@ final class TelemetryClientTests: XCTestCase {
     let executionID = client.startExecution(test)
     test.result = .passed
     client.finishExecution(executionID, test: test, tags: nil)
+    client.forceFlush()
 
     return try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
   }
@@ -531,10 +891,31 @@ private extension CollectorOTLPConfiguration {
 
 private final class FailOnceExporter: SpanExporter, @unchecked Sendable {
   var exports = [[SpanData]]()
+  let exported = DispatchSemaphore(value: 0)
 
   func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
     self.exports.append(spans)
+    self.exported.signal()
     return self.exports.count == 1 ? .failure : .success
+  }
+
+  func flush(explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
+    .success
+  }
+
+  func shutdown(explicitTimeout: TimeInterval?) {}
+}
+
+private final class SlowExporter: SpanExporter, @unchecked Sendable {
+  private let delay: TimeInterval
+
+  init(delay: TimeInterval) {
+    self.delay = delay
+  }
+
+  func export(spans: [SpanData], explicitTimeout: TimeInterval?) -> SpanExporterResultCode {
+    Thread.sleep(forTimeInterval: self.delay)
+    return .success
   }
 
   func flush(explicitTimeout: TimeInterval?) -> SpanExporterResultCode {

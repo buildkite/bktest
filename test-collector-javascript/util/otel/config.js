@@ -1,6 +1,5 @@
 const { inspect } = require('util')
 const { warn, describeError } = require('./warn')
-const { parseInstrumentations } = require('./instrumentations')
 
 const DEFAULT_ENDPOINT = 'https://tests-otlp.buildkite.com/v1/traces'
 
@@ -71,23 +70,19 @@ const resolveSettings = (options) => {
   return settings
 }
 
-// Instrumentation is optional: a bad option costs child spans, never results.
-const instrumentationsFrom = (value) => {
-  try {
-    return parseInstrumentations(value)
-  } catch (error) {
-    warn(`otelInstrumentations is ignored: ${error.message}; test.execution export remains enabled`)
-    return []
-  }
-}
-
-const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runEnv, tags, instrumentations, probe = buildSession }) => {
+// `unsupported` names why the framework version in use cannot export spans.
+const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runEnv, tags, unsupported, probe = buildSession }) => {
   if (!isOtelEnabled(otelEnabled)) return null
 
   const jsonToken = jsonTokenFor(token)
   const relayToken = (process.env.BUILDKITE_TESTS_OTLP_TOKEN || '').trim()
   const credential = relayToken || jsonToken
   if (!credential) return null
+
+  if (unsupported) {
+    warn(`otelEnabled is set, but ${unsupported}; ${fallbackOutcome({ token })}`)
+    return null
+  }
 
   const couldNotConfigure = () => {
     warn(`otelEnabled is set, but OpenTelemetry could not be configured (see the warning above); ${fallbackOutcome({ token })}`)
@@ -119,7 +114,6 @@ const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runE
     tags: stringTags(tags),
     testRunner,
     frameworkVersion,
-    instrumentations: instrumentationsFrom(instrumentations),
   }
 
   try {

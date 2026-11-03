@@ -51,11 +51,7 @@ const errorClass = (error) => (error instanceof Error ? error.name : typeof erro
 // instead of queueing them; the batch processor already bounds what is in
 // flight (one batch at a time on its timer, the whole queue on a flush), so
 // the limit is lifted rather than turned into a reason to drop results.
-//
-// `runExport(send)` runs each send; the session passes one that suppresses
-// tracing in every OpenTelemetry context the tests can see, so HTTP
-// instrumentation never records the collector's own requests.
-const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, onSettled = () => {}, runExport = (send) => send() }) => {
+const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, onSettled = () => {} }) => {
   const exporter = withoutExporterEnv(() => new sdk.exporter.OTLPTraceExporter({
     url: endpoint,
     headers: {
@@ -102,7 +98,7 @@ const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, onSettl
       }
 
       try {
-        runExport(() => exporter.export(spans, settle))
+        exporter.export(spans, settle)
       } catch (error) {
         // The batch processor does not catch a throwing exporter, so a throw
         // here would escape into the test run.

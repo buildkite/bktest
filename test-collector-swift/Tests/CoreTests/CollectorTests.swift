@@ -55,6 +55,53 @@ final class CollectorTests: XCTestCase {
     })
   }
 
+  func testLogsExactlyOneReasonWhenExportIsDisabled() {
+    let unconfigured =
+      "[BuildkiteTestCollector] info: TestCollector requires an API token or OpenTelemetry exporter configuration. Test results will not be exported."
+
+    func messages(for values: [String: String]) -> [String] {
+      let messages = LockIsolated([String]())
+      let logger = Logger(printer: { message in
+        messages.withValue { $0.append(message) }
+      })
+      let environment = EnvironmentValues(
+        values: values,
+        getFromEnvironment: { _ in nil },
+        getFromInfoDictionary: { _ in nil }
+      )
+      _ = TestCollector(environment: environment, logger: logger)
+      logger.waitForLogs()
+      return messages.value
+    }
+
+    XCTAssertEqual(messages(for: [:]), [unconfigured])
+
+    let invalidRunKey = messages(for: [
+      "BUILDKITE_ANALYTICS_TOKEN": "collector-token",
+      "BUILDKITE_ANALYTICS_KEY": "run key",
+    ])
+    XCTAssertEqual(invalidRunKey.count, 1)
+    XCTAssertTrue(invalidRunKey.first?.contains("run key \"run key\" is invalid") == true)
+
+    let invalidEndpoint = messages(for: [
+      "BUILDKITE_ANALYTICS_TOKEN": "collector-token",
+      "BUILDKITE_ANALYTICS_OTLP_ENDPOINT": "not a url",
+    ])
+    XCTAssertEqual(
+      invalidEndpoint,
+      ["[BuildkiteTestCollector] error: OpenTelemetry traces endpoint is not a valid absolute URL"]
+    )
+
+    let unsupportedProtocol = messages(for: [
+      "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:4318/v1/traces",
+      "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "grpc",
+    ])
+    XCTAssertEqual(
+      unsupportedProtocol,
+      ["[BuildkiteTestCollector] error: Unsupported OpenTelemetry traces protocol grpc; expected http/protobuf"]
+    )
+  }
+
   func testUploadTagsEnvVarTakesPrecedence() {
     let environment = EnvironmentValues(values: [
       "BUILDKITE_ANALYTICS_TAGS": #"{"shared":"from-env","env-only":"yes"}"#,

@@ -2,8 +2,8 @@
  * @jest-environment node
  */
 // Runs after io.js in the same process, outside the collector's environment:
-// the collector's instrumentation must neither record this file's requests
-// nor add trace headers to them.
+// worker-wide wrappers remain, but their closed gate must neither record
+// requests nor inject trace headers.
 const http = require('http')
 
 test('opted-out request carries no trace headers', async () => {

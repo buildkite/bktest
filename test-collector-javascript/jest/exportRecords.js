@@ -11,9 +11,9 @@ const path = require('path')
 //
 // Records are per project, since projects can run the same file under
 // different environments. Jest accepts two projects with the same explicit
-// name (Jest 28: id), so the key is the whole project config. Jest copies it
-// to workers as JSON (or a structured clone with workerThreads), which
-// JSON.stringify sees the same. Only testEnvironmentOptions is left out: the
+// id, so the key is the whole project config. Jest copies it to workers as
+// JSON (or a structured clone with workerThreads), which JSON.stringify sees
+// the same. Only testEnvironmentOptions is left out: the
 // worker merges a file's @jest-environment-options docblock into it.
 // Projects whose configs differ only there still share a key, so each
 // exporting worker adds its own numbered record, and the reporter can tell

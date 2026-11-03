@@ -1,393 +1,251 @@
-const fs = require('fs')
 const path = require('path')
 const { createRequire } = require('module')
-const semver = require('semver')
-const { TEST_CONTEXT } = require('../util/otel/children')
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
-const { isBuiltin, createInstrumentation, enabledInstrumentations, moduleDefinitions } = require('../util/otel/instrumentations')
 const { workerFor } = require('./otelWorker')
-
-const NOOP_PROCESSOR = { onStart() {}, onEnd() {}, forceFlush: async () => {}, shutdown: async () => {} }
-const RUNTIME_HINT = "set runtime: 'buildkite-test-collector/jest/runtime' in the Jest config (Jest 27: moduleLoader)"
+const JestOtelPackages = require('./otelPackages')
 
 const disabledMessage = (error) => `OpenTelemetry child span export disabled: ${describeError(error).split('\n')[0]}; test.execution export remains enabled`
+const SUITE_PROVIDER = 'OpenTelemetry child spans are not exported because the suite registers its own tracer provider; ' +
+  'to get them, let the collector provide the provider under Jest. test.execution export remains enabled.'
 
-// Instrumentation packages are loaded once per worker in the environment's
-// realm, from the project's root. Those that patch Node's built-in modules or
-// listen on diagnostics channels are used from here, in the realm of the
-// objects they wrap, and enabled once per worker. Those that patch packages
-// are created again in each test file's sandbox: Jest gives every file its
-// own copies of packages and of intrinsics such as Promise, which
-// instrumentation compares against (`result instanceof Promise` in
-// @opentelemetry/instrumentation-pg).
+// OpenTelemetry's instrumentation of Node's http and https modules and of
+// fetch, from the 2.x SDK line the collector exports with: version 0.2xx, which
+// instrumentation-undici numbers 0.11 to 0.33.
+const INSTRUMENTATIONS = [
+  { name: 'http', className: 'HttpInstrumentation', minors: [200, 300] },
+  { name: 'undici', className: 'UndiciInstrumentation', minors: [11, 34] },
+]
+
+// The switches and short names of @opentelemetry/auto-instrumentations-node:
+// a non-empty OTEL_NODE_ENABLED_INSTRUMENTATIONS keeps only the names it
+// lists, then OTEL_NODE_DISABLED_INSTRUMENTATIONS removes the names it lists.
+const listedIn = (variable, name) => (process.env[variable] || '').split(',').some((entry) => entry.trim() === name)
+const enabledByEnv = (name) => (!process.env.OTEL_NODE_ENABLED_INSTRUMENTATIONS || listedIn('OTEL_NODE_ENABLED_INSTRUMENTATIONS', name)) &&
+  !listedIn('OTEL_NODE_DISABLED_INSTRUMENTATIONS', name)
+
+// Instrumentation is loaded once per worker, in the environment's realm (that
+// of the built-in modules it patches), from the project, or else from the
+// dependencies of @opentelemetry/auto-instrumentations-node, which pnpm does
+// not hoist. Anything else is skipped with one warning per run.
 const instrumentationSets = new Map()
-const instrumentationSet = (entries, rootDir, warnOnce) => {
-  const key = JSON.stringify([rootDir, entries])
-  if (instrumentationSets.has(key)) return instrumentationSets.get(key)
-  const requireFromProject = createRequire(path.join(rootDir, 'package.json'))
-  const set = { shared: [], sandboxed: [], packages: new Set() }
-  for (const entry of enabledInstrumentations(entries)) {
-    try {
-      const instance = createInstrumentation(requireFromProject, entry)
-      const names = moduleDefinitions(instance).map((definition) => definition.name)
-      const packages = names.filter((name) => !isBuiltin(name))
-      if (packages.length < names.length || names.length === 0) set.shared.push({ name: entry.name, instance })
-      if (packages.length > 0) {
-        set.sandboxed.push({ ...entry, packages: new Set(packages) })
-        for (const name of packages) set.packages.add(name)
+const loadInstrumentations = (rootDir, warnOnce) => {
+  if (instrumentationSets.has(rootDir)) return instrumentationSets.get(rootDir)
+  const fromProject = createRequire(path.join(rootDir, 'package.json'))
+  const loaders = [fromProject]
+  try {
+    loaders.push(createRequire(fromProject.resolve('@opentelemetry/auto-instrumentations-node')))
+  } catch {
+    // not installed
+  }
+  const instances = []
+  const skipped = []
+  for (const { name, className, minors } of INSTRUMENTATIONS.filter((entry) => enabledByEnv(entry.name))) {
+    const packageName = `@opentelemetry/instrumentation-${name}`
+    const rejected = []
+    for (const load of loaders) {
+      let instance
+      try {
+        instance = new (load(packageName)[className])({ enabled: false })
+      } catch (error) {
+        if (!(error.code === 'MODULE_NOT_FOUND' && error.message.startsWith(`Cannot find module '${packageName}'`))) {
+          rejected.push(`${packageName} (${describeError(error).split('\n')[0]})`)
+        }
+        continue
       }
-    } catch (error) {
-      warnOnce(`load:${entry.name}`, `OpenTelemetry instrumentation ${entry.name} could not be loaded (${describeError(error).split('\n')[0]}); continuing without it. test.execution export remains enabled.`)
+      const [major, minor] = String(instance.instrumentationVersion).split('.').map(Number)
+      if (major === 0 && minor >= minors[0] && minor < minors[1]) {
+        instances.push(instance)
+        rejected.length = 0
+        break
+      }
+      rejected.push(`${packageName} ${instance.instrumentationVersion}`)
     }
+    skipped.push(...rejected)
   }
-  instrumentationSets.set(key, set)
-  return set
+  if (skipped.length) {
+    warnOnce('instrumentation', `OpenTelemetry instrumentation skipped: ${skipped.join(', ')}. The collector records child spans with ` +
+      'instrumentation from the OpenTelemetry JavaScript 2.x SDK line: @opentelemetry/instrumentation-http 0.200 to 0.2xx and ' +
+      '@opentelemetry/instrumentation-undici 0.11 to 0.33. test.execution export remains enabled.')
+  }
+  instrumentationSets.set(rootDir, instances)
+  return instances
 }
 
-const hasTracerProvider = (api) => {
-  const provider = api.trace.getTracerProvider()
-  return !(provider instanceof api.ProxyTracerProvider) || provider.getDelegate() !== new api.ProxyTracerProvider().getDelegate()
+// One async context manager per worker, used by the sandbox (for the tests'
+// API) and the environment's realm (for instrumentation). It must be the same
+// instance in both so that a test's context is visible to instrumentation in
+// either realm.
+let sharedContextManager = null
+const contextManager = () => {
+  if (!sharedContextManager) {
+    const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks')
+    sharedContextManager = new AsyncLocalStorageContextManager().enable()
+  }
+  return sharedContextManager
 }
 
-// What require-in-the-middle tells instrumentation about a module, worked out
-// from the file Jest loaded: its package, the package's root and version, and
-// whether the file is the package's main module.
-const moduleDetails = (file) => {
-  const segments = file.split(path.sep)
-  const index = segments.lastIndexOf('node_modules')
-  if (index === -1) return null
-  const width = segments[index + 1]?.startsWith('@') ? 2 : 1
-  if (segments.length <= index + width + 1) return null
-  return {
-    name: segments.slice(index + 1, index + 1 + width).join('/'),
-    basedir: segments.slice(0, index + 1 + width).join(path.sep),
-    relative: segments.slice(index + 1 + width).join(path.sep),
-  }
+const PROBE = Symbol.for('buildkite.test.execution.probe')
+const hasContextManager = (api) => {
+  const probe = api.ROOT_CONTEXT.setValue(PROBE, true)
+  return api.context.with(probe, () => api.context.active().getValue(PROBE)) === true
 }
 
-const packageVersions = new Map()
-const packageVersion = (basedir) => {
-  if (!packageVersions.has(basedir)) {
-    let version
-    try {
-      version = JSON.parse(fs.readFileSync(path.join(basedir, 'package.json'), 'utf8')).version
-    } catch {
-      version = undefined
-    }
-    packageVersions.set(basedir, version)
-  }
-  return packageVersions.get(basedir)
+// Registered in the environment's realm, where no suite code runs.
+const ensureContextManager = (api) => {
+  if (hasContextManager(api)) return
+  if (!api.context.setGlobalContextManager(contextManager())) throw new Error('could not register an async context manager')
 }
 
-const packageOf = (specifier) => specifier.split('/').slice(0, specifier.startsWith('@') ? 2 : 1).join('/')
-const isPath = (specifier) => specifier.startsWith('.') || path.isAbsolute(specifier)
-
-// Whether a require could load a module of an instrumented package, without
-// resolving it.
-const mayMatch = (from, moduleName, packages) => {
-  if (!isPath(moduleName)) return packages.has(packageOf(moduleName))
-  return !moduleName.startsWith('.') || packages.has(moduleDetails(from)?.name)
+// The sandbox never gets a registered context manager either, which would
+// refuse the suite's own. Each copy of the API falls back to a context manager
+// that does nothing when none is registered, and the collector makes that one
+// use its own. One the suite registers takes over until it disables it.
+const fillContextManager = (api) => {
+  if (hasContextManager(api)) return
+  const fallback = api.context._getContextManager()
+  if (fallback.constructor.name === 'NoopContextManager') {
+    const manager = contextManager()
+    for (const method of ['active', 'with', 'bind']) fallback[method] = manager[method].bind(manager)
+  }
+  if (!hasContextManager(api)) throw new Error('could not set up an async context manager')
 }
 
-const describeModule = (from, moduleName, packages) => {
-  let file
-  try {
-    file = isPath(moduleName)
-      ? require.resolve(path.resolve(path.dirname(from), moduleName))
-      : require.resolve(moduleName, { paths: [path.dirname(from)] })
-  } catch {
-    return null
+// The collector never registers a tracer provider in the sandbox, which
+// would refuse the suite's own registration. It becomes the delegate of each
+// copy of the API's proxy provider that has none, which serves both tracers
+// obtained earlier and later getTracer() calls; a provider the suite
+// registers replaces it. Returns those proxies, or null when the suite has a
+// provider of its own.
+const emptyProxies = (apis, ours) => {
+  const empty = []
+  for (const api of apis) {
+    const proxy = api.trace.getTracerProvider()
+    const delegate = proxy.getDelegate()
+    if (delegate === new api.ProxyTracerProvider().getDelegate()) empty.push(proxy)
+    else if (delegate !== ours) return null
   }
-  const details = moduleDetails(file)
-  if (!details || !packages.has(details.name)) return null
-  let main = false
-  try {
-    main = require.resolve(details.name, { paths: [details.basedir] }) === file
-  } catch {
-    main = false
-  }
-  return {
-    path: file,
-    name: details.name,
-    file: main ? details.name : path.join(details.name, details.relative),
-    main,
-    version: packageVersion(details.basedir),
-  }
+  return empty
 }
 
-// Some instrumentation (undici) also checks its config on every operation.
-// The sandbox's copy only patches the package modules the runtime hands it:
-// built-in modules belong to the worker's shared copy.
-const enable = (instance, tracerProvider) => {
-  instance.setTracerProvider(tracerProvider)
-  instance.setConfig({ ...instance.getConfig(), enabled: true })
-  instance.enable()
-}
-
-// @opentelemetry/instrumentation's own rule for whether a definition applies.
-const supports = (ranges, version, includePrerelease) => (version === undefined
-  ? ranges.includes('*')
-  : ranges.some((range) => semver.satisfies(version, range, { includePrerelease })))
-
-const patchModule = (definition, record) => {
-  let { exports } = record
-  if (record.main) {
-    if (typeof definition.patch === 'function' && supports(definition.supportedVersions, record.version, definition.includePrerelease)) {
-      exports = definition.patch(exports, record.version) ?? exports
-    }
-    return exports
-  }
-  for (const file of definition.files || []) {
-    if (path.normalize(file.name) === path.normalize(record.file) && supports(file.supportedVersions, record.version, definition.includePrerelease)) {
-      exports = file.patch(exports, record.version) ?? exports
-    }
-  }
-  return exports
-}
-
-// Connects one test file's sandbox to OpenTelemetry. Nothing is decided until
-// its first test or beforeEach hook runs, after setup files, the file's own
-// top-level code and beforeAll hooks, so a provider the suite registers wins:
-// the collector then never replaces or reconfigures it, and its
-// instrumentation records nothing for the file.
+// Connects one test file's sandbox to OpenTelemetry when the collector's Jest
+// runtime is set. Nothing is decided until its first test or beforeEach hook
+// runs, after setup files, the file's own top-level code and beforeAll hooks.
+// A provider the suite registers by then is never replaced or reconfigured,
+// and the file exports test spans only; one it registers later takes over
+// from the collector's until the suite removes it.
 class JestOtelContext {
   constructor({ session, settings, testPath, rootDir }) {
     this.session = session
-    this.entries = settings.instrumentations || []
     this.testPath = testPath
     this.rootDir = rootDir
     this.mode = null
     this.runtime = null
-    this.bridgeApi = null
-    this.worker = null
-    this.resolved = new Map()
-    this.loading = new Set()
-    this.loads = new WeakMap()
-    this.records = []
     this.traces = new Set()
-    this.sandboxed = new Map()
+    this.apis = new Set()
     this.cleanups = []
     // Conditions every worker would hit are reported once per run.
     this.warnOnce = (key, message) => warnOncePerRun(settings.exportRecords, key, message)
   }
 
-  // Called by the collector's Jest runtime when it is created for this file,
-  // before setup files and the test file load. The worker's instrumentation
-  // is enabled from here, unless OpenTelemetry is configured for the whole
-  // process: instrumentation that listens on diagnostics channels must be
-  // listening when an app is built (@fastify/otel hooks each Fastify
-  // instance as it initializes). If the worker cannot record children,
-  // setup reports why.
+  // Called by the collector's Jest runtime when it is created for this file.
   attachRuntime(runtime) {
     this.runtime = runtime
+    this.packages = new JestOtelPackages(this, enabledByEnv)
     try {
-      this.instrumentations = this.entries.length ? instrumentationSet(this.entries, this.rootDir, this.warnOnce) : null
+      this.instrumentations = loadInstrumentations(this.rootDir, this.warnOnce)
     } catch (error) {
       warn(`OpenTelemetry instrumentation could not be loaded (${describeError(error)}); test.execution export remains enabled.`)
     }
-    if (!this.instrumentations || hasTracerProvider(this.session.api)) return
+  }
+
+  _worker() {
+    if (!this.worker) this.worker = workerFor(this.session, this.instrumentations || [])
+    return this.worker
+  }
+
+  load(from, name, load) {
+    // A suite-owned provider must not activate collector package patches.
+    if (!emptyProxies([...this.apis, this.session.api], this.provider)) return load()
+    return this.packages.load(from, name, load)
+  }
+
+  // Called by the collector's Jest runtime for each copy of the API the file
+  // requires, of which jest.resetModules() and jest.isolateModules() make
+  // more. A copy loaded during a test records children at once.
+  loadedApi(api) {
+    if (this.apis.has(api)) return
     try {
-      this._worker()
+      if (typeof api.trace.getTracerProvider().setDelegate !== 'function') return
     } catch {
-      // reported by setup
+      return // a mocked API
     }
+    this.apis.add(api)
+    if (this.mode === 'managed') this._fill()
   }
 
   // Test bodies and hooks are only wrapped when children are possible.
   get canExportChildren() {
-    return Boolean(this.runtime || this.bridgeApi)
-  }
-
-  // createBuildkiteSpanProcessor() from buildkite-test-collector/jest/otel:
-  // SDK 2.x providers take processors only in their constructor.
-  createSpanProcessor(sandboxApi) {
-    try {
-      if (sandboxApi && !this.bridgeApi) this.bridgeApi = sandboxApi
-      if (!this.forwarder) this.forwarder = this.session.childExport().createForwarder()
-      return this.forwarder
-    } catch (error) {
-      this.warnOnce(`processor:${describeError(error)}`, disabledMessage(error))
-      return NOOP_PROCESSOR
-    }
-  }
-
-  // Called by the runtime for every module a test file's code requires, with
-  // a function that loads it. Modules of packages that sandboxed
-  // instrumentation patches are patched as they load, before the file's
-  // provider is decided, so that what an app sets up as it loads (Express
-  // routes and middleware) is instrumented too. The patches record nothing
-  // unless the collector manages the file. As in require-in-the-middle, each
-  // file is patched under its own name, once per evaluation and only once it
-  // has finished loading: a package's main module can export an internal
-  // file's exports unchanged (Express 4's index.js), and a circular require
-  // returns a module that is still loading (node-redis's pool.js requires its
-  // unfinished index.js).
-  load(from, moduleName, load) {
-    const module = this._instrumented(from, moduleName)
-    if (!module || this.loading.has(module.path)) return load()
-    this.loading.add(module.path)
-    let exports
-    try {
-      exports = load()
-    } finally {
-      this.loading.delete(module.path)
-    }
-    if (exports === null || (typeof exports !== 'object' && typeof exports !== 'function')) return exports
-    let byPath = this.loads.get(exports)
-    if (!byPath) {
-      byPath = new Map()
-      this.loads.set(exports, byPath)
-    }
-    let record = byPath.get(module.path)
-    if (!record) {
-      record = { ...module, exports, patchedBy: new Set() }
-      byPath.set(module.path, record)
-      this.records.push(record)
-      this._patch(record)
-    }
-    return record.exports
-  }
-
-  // The module a require loads, when it belongs to an instrumented package.
-  _instrumented(from, moduleName) {
-    const packages = this.instrumentations?.packages
-    if (!packages?.size || (this.mode !== null && this.mode !== 'managed')) return null
-    if (!moduleName || isBuiltin(moduleName) || !mayMatch(from, moduleName, packages)) return null
-    const key = `${from}\0${moduleName}`
-    if (!this.resolved.has(key)) {
-      let module = null
-      try {
-        module = describeModule(from, moduleName, packages)
-      } catch {
-        module = null
-      }
-      this.resolved.set(key, module)
-    }
-    return this.resolved.get(key)
+    return Boolean(this.runtime)
   }
 
   setup() {
     if (this.mode !== null) return
     this.mode = 'off'
-    let api
+    if (!this.runtime) return
     try {
-      api = this.runtime ? this.runtime.requireModule(this.testPath, '@opentelemetry/api') : this.bridgeApi
-    } catch (error) {
-      if (this.entries.length) this.warnOnce('api', disabledMessage(error))
-      return
-    }
-    if (!api) {
-      if (this.entries.length) this.warnOnce('runtime', `otelInstrumentations needs the collector's Jest runtime: ${RUNTIME_HINT}. Exporting test.execution spans only.`)
-      return
-    }
-    this.api = api
-    try {
-      if (hasTracerProvider(api) || hasTracerProvider(this.session.api)) {
-        this._useSuiteProvider(api)
-      } else if (this.runtime) {
-        this._useCollectorProvider(api)
-      } else if (this.entries.length) {
-        this.warnOnce('runtime', `otelInstrumentations needs the collector's Jest runtime: ${RUNTIME_HINT}. Exporting test.execution spans only.`)
+      this.api = this.runtime.requireModule(this.testPath, '@opentelemetry/api')
+      this.loadedApi(this.api)
+      // Also a provider registered outside the sandbox, for example with
+      // NODE_OPTIONS=--require: instrumentation there sees every file's tests.
+      if (!emptyProxies([...this.apis, this.session.api])) {
+        this.warnOnce('suite-provider', SUITE_PROVIDER)
+        return
       }
+      ensureContextManager(this.session.api)
+      // As OpenTelemetry's SDK setup does, so that an in-process server
+      // handling a test's request continues the test's trace. Instrumentation
+      // propagates in the environment's realm, so the sandbox's propagator is
+      // left to the suite.
+      if (this.session.api.propagation.fields().length === 0) this.session.api.propagation.setGlobalPropagator(this.session.childPropagator())
+      this.forwarder = this.session.childExport().createForwarder()
+      this.provider = this._worker().tracerProvider
+      this.mode = 'managed'
+      for (const traceId of this.traces) this.forwarder.addTrace(traceId)
     } catch (error) {
-      if (this.worker) this.worker.close(this)
       this._cleanUp()
       this.mode = 'off'
       this.warnOnce(`setup:${describeError(error)}`, disabledMessage(error))
     }
   }
 
-  _useSuiteProvider(api) {
-    if (!this.forwarder) {
-      const outside = !hasTracerProvider(api)
-      this.warnOnce(outside ? 'outside-provider' : 'suite-provider', outside
-        ? 'OpenTelemetry child spans are not exported: OpenTelemetry is configured outside the Jest test sandbox. test.execution export remains enabled.'
-        : 'OpenTelemetry child spans are not exported: the suite registers its own tracer provider, so add createBuildkiteSpanProcessor() ' +
-          "from 'buildkite-test-collector/jest/otel' to its spanProcessors. test.execution export remains enabled.")
-      return
-    }
-    this.mode = 'suite'
-    for (const traceId of this.traces) this.forwarder.addTrace(traceId)
-  }
-
-  // The worker's child provider records for this file until its teardown.
-  _useCollectorProvider(api) {
-    const worker = this._worker()
-    this.forwarder = this.session.childExport().createForwarder()
-    worker.open(this, api)
-    this.mode = 'managed'
-    for (const traceId of this.traces) this.forwarder.addTrace(traceId)
-    for (const record of this.records) this._patch(record)
-  }
-
-  // Before setup, a provider already registered settles that the suite owns
-  // this file, so nothing is patched for it.
-  _ownedElsewhere() {
-    if (hasTracerProvider(this.session.api)) return true
+  // Before each test body and per-test hook, and for a copy of the API loaded
+  // during one: fills in what the sandbox lacks for children, which the suite
+  // may have reset since, without replacing anything it registered. Returns
+  // false while the suite has a provider.
+  _fill() {
     try {
-      return hasTracerProvider(this.runtime.requireModule(this.testPath, '@opentelemetry/api'))
-    } catch {
+      const empty = emptyProxies(this.apis, this.provider)
+      if (!empty) {
+        this.worker.close(this)
+        this.warnOnce('suite-provider', SUITE_PROVIDER)
+        return false
+      }
+      for (const api of this.apis) fillContextManager(api)
+      for (const proxy of empty) proxy.setDelegate(this.provider)
+      this.worker.open(this)
+      return true
+    } catch (error) {
+      this.warnOnce(`setup:${describeError(error)}`, disabledMessage(error))
       return false
     }
   }
 
-  _patch(record) {
-    if (this.mode === null && this._ownedElsewhere()) return
-    for (const entry of this.instrumentations.sandboxed) {
-      if (!entry.packages.has(record.name) || record.patchedBy.has(entry.name)) continue
-      record.patchedBy.add(entry.name)
-      const sandboxed = this._sandboxed(entry)
-      if (!sandboxed) continue
-      try {
-        for (const definition of sandboxed.definitions) {
-          if (definition.name === record.name && entry.packages.has(definition.name)) record.exports = patchModule(definition, record)
-        }
-      } catch (error) {
-        this.warnOnce(`patch:${entry.name}:${record.file}`, `OpenTelemetry instrumentation ${entry.name} could not patch ${record.file} (${describeError(error)}); test.execution export remains enabled.`)
-      }
-    }
-  }
-
-  _worker() {
-    if (!this.worker) this.worker = workerFor(this.session, this.instrumentations?.shared || [])
-    return this.worker
-  }
-
-  // The instrumentation's sandbox copy, created on first use in this file.
-  // If the worker cannot record children, setup reports why.
-  _sandboxed(entry) {
-    if (this.sandboxed.has(entry.name)) return this.sandboxed.get(entry.name)
-    let sandboxed = null
-    let tracerProvider
-    try {
-      tracerProvider = this._worker().tracerProvider
-    } catch {
-      this.sandboxed.set(entry.name, null)
-      return null
-    }
-    try {
-      const instance = createInstrumentation((name) => this.runtime.requireModule(this.testPath, name), entry)
-      // disable() undoes what enable() set up outside the sandbox, such as
-      // diagnostics channel subscriptions.
-      this.cleanups.push(() => instance.disable())
-      enable(instance, tracerProvider)
-      sandboxed = { instance, definitions: moduleDefinitions(instance) }
-    } catch (error) {
-      this.warnOnce(`sandbox:${entry.name}`, `OpenTelemetry instrumentation ${entry.name} could not be enabled (${describeError(error)}); continuing without it. test.execution export remains enabled.`)
-    }
-    this.sandboxed.set(entry.name, sandboxed)
-    return sandboxed
-  }
-
   // Each test span's trace is the set of spans the forwarder accepts.
-  // Without the collector's runtime nothing is loaded into the sandbox, so
-  // the decision can be made as the first test starts.
   began(started) {
     const traceId = started?.handle?.span?.spanContext?.().traceId
-    if (!traceId) return
+    if (!traceId || !this.runtime) return
     this.traces.add(traceId)
-    if (!this.runtime) this.setup()
-    if (this.mode === 'managed' || this.mode === 'suite') this.forwarder.addTrace(traceId)
+    if (this.mode === 'managed') this.forwarder.addTrace(traceId)
   }
 
   // Runs a test body or per-test hook with its test span current, in the
@@ -395,13 +253,12 @@ class JestOtelContext {
   // parents its spans under the test and the forwarder recognises them.
   // Setup runs here, inside test code, rather than at test_start: Jest 30.5
   // refuses to load modules between tests, and setup loads the OpenTelemetry
-  // API, the SDK and sandboxed instrumentation into the sandbox.
+  // API and SDK into the sandbox.
   run(started, fn, receiver, args) {
     this.setup()
-    if ((this.mode !== 'managed' && this.mode !== 'suite') || !started?.handle) return fn.apply(receiver, args)
+    if (this.mode !== 'managed' || !started?.handle || !this._fill()) return fn.apply(receiver, args)
     const { span } = started.handle
-    const traceId = span.spanContext().traceId
-    const contexts = [...new Set([this.api, this.session.api])].map((api) => [api, api.trace.setSpan(api.context.active(), span).setValue(TEST_CONTEXT, traceId)])
+    const contexts = [...new Set([this.api, this.session.api])].map((api) => [api, api.trace.setSpan(api.context.active(), span)])
     const enter = (index) => (index === contexts.length
       ? fn.apply(receiver, args)
       : contexts[index][0].context.with(contexts[index][1], () => enter(index + 1)))
@@ -427,11 +284,11 @@ class JestOtelContext {
     this.cleanups = []
   }
 
-  // Before Jest destroys the sandbox: no more recording, forwarding or
-  // patching for this file.
+  // Close the worker's gate and this file's forwarding before destroying
+  // its sandbox. Only sandbox package instrumentation is disabled here.
   async teardown() {
     this.mode = 'done'
-    if (this.worker) this.worker.close(this)
+    this.worker?.close(this)
     if (this.forwarder) await this.forwarder.shutdown()
     this._cleanUp()
   }
