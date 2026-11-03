@@ -25,13 +25,22 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
   constructor(config, environment, ...rest) {
     super(config, environment, ...rest)
     this._buildkiteChildren = environment?._buildkite?.children
-    if (this._buildkiteChildren) this._buildkiteChildren.attachRuntime(this)
-  }
-
-  requireModule(from, moduleName, options, isRequireActual) {
-    const load = () => super.requireModule(from, moduleName, options, isRequireActual)
-    if (!this._buildkiteChildren || options?.isInternalModule) return load()
-    return this._buildkiteChildren.load(from, moduleName, load)
+    if (!this._buildkiteChildren) return
+    // Newer Jest 30 releases moved the CJS loader off the runtime.
+    const loader = this.cjsLoader || this
+    const method = this.cjsLoader ? 'loadModule' : '_loadModule'
+    const original = loader[method].bind(loader)
+    loader[method] = (localModule, from, moduleName, modulePath, options, moduleRegistry) => {
+      const load = () => {
+        original(localModule, from, moduleName, modulePath, options, moduleRegistry)
+        return localModule.exports
+      }
+      if (options?.isInternalModule) return load()
+      // Jest has resolved aliases, conditions and mocks, and registered the
+      // module for circular loads. Store replacement exports in that registry.
+      localModule.exports = this._buildkiteChildren.load(modulePath, load)
+    }
+    this._buildkiteChildren.attachRuntime(this)
   }
 
   // The test file's require: tells the environment about each copy of the

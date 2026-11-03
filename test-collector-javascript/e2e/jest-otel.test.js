@@ -123,6 +123,21 @@ const otelSupported = jestMajor >= 29
   const named = (name) => (span) => span.name === name
   const clientGet = (span) => span.name === 'GET' && span.kind === CLIENT
 
+  test('instruments Jest aliases by resolved path, but not mapped package mocks', async () => {
+    const outcome = await runChildren('aliases', { args: 'web.js --runInBand' })
+    expect([outcome.result.code, outcome.warnings, outcome.roots.length]).toEqual([0, [], 1])
+    const root = outcome.rootsNamed('mapped Express route')[0]
+    const [client] = outcome.childrenOf(root, clientGet)
+    const [serverSpan] = outcome.childrenOf(root, (s) => s.kind === SERVER && s.parentSpanId === client?.spanId)
+    expect(outcome.childrenOf(root, (s) => s.attributes['express.type'] === 'request_handler'))
+      .toEqual([expect.objectContaining({ name: 'request handler - /alias', parentSpanId: serverSpan.spanId })])
+    expect(outcome.childrenOf(root, (s) => s.attributes['express.type'] === 'middleware')).toHaveLength(2)
+    await server.close()
+    server = null
+    const mocked = await runChildren('aliases', { args: 'mock.js --runInBand', env: { OTEL_MAPPED_MOCK: '1' } })
+    expect([mocked.result.code, mocked.warnings, mocked.roots.length, mocked.children]).toEqual([0, [], 1, []])
+  }, 60000)
+
   // io.js alone has 7 tests, which pass.
   const IO_ROOTS = 7
   const expectAllResults = ({ result, roots }, count = CHILD_FIXTURE_ROOTS) => {

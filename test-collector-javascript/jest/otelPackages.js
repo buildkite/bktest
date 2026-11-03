@@ -1,6 +1,6 @@
 const fs = require('fs')
 const path = require('path')
-const { isBuiltin, createRequire } = require('module')
+const { createRequire } = require('module')
 const semver = require('semver')
 
 const PACKAGES = [
@@ -11,18 +11,19 @@ const PACKAGES = [
 
 // Mirror require-in-the-middle's package/file names, retaining file identity
 // even when an entry point re-exports an internal file (Express).
-const describe = (from, name) => {
-  const file = require.resolve(name.startsWith('.') ? path.resolve(path.dirname(from), name) : name, { paths: [path.dirname(from)] })
+const describe = (file, runtime) => {
   const segments = file.split(path.sep)
   const index = segments.lastIndexOf('node_modules')
   if (index < 0) return null
   const width = segments[index + 1].startsWith('@') ? 2 : 1
   const basedir = segments.slice(0, index + 1 + width).join(path.sep)
   const packageName = segments.slice(index + 1, index + 1 + width).join('/')
+  const from = path.join(basedir, 'package.json')
+  const entry = runtime._resolution ? runtime._resolution.resolveCjs(from, packageName) : runtime._resolveCjsModule(from, packageName)
   return {
     path: file,
     name: packageName,
-    file: require.resolve(packageName, { paths: [basedir] }) === file ? packageName : path.join(packageName, path.relative(basedir, file)),
+    file: entry === file ? packageName : path.join(packageName, path.relative(basedir, file)),
     version: JSON.parse(fs.readFileSync(path.join(basedir, 'package.json'), 'utf8')).version,
   }
 }
@@ -38,17 +39,15 @@ class JestOtelPackages {
     this.fromProject = createRequire(path.join(context.rootDir, 'package.json'))
   }
 
-  load(from, name, load) {
-    if (!name || isBuiltin(name) || !this.entries.length) return load()
-    // Avoid resolving and reading package.json for unrelated imports.
-    const candidate = name.startsWith('.') ? from : name
-    if (!/(^|[/\\])(express|graphql|redis|@redis|@node-redis)([/\\]|$)/.test(candidate)) return load()
+  load(file, load) {
+    if (!this.entries.length) return load()
+    // Filter the actual Jest-resolved path, never the import specifier.
+    if (!/(^|[/\\])node_modules[/\\](express|graphql|redis|@redis|@node-redis)([/\\]|$)/.test(file)) return load()
     let record
-    const key = `${from}\0${name}`
-    if (!this.resolved.has(key)) {
-      try { this.resolved.set(key, describe(from, name)) } catch { this.resolved.set(key, null) }
+    if (!this.resolved.has(file)) {
+      try { this.resolved.set(file, describe(file, this.context.runtime)) } catch { this.resolved.set(file, null) }
     }
-    record = this.resolved.get(key)
+    record = this.resolved.get(file)
     if (!record || !this.entries.some(([name]) => record.name === name || (name === 'redis' && record.name === '@redis/client')) || this.loading.has(record.path)) return load()
     this.loading.add(record.path)
     let exports

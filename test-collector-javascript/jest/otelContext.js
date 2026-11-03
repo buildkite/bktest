@@ -163,10 +163,10 @@ class JestOtelContext {
     return this.worker
   }
 
-  load(from, name, load) {
+  load(file, load) {
     // A suite-owned provider must not activate collector package patches.
     if (!emptyProxies([...this.apis, this.session.api], this.provider)) return load()
-    return this.packages.load(from, name, load)
+    return this.packages.load(file, load)
   }
 
   // Called by the collector's Jest runtime for each copy of the API the file
