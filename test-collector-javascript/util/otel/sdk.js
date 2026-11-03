@@ -1,5 +1,4 @@
 const { createRequire } = require('module')
-const { peerDependencies } = require('../../package.json')
 const { describeError } = require('./warn')
 
 // Keyed by the name the session uses for each module.
@@ -10,8 +9,20 @@ const PACKAGES = {
   exporter: '@opentelemetry/exporter-trace-otlp-proto',
 }
 
+// The OpenTelemetry JavaScript 2.x SDK line, which the collector exports
+// with. The peer dependencies only set minimums, so that no other
+// OpenTelemetry user in a project fails to install or is downgraded;
+// assertCanExport decides whether the installed packages work.
+const SUPPORTED_VERSIONS = {
+  '@opentelemetry/api': '>=1.9.0 <1.10.0',
+  '@opentelemetry/sdk-trace-base': '^2.0.0',
+  '@opentelemetry/resources': '^2.0.0',
+  '@opentelemetry/exporter-trace-otlp-proto': '>=0.200.0 <0.300.0',
+  '@opentelemetry/context-async-hooks': '^2.0.0',
+}
+
 const installCommand = () => {
-  const specs = Object.values(PACKAGES).map((name) => `"${name}@${peerDependencies[name]}"`)
+  const specs = Object.values(PACKAGES).map((name) => `"${name}@${SUPPORTED_VERSIONS[name]}"`)
   return `npm install --save-dev ${specs.join(' ')}`
 }
 
@@ -29,6 +40,8 @@ const loadSdk = () => {
       throw new Error(`${String(error.message).split('\n')[0]}. Install the OpenTelemetry packages with: ${installCommand()}`)
     }
   }
+  // W3C propagators; a dependency of the trace SDK rather than a peer of ours.
+  sdk.core = createRequire(require.resolve(PACKAGES.trace))('@opentelemetry/core')
   return sdk
 }
 
@@ -52,4 +65,4 @@ const assertCanExport = (sdk, providerConfig) => {
   }
 }
 
-module.exports = { loadSdk, assertCanExport }
+module.exports = { loadSdk, assertCanExport, SUPPORTED_VERSIONS }
