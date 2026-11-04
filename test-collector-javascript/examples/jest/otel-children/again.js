@@ -1,6 +1,5 @@
-// A second file in the same worker: built-in modules were patched for the
-// previous file and unpatched at its teardown, and must be patched exactly
-// once again. Also covers test shapes that run a body more than once or
+// A second file in the same worker: built-in wrappers must record exactly
+// once without being re-patched. Also covers bodies that run more than once or
 // outside an ordinary async call, fresh module registries, and a child the
 // test leaves open. beforeAll resets the module registry before the collector
 // sets up, so setup loads a newer copy of the API than the one this file's
@@ -71,7 +70,7 @@ test('in jest.isolateModules', () => {
   jest.isolateModules(() => require('./support/app').work('isolated-modules-child'))
 })
 
-// Ends after the file has finished, so it is counted as dropped.
+// Jest clears this sandbox timer at teardown, so the child never ends.
 test('leaves a child open', () => {
   const span = tracer.startSpan('late-child')
   setTimeout(() => span.end(), 1000).unref()

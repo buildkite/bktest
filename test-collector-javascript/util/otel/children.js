@@ -11,7 +11,11 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
   // spends the time test spans need in later files.
   const metrics = { handed: 0, exported: 0, failed: 0, lastFailure: null, flushBudget: FLUSH_BUDGET_MILLISECONDS }
   let offered = 0 // ended children handed to the processor
-  let late = 0 // children still open when their test file finished
+  let open = 0 // accepted children that have not ended yet
+  let startedAfterTeardown = 0
+  // Retain only trace IDs, not closed sandboxes/forwarders, to recognise
+  // descendants started later under a parent from a completed file.
+  const closedTraces = new Set()
 
   const exporter = createExporter({
     sdk, endpoint: settings.endpoint, token: settings.token,
@@ -44,17 +48,21 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
         try {
           if (!active || !traces.has(span.spanContext().traceId)) return
           tracked.add(span.spanContext().spanId)
+          open += 1
         } catch (error) {
           warn(`Could not track OpenTelemetry child span: ${describeError(error)}`)
         }
       },
       onEnd(span) {
         try {
-          if (!tracked.delete(span.spanContext().spanId) || !active) return
+          if (!tracked.delete(span.spanContext().spanId)) return
+          open -= 1
           offered += 1
           // The batch processor exports with tracing suppressed, so no
           // instrumentation records the collector's own requests.
           processor.onEnd(span)
+          // There may be no later file teardown to flush this completion.
+          if (!active) flush().catch((error) => warn(`Could not flush OpenTelemetry child span: ${describeError(error)}`))
         } catch (error) {
           warn(`Could not export OpenTelemetry child span: ${describeError(error)}`)
         }
@@ -62,9 +70,10 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
       forceFlush: () => (active ? flush() : Promise.resolve()),
       shutdown: async () => {
         active = false
-        late += tracked.size
+        for (const traceId of traces) closedTraces.add(traceId)
         traces.clear()
-        tracked.clear()
+        // Already-started spans retain this forwarder until they end, even
+        // after the sandbox closes. Only new spans stop being accepted.
       },
     }
   }
@@ -83,13 +92,15 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
     // After a drained flush, a child that never reached the exporter was
     // dropped from the full queue; the count stands until the next one.
     if (drained) notExported = offered - metrics.handed
-    const lost = notExported + metrics.failed + late
+    const late = final ? open : 0
+    const lost = notExported + metrics.failed + startedAfterTeardown + late
     if (lost > warned && (warned === 0 || final)) {
       const cause = metrics.lastFailure ? `, last OTLP failure: ${metrics.lastFailure}` : ''
       const reasons = [
         notExported && `not-exported: ${notExported}`,
         metrics.failed && `export-failure: ${metrics.failed}${cause}`,
-        late && `still open when their test file finished: ${late}`,
+        startedAfterTeardown && `started after file teardown: ${startedAfterTeardown}`,
+        late && `still open when the worker exited: ${late}`,
       ].filter(Boolean).join(', ')
       warn(`OpenTelemetry dropped ${lost} child span(s)${warned ? ' so far this run' : ''} (${reasons}); test.execution results are unaffected.`)
       warned = lost
@@ -103,6 +114,12 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
   return {
     metrics,
     createForwarder,
+    isClosedTrace: (traceId) => closedTraces.has(traceId),
+    rejectLate(span) {
+      if (!closedTraces.has(span.spanContext().traceId)) return false
+      startedAfterTeardown += 1
+      return true
+    },
     flush,
     report,
   }

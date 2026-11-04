@@ -8,6 +8,7 @@ const tracer = trace.getTracer('app')
 // Each request is handled under the server's span, in a manual span.
 exports.createServer = () => http.createServer((req, res) => {
   tracer.startActiveSpan('handle-request', (span) => {
+    if (process.env.OTEL_CHILD_CASE === 'projects') res.setHeader('seen-traceparent', req.headers.traceparent || '')
     res.end('real I/O')
     span.end()
   })

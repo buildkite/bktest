@@ -20,7 +20,7 @@ const get = (target) => new Promise((resolve, reject) => {
   http.get(target, (res) => {
     let body = ''
     res.on('data', (chunk) => { body += chunk })
-    res.on('end', () => resolve(body))
+    res.on('end', () => resolve({ body, traceparent: res.headers['seen-traceparent'] }))
   }).on('error', reject)
 })
 
@@ -34,6 +34,11 @@ describe('per-test hooks', () => {
   })
 
   test('http I/O', async () => {
+    if (process.env.OTEL_CHILD_CASE === 'projects' && !globalThis.expectRequestTracing.http) {
+      for (const mod of [http, require('https')]) for (const method of ['get', 'request']) {
+        expect(() => mod[method]('/relative').on('error', () => {}).destroy()).toThrow(expect.objectContaining({ code: 'ERR_INVALID_URL' }))
+      }
+    }
     // Overflows the 2-span child queue, then lets it drain, so the request's
     // spans that follow show instrumentation was active.
     if (process.env.OTEL_CHILD_CASE === 'flood') {
@@ -42,7 +47,9 @@ describe('per-test hooks', () => {
     }
     await tracer.startActiveSpan('manual-parent', async (span) => {
       try {
-        expect(await get(url)).toBe('real I/O')
+        const response = await get(url)
+        expect(response.body).toBe('real I/O')
+        if (process.env.OTEL_CHILD_CASE === 'projects') expect(Boolean(response.traceparent)).toBe(globalThis.expectRequestTracing.http)
         // Without the collector's runtime, or with OpenTelemetry configured
         // outside the sandbox, nothing sets up the sandbox's API.
         if (!['preload', 'no-runtime'].includes(process.env.OTEL_CHILD_CASE)) expect(trace.getActiveSpan()).toBe(span)
@@ -55,6 +62,7 @@ describe('per-test hooks', () => {
   test('undici I/O', async () => {
     const response = await fetch(url)
     expect(await response.text()).toBe('real I/O')
+    if (process.env.OTEL_CHILD_CASE === 'projects') expect(Boolean(response.headers.get('seen-traceparent'))).toBe(globalThis.expectRequestTracing.undici)
   })
 
   test('callback body', (done) => {

@@ -66,6 +66,9 @@ steps:
               mount-buildkite-agent: false
       - label: ":jest: Jest {{matrix}} OTel compatibility"
         # 28.1.3 checks that unsupported Jest falls back to JSON.
+        # 29.7.0 and 30.x exercise real Express, GraphQL, Redis and pg clients
+        # through Jest and the OTLP receiver, including alias/mock resolution,
+        # environment selection, non-hoisted instrumentation and late children.
         matrix:
           - "28.1.3"
           - "29.7.0"

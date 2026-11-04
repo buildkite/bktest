@@ -7,9 +7,12 @@ const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-asyn
 const { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base')
 
 const propagator = { inject() {}, extract: (context) => context, fields: () => ['own-header'] }
+const appTracer = trace.getTracer('cached-app')
 let exporter
 let registered
 beforeEach(() => {
+  // Prime the API ProxyTracer's delegate while the collector owns the test.
+  appTracer.startSpan('before-takeover').end()
   exporter = new InMemorySpanExporter()
   registered = [
     trace.setGlobalTracerProvider(new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] })),
@@ -24,7 +27,14 @@ afterEach(() => {
 })
 
 test.each(['own-a', 'own-b'])('own provider %s', (name) => {
-  trace.getTracer('mine').startSpan(name).end()
+  appTracer.startActiveSpan('after-takeover', (span) => {
+    context.with(trace.setSpan(context.active(), span), () => {
+      trace.getTracer('mine').startSpan(name).end()
+    })
+    span.end()
+  })
   expect(registered).toEqual([true, true, true])
-  expect(exporter.getFinishedSpans().map((span) => span.name)).toEqual([name])
+  const spans = exporter.getFinishedSpans()
+  expect(spans.map((span) => span.name)).toEqual([name])
+  expect(spans[0].parentSpanContext).toBeUndefined()
 })
