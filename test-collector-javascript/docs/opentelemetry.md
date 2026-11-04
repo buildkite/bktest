@@ -26,7 +26,8 @@ npm install --save-dev '@opentelemetry/api@~1.9.0' \
 ```
 
 Use Jest 29+ with `jest-circus` and Node.js 18.19+ or 20.6+.
-It's experimental and off by default. Child spans add data volume, not test executions.
+It's experimental and off by default.
+Test spans count as test executions, like JSON uploads, at no extra charge. Child spans are billed by data ingested and need a plan that includes them; without it, we still record test results and warn that child spans were dropped.
 
 Install the versions above. SDK 3 and `@opentelemetry/api` 1.10 aren't supported yet.
 
@@ -40,7 +41,7 @@ For a custom runtime, use `require('buildkite-test-collector/jest/runtime').exte
 
 ## Settings
 
-Set a suite API token, or use an agent OIDC token with `write_uploads`.
+Set a suite API token, or an agent OIDC token that your suite's OIDC policy grants `write_uploads`.
 The run key is the ID that groups results from one test run. It must be 1–255 printable ASCII characters without spaces.
 
 | Variable | What it does | Default |
@@ -106,7 +107,7 @@ We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2.
 
 - **No spans:** check the reporter, runtime, SDK versions, endpoint and earlier warnings, and use Jest 29+ with `jest-circus`.
 - **No fallback results:** set reporter `token` or `BUILDKITE_ANALYTICS_TOKEN` so files that can't export spans can upload JSON instead.
-- **Missing children:** check instrumentation warnings and mocked APIs, skip your own provider setup under Jest, and supply fetch yourself in jsdom if needed.
+- **Missing children:** check your plan includes child spans. Check instrumentation warnings and mocked APIs, skip your own provider setup under Jest, and supply fetch yourself in jsdom if needed.
 - **Duplicates:** projects whose configs differ only in `testEnvironmentOptions` also upload JSON. Make them differ another way, such as `displayName`.
 - **Changed stacks:** package instrumentation adds collector frames to errors created while a module loads. Failing tests show context-manager frames whenever runtime is set. Use explicit labels if test names or snapshots include stacks.
 - **Changed headers or messages:** disable the affected instrumentation using the table above if propagation changes what your tests expect.

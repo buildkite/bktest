@@ -70,7 +70,9 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ```
 
     Each test becomes a span, with work such as HTTP calls and database queries
-    underneath. Child spans add data volume, not test executions.
+    underneath. Test spans count as test executions, like JSON uploads, at no extra charge.
+    Child spans are billed by data ingested and need a plan that includes them;
+    without it, we still record test results and warn that child spans were dropped.
 
     Upgrading from a 1.13 beta? Remove `testEnvironment: 'buildkite-test-collector/jest/environment'` and add `runtime`.
 
