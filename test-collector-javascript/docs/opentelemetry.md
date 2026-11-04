@@ -25,8 +25,9 @@ npm install --save-dev buildkite-test-collector \
 ```
 
 With pnpm or Yarn, also add `@opentelemetry/api@~1.9.0`.
+Under Yarn Plug'n'Play, declare these packages in the root workspace.
 
-Use Jest 29 or 30.2+ with `jest-circus`, and Node.js 18.19+, 20.6+, 22, 24 or 26.
+Use Jest 29 or 30.2+ with `jest-circus`. OpenTelemetry SDK 2 needs Node.js 18.19+ or 20.6+.
 Jest 30.0 and 30.1 can drop `afterEach` children in files mixing concurrent and sequential tests.
 It's experimental and off by default.
 OpenTelemetry options, environment variables and span shape may change in minor releases.

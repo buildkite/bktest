@@ -64,6 +64,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ```
 
     With pnpm or Yarn, also add `@opentelemetry/api@~1.9.0`.
+    Under Yarn Plug'n'Play, declare these packages in the root workspace.
     Install the versions above. SDK 3 and `@opentelemetry/api` 1.10 aren't supported yet.
 
     ```js
@@ -83,7 +84,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     Child spans are billed by data ingested and need a plan that includes them;
     without it, we still record test results and warn that child spans were dropped.
 
-    Use Jest 29 or 30.2+ with `jest-circus`, and Node.js 18.19+, 20.6+, 22, 24 or 26.
+    Use Jest 29 or 30.2+ with `jest-circus`. OpenTelemetry SDK 2 needs Node.js 18.19+ or 20.6+.
     OpenTelemetry options, environment variables and span shape may change in minor releases.
     Retries count as one test execution per attempt. Child spans can contain URLs,
     query strings and database statements. A resolvable `@opentelemetry/auto-instrumentations-node`
