@@ -2,7 +2,10 @@
 
 ## 1.13.0-beta.4
 
-- Set up OpenTelemetry with the reporter and runtime, and keep your own test environment. beta.3 setups still work.
+- Set up OpenTelemetry with the reporter and runtime, and keep your own test environment. The beta `jest/environment` setup is gone: use your usual environment and add `runtime`.
+- Installing no longer fails next to older OpenTelemetry packages, such as those from `@sentry/node` 8 or 9.
+- Mocking `@opentelemetry/api`, or app code changing the active span, no longer changes test results.
+- Limit test batches to 256 spans, preserve job links despite `OTEL_SPAN_*` settings, and flush test and child spans together.
 - Type-check reporter options in `jest.config.ts` with `jest/reporter.d.ts`.
 - Send selected instrumentation names to your OpenTelemetry `diag` logger.
 - Keep beta.2's error stacks when no package instrumentation is selected.

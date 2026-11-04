@@ -71,7 +71,6 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
 
     Each test becomes a span, with work such as HTTP calls and database queries
     underneath. Child spans add data volume, not test executions.
-    Existing beta.3 environment setups keep working.
 
     See [OpenTelemetry (experimental)](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md) for installation,
     supported versions, settings and known limits.
