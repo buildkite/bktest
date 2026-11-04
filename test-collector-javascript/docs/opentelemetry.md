@@ -98,7 +98,7 @@ To collect children in Buildkite, skip your application's provider setup when `J
 
 `trace.getActiveSpan()` in a test is non-recording. It carries the parent context for children, but changing or ending it doesn't change the test result.
 Child spans can contain URLs, query strings and database statements. Check what your instrumentation records before enabling it.
-OpenTelemetry results aren't treated as default-branch results yet, so default-branch monitors ignore them.
+OpenTelemetry results don't yet count toward auto-quarantine or tag-to-label mappings, and don't update a test's file location.
 
 ## Choosing instrumentation
 

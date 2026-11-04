@@ -88,7 +88,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     Retries count as one test execution per attempt. Child spans can contain URLs,
     query strings and database statements. A resolvable `@opentelemetry/auto-instrumentations-node`
     enables its bundle, with the exclusions in the guide below.
-    OpenTelemetry results aren't treated as default-branch results yet, so default-branch monitors ignore them.
+    OpenTelemetry results don't yet count toward auto-quarantine or tag-to-label mappings, and don't update a test's file location.
 
     Upgrading from a 1.13 beta? Remove `testEnvironment: 'buildkite-test-collector/jest/environment'` and add `runtime`.
 

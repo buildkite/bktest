@@ -6,7 +6,7 @@
 - Send each test result as a span, with HTTP calls, database queries and manual spans underneath. Retries count as one execution per attempt. Test spans cost no extra; child spans are billed by data ingested and need a plan that includes them.
 - Install OpenTelemetry packages only if you use them. The collector no longer declares peers that can break installs next to other SDK versions. Missing child-span dependencies don't prevent test-result export.
 - Type-check reporter options with `jest/reporter.d.ts`. Debug output and OpenTelemetry `diag` show selected instrumentation.
-- Read the [OpenTelemetry guide](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md) before enabling export. Options, environment variables and span shape may change in minor releases. Child spans can contain URLs, query strings and database statements. Default-branch monitors don't include OpenTelemetry results yet.
+- Read the [OpenTelemetry guide](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md) before enabling export. Options, environment variables and span shape may change in minor releases. Child spans can contain URLs, query strings and database statements. OpenTelemetry results don't yet count toward auto-quarantine or tag-to-label mappings, and don't update a test's file location.
 
 ## 1.13.0-beta.4
 
