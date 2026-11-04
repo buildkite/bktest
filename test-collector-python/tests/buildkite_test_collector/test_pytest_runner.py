@@ -189,7 +189,7 @@ def harness(tmp_path):
 
     servers = []
 
-    def start(pulls, *args):
+    def start(pulls, *args, **extra_env):
         host = FakeHost(tmp_path / "runner.sock", pulls, events)
         servers.append(host)
         threading.Thread(target=host.serve_forever, daemon=True).start()
@@ -199,6 +199,7 @@ def harness(tmp_path):
             "BUILDKITE_TEST_ENGINE_RUNNER_SOCKET": str(tmp_path / "runner.sock"),
             "BUILDKITE_ANALYTICS_TOKEN": "fake",
             "BUILDKITE_ANALYTICS_API_URL": f"http://127.0.0.1:{uploads.server_port}/v1",
+            **extra_env,
         })
         process = subprocess.Popen([*RUNNER, *args], cwd=project, env=env, text=True,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -290,6 +291,30 @@ def test_runs_every_batch_in_one_pytest_session(harness):
         ("upload", ["test_broken.py"]),
         ("host", "POST", "/v1/batches/b_3/results"),
     ]
+
+
+def test_otel_mode_sends_a_span_for_every_batch_report(harness, receiver):
+    start, _, uploads, _ = harness
+    host, process = start([
+        batch("b_1", {"format": "file", "path": "test_broken.py"}),
+        batch("b_2", {"format": "file", "path": "test_b.py"},
+              {"format": "file", "path": "test_broken.py"}),
+        {"type": "done", "reason": "plan_completed"},
+    ], BUILDKITE_ANALYTICS_OTEL_ENABLED="true",
+       BUILDKITE_ANALYTICS_OTLP_ENDPOINT=f"{receiver.url}/v1/traces")
+    output, _ = process.communicate(timeout=60)
+
+    assert process.returncode == 0, output
+    assert results(host) == {
+        "b_1": {"::test_broken.py": "failed"},
+        "b_2": {"test_b.py::test_b": "passed", "::test_broken.py": "failed"},
+    }
+    assert uploads.uploads == []
+    # Every execution reported to bktec is also exported, each with its own id.
+    spans = receiver.spans("test")
+    assert sorted(span.attributes["buildkite.test.name"] for span in spans) == \
+        ["test_b", "test_broken.py", "test_broken.py"]
+    assert len({span.attributes["buildkite.test.execution.external_id"] for span in spans}) == 3
 
 
 def test_retries_a_class_test_with_a_new_instance(harness):

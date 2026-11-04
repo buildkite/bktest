@@ -2,7 +2,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 from uuid import uuid4
 
 from filelock import FileLock
@@ -10,6 +10,9 @@ from filelock import FileLock
 from ..collector.payload import TestData, TestResultFailed
 from .logger import logger
 from .failure_reasons import failure_reasons
+
+if TYPE_CHECKING:
+    from .otel.plugin import OTelPlugin
 
 
 def _is_subtest_report(report):
@@ -48,6 +51,9 @@ class BuildkitePlugin:
         # survive fork-per-test runners (pytest-forked) where
         # pytest_runtest_makereport only fires in the discarded child.
         self._tags_by_nodeid: Dict[str, Tuple[Tuple[str, str], ...]] = {}
+        # Set by the OTel plugin once span export is configured; it is told
+        # about every finalized test so it can finish the test's span.
+        self.otel: Optional["OTelPlugin"] = None
 
     def pytest_collection_modifyitems(self, config, items):
         """pytest_collection_modifyitems hook callback to capture execution_tag
@@ -121,6 +127,8 @@ class BuildkitePlugin:
         test_data = test_data.finish()
 
         self.payload = self.payload.push_test_data(test_data)
+        if self.otel is not None:
+            self.otel.report(test_data)
 
     def pytest_runtest_logstart(self, nodeid, location):
         """pytest_runtest_logstart hook callback"""
@@ -329,6 +337,8 @@ class BuildkitePlugin:
         test_data = test_data.finish()
         logger.debug('-> finalize_test nodeid=%s duration=%s', nodeid, test_data.history.duration)
         self.payload = self.payload.push_test_data(test_data)
+        if self.otel is not None:
+            self.otel.finalized(nodeid, test_data)
 
         # Clean up subtest tracking state for this test.
         self._failed_by_subtest.discard(nodeid)
