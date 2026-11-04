@@ -45,7 +45,7 @@ const processorSizes = (stream = 'TEST', defaults = PROCESSOR_DEFAULTS) => {
   const queueName = `BUILDKITE_TESTS_OTEL_${stream}_SPAN_QUEUE_SIZE`
   const batchName = `BUILDKITE_TESTS_OTEL_${stream}_SPAN_BATCH_SIZE`
   const queue = processorSize(queueName, defaults.queue)
-  const batch = processorSize(batchName, defaults.batch, stream === 'TEST' ? 256 : PROCESSOR_SIZE_LIMIT)
+  const batch = processorSize(batchName, defaults.batch, stream === 'TEST' ? 200 : PROCESSOR_SIZE_LIMIT)
   if (batch > queue) {
     warn(`${batchName} must be <= ${queueName}; using defaults (batch ${defaults.batch}, queue ${defaults.queue})`)
     return defaults

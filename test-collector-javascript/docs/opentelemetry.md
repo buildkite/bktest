@@ -51,13 +51,13 @@ The run key is the ID that groups results from one test run; it must be 1–255 
 | `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | Prints debug output, including upload payloads and selected instrumentation | `false` |
 | `OTEL_NODE_ENABLED_INSTRUMENTATIONS` | Selects only these comma-separated short names | Declared packages, with exclusions below |
 | `OTEL_NODE_DISABLED_INSTRUMENTATIONS` | Removes names, even from the enabled list | None |
-| `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` / `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | Sets queue/batch sizes (batch maximum 256); overflow waits in memory | 8,192 / 120 |
+| `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` / `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | Sets queue/batch sizes (batch maximum 200); overflow waits in memory | 8,192 / 120 |
 | `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` / `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` | Sets queue/batch sizes; overflow drops children | 2,048 / 512 |
 | `OTEL_RESOURCE_ATTRIBUTES` | Adds OpenTelemetry details | None |
 | `Buildkite-Tests-Run-Key` / `Buildkite-Tests-Span-Stream` (headers) | Proxies must forward these and `Authorization` | Run key / `test` or `child` |
 
 We ignore `OTEL_EXPORTER_OTLP_*`, `OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_TRACES_SAMPLER` for test results; normal child sampling and limits still apply.
-Queue and batch sizes must be decimal integers from 1 to 2,147,483,647 (test batches: 256 maximum) with batch ≤ queue; invalid values warn and use defaults.
+Queue and batch sizes must be decimal integers from 1 to 2,147,483,647 (test batches: 200 maximum) with batch ≤ queue; invalid values warn and use defaults.
 An OpenTelemetry `diag` logger at DEBUG receives selected names once per managed file; `OTEL_LOG_LEVEL=DEBUG` alone doesn't install a logger.
 If you use bktec's local relay, it sets the endpoint and token for you. Relay-only credentials cannot upload JSON fallback results.
 

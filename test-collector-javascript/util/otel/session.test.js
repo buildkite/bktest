@@ -362,12 +362,12 @@ describe('createSession', () => {
 
     consoleWarnSpy.mockClear()
     delete process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE
-    process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE = '256'
+    process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE = '200'
     await createSession(settings()).shutdown()
     expect(warnings()).toEqual([])
-    process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE = '257'
+    process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE = '201'
     await createSession(settings()).shutdown()
-    expect(warnings()).toEqual([expect.stringMatching(/BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE must be a positive integer up to 256, using default 120/)])
+    expect(warnings()).toEqual([expect.stringMatching(/BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE must be a positive integer up to 200, using default 120/)])
   })
 })
 
