@@ -98,8 +98,8 @@ const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runE
   try {
     probe(settings)
   } catch (error) {
-    warn(`OpenTelemetry span export disabled: ${describeError(error)}`)
-    return couldNotConfigure()
+    warn(`OpenTelemetry span export disabled: ${describeError(error)}; ${fallbackOutcome({ token })}.`)
+    return null
   }
 
   return settings

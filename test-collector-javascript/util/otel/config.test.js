@@ -208,8 +208,7 @@ describe('resolveSettings', () => {
 
     expect(resolve({ probe })).toBeNull()
     expect(warnings()).toEqual([
-      "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'",
-      expect.stringMatching(/could not be configured .*uploading results as JSON instead/),
+      "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'; uploading results as JSON instead.",
     ])
   })
 
@@ -227,8 +226,8 @@ describe('resolveSettings', () => {
     expect(warnings()).toEqual([
       "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'. " +
       'Install the OpenTelemetry packages with: npm install --save-dev "@opentelemetry/api@>=1.9.0 <1.10.0" ' +
-      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0"',
-      expect.stringMatching(/could not be configured .*uploading results as JSON instead/),
+      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0" ' +
+      '"@opentelemetry/context-async-hooks@^2.0.0"; uploading results as JSON instead.',
     ])
     expect(readSettings()).toBeNull()
   })
@@ -249,8 +248,8 @@ describe('resolveSettings', () => {
     expect(warnings()).toEqual([
       "[buildkite-test-collector] OpenTelemetry span export disabled: Error: the installed OpenTelemetry packages cannot export spans together (TypeError: Cannot read properties of undefined (reading 'name')). " +
       'Install matching versions with: npm install --save-dev "@opentelemetry/api@>=1.9.0 <1.10.0" ' +
-      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0"',
-      expect.stringMatching(/could not be configured .*uploading results as JSON instead/),
+      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0" ' +
+      '"@opentelemetry/context-async-hooks@^2.0.0"; uploading results as JSON instead.',
     ])
     expect(readSettings()).toBeNull()
   })
@@ -260,7 +259,7 @@ describe('resolveSettings', () => {
     const probe = () => { throw new Error('boom') }
 
     expect(resolve({ probe })).toBeNull()
-    expect(warnings()[1]).toMatch(/results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set/)
+    expect(warnings()).toEqual([expect.stringMatching(/results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set/)])
   })
 })
 
