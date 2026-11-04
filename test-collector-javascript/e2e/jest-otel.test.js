@@ -947,6 +947,7 @@ if (otelSupported) {
       OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:9/v1/traces',
       OTEL_TRACES_SAMPLER: 'always_off',
       OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT: '2',
+      OTEL_SPAN_LINK_COUNT_LIMIT: '0',
     })
 
     expect(result.code).toBe(1)
@@ -960,6 +961,7 @@ if (otelSupported) {
     for (const span of server.spans()) {
       expect(span.droppedAttributesCount).toBe(0)
       expect(span.attributes['buildkite.tag.hello']).toBe('jest')
+      expect(span.links).toEqual([expect.objectContaining({ traceId: '0af7651916cd43dd8448eb211c80319c' })])
     }
   }, 30000)
 

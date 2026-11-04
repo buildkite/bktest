@@ -51,7 +51,7 @@ The run key is the ID that groups results from one test run; it must be 1–255 
 | `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | Logs selected instrumentation once per worker | `false` |
 | `OTEL_NODE_ENABLED_INSTRUMENTATIONS` | Selects only these comma-separated short names | Declared packages, with exclusions below |
 | `OTEL_NODE_DISABLED_INSTRUMENTATIONS` | Removes names, even from the enabled list | None |
-| `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` / `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | Sets queue/batch sizes; overflow waits in memory | 8,192 / 120 |
+| `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` / `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | Sets queue/batch sizes (batch maximum 256); overflow waits in memory | 8,192 / 120 |
 | `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` / `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` | Sets queue/batch sizes; overflow drops children | 2,048 / 512 |
 | `OTEL_RESOURCE_ATTRIBUTES` | Adds OpenTelemetry details | None |
 | `Buildkite-Tests-Run-Key` / `Buildkite-Tests-Span-Stream` (headers) | Proxies must forward these and `Authorization` | Run key / `test` or `child` |

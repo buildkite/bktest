@@ -20,6 +20,8 @@ const SPAN_LIMITS = {
   attributeValueLengthLimit: 2 * 16384,
   eventCountLimit: 100,
   attributePerEventCountLimit: 128,
+  linkCountLimit: 128,
+  attributePerLinkCountLimit: 128,
 }
 
 const limitAttributes = (attributes) => Object.fromEntries(Object.entries(attributes).map(([key, value]) => [
@@ -30,12 +32,12 @@ const PROCESSOR_DEFAULTS = { queue: 8192, batch: 120 }
 const PROCESSOR_SIZE_LIMIT = 2147483647
 const SCHEDULE_DELAY_MILLISECONDS = 1000
 
-const processorSize = (name, fallback) => {
+const processorSize = (name, fallback, limit = PROCESSOR_SIZE_LIMIT) => {
   const raw = process.env[name]
   if (raw === undefined) return fallback
   const value = /^[0-9]+$/.test(raw) ? Number(raw) : NaN
-  if (value >= 1 && value <= PROCESSOR_SIZE_LIMIT) return value
-  warn(`${name} must be a positive integer up to ${PROCESSOR_SIZE_LIMIT}, using default ${fallback}`)
+  if (value >= 1 && value <= limit) return value
+  warn(`${name} must be a positive integer up to ${limit}, using default ${fallback}`)
   return fallback
 }
 
@@ -43,7 +45,7 @@ const processorSizes = (stream = 'TEST', defaults = PROCESSOR_DEFAULTS) => {
   const queueName = `BUILDKITE_TESTS_OTEL_${stream}_SPAN_QUEUE_SIZE`
   const batchName = `BUILDKITE_TESTS_OTEL_${stream}_SPAN_BATCH_SIZE`
   const queue = processorSize(queueName, defaults.queue)
-  const batch = processorSize(batchName, defaults.batch)
+  const batch = processorSize(batchName, defaults.batch, stream === 'TEST' ? 256 : PROCESSOR_SIZE_LIMIT)
   if (batch > queue) {
     warn(`${batchName} must be <= ${queueName}; using defaults (batch ${defaults.batch}, queue ${defaults.queue})`)
     return defaults
