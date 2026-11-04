@@ -3,7 +3,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
-// Only workers know which environment actually exported a file. Key their
+// Only workers know whether a file was exported. Key their
 // records by config, not project ID (Jest allows duplicates). Exclude options
 // rewritten by docblocks; numbered records detect ambiguous shared keys.
 const recordKey = (projectConfig, testPath) => {

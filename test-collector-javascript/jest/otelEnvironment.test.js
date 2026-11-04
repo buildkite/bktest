@@ -43,7 +43,7 @@ afterAll(() => {
   fs.rmSync(exportRecords, { recursive: true, force: true })
 })
 
-describe('BuildkiteTestEngineEnvironment constructor', () => {
+describe('JestOtelEnvironment constructor', () => {
   it('makes paths relative to the run\'s rootDir, as the JSON upload does, not the project\'s or the worker\'s cwd', () => {
     publishSettings(settings)
     const environment = new Environment(configFor({ rootDir: '/proj/pkg', cwd: '/elsewhere' }, '/proj'), context)
@@ -289,7 +289,7 @@ const STACKS = [
   )],
 ]
 
-describe('BuildkiteTestEngineEnvironment test locations', () => {
+describe('JestOtelEnvironment test locations', () => {
   it.each(STACKS)('reports the line Jest reports for a %s', async (_, line, asyncErrorStack) => {
     publishSettings({ ...settings, runEnv: { key: 'run-1' } })
     const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
@@ -356,7 +356,7 @@ const FAILURES = [
     'Error: thrown: "oops"\n\n[cause]: Error\n    at Object.test (/repo/fail.test.js:3:1)'],
 ]
 
-describe('BuildkiteTestEngineEnvironment failure text', () => {
+describe('JestOtelEnvironment failure text', () => {
   it.each(FAILURES)('%s', async (_, version, messageUtil, errors, text) => {
     publishSettings({ ...settings, runEnv: { key: 'run-1' } })
     const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }

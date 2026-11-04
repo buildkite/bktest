@@ -15,7 +15,7 @@ const BaseRuntime = (() => {
   throw new Error("buildkite-test-collector/jest/runtime requires 'jest-runtime' to be installed")
 })()
 
-// The environment alone cannot reach Jest's sandbox module registry.
+// Only the runtime can reach Jest's sandbox module registry.
 const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
   constructor(config, environment, ...rest) {
     super(config, environment, ...rest)

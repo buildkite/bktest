@@ -1,5 +1,4 @@
-// Jest configured for OTel mode: the reporter decides the mode and the test
-// environment exports one span per test from the worker.
+// The reporter enables OTel; the runtime exports one span per test.
 const config = {
   reporters: [
     'default',
