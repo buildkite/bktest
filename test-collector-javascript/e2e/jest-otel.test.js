@@ -223,6 +223,30 @@ if (otelSupported) {
     }, 60000)
   }
 
+  ;(tools ? test : test.skip)('type-checks reporter options strictly against the selected Jest types', async () => {
+    const dir = fs.mkdtempSync(path.join(__dirname, '../examples/jest/otel-types-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'config.ts'), `
+        import type { Config } from 'jest'
+        import type { Options } from 'buildkite-test-collector/jest/reporter'
+        const options = { otelEnabled: true, token: 'token', tags: { count: 2, enabled: false }, url: 'https://example.test' } satisfies Options
+        const stringOption = { otelEnabled: 'true' } satisfies Options
+        // @ts-expect-error The collector option is otelEnabled, not otelEnable.
+        const misspelled = { otelEnable: true } satisfies Options
+        export default { reporters: [['buildkite-test-collector/jest/reporter', options]], runtime: 'buildkite-test-collector/jest/runtime' } satisfies Config
+      `)
+      const jestPackage = require.resolve('jest/package.json', { paths: [path.dirname(dir)] })
+      fs.writeFileSync(path.join(dir, 'tsconfig.json'), JSON.stringify({
+        compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'CommonJS', esModuleInterop: true, types: [],
+          paths: { jest: [path.join(path.dirname(jestPackage), require(jestPackage).types)] } }, files: ['config.ts'],
+      }))
+      await new Promise((resolve, reject) => {
+        execFile(process.execPath, [tools.resolve('typescript/bin/tsc'), '-p', path.join(dir, 'tsconfig.json')],
+          (error, stdout, stderr) => error ? reject(new Error(stdout + stderr)) : resolve())
+      })
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  }, 30000)
+
   test('keeps beta.2 module-load stacks with only HTTP and undici', async () => {
     const root = fs.mkdtempSync(path.join(__dirname, '../examples/jest/otel-stack-'))
     try {
