@@ -226,9 +226,8 @@ describe('resolveSettings', () => {
     }
     expect(warnings()).toEqual([
       "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'. " +
-      'Install the OpenTelemetry packages with: npm install --save-dev "@opentelemetry/api@>=1.9.0 <1.10.0" ' +
-      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0" ' +
-      '"@opentelemetry/context-async-hooks@^2.0.0"; uploading results as JSON instead.',
+      'Install the OpenTelemetry packages with: npm install --save-dev "@opentelemetry/sdk-trace-base@^2" ' +
+      '"@opentelemetry/context-async-hooks@^2" "@opentelemetry/exporter-trace-otlp-proto@<0.300"; uploading results as JSON instead.',
     ])
     expect(readSettings()).toBeNull()
   })
@@ -248,17 +247,17 @@ describe('resolveSettings', () => {
     }
     expect(warnings()).toEqual([
       "[buildkite-test-collector] OpenTelemetry span export disabled: Error: the installed OpenTelemetry packages cannot export spans together (TypeError: Cannot read properties of undefined (reading 'name')). " +
-      'Install matching versions with: npm install --save-dev "@opentelemetry/api@>=1.9.0 <1.10.0" ' +
-      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0" ' +
-      '"@opentelemetry/context-async-hooks@^2.0.0"; uploading results as JSON instead.',
+      'Install matching versions with: npm install --save-dev "@opentelemetry/sdk-trace-base@^2" ' +
+      '"@opentelemetry/context-async-hooks@^2" "@opentelemetry/exporter-trace-otlp-proto@<0.300"; uploading results as JSON instead.',
     ])
     expect(readSettings()).toBeNull()
   })
 
-  it('does not use the API install hint as an export compatibility cap', () => {
+  it('does not use API metadata as an export compatibility cap', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
     jest.resetModules()
-    const manifest = createRequire(require.resolve('@opentelemetry/api')).resolve('../../package.json')
+    const fromTrace = createRequire(require.resolve('@opentelemetry/sdk-trace-base'))
+    const manifest = createRequire(fromTrace.resolve('@opentelemetry/api')).resolve('../../package.json')
     jest.doMock(manifest, () => ({ name: '@opentelemetry/api', version: '1.10.0' }))
     try {
       // The default probe creates and serializes a real SDK 2 span.
@@ -271,20 +270,44 @@ describe('resolveSettings', () => {
     }
   })
 
+  it.each(['missing', '1.30.1'])('exports test spans when the child context package is %s', (version) => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    jest.resetModules()
+    const manifest = require.resolve('@opentelemetry/context-async-hooks/package.json')
+    jest.doMock(manifest, () => {
+      if (version === 'missing') throw new Error('context package is not installed')
+      return { name: '@opentelemetry/context-async-hooks', version }
+    })
+    try {
+      // The default probe must still serialize a real test span.
+      expect(resolve({ probe: undefined })).toMatchObject({ token: 'env-token' })
+      expect(warnings()).toEqual([])
+    } finally {
+      jest.dontMock(manifest)
+      jest.resetModules()
+    }
+  })
+
   it.each([
     ['@opentelemetry/sdk-trace-base', '1.30.1'],
-    ['@opentelemetry/resources', '3.0.0'],
+    ['@opentelemetry/sdk-trace-base', '3.0.0'],
+    ['@opentelemetry/exporter-trace-otlp-proto', '0.300.0'],
   ])('names unsupported %s %s and explains how to install compatible packages', (name, version) => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    jest.resetModules()
     jest.doMock(`${name}/package.json`, () => ({ name, version }))
     try {
       expect(resolve({ probe: undefined })).toBeNull()
-    } finally { jest.dontMock(`${name}/package.json`) }
+    } finally {
+      jest.dontMock(`${name}/package.json`)
+      jest.resetModules()
+    }
     expect(warnings()).toEqual([
       expect.stringContaining(`unsupported ${name}@${version}`),
     ])
     expect(warnings()[0]).toContain('Install the OpenTelemetry packages with: npm install --save-dev')
-    expect(warnings()[0]).toContain('@opentelemetry/context-async-hooks@^2.0.0')
+    expect(warnings()[0]).toContain('@opentelemetry/context-async-hooks@^2')
+    expect(warnings()[0]).not.toContain('@opentelemetry/api@')
     expect(warnings()[0]).toContain('uploading results as JSON instead')
     expect(readSettings()).toBeNull()
   })
