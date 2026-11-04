@@ -2,6 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const { createRequire } = require('module')
 const { describeError } = require('../util/otel/warn')
+const { worker } = require('./otelWorker')
 
 const PREFIX = '@opentelemetry/instrumentation-'
 const SDK_LINES = { http: [200, 300], undici: [11, 34] }
@@ -28,9 +29,8 @@ const enabledByEnv = (name) => (process.env.OTEL_NODE_ENABLED_INSTRUMENTATIONS
 // Resolve from the project first, then the auto-instrumentations bundle's
 // dependencies (which pnpm does not hoist). Only project/workspace manifests
 // and the bundle choose packages, never incidental hoisted dependencies.
-const sets = new Map()
 const loadInstrumentations = (rootDir, warnOnce) => {
-  if (sets.has(rootDir)) return sets.get(rootDir)
+  if (worker.sets.has(rootDir)) return worker.sets.get(rootDir)
   const project = createRequire(path.join(rootDir, 'package.json'))
   const loaders = [project]
   const manifests = []
@@ -96,7 +96,7 @@ const loadInstrumentations = (rootDir, warnOnce) => {
   }
   if (skipped.length) warnOnce('instrumentation', `OpenTelemetry instrumentation skipped: ${skipped.join(', ')}. ` +
     'The collector records child spans with instrumentation from the OpenTelemetry JavaScript 2.x SDK line; test.execution export remains enabled.')
-  sets.set(rootDir, entries)
+  worker.sets.set(rootDir, entries)
   return entries
 }
 

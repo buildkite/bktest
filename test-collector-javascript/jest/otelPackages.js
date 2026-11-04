@@ -5,7 +5,7 @@ const semver = require('semver')
 
 // Mirror require-in-the-middle's package/file names, retaining file identity
 // even when an entry point re-exports an internal file (Express).
-const describe = (file, runtime, names) => {
+const packageForFile = (file, runtime, names) => {
   const segments = file.split(path.sep)
   const index = segments.lastIndexOf('node_modules')
   if (index < 0) return null
@@ -37,12 +37,11 @@ class JestOtelPackages {
   }
 
   load(file, load) {
-    if (!this.entries.length) return load()
-    let record
+    if (!this.names.size) return load()
     if (!this.resolved.has(file)) {
-      try { this.resolved.set(file, describe(file, this.context.runtime, this.names)) } catch { this.resolved.set(file, null) }
+      try { this.resolved.set(file, packageForFile(file, this.context.runtime, this.names)) } catch { this.resolved.set(file, null) }
     }
-    record = this.resolved.get(file)
+    const record = this.resolved.get(file)
     if (!record || this.loading.has(record.path)) return load()
     this.loading.add(record.path)
     let exports
@@ -62,7 +61,7 @@ class JestOtelPackages {
           const api = context.runtime.requireModuleOrMock(resolved, '@opentelemetry/api')
           if (typeof api?.trace?.getSpan !== 'function' || typeof api?.context?.with !== 'function' ||
               typeof api?.context?.active !== 'function' || typeof api.context.active()?.getValue !== 'function') {
-            this.entries = []
+            this.names.clear()
             context.warnOnce(`package-api:${context.testPath}`, 'OpenTelemetry package instrumentation skipped because its API is mocked or incomplete; test.execution export remains enabled.')
             return exports
           }

@@ -1,5 +1,5 @@
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
-const { workerFor } = require('./otelWorker')
+const { worker, workerFor } = require('./otelWorker')
 const JestOtelPackages = require('./otelPackages')
 const { loadInstrumentations } = require('./otelInstrumentations')
 
@@ -11,13 +11,12 @@ const SUITE_PROVIDER = 'OpenTelemetry child spans are not exported because the s
 // API) and the environment's realm (for instrumentation). It must be the same
 // instance in both so that a test's context is visible to instrumentation in
 // either realm.
-let sharedContextManager = null
 const contextManager = () => {
-  if (!sharedContextManager) {
+  if (!worker.contextManager) {
     const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks')
-    sharedContextManager = new AsyncLocalStorageContextManager().enable()
+    worker.contextManager = new AsyncLocalStorageContextManager().enable()
   }
-  return sharedContextManager
+  return worker.contextManager
 }
 
 const PROBE = Symbol.for('buildkite.test.execution.probe')
@@ -145,7 +144,7 @@ class JestOtelContext {
       if (this.session.api.propagation.fields().length === 0) this.session.api.propagation.setGlobalPropagator(this.session.childPropagator())
       this.forwarder = this.session.childExport().createForwarder()
       this.provider = this._worker().tracerProvider
-      this.worker.refreshHttp()
+      this.worker.refresh()
       this.mode = 'managed'
       for (const traceId of this.traces) this.forwarder.addTrace(traceId)
     } catch (error) {

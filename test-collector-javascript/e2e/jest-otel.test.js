@@ -64,6 +64,90 @@ test('runs the selected Jest version', () => {
 // OpenTelemetry submission needs Jest 29 or newer; older versions upload JSON.
 const otelSupported = jestMajor >= 29
 
+// Runs with the example's Jest, not the outer test runner's. Keeping this in
+// the OTel e2e suite also runs it in the newest-SDK soft-fail leg.
+;(otelSupported ? test : test.skip)('Jest and OpenTelemetry internals still satisfy the child-span contract', async () => {
+  const canary = async () => {
+    const assert = require('node:assert/strict')
+    const { createRequire } = require('node:module')
+    const load = createRequire(require.resolve('jest'))
+    const Runtime = load('jest-runtime').default
+    const { projectConfig, globalConfig } = await load('jest-config').readConfig({}, process.cwd())
+    const Environment = require('jest-environment-node').TestEnvironment
+    const environment = new Environment({ projectConfig, globalConfig }, { console, testPath: __filename })
+    const { resolver } = await Runtime.createContext(projectConfig, { maxWorkers: 1, watchman: false })
+    const transformer = await load('@jest/transform').createScriptTransformer(projectConfig)
+    const runtime = new Runtime(projectConfig, environment, resolver, transformer, new Map(), {}, __filename, globalConfig)
+    try {
+      const loader = runtime.cjsLoader || runtime
+      const method = runtime.cjsLoader ? 'loadModule' : '_loadModule'
+      assert.equal(typeof loader[method], 'function', `Jest ${method}`)
+      assert.equal(loader[method].length, 6, `Jest ${method} arguments`)
+      const resolution = runtime._resolution || runtime
+      const resolve = runtime._resolution ? 'resolveCjs' : '_resolveCjsModule'
+      assert.equal(typeof resolution[resolve], 'function', `Jest ${resolve}`)
+      assert.equal(resolution[resolve](require.resolve('express/package.json'), 'express'), require.resolve('express'))
+
+      const api = require('@opentelemetry/api')
+      const proxy = api.trace.getTracerProvider()
+      assert.equal(typeof proxy.getDelegate, 'function')
+      assert.equal(typeof proxy.setDelegate, 'function')
+      assert.equal(proxy.getDelegate(), new api.ProxyTracerProvider().getDelegate())
+      const tracer = proxy.getTracer('canary')
+      const provider = { getTracer: () => ({ startSpan: () => 'delegated' }) }
+      proxy.setDelegate(provider)
+      assert.equal(tracer.startSpan('early tracer'), 'delegated')
+      assert.equal(api.trace.setGlobalTracerProvider(provider), true, 'delegation must not register a provider')
+      api.trace.disable()
+
+      assert.equal(typeof api.context._getContextManager, 'function')
+      const fallback = api.context._getContextManager()
+      assert.equal(fallback.constructor.name, 'NoopContextManager')
+      const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks')
+      const manager = new AsyncLocalStorageContextManager().enable()
+      for (const method of ['active', 'with', 'bind']) fallback[method] = manager[method].bind(manager)
+      const key = api.createContextKey('canary')
+      const context = api.ROOT_CONTEXT.setValue(key, true)
+      assert.equal(api.context.with(context, () => api.context.active().getValue(key)), true, 'noop methods must be writable and used by the API')
+      assert.equal(api.context.bind(context, () => api.context.active().getValue(key))(), true)
+      assert.equal(api.context.setGlobalContextManager(manager), true, 'fallback must not block suite registration')
+      api.context.disable()
+
+      const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http')
+      const http = new HttpInstrumentation({ enabled: false })
+      assert.ok(Array.isArray(http._modules), 'live instrumentation definitions')
+      assert.deepEqual(http._modules.map((definition) => definition.name).sort(), ['http', 'https'])
+      assert.equal(typeof http._wrap, 'function')
+      for (const definition of http._modules) {
+        assert.equal(typeof definition.patch, 'function')
+        assert.equal(typeof definition.unpatch, 'function')
+        const exports = { request() {}, get() {}, Server: { prototype: { emit() {} } } }
+        definition.moduleExports = exports
+        assert.equal(definition.moduleExports, exports, 'live exports slot must be writable')
+        definition.patch(exports)
+        const wrapped = exports.request
+        assert.equal(typeof wrapped.__original, 'function', '_wrap must install a wrapper')
+        definition.unpatch() // Must reset the guard without unwrapping replacements.
+        assert.equal(exports.request, wrapped)
+        definition.patch(exports)
+        assert.notEqual(exports.request, wrapped, 'unpatch() must allow a fresh patch')
+        definition.unpatch(exports)
+      }
+      const target = { call: () => 7 }
+      const wrapped = http._wrap(target, 'call', (original) => new Proxy(original, {}))
+      assert.equal(target.call, wrapped, '_wrap must return the installed Proxy')
+      assert.equal(wrapped(), 7)
+    } finally {
+      runtime.teardown()
+      await environment.teardown()
+    }
+  }
+  await new Promise((resolve, reject) => {
+    execFile(process.execPath, ['-e', `(${canary})().catch(error => { console.error(error); process.exitCode = 1 })`],
+      { cwd: path.join(__dirname, '../examples/jest') }, (error, stdout, stderr) => error ? reject(new Error(stderr)) : resolve())
+  })
+}, 60000)
+
 ;(otelSupported ? test.skip : test)('warns once and uploads JSON on Jest 28 and older', async () => {
   server = await startOtlpServer()
   const result = await run('jest --config otel-children.config.js', {
