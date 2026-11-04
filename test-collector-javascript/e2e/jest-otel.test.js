@@ -2,6 +2,7 @@ const { exec, execFile } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const stripAnsi = require('strip-ansi')
 const { startOtlpServer } = require('./support/otlpServer')
 
 // examples/jest/otel.config.js runs: example.test.js (2), passed.test.js (1),
@@ -367,7 +368,7 @@ if (otelSupported) {
   test('runs failing test bodies with a mapped API and resetMocks', async () => {
     const outcome = await runChildren('mapped-api')
     expect(outcome.result.code).toBe(1)
-    expect(outcome.result.stderr).toContain('Expected: "failure"')
+    expect(stripAnsi(outcome.result.stderr)).toContain('Expected: "failure"')
     expect(outcome.roots.map(spanRecord)).toEqual([expect.objectContaining({
       name: 'still fails with a mapped API and resetMocks', result: 'fail',
       failure_reason: expect.stringContaining('expect(received).toBe(expected)'),
