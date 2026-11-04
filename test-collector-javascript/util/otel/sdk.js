@@ -1,4 +1,7 @@
 const { createRequire } = require('module')
+const fs = require('fs')
+const path = require('path')
+const semver = require('semver')
 const { describeError } = require('./warn')
 
 const PACKAGES = {
@@ -25,14 +28,18 @@ const installCommand = () => {
 // Optional peers must not load until OpenTelemetry is requested.
 const loadSdk = () => {
   const sdk = {}
-  for (const [key, name] of Object.entries(PACKAGES)) {
-    try {
-      sdk[key] = require(name)
-    } catch (error) {
-      if (error.code !== 'MODULE_NOT_FOUND') throw error
-      // The first line names the module; the rest is the require stack.
-      throw new Error(`${String(error.message).split('\n')[0]}. Install the OpenTelemetry packages with: ${installCommand()}`)
+  try {
+    for (const [name, range] of Object.entries(SUPPORTED_VERSIONS)) {
+      // The API doesn't export package.json.
+      let directory = path.dirname(require.resolve(name))
+      while (!fs.existsSync(path.join(directory, 'package.json'))) directory = path.dirname(directory)
+      const { version } = require(path.join(directory, 'package.json'))
+      if (!semver.satisfies(version, range)) throw new Error(`unsupported ${name}@${version} (requires ${range})`)
     }
+    for (const [key, name] of Object.entries(PACKAGES)) sdk[key] = require(name)
+  } catch (error) {
+    // The first line names the module; the rest is the require stack.
+    throw new Error(`${String(error.message).split('\n')[0]}. Install the OpenTelemetry packages with: ${installCommand()}`)
   }
   // W3C propagators; a dependency of the trace SDK rather than a peer of ours.
   sdk.core = createRequire(require.resolve(PACKAGES.trace))('@opentelemetry/core')

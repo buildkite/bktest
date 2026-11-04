@@ -254,6 +254,24 @@ describe('resolveSettings', () => {
     expect(readSettings()).toBeNull()
   })
 
+  it.each([
+    ['@opentelemetry/sdk-trace-base', '1.30.1'],
+    ['@opentelemetry/resources', '3.0.0'],
+  ])('names unsupported %s %s and explains how to install compatible packages', (name, version) => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    jest.doMock(`${name}/package.json`, () => ({ version }))
+    try {
+      expect(resolve({ probe: undefined })).toBeNull()
+    } finally { jest.dontMock(`${name}/package.json`) }
+    expect(warnings()).toEqual([
+      expect.stringContaining(`unsupported ${name}@${version}`),
+    ])
+    expect(warnings()[0]).toContain('Install the OpenTelemetry packages with: npm install --save-dev')
+    expect(warnings()[0]).toContain('@opentelemetry/context-async-hooks@^2.0.0')
+    expect(warnings()[0]).toContain('uploading results as JSON instead')
+    expect(readSettings()).toBeNull()
+  })
+
   it('says results will not be uploaded when only the relay token held the credential', () => {
     process.env.BUILDKITE_TESTS_OTLP_TOKEN = 'relay-token'
     const probe = () => { throw new Error('boom') }
