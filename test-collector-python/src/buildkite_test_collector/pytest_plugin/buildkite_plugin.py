@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from filelock import FileLock
 
-from ..collector.payload import TestData
+from ..collector.payload import TestData, TestResultFailed
 from .logger import logger
 from .failure_reasons import failure_reasons
 
@@ -43,16 +43,10 @@ class BuildkitePlugin:
         # call-phase report from overwriting the failure.
         self._failed_by_subtest = set()
         self._collection_errors_seen = set()
-        # The pid of the process that owns this plugin instance (the one
-        # whose payload is uploaded/saved at pytest_unconfigure).  Runners
-        # that fork per test (e.g. pytest-forked) give each child a copy of
-        # this state that is discarded when the child exits — hooks that
-        # fire in such a child must not finalize tests.  See finalize_test.
-        self._owner_pid = os.getpid()
         # execution_tag markers captured at collection time, keyed by
         # nodeid.  Collection happens in the owning process, so these
-        # survive fork-per-test runners where pytest_runtest_makereport
-        # (our usual tagging point) only fires in the discarded child.
+        # survive fork-per-test runners (pytest-forked) where
+        # pytest_runtest_makereport only fires in the discarded child.
         self._tags_by_nodeid: Dict[str, Tuple[Tuple[str, str], ...]] = {}
 
     def pytest_collection_modifyitems(self, config, items):
@@ -140,13 +134,15 @@ class BuildkitePlugin:
 
         chunks = nodeid.split("::")
         file_name = self._normalize_file_path(location[0])
+        # pytest's location line is 0-based; editors and Test Engine count from 1.
+        line = location[1] + 1 if location[1] is not None else None
 
         test_data = TestData.start(
             uuid4(),
             scope="::".join(chunks[:-1]),
             name=chunks[-1],
             file_name=file_name,
-            location=f"{file_name}:{location[1]}"
+            location=f"{file_name}:{line}"
         )
         self.in_flight[nodeid] = test_data
 
@@ -210,14 +206,15 @@ class BuildkitePlugin:
         #             broken cleanup should fail the test.
         #
         # We intentionally skip setup-passed and teardown-passed/skipped
-        # because they would overwrite the real test outcome.
+        # because they would overwrite the real test outcome.  A "rerun"
+        # outcome (pytest-rerunfailures) is a failure of this attempt.
         #
         # See: https://github.com/buildkite/test-collector-python/pull/45
         # See: https://github.com/buildkite/test-collector-python/issues/84
         should_capture = (
             report.when == 'call'
             or (report.when == 'setup' and not report.passed)
-            or (report.when == 'teardown' and report.failed)
+            or (report.when == 'teardown' and (report.failed or report.outcome == 'rerun'))
         )
         if should_capture:
             # Guard: do not let the parent test's "passed" call-phase
@@ -235,11 +232,17 @@ class BuildkitePlugin:
 
             self.update_test_result(report)
 
-    # This hook only runs in xdist worker thread, not controller thread.
-    # We used to rely on pytest_runtest_teardown, but somehow xdist will ignore it
-    # in both controller and worker thread.
+        # The teardown report is the last one pytest logs for an attempt, so
+        # the result is settled once it has been applied.  Finalizing any
+        # earlier (pytest_runtest_makereport fires before the report is
+        # logged) would miss a failing fixture finalizer, and would export
+        # tests run with log=False (pytest-rerunfailures, pytest-forked)
+        # before any report had been applied at all.
+        if report.when == 'teardown':
+            self.finalize_test(report.nodeid)
+
     def pytest_runtest_makereport(self, item, call):
-        """pytest_runtest_hook hook callback to mark test as finished and add it to the payload"""
+        """pytest_runtest_makereport hook callback to apply runtime execution_tag markers"""
         logger.debug('hook=pytest_runtest_makereport nodeid=%s when=%s', item.nodeid, call.when)
 
         if call.when != 'teardown':
@@ -253,26 +256,18 @@ class BuildkitePlugin:
                 test_data = test_data.tag_execution(tag.args[0], tag.args[1])
 
             self.in_flight[item.nodeid] = test_data
-
-            self.finalize_test(item.nodeid)
         else:
             logger.warning('Unexpected missing test_data during pytest_runtest_makereport')
 
-    # If pytest_runtest_makereport runs properly then this hook is unnecessary.
-    # But as we commented above, in some cases, in pytest-xdist controller thread,
-    # pytest_runtest_makereport will be skipped.
-    # In that case, it's necessary for this hook to work as a fallback mechanism.
+    # A rerun attempt (pytest-rerunfailures) logs no teardown report: the
+    # attempt ends with the "rerun" report, then logfinish.  Finalize here so
+    # the attempt is recorded before the next one starts.
     def pytest_runtest_logfinish(self, nodeid, location):  # pylint: disable=unused-argument
         """pytest_runtest_logfinish hook always runs in the very end"""
         logger.debug('hook=pytest_runtest_logfinish nodeid=%s', nodeid)
 
         if self.finalize_test(nodeid):
-            # This is expected to happen in xdist controller thread.
-            # Where it would skip many pytest_runtest_xxx hooks
-            logger.debug(
-                'Detected possible interference in pytest_runtest_makereport hook (xdist?). '
-                'Falling back to pytest_runtest_logfinish'
-            )
+            logger.debug('-> finalized at logfinish: no teardown report was logged')
 
     def update_test_result(self, report):
         """Update test result based on pytest report"""
@@ -282,9 +277,19 @@ class BuildkitePlugin:
             if report.passed:
                 logger.debug('-> test passed')
                 test_data = test_data.passed()
-            elif report.failed:
+            elif report.failed or report.outcome == 'rerun':
                 failure_reason, failure_expanded = failure_reasons(longrepr=report.longrepr)
-                logger.debug('-> test failed: %s', failure_reason)
+                logger.debug('-> test %s: %s', report.outcome, failure_reason)
+                if report.when == 'teardown' and isinstance(test_data.result, TestResultFailed):
+                    # The test had already failed: that stays the reason, and
+                    # the teardown failure is added as a further detail.
+                    teardown_detail = failure_expanded or (
+                        [{"expanded": [failure_reason]}] if failure_reason else []
+                    )
+                    failure_reason = test_data.result.failure_reason
+                    failure_expanded = [
+                        *(test_data.result.failure_expanded or ()), *teardown_detail
+                    ]
                 test_data = test_data.failed(
                     failure_reason=failure_reason,
                     failure_expanded=failure_expanded
@@ -302,20 +307,6 @@ class BuildkitePlugin:
     def finalize_test(self, nodeid):
         """ Attempting to move test data for a nodeid to payload area for upload """
         logger.debug('-> finalize_test nodeid=%s', nodeid)
-
-        # Fork-per-test runners (e.g. pytest-forked) run the test protocol
-        # in a child process holding a copy of this plugin.  That copy is
-        # discarded when the child exits — only the serialized reports are
-        # replayed in the owning process, which finalizes the test with the
-        # real result via pytest_runtest_logreport/logfinish.  Finalizing in
-        # the child would only produce a spurious "no result set" warning
-        # (log=False suppresses in-child logreport), so skip it.
-        if os.getpid() != self._owner_pid:
-            logger.debug(
-                '-> finalize_test: skipping in forked child (pid=%s, owner=%s)',
-                os.getpid(), self._owner_pid
-            )
-            return False
 
         test_data = self.in_flight.get(nodeid)
         if not test_data:
