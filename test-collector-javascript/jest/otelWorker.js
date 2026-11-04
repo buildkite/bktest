@@ -52,16 +52,18 @@ const workerFor = (session, instances) => {
       for (const definition of instance._modules || []) if (isBuiltin(definition.name)) require(definition.name)
       instance.setTracerProvider(worker.tracerProvider)
       const config = { ...instance.getConfig(), enabled: true }
-      // A noop tracer alone still propagates the active test's traceparent.
-      // Ignore new requests for unselected projects without unpatching or
-      // unsubscribing callbacks needed to finish already-started requests.
-      const hooks = {
-        '@opentelemetry/instrumentation-http': ['ignoreIncomingRequestHook', 'ignoreOutgoingRequestHook'],
-        '@opentelemetry/instrumentation-undici': ['ignoreRequestHook'],
-      }[instance.instrumentationName] || []
-      for (const hook of hooks) {
-        const ignore = config[hook]
-        config[hook] = (...args) => !worker.selected(instance.instrumentationName) || Boolean(ignore?.(...args))
+      if (instance.instrumentationName === '@opentelemetry/instrumentation-http') {
+        // Bypass HTTP before upstream argument normalization, not just span
+        // creation: inactive callers must retain Node's validation behavior.
+        const wrap = instance._wrap.bind(instance)
+        instance._wrap = (exports, name, wrapper) => wrap(exports, name, (original, ...args) => new Proxy(wrapper(original, ...args), {
+          apply: (patched, receiver, args) => Reflect.apply(worker.selected(instance.instrumentationName) ? patched : original, receiver, args),
+        }))
+      }
+      if (instance.instrumentationName === '@opentelemetry/instrumentation-undici') {
+        // Ignore new requests without unsubscribing callbacks that finish
+        // requests already started in an earlier file.
+        config.ignoreRequestHook = () => !worker.selected(instance.instrumentationName)
       }
       instance.setConfig(config)
       instance.enable()

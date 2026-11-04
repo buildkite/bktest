@@ -10,3 +10,5 @@
 - Shared Jest workers respect each project's instrumentation selection regardless
   of project order, including HTTP/fetch spans and trace headers, without
   duplicating built-in patches or interrupting already-started requests.
+  Inactive HTTP/HTTPS calls bypass instrumentation before argument normalization,
+  preserving Node's URL validation for opted-out and uninstrumented files.

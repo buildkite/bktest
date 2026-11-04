@@ -34,6 +34,11 @@ describe('per-test hooks', () => {
   })
 
   test('http I/O', async () => {
+    if (process.env.OTEL_CHILD_CASE === 'projects' && !globalThis.expectRequestTracing.http) {
+      for (const mod of [http, require('https')]) for (const method of ['get', 'request']) {
+        expect(() => mod[method]('/relative').on('error', () => {}).destroy()).toThrow(expect.objectContaining({ code: 'ERR_INVALID_URL' }))
+      }
+    }
     // Overflows the 2-span child queue, then lets it drain, so the request's
     // spans that follow show instrumentation was active.
     if (process.env.OTEL_CHILD_CASE === 'flood') {
