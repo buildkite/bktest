@@ -109,7 +109,7 @@ We test HTTP/fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2; 
 - **No fallback results:** set reporter `token` or `BUILDKITE_ANALYTICS_TOKEN` so files that can't export spans can upload JSON instead.
 - **Missing children:** check instrumentation warnings and mocked APIs, skip your own provider setup under Jest, and supply fetch yourself in jsdom if needed.
 - **Duplicates:** give projects distinct configurations beyond `testEnvironmentOptions`, because ambiguous configurations send JSON too rather than risk missing results.
-- **Changed stacks:** With package instrumentation, errors created while a module loads include a few collector frames. If test names or snapshots include stacks, use explicit labels.
+- **Changed stacks:** package instrumentation adds a few collector frames to errors created while a module loads; use explicit labels if test names or snapshots include stacks.
 - **Changed headers or messages:** disable the affected instrumentation using the table above if propagation changes what your tests expect.
 - **Missing HTTP client spans:** call `http.get(...)` on the module object instead of destructuring `get` at file load.
 - **nock/MSW blocking export:** allow the endpoint and relay's `127.0.0.1`, or bypass them in MSW; restoring HTTP across files is supported.

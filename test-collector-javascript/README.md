@@ -63,30 +63,18 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
         "default",
         ["buildkite-test-collector/jest/reporter", { otelEnabled: true }],
       ],
-      testEnvironment: "node", // Keep your existing environment, or omit for node
+      testEnvironment: "node", // Keep your existing environment
       runtime: "buildkite-test-collector/jest/runtime",
       testLocationInResults: true,
     };
     ```
 
-    We send each test result as a timed OpenTelemetry span instead of a JSON upload.
-    Your test names, locations and history stay the same. This needs Jest 29+,
-    the default `jest-circus` runner and the OpenTelemetry JavaScript 2.x SDK.
-    API 1.9 and 1.10 work with that SDK; SDK 3 is not supported.
-    Set the reporter option and `runtime`, and keep your existing test environment.
+    Each test becomes a span, with work such as HTTP calls and database queries
+    underneath. Child spans add data volume, not test executions.
+    Existing beta.3 environment setups keep working.
 
-    We also record work inside tests, such as HTTP requests
-    and database queries. We use instrumentation packages you declare, or those
-    supplied by `@opentelemetry/auto-instrumentations-node`. You can choose them
-    with `OTEL_NODE_ENABLED_INSTRUMENTATIONS` and `OTEL_NODE_DISABLED_INSTRUMENTATIONS`.
-    These extra spans are billed by decoded GB, not test executions.
-    If your suite registers its own tracer provider, it keeps its own children;
-    we send test results only. Existing beta.3 environment setups keep working.
-
-    See [OpenTelemetry submission](docs/opentelemetry.md) for installation,
-    credentials, examples and known limits. Older Jest versions upload JSON
-    instead, which needs `BUILDKITE_ANALYTICS_TOKEN` or the reporter's `token` option;
-    a relay-only token cannot upload those results.
+    See [OpenTelemetry (experimental)](docs/opentelemetry.md) for installation,
+    supported versions, settings and known limits.
 
     ### Vitest
 
