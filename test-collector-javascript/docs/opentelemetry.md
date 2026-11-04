@@ -2,22 +2,16 @@
 
 > **This feature is still under development and may change.**
 
-When `otelEnabled` is true, spans are the only submission path. Every test
-becomes a `test.execution` span with `buildkite.execution.via=otlp`, which makes
-the span itself the submission: Buildkite synthesizes the execution from it
-server-side, and nothing is sent to `/v1/uploads`. Resources identify the suite,
-CI run, worker and VCS ref that produced the telemetry. Test Engine run metadata
-and any `tags` you configure live on each `test.execution` span.
+With `otelEnabled: true`, each test becomes a `test.execution` span with
+`buildkite.execution.via=otlp`; Buildkite synthesizes its execution server-side
+instead of receiving `/v1/uploads` JSON. Resources identify the suite, CI run,
+worker and VCS ref; run metadata and configured `tags` live on each test span.
+Submission is off by default and currently supports Jest only.
 
-OpenTelemetry submission is off by default. Jest is the only framework that
-supports it so far.
+## Jest setup
 
-## Jest
-
-Jest runs tests in worker processes and reporters in the main process, so the
-collector needs both halves: the reporter decides whether the run uses
-OpenTelemetry, and a test environment in each worker starts and ends a span
-around every test and exports from the worker.
+Jest 29+ with the default `jest-circus` runner needs both the reporter and the
+collector's environment:
 
 ```js
 // jest.config.js
@@ -27,298 +21,92 @@ module.exports = {
     ['buildkite-test-collector/jest/reporter', { otelEnabled: true }],
   ],
   testEnvironment: 'buildkite-test-collector/jest/environment',
-  // Optional: child spans under each test (see below)
-  runtime: 'buildkite-test-collector/jest/runtime',
-
-  // Enable column + line capture for Test Engine
-  testLocationInResults: true,
+  runtime: 'buildkite-test-collector/jest/runtime', // Optional: child spans
+  testLocationInResults: true, // Capture test line and column
 }
 ```
 
-The reporter and the test environment are required. With `otelEnabled: true` but no `testEnvironment`
-(or one that is not the collector's and was not built with its `extend`), the
-reporter warns `otelEnabled is set, but test environment "…" is not
-buildkite-test-collector/jest/environment …` once per environment and uploads
-those files' results as JSON.
+Reporter options remain `token`, `tags` and `otelEnabled`; only boolean `true`
+or the case-insensitive string `'true'` enables OTel (`'false'`, `'1'` and `1`
+do not). Changing `testEnvironment` or `runtime` invalidates transformer cache
+keys, so the first run transforms files from cold.
 
-Setting the `testEnvironment` or `runtime` changes the project config, which
-babel-jest and other transformers hash into their cache keys, so the first run
-after enabling them transforms every file from cold and a transform cache
-warmed under a different config is not reused.
+Install the optional peer dependencies explicitly:
 
-`buildkite-test-collector/jest/environment` extends `jest-environment-node`.
-With Yarn Plug'n'Play, add `jest-environment-node` (the same version as
-`jest`) to your devDependencies so the collector can load it. If your suite
-needs another environment, such as `jest-environment-jsdom` or
-`@happy-dom/jest-environment`, build one with `extend`:
+```bash
+npm install --save-dev '@opentelemetry/api@~1.9.0' \
+  '@opentelemetry/sdk-trace-base@^2.0.0' '@opentelemetry/resources@^2.0.0' \
+  '@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0'
+# Also needed for child spans:
+npm install --save-dev '@opentelemetry/context-async-hooks@^2.0.0'
+```
+
+Use the JavaScript 2.x SDK line: API 1.9, SDK/resources/context-async-hooks 2.x
+and exporter 0.200–0.2xx, requiring Node.js 18.19 or 20.6 and newer.
+SDK 3 (API 1.10, resources/sdk-trace 3.x, exporter 0.300) is unsupported;
+unversioned installs can mix these lines. Peer ranges set minimums so other
+dependencies can install newer APIs without conflicts or downgrades, but an
+incompatible export setup warns and falls back to JSON. Packages are loaded
+only when OTel is enabled.
+
+### Other environments and runtimes
+
+The default environment extends `jest-environment-node`; Yarn Plug'n'Play
+projects must declare `jest-environment-node` at the same version as Jest.
+Use `extend` for `jest-environment-jsdom`, `@happy-dom/jest-environment`, or
+your own environment:
 
 ```js
 // buildkite-jsdom-environment.js
 const { extend } = require('buildkite-test-collector/jest/environment')
 module.exports = extend(require('jest-environment-jsdom').default)
+// jest.config.js: testEnvironment: './buildkite-jsdom-environment.js'
 ```
 
-```js
-// jest.config.js
-testEnvironment: './buildkite-jsdom-environment.js',
-```
-
-The environment ships no TypeScript declarations, so a TypeScript environment
-loads the module with `require` and gives `extend` the base class's type:
+There are no TypeScript declarations; use `require` and type `extend` with
+your base class:
 
 ```ts
-// buildkite-environment.ts
 import NodeEnvironment from 'jest-environment-node'
-
 const { extend } = require('buildkite-test-collector/jest/environment') as {
   extend: (Base: typeof NodeEnvironment) => typeof NodeEnvironment
 }
-
 export default class BuildkiteEnvironment extends extend(NodeEnvironment) {
   async setup() {
     await super.setup()
     this.global.answer = 42
   }
 }
+// jest.config.js: testEnvironment: './buildkite-environment.ts'
 ```
 
-```js
-// jest.config.js
-testEnvironment: './buildkite-environment.ts',
-```
+A custom runtime can also be extended:
+`module.exports = require('buildkite-test-collector/jest/runtime').extend(MyRuntime)`.
+All three environments above support children; jsdom has no `fetch`, while
+happy-dom's `fetch` is recorded as HTTP. Native ESM (`--experimental-vm-modules`)
+supports manual, HTTP and `fetch` children, but not package patching.
 
-OpenTelemetry submission supports Jest 29 and newer. On Jest 28 and older the
-reporter warns `otelEnabled is set, but OpenTelemetry submission needs Jest 29
-or newer` once and uploads results as JSON.
+## What gets recorded
 
-1.13.0-beta.1 also exported spans on Jest 27 and 28; beta.2 does not. The
-JSON upload needs `BUILDKITE_ANALYTICS_TOKEN` (or the reporter's `token`), so
-a Jest 27 or 28 run whose only credential is `BUILDKITE_TESTS_OTLP_TOKEN`, as
-with bktec's OTLP relay, now reports no results and warns
-`otelEnabled is set, but OpenTelemetry submission needs Jest 29 or newer, not
-28.1.3; results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not
-set`. Upgrade to Jest 29, or set `BUILDKITE_ANALYTICS_TOKEN` to keep
-reporting.
-
-The reporter options (`token`, `tags`, `otelEnabled`) are the same as before.
-`otelEnabled` is on only for `true` and the case-insensitive string `'true'`;
-`'false'`, `'1'` and `1` are off, so a value passed through from a CLI or the
-environment, for example `otelEnabled: process.env.BUILDKITE_OTEL`, only turns
-OpenTelemetry on when it says `true`.
-
-Export needs the OpenTelemetry packages, which are optional peer dependencies
-of `buildkite-test-collector` and are not installed with it:
-
-```bash
-npm install --save-dev '@opentelemetry/api@~1.9.0' \
-  '@opentelemetry/sdk-trace-base@^2.0.0' '@opentelemetry/resources@^2.0.0' \
-  '@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0'
-```
-
-The collector supports the OpenTelemetry JavaScript 2.x SDK line:
-`@opentelemetry/api` 1.9, `@opentelemetry/sdk-trace-base` and
-`@opentelemetry/resources` 2.x, and `@opentelemetry/exporter-trace-otlp-proto`
-0.200 to 0.2xx. The 3.0 SDK line (`@opentelemetry/api` 1.10,
-`@opentelemetry/resources` 3.x, `@opentelemetry/sdk-trace` 3.x and the
-0.300 exporter) is not supported yet. Keep the versions in the command above:
-without them npm installs the newest packages, which mix the two lines. The
-peer dependencies only set minimum versions, so a project whose other
-dependencies need a newer `@opentelemetry/api` still installs the collector
-without conflicts or downgrades; if the installed packages cannot export, the
-run warns `OpenTelemetry span export disabled` and uploads JSON (see below).
-Those SDK versions need Node.js 18.19 or 20.6 and newer. The packages are only
-loaded once a run has decided to use OpenTelemetry; with `otelEnabled` off
-nothing changes.
-
-### What a run looks like
-
-Each test that Jest runs gets one `test.execution` span, which is a trace of its
-own: the span is never nested under anything else. A test retried with
-`jest.retryTimes`, including Jest 30.5's `entireDescribe` mode, gets one span per
-attempt. A test skipped with `test.skip`,
-`xit` or `test.todo` gets a `skipped` span. When a `beforeAll` hook fails, every
-test in its block gets a failed span carrying the hook's error, which is also
-what the JSON upload reports.
-
-The span's start and end are read from the real clock in the worker, outside
-the test's sandbox, so `jest.useFakeTimers()` does not affect the execution's
-duration. The final attempt is recorded once the file's results have settled,
-using the time the test finished, not the end of `afterAll`. This includes late
-test-owned promise rejections that Jest 30.5 attaches to a test during
-`afterAll`, as well as `afterEach` failures. Jest 29 treats those late
-rejections as file errors instead; the test's span stays passed, matching the
-JSON upload.
-
-Spans are exported with explicit settings on a provider the collector owns:
-the sampler always samples, span and trace IDs come from `crypto.randomBytes`
-(so a suite that stubs `Math.random` cannot produce colliding IDs), and the
-attribute and event limits below apply whatever `OTEL_SPAN_*` is set to.
-
-On Buildkite Agent v3.110 or newer with tracing enabled, the test span links to
-the Agent's job span through `TRACEPARENT`, letting you navigate between them
-without combining every test into one trace.
+- Each test has its own root trace, including skipped/todo tests; `jest.retryTimes`
+  (also Jest 30.5's `entireDescribe`) records one span per attempt.
+- A failed `beforeAll` gives every test in its block a failed span with that
+  error, matching JSON; `afterEach` failures are also included.
+- Durations use the real worker clock, unaffected by fake timers, and end when
+  the test finishes, not after `afterAll`.
+- Final results include test-owned rejections Jest 30.5 attributes during
+  `afterAll`; Jest 29 treats these as file errors, leaving the test passed as
+  in JSON.
+- Test spans always sample and use random IDs independent of `Math.random`.
+  On Agent v3.110+ with tracing enabled, `TRACEPARENT` links them to the job span
+  without combining tests into one trace.
 
 ### Child spans
 
-Starting with 1.13.0-beta.2, the collector can also export the work each test
-does, as child spans under its `test.execution` span: spans your tests and
-application code create, and HTTP, HTTPS and `fetch` requests. Setting the
-collector's Jest `runtime`, as above, turns them on; there is no setup file
-and no other option. The runtime lets the collector load the OpenTelemetry API
-and SDK into each test file's sandbox, which has its own module registry.
-Install the async context manager alongside the OpenTelemetry packages above:
-
-```bash
-npm install --save-dev '@opentelemetry/context-async-hooks@^2.0.0'
-```
-
-Requests are recorded with OpenTelemetry's own instrumentation,
-`@opentelemetry/instrumentation-http` (HTTP and HTTPS) and
-`@opentelemetry/instrumentation-undici` (`fetch`), when declared in the Jest
-`rootDir`'s package.json or an ancestor package.json (including workspace
-roots), or bundled as dependencies of a resolvable
-`@opentelemetry/auto-instrumentations-node`, which pnpm does not hoist. Only
-releases from the 2.x SDK line are used: `@opentelemetry/instrumentation-http`
-0.200 to 0.2xx and `@opentelemetry/instrumentation-undici` 0.11 to 0.33, which
-`@opentelemetry/auto-instrumentations-node` 0.81 and older install. Any other
-release is skipped with one warning per run, `OpenTelemetry instrumentation
-skipped: …`; manual children and test spans are unaffected. For example:
-
-```bash
-npm install --save-dev '@opentelemetry/instrumentation-http@>=0.200.0 <0.300.0' \
-  '@opentelemetry/instrumentation-undici@>=0.11.0 <0.34.0'
-```
-
-Narrow the instrumentation the way `@opentelemetry/auto-instrumentations-node`
-reads the same variables: `OTEL_NODE_ENABLED_INSTRUMENTATIONS` keeps only the
-comma-separated names it lists, then `OTEL_NODE_DISABLED_INSTRUMENTATIONS`
-removes the names it lists. Names drop the `@opentelemetry/instrumentation-`
-prefix, so `OTEL_NODE_DISABLED_INSTRUMENTATIONS=undici` keeps HTTP and HTTPS
-and turns off `fetch`. Child spans are billed by the decoded gigabytes
-Buildkite receives, and each instrumented request adds spans to every test
-that makes it; `test.execution` spans are unaffected by these settings.
-
-Instrumented requests carry a W3C `traceparent` header, which is how an
-in-process server continues the test's trace, so a test that asserts or
-snapshots a request's exact headers can see a new one. Set
-`OTEL_NODE_DISABLED_INSTRUMENTATIONS=http,undici` to send requests unchanged.
-
-Starting with **1.13.0-beta.3**, project-declared
-`@opentelemetry/instrumentation-*` packages from the 2.x SDK line are selected
-from the Jest `rootDir`'s package.json and its ancestors up to the filesystem
-root, plus a resolvable `@opentelemetry/auto-instrumentations-node` bundle's
-dependencies, including non-hoisted packages. Incidental transitive packages
-(for example, instrumentations hoisted from `@sentry/node`) are not selected.
-Selection is on by default unless instrumentation changes observable log records
-or message payloads (`pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`),
-adds low-level connection/lookup noise (`net`, `dns`), produces only metrics
-(`host-metrics`, `runtime-node`), or is browser-only (`fetch`, `xml-http-request`,
-`document-load`, `user-interaction`, `long-task`; Node `fetch` uses `undici`).
-`fs` is also off by default, as in auto-instrumentations-node, to avoid a span
-for every filesystem call. Opt in explicitly with
-`OTEL_NODE_ENABLED_INSTRUMENTATIONS`, for example
-`OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,fs`. The enabled list selects only its
-listed names; `OTEL_NODE_DISABLED_INSTRUMENTATIONS` still wins when a name is
-in both lists. The same environment switches narrow selection; for example,
-`OTEL_NODE_DISABLED_INSTRUMENTATIONS=express,graphql,redis,pg` turns off those
-package spans without turning off test results or HTTP spans. No new reporter
-option, `otelInstrumentations` option or `jest/otel` bridge is needed.
-With the existing `BUILDKITE_ANALYTICS_DEBUG_ENABLED=true` switch, the worker
-logs the union of its selected instrumentation names once when it exits,
-including selections from later projects in the same worker.
-
-CommonJS packages are patched from the upstream instrumentation's module and
-file definitions as Jest loads them, including routes registered at file
-load and imports resolved through `moduleNameMapper`. A package mapped to a
-local mock is not mistaken for the real package. If the instrumentation sees
-a mocked or incomplete OpenTelemetry API, package patching is skipped for
-that file with one warning; test results still export. Native ESM package patching
-is not supported. Verified package combinations are Express 4.22.3 with
-instrumentation 0.71.1, GraphQL 16.14.2 with 0.69.0, redis 5.12.1 with 0.71.0,
-pg 8.23.1 with 0.69.0, and default Fastify 5.12.8 with 0.57.0, on Jest 29.7.0
-and 30.5.2 in CI. The Fastify runtime preserves getter-only dependency exports;
-its standard instrumentation is deprecated upstream in favor of `@fastify/otel`.
-Also checked manually outside CI: Koa 2 routes, NestJS 11 with the
-Express adapter, Apollo Server 5 `executeOperation`, mysql2 3 queries, MongoDB 6 /
-Mongoose 8 operations, ioredis 5, and Knex/Sequelize/TypeORM query paths. These
-checks cover the exercised operations, not full framework/driver feature sets.
-Other selected instrumentations use their upstream definitions and
-supported-version ranges; they are not all individually verified by this collector.
-
-Incoming propagation is partial: the collector does not install a W3C propagator
-in the sandbox, so gRPC server and amqplib consumer spans can start separate
-traces rather than continue the test's trace and are then not exported as its
-children. The checked Socket.IO incoming request/ack path produced no children.
-Installing `@fastify/otel` or `@prisma/instrumentation` alone does not auto-select
-them; explicit setup in the suite worked in the study. No sandbox propagator is
-added by this release. `aws-sdk` is opt-in through
-`OTEL_NODE_ENABLED_INSTRUMENTATIONS`, as described above.
-
-Child spans add billed decoded GB, not additional test executions. Counts
-depend on the operation and instrumentation version/configuration. The
-examples add the following children when selected, in addition to the one
-`test.execution` root:
-
-| Instrumentation | Children per operation |
-| --- | --- |
-| `http` | 1 client span per HTTP/HTTPS request; another server span when the server runs in the instrumented worker |
-| `undici` | 1 client span per `fetch`; an in-process server can add an `http` server span |
-| `net` (opt-in) | 1 `tcp.connect` span per new TCP connection; a request can add this beneath its HTTP client span |
-| `dns` (opt-in) | 1 span per DNS lookup; a request can add multiple lookups (the observed Express request added 2 `dns.lookup` spans) |
-| `express` | 1 span per middleware/handler run: the simple Express 4 route has 3 (query, expressInit, handler), plus the 2 HTTP spans when `http` is enabled |
-| `router` | Remains on by default when selected; Express 5 is instrumented by both `express` and `router`, so one supertest request can add about 11 spans across the selected instrumentations |
-| `graphql` | Parse + validate + execute + resolver spans: 4 for the one-field async query; more resolved fields can add more spans |
-| `redis` | 1 connect span and 1 per command: connect/SET/GET adds 3 |
-| `pg` | 1 connect span and 1 per query: a direct connect/SELECT adds 2; acquiring a pooled connection can add a pool-connect span |
-| Manual spans | 1 per ended span in the test's trace |
-
-Message instrumentations such as `kafkajs`, `amqplib` and `aws-sdk` (SQS/SNS
-and Lambda ClientContext) are opt-in because they can change message headers,
-attributes or context, just as HTTP adds `traceparent`. Empty carriers such as
-`headers: {}`, `MessageAttributes: {}` or `MessageAttributeNames: []` can be added
-even without trace context injection. Tests asserting exact messages can see
-those changes. There is no upstream propagation-only switch; use
-`OTEL_NODE_DISABLED_INSTRUMENTATIONS=kafkajs,amqplib,aws-sdk` to opt out of
-those package patches.
-
-Built-in instrumentation may not be active until the first test/per-test
-hook. A top-level `const { get } = require('http')` or native ESM
-`import { get } from 'node:http'` evaluated before activation captures the
-unpatched function: requests through that binding have no client span or
-`traceparent` header.
-Use the module object instead: `const http = require('http')` followed by
-`http.get(...)`, or `import http from 'node:http'` followed by `http.get(...)`.
-
-Package patches are prepared at file load but record only during managed
-tests. One child provider per worker uses the collector's resource and random
-ids from `crypto.randomBytes`. The file connects to it at its first test or
-`beforeEach`, after setup and `beforeAll`. It never registers that provider in the file's sandbox,
-which would refuse a provider the suite registers later: it becomes the
-delegate of the API's proxy provider, which tracers obtained earlier and later
-`getTracer()` calls both use, until the suite registers its own. Nor does it
-register a context manager in the sandbox: while none is registered, the API
-falls back to the collector's `AsyncLocalStorageContextManager`, and one the
-suite registers takes over until the suite disables it. Before each test and
-per-test hook, the collector becomes the proxy's delegate again if the suite
-has reset OpenTelemetry since, for example with `trace.disable()` in
-`afterEach`. W3C trace-context and baggage propagation are registered in the
-worker for the instrumentation, not in the sandbox, so a propagator the suite
-registers is used as is. Children otherwise use the SDK's defaults and `OTEL_*`
-settings, as Ruby's do: `OTEL_TRACES_SAMPLER=traceidratio` can sample children
-out, but never test spans, whose provider is separate and always samples.
-Node's built-in modules, which Jest shares between test files, are patched
-once per worker and stay wrapped. Each managed project's instrumentation
-selection still applies: HTTP/fetch requests are not traced or given trace
-headers merely because an earlier project selected their instrumentation.
-A gate closes at file teardown or while a
-suite owns its provider, so opted-out files record nothing and do not gain
-trace headers on requests without an existing trace context. Package copies
-and their instrumentation belong to the file's sandbox. If your project
-already uses a custom runtime, build one with `extend`:
-`module.exports = require('buildkite-test-collector/jest/runtime').extend(MyRuntime)`.
-
-Inside a test, or a `beforeEach`/`afterEach` hook, including those a
-`setupFilesAfterEnv` file registers, the test span is current:
+Set the collector's `runtime` and install the context manager above to export
+manual and selected instrumentation spans beneath each test; no setup file is
+needed. Inside tests and `beforeEach`/`afterEach` (including setup-file hooks),
+the test span is current:
 
 ```js
 const { trace } = require('@opentelemetry/api')
@@ -329,337 +117,247 @@ test('does work', async () => {
 })
 ```
 
-Tracers obtained at module load, in the test file, a setup file or
-application code it requires, record children too, as do modules loaded again
-after `jest.resetModules()` or inside `jest.isolateModules()`, including a reset
-in `beforeAll`. Async work inherits
-the test's context across `await`, timers (including Jest's fake timers) and
-callback APIs, and concurrent tests keep separate contexts. A test retried
-with `jest.retryTimes` gets one test span per attempt, each with the children
-of its own attempt. Callback-style (`done`) tests and hooks and generator
-tests are supported. A child span is any span in a running test's trace:
-spans started under the test, and spans that continue its trace through
-propagation, such as an in-process server handling a request the test made.
-Spans from `beforeAll`, `afterAll`, file loading or roots you start yourself
-are in traces of their own and are not exported.
+- Module-load tracers work, including setup/application modules, `resetModules`
+  (also in `beforeAll`) and `isolateModules`; await, timers/fake timers and
+  callbacks retain context, concurrent tests stay separate, and retries retain
+  only their own attempt's children. Callback-style tests/hooks and generators work.
+- Children include spans continuing the test's trace, such as an in-process
+  HTTP server; file-load, `beforeAll`, `afterAll` and independent root spans
+  are not exported. There are no phase spans or `otelSpanFilter` option.
+- Already-started children can end and export after file teardown but before
+  worker exit, retaining their original trace/parent and flushing when they end.
+  New descendants after that file's teardown are rejected and counted as
+  `started after file teardown`; unfinished children count as
+  `still open when the worker exited` in the dropped-children warning.
+- Jest clears sandbox timers at teardown and can force-exit workers: end spans
+  and close long-lived connections, since work that never ends cannot export.
+- A suite-owned provider (in setup, a module, `beforeAll`, a test or a per-test
+  hook) is never replaced/reconfigured: its spans go only there, collector
+  children pause, and test spans still export. Children resume after
+  `trace.disable()`. Process-level setup such as `NODE_OPTIONS=--require
+  @opentelemetry/auto-instrumentations-node/register` also leaves test spans only.
+  The warning says `OpenTelemetry child spans are not exported because the suite
+  registers its own tracer provider; to get them, let the collector provide the
+  provider under Jest`. Skip your provider setup when `JEST_WORKER_ID` is set
+  to collect children; SDK 2.x cannot add processors after provider construction.
+- Suite context managers and propagators are left alone; children use normal
+  SDK settings, so `OTEL_TRACES_SAMPLER=traceidratio` can sample them out, never
+  test results. Collector requests to Buildkite are never traced.
 
-Each accepted child is exported when it ends, including a child that ends after its
-test file finishes but before the worker exits. It retains its original
-test's trace and parent even while the worker runs a later file. Ending such
-a child triggers a flush rather than waiting for another file's teardown.
-Children started under that trace only after their original file's teardown
-are not accepted, even while a later file runs; the `OpenTelemetry dropped N
-child span(s)` warning counts them as `started after file teardown`.
-Already-started children still open at worker exit are counted as
-`still open when the worker exited`.
-Jest clears sandbox timers at teardown and can force-exit workers: the
-collector cannot export a span that never gets to end. Close long-lived
-connections and end spans when their work completes.
+Children add billed decoded GB, not test executions. Counts vary by operation,
+instrumentation version and configuration; examples below exclude the test root:
 
-The collector's own requests to Buildkite are sent with tracing suppressed, so
-no instrumentation records them, as children or in traces of your own.
+| Instrumentation | Example children |
+| --- | --- |
+| `http` | 1 client per HTTP/HTTPS request, plus 1 server in an instrumented worker |
+| `undici` | 1 client per `fetch`, plus an in-process `http` server span |
+| `net`, `dns` | 1 `tcp.connect` per new connection, 1 per lookup (an Express request added 2 `dns.lookup` spans) |
+| `express` | 3 for a simple Express 4 route (query, expressInit, handler), plus 2 HTTP spans |
+| `router` | Express 5 overlaps with `express`: a supertest request can add about 11 spans in total |
+| `graphql` | 4 for a one-field async query (parse, validate, execute, resolver); more fields can add more |
+| `redis` | 3 for connect/SET/GET |
+| `pg` | 2 for connect/SELECT; a pool can add a pool-connect span |
+| Manual | 1 per ended span in the test's trace |
 
-Test environments built from `jest-environment-node`,
-`jest-environment-jsdom` and `@happy-dom/jest-environment` with `extend` all
-export children. jsdom has no `fetch`, and happy-dom's `fetch` is recorded as
-HTTP requests. Under native ESM (`--experimental-vm-modules`), manual, HTTP
-and `fetch` children are exported as they are for CommonJS.
+### Choosing instrumentation
 
-### Suites that register their own tracer provider
+The collector selects `@opentelemetry/instrumentation-*` declared in the Jest
+`rootDir`'s package.json or ancestors up to the filesystem root (workspace roots
+included), plus dependencies of resolvable `@opentelemetry/auto-instrumentations-node`
+(including non-hoisted pnpm packages), not incidental hoisted packages from
+dependencies such as `@sentry/node`. It uses upstream definitions/version ranges
+for CommonJS packages, including file-load routes and `moduleNameMapper` aliases;
+local mapped mocks are not patched.
 
-A tracer provider the suite registers in a test file's sandbox, in a setup
-file, the test file, a module it loads or a `beforeAll` hook, is never
-replaced or reconfigured. That file exports test spans only, and the run warns
-once: `OpenTelemetry child spans are not exported because the suite registers
-its own tracer provider; to get them, let the collector provide the provider
-under Jest`. A provider the suite registers later, in a `beforeEach` hook or a
-test, takes over from the collector's: its spans go to the suite's provider
-alone, children are not exported while it is registered, the run warns the
-same way, and children resume after the suite removes it with
-`trace.disable()`. Unlike Ruby's SDK, the 2.x JavaScript SDK cannot add a span
-processor to a provider after it is constructed, so to get children, don't
-register your provider when your code runs under Jest (Jest sets
-`JEST_WORKER_ID`) and let the collector's take its place. OpenTelemetry
-configured for the whole Jest process instead, for example with
-`NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register`,
-gets the same warning and also exports test spans only.
+Use 2.x SDK-line instrumentation, for example HTTP 0.200–0.2xx and undici
+0.11–0.33 (auto-instrumentations-node 0.81 and older):
 
-Phase spans (`test.setup`, `test.body`, `test.teardown`) are not implemented in
-JavaScript yet: children nest directly under the test span, or under their own
-parent spans. There is no `otelSpanFilter` option.
+```bash
+npm install --save-dev '@opentelemetry/instrumentation-http@>=0.200.0 <0.300.0' \
+  '@opentelemetry/instrumentation-undici@>=0.11.0 <0.34.0'
+```
 
-### Identity
+Other SDK lines are skipped with `OpenTelemetry instrumentation skipped: …`
+once per run; test and manual spans are unaffected.
+Selection is on by default except for these groups:
 
-A test's scope, name and location are derived exactly as the JSON upload
-derives them, so switching `otelEnabled` on keeps each test's history:
+- Observable log/message changes: `pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`.
+- Low-level noise: `net`, `dns`; filesystem-call noise: `fs` (also off upstream).
+- Metrics only: `host-metrics`, `runtime-node`.
+- Browser only: `fetch`, `xml-http-request`, `document-load`, `user-interaction`, `long-task` (Node fetch uses `undici`).
+
+`OTEL_NODE_ENABLED_INSTRUMENTATIONS` selects only its comma-separated names,
+including default-off names; `OTEL_NODE_DISABLED_INSTRUMENTATIONS` then removes
+names and always wins. Omit the `@opentelemetry/instrumentation-` prefix:
+`OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,fs` selects just those two;
+`OTEL_NODE_DISABLED_INSTRUMENTATIONS=express,graphql,redis,pg` keeps HTTP/fetch.
+These switches never disable test results; there is no extra reporter option
+or bridge. `BUILDKITE_ANALYTICS_DEBUG_ENABLED=true` logs the union of selected
+names once per worker at exit, including later projects in that worker.
+
+- CI-verified on Jest 29.7.0/30.5.2: Express 4.22.3/instrumentation 0.71.1, GraphQL 16.14.2/0.69.0, redis 5.12.1/0.71.0, pg 8.23.1/0.69.0.
+- Checked manually outside CI: default Fastify 5.12.8/0.57.0, Koa 2 routes, NestJS 11 (Express), Apollo Server 5 `executeOperation`, mysql2 3, MongoDB 6/Mongoose 8, ioredis 5, Knex/Sequelize/TypeORM queries; these cover exercised operations, not full feature sets.
+- Other upstream instrumentations are not individually verified; Fastify's standard instrumentation is deprecated in favor of `@fastify/otel`.
+- Incoming propagation is partial: no sandbox W3C propagator is installed, so gRPC server/amqplib consumer spans can start separate traces and not export as children; the checked Socket.IO incoming request/ack produced no children.
+- `@fastify/otel` and `@prisma/instrumentation` are not auto-selected; explicit suite setup worked in manual checks.
+
+## Identity and attributes
+
+Scope, name and location match JSON, preserving test history:
 
 | Span attribute | Value | Execution field |
 | --- | --- | --- |
-| `buildkite.test.scope` | the `describe` titles joined with spaces | scope |
-| `buildkite.test.name` | the test title | name |
-| `test.suite.name` | the `describe` titles joined with spaces | — |
+| `buildkite.test.scope` | `describe` titles joined with spaces | scope |
+| `buildkite.test.name` | test title | name |
+| `test.suite.name` | `describe` titles joined with spaces | — |
 | `test.case.name` | scope and name joined with a space | — |
-| `code.file.path` | the test file, relative to `rootDir`, with any location prefix | file name, location |
-| `code.line.number` | the test's line when `testLocationInResults` is on | location |
-| `test.case.result.status` | `pass`, `fail` or `skipped` | result |
-| `buildkite.test.execution.external_id` | a UUID the collector generates per span | external ID |
+| `code.file.path` | file relative to `rootDir`, with location prefix | file name, location |
+| `code.line.number` | test line when `testLocationInResults` is on | location |
+| `test.case.result.status` | passed → `pass`, failed → `fail`, pending/skipped/todo → `skipped` | result |
+| `buildkite.test.execution.external_id` | generated UUID per span | external ID |
 
-Jest results map to `test.case.result.status` as `passed` → `pass`,
-`failed` → `fail`, and `pending`, `skipped` and `todo` → `skipped`.
+jest-circus omits `ROOT_DESCRIBE_BLOCK` from the whole name path: even a test
+with that title inside `describe('ordinary')` has that name and an empty scope.
+Failed spans have error status with the failure's first line (1,024 code points)
+and one `exception` event per failure containing the message/stack (10,243).
+Unicode code points count once, including emoji. Failure text matches JSON except:
 
-Names follow jest-circus, which leaves its internal `ROOT_DESCRIBE_BLOCK`
-marker out of the whole name path, so a test titled `ROOT_DESCRIBE_BLOCK`
-inside `describe('ordinary')` is named `ROOT_DESCRIBE_BLOCK` with an empty
-scope in both uploads.
-
-A failed test sets the span's status to error with the failure's first line as
-its description, cut at 1,024 characters as the server cuts the JSON upload's.
-Each failure is an `exception` event whose `exception.message` carries the
-rest of Jest's failure message, including the stack trace, truncated to 10,243
-characters. Lengths count Unicode code points, as the server and the other
-collectors do, so an emoji counts once and is never cut in half.
-
-Failure text matches the JSON upload with two exceptions. On Jest 30.5 and
-later, a test that throws something other than an `Error` (`throw 'oops'`, and
-every test timeout, which Jest 30.5 throws as a string) has its value wrapped
-in a new `Error` by Jest after the test's last hook, so the JSON upload's
-message carries about ten Jest-internal stack frames that the span's message
-does not; the failure reason and the test's own frames are the same. On Jest
-29 to 30.4, an error whose `cause` chain is circular makes Jest fail the whole
-file, so the JSON upload sends nothing for it, while the span still reports
-the test as failed.
+- Jest 30.5+ wraps non-Errors (including string timeouts) after the last hook,
+  adding about ten internal stack frames to JSON but not spans; reasons and
+  test frames match.
+- Jest 29–30.4 fails the entire file for circular `cause` chains, so JSON sends
+  nothing while the span still reports the failed test.
 
 ### Resource and run attributes
 
-The `buildkite.execution.via=otlp` marker opts every exported test span into
-execution synthesis. Buildkite-specific execution fields are flat
-(`buildkite.run_key`, `buildkite.job_id`, ...); producer identity follows
-OpenTelemetry resource semantic conventions.
-
-Resources identify entities that apply to every span the worker emits:
-
 | Resource attribute | Value | Execution field |
 | --- | --- | --- |
-| `service.name` | the Test Engine suite slug, when available | — |
-| `service.namespace` | the Buildkite organization slug, when available | — |
-| `cicd.pipeline.run.id` | the CI pipeline run ID | build ID on Buildkite |
-| `cicd.pipeline.run.url.full` | the CI pipeline run URL | URL |
-| `cicd.worker.id` | the Buildkite Agent ID, when available | — |
-| `process.runtime.version` | the Node.js version | language version |
-| `vcs.ref.head.name` | the branch (or tag) name | branch |
-| `vcs.ref.head.revision` | the commit SHA | commit |
+| `service.name`, `service.namespace` | suite slug, organization slug, when available | — |
+| `cicd.pipeline.run.id`, `cicd.pipeline.run.url.full` | CI run ID, URL | build ID on Buildkite, URL |
+| `cicd.worker.id` | Buildkite Agent ID, when available | — |
+| `process.runtime.version` | Node.js version | language version |
+| `vcs.ref.head.name`, `vcs.ref.head.revision` | branch/tag, commit SHA | branch, commit |
 | `vcs.ref.type` | `branch` or `tag` | — |
 
-The SDK's default resource also contributes `telemetry.sdk.*` attributes, and
-`OTEL_RESOURCE_ATTRIBUTES` remains the standard way to add resource identity.
+The SDK adds `telemetry.sdk.*`; use `OTEL_RESOURCE_ATTRIBUTES` for extra resource identity.
 
-Each test span also carries the run metadata:
-
-| Span attribute | Value | Execution field |
+| Test span attribute | Value | Execution field |
 | --- | --- | --- |
 | `buildkite.execution.via` | `otlp` | — |
-| `buildkite.run_key` | the Test Engine run key | run key |
-| `buildkite.run_url` | a `BUILDKITE_ANALYTICS_URL` that differs from the CI run URL | URL |
-| `buildkite.build_number` | the build number | number |
-| `buildkite.job_id` | the job's UUID | job ID |
-| `buildkite.step_id` | the step's UUID | step ID |
-| `buildkite.message` | the commit message | message |
-| `buildkite.collector.name` | `js-buildkite-test-collector` | collector |
-| `buildkite.collector.version` | this package's version | version |
-| `buildkite.location_prefix` | the prefix prepended to test file paths, when configured | location prefix |
-| `buildkite.test.framework.name` | `jest` | — |
-| `buildkite.test.framework.version` | the Jest version | — |
-| `buildkite.tag.<key>` | each reporter `tags` entry, plus `ci.worker.id` from `BUILDKITE_AGENT_ID` | execution tag `<key>` |
+| `buildkite.run_key` | Test Engine run key | run key |
+| `buildkite.run_url` | `BUILDKITE_ANALYTICS_URL` when different from CI URL | URL |
+| `buildkite.build_number`, `buildkite.job_id`, `buildkite.step_id` | build number, job UUID, step UUID | number, job ID, step ID |
+| `buildkite.message` | commit message | message |
+| `buildkite.collector.name`, `buildkite.collector.version` | `js-buildkite-test-collector`, package version | collector, version |
+| `buildkite.location_prefix` | configured path prefix | location prefix |
+| `buildkite.test.framework.name`, `buildkite.test.framework.version` | `jest`, Jest version | — |
+| `buildkite.tag.<key>` | reporter tags, plus `ci.worker.id` from `BUILDKITE_AGENT_ID` | execution tag `<key>` |
 
-The execution name affixes (`BUILDKITE_ANALYTICS_EXECUTION_NAME_PREFIX` and
-`BUILDKITE_ANALYTICS_EXECUTION_NAME_SUFFIX`) are not sent over OpenTelemetry;
-`buildkite.test.name` is the test title as written. Use `tags` to distinguish
-runs that share a suite, or keep `otelEnabled` off if you rely on them.
+`BUILDKITE_ANALYTICS_EXECUTION_NAME_PREFIX` and
+`BUILDKITE_ANALYTICS_EXECUTION_NAME_SUFFIX` are not sent: the test title is
+unchanged. Use tags to distinguish runs, or keep `otelEnabled` off if you rely on affixes.
 
-## What gets sent
+## Export settings
 
-The collector exports to `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` (default
-`https://tests-otlp.buildkite.com/v1/traces`; it must be an http or https URL
-with a host, or the run warns and falls back) and authenticates with
-`BUILDKITE_TESTS_OTLP_TOKEN` or, when that is unset or blank, the reporter's
-`token` option or `BUILDKITE_ANALYTICS_TOKEN`: either the suite API token or an
-agent OIDC token with the `write_uploads` scope. bktec's OTLP relay sets both
-`BUILDKITE_*` variables to its loopback listener and local credential, then
-forwards spans to Buildkite with its own credential.
+- Destination: `BUILDKITE_ANALYTICS_OTLP_ENDPOINT`, default
+  `https://tests-otlp.buildkite.com/v1/traces`; only http/https URLs with a host
+  are valid.
+- Credentials: nonblank `BUILDKITE_TESTS_OTLP_TOKEN`, then reporter `token` or
+  `BUILDKITE_ANALYTICS_TOKEN` (suite API token or agent OIDC with `write_uploads`).
+  bktec's relay sets the endpoint/token to its loopback listener/local credential
+  and forwards with its own credential.
+- Requests: gzip OTLP/HTTP protobuf POSTs with `Authorization: Token token="…"`,
+  `Buildkite-Tests-Run-Key` and `Buildkite-Tests-Span-Stream: test` or `child`.
+  Forward both `Buildkite-Tests-*` headers through an OTLP proxy.
+- `OTEL_EXPORTER_OTLP_*` endpoint/header/compression/certificate/protocol settings
+  are ignored: other destinations cannot redirect results or leak their credentials.
+  `OTEL_TRACES_SAMPLER`, `OTEL_BSP_*`, `OTEL_SPAN_*`, `OTEL_EVENT_*` cannot change test export.
+- Test defaults: queue 8,192, batch 120, delay 1,000 ms, export timeout 30 seconds;
+  override with `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` and
+  `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE`.
+  Overflow waits in memory (no cap), rather than dropping results.
+- Child defaults: bounded queue 2,048, batch 512, delay 5,000 ms, timeout 30 seconds;
+  override with `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` and
+  `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE`.
+  Child floods can drop children, never displace results.
+- Size overrides must be decimal integers 1–2,147,483,647; invalid values warn
+  and use defaults, and batch > queue resets both defaults. The server rejects
+  bodies >900 KiB: lower batch size for large failures.
+- Attributes/exception messages are limited to 10,243 code points, 128 attributes
+  per span/event and 100 events per span; long test names retain JSON identity
+  (the server truncates names to 10,240 before deriving the test ID).
+- Each file flushes tests first, then children, with separate 30-second failure
+  budgets per worker. A healthy endpoint can flush longer; failures and waits
+  exceeding the remaining budget consume it. After exhaustion, flushes stop
+  waiting but exports continue in the background until worker exit.
+- Exports retry 429/502/503/504, timeouts and connection errors with backoff;
+  other responses (400/401/403/404/413) fail immediately.
+- One worker reports one run: changing run identity after export starts warns
+  and keeps the original run key.
 
-Every request is an OTLP/HTTP protobuf `POST` with gzip compression and the
-headers `Authorization: Token token="…"`, `Buildkite-Tests-Run-Key` (the run
-key) and `Buildkite-Tests-Span-Stream: test` for test spans, or `child` for child
-spans. Separate exporters and queues keep children out of test batches. If you relay collector traffic
-through your own OTLP proxy, forward both `Buildkite-Tests-*` headers.
+## Known limits and troubleshooting
 
-The standard `OTEL_EXPORTER_OTLP_*` endpoint, header, compression, certificate
-and protocol variables are never read, so credentials the process configures
-for another OpenTelemetry destination are not sent to Buildkite, and that
-destination's settings do not redirect test results. `OTEL_TRACES_SAMPLER`,
-`OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_EVENT_*` cannot change test-span export.
-The child provider uses normal SDK sampling, including `OTEL_TRACES_SAMPLER`.
-
-Without either token, nothing is exported and the run uses the JSON path as it
-always has. There is no OTel warning, but the legacy uploader still prints
-`Missing BUILDKITE_ANALYTICS_TOKEN` and uploads nothing, so a suite that
-hard-codes `otelEnabled: true` behaves on a developer machine exactly as it
-did before.
-
-Each worker exports its spans in batches of up to 120, with a queue of 8,192
-spans, a 1,000 ms schedule delay and a 30-second export timeout. Set
-`BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` or
-`BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` to override the batch or queue size.
-Overrides must be positive decimal integers no greater than 2,147,483,647;
-invalid values warn and use the corresponding default, and a batch size larger
-than the queue size warns and resets both to their defaults. The server rejects
-request bodies over 900 KiB, so lower the batch size rather than raise it if a
-suite produces very large failure output.
-
-A full queue never drops a result. A file of fast tests finishes spans faster
-than the worker can export them, so spans that would overflow the queue are
-held in memory and handed to the exporter as earlier batches complete, with
-memory as the only cap; the queue size only bounds what is in flight.
-
-Children use a separate bounded queue of 2,048 spans, batches of up to 512,
-a 5,000 ms schedule delay and a 30-second export timeout. Set
-`BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` and
-`BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` to override these sizes, with the
-same validation as test sizes. A child flood can drop children but never
-displace test results. Each path has its own 30-second flush budget in the
-worker, and test spans flush first. Dropped children warn that
-`test.execution results are unaffected`; SDK 2.x does not expose immediate
-queue-overflow callbacks, so accounting is reported at flush, not the moment a
-queue fills.
-
-Span attribute values are truncated to 10,243 characters, each span keeps at
-most 128 attributes and 100 events, and each event keeps at most 128
-attributes. The attribute limit matches the server, which truncates test names
-to 10,240 characters before deriving the test ID, so a long test name keeps
-the same identity and history as the JSON upload. Exception messages are cut
-at the same 10,243 characters, as the other collectors cut theirs. Both limits
-count Unicode code points.
-
-The worker flushes its queue at the end of every test file, because Jest
-exits workers without any later hook. A flush has no overall time limit while
-the endpoint keeps accepting spans, so a large file against a slow endpoint
-can take more than 30 seconds to flush. Flushes in one worker share a
-30-second budget that failures consume, as does a single wait that outlasts
-what is left of it: a healthy endpoint never consumes it, but once it is used
-up, later flushes stop waiting and export continues in the background until
-the worker exits. A flush that stops waiting warns about the spans still
-exporting at that moment (see below), so that warning is printed even when
-Jest later force-exits the worker. The exporter retries on 429, 502, 503,
-504, timeouts and connection errors with backoff; other responses (400, 401,
-403, 404, 413) fail the batch immediately.
-
-## When something goes wrong
-
-Child spans are best-effort: a missing context manager, instrumentation from
-another SDK line, a suite's own tracer provider and child export failures
-warn and leave test-span export enabled. They never select the JSON fallback.
-Check for `OpenTelemetry child span export disabled`, `OpenTelemetry
-instrumentation skipped` or `the suite registers its own tracer provider` if
-children are missing. Children have their own queue (2,048 spans, batches of
-512, sent every 5 seconds; `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` and
-`BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` override them) and their own
-30-second flush budget, so a flood of children or a slow child endpoint never
-delays or displaces test results. As in Ruby, each worker reports the first
-dropped children as `OpenTelemetry dropped N child span(s) (…); test.execution
-results are unaffected` when it notices them, and the total as `OpenTelemetry
-dropped N child span(s) so far this run (…)` when it exits. The reasons are
-`not-exported` (the queue was full), `export-failure` with the last OTLP
-failure, and `still open when the worker exited`. A batch Buildkite
-refuses with HTTP 403, for example because the organization has reached its
-child span limit, counts as an export failure, and later batches are still
-sent.
-
-The run key (`BUILDKITE_ANALYTICS_KEY`, or the key derived from your CI's
-variables) must be 1–255 printable ASCII characters without spaces. An invalid
-key disables OpenTelemetry export with a warning before any OpenTelemetry code
-is loaded, and the run falls back to the JSON upload. That upload still needs
-`BUILDKITE_ANALYTICS_TOKEN`; when the only credential was
-`BUILDKITE_TESTS_OTLP_TOKEN` (as with bktec's relay), the warning says that
-results will not be uploaded instead.
-
-If the OpenTelemetry packages are missing or come from releases that cannot
-export together, the exporter cannot be built, the run key is invalid or
-`BUILDKITE_ANALYTICS_OTLP_ENDPOINT` is not an http or https URL, the reporter
-warns `OpenTelemetry span export disabled: …` followed by
-`otelEnabled is set, but OpenTelemetry could not be configured …` and the
-whole run uploads JSON, exactly as it does with `otelEnabled` off. That
-decision is made once in the main process before any worker starts. For a
-missing package the warning names the module, and for mismatched packages the
-error a test span would have hit; both give the `npm install` command, with
-the supported version ranges, that installs all four.
-
-Export is decided per test file. Test files that run under a
-`testEnvironment` other than the collector's (or one built with its `extend`)
-cannot export spans: the reporter warns once per environment and uploads those
-files' results as JSON, while files under the collector's environment in the
-same run still export spans. The worker that runs a file records, in a
-temporary directory the reporter creates for the run, that it is exporting
-the file, and the reporter uploads JSON only for files without that record, so
-a test is sent over one path. The exception is two projects with the same
-configuration apart from `testEnvironmentOptions` (Jest accepts a repeated
-explicit project `name` or `id`): if only one of them exported a file, the
-reporter cannot tell which, so it warns and uploads both projects' results for
-that file as JSON as well, and some appear twice rather than any going
-missing. A custom test runner that rewrites the project config before the
-environment sees it can make the worker's record miss the reporter's lookup
-in the same way, so that file's tests would be sent twice, never lost. Check
-the warning if a project uses per-file `@jest-environment` docblocks. The whole run falls back under the legacy `jest-jasmine2` test
-runner, which does not send test events to the environment; export needs the
-default `jest-circus` runner. Every fallback warning ends with what happens to
-the results: `uploading results as JSON instead`, or, when only
-`BUILDKITE_TESTS_OTLP_TOKEN` is set, `results will not be uploaded because
-BUILDKITE_ANALYTICS_TOKEN is not set`.
-
-OpenTelemetry errors never fail a test or change Jest's exit code. If a worker
-cannot set up export, the environment still constructs, the file's tests still
-run, and the worker warns `OpenTelemetry could not be set up in this test
-worker` with what happens to that file's results instead (normally `uploading
-results as JSON instead`). If a span cannot be started, the collector warns
-`TEST RESULTS MISSING` for the affected tests and the run continues. When
-the endpoint rejects a batch, the end-of-file flush warns
-`TEST RESULTS MISSING: OpenTelemetry dropped N test.execution span(s) (export-failure: N, last OTLP failure: …)`,
-naming the HTTP status, `timeout`, or the connection error (for example `403`
-when OTLP ingest is not enabled for the organization, `404` for a wrong
-endpoint, `503` once retries run out, or `ECONNREFUSED`). Spans that never
-reached the exporter are counted as `not-exported: N`. When a flush stops
-waiting because the 30-second budget is used up, it warns
-`TEST RESULTS MISSING: N test.execution span(s) were still exporting when the collector stopped waiting for them and may not have reached Buildkite Test Engine.`
-Export continues in the background, so some of those may still arrive. Each
-span is counted in one warning at most. Because `test.execution` spans are the
-submission, a dropped span is a test execution Test Engine never sees.
-
-Suites that block outgoing HTTP in tests need to allow the endpoint. `nock` and
-`msw` patch Node's `http` module, which the worker's exporter shares with the
-test sandbox, so a blanket `nock.disableNetConnect()` or
-`onUnhandledRequest: 'error'` that is still active when the test file finishes
-blocks the flush. Allow the host with
-`nock.enableNetConnect('tests-otlp.buildkite.com')` (plus `127.0.0.1` when
-using bktec's relay); for MSW, bypass the OTLP endpoint in the unhandled-request
-policy. Reset request handlers between tests without blocking the export host.
-If cleanup restores Node's HTTP functions (`nock.restore()` or MSW's `server.close()`),
-the next managed file checks HTTP/HTTPS `request`/`get` at its first activation
-and reapplies missing upstream patches. If an interceptor retains an older
-collector wrapper underneath, each request still passes through at most one
-active collector request wrapper.
-MSW 2.x through 2.15 (`@mswjs/interceptors` <0.42,
-[mswjs/interceptors#804](https://github.com/mswjs/interceptors/issues/804)) drops
-the caller's headers for `http.get/request(urlString, options, cb)` while HTTP
-instrumentation is active, including on beta.2; use
-`OTEL_NODE_DISABLED_INSTRUMENTATIONS=http` as the workaround.
-
-One worker process reports one run. Run identity is fixed when export starts in
-a worker: reconfiguring with a different run key warns and keeps attributing
-results to the original run.
-
-## Limitations
-
-A worker killed by SIGTERM or SIGINT in the middle of a test file loses that
-file's spans without a `TEST RESULTS MISSING` warning. Node has no exit event
-when a signal ends the process, and the collector does not install signal
-handlers in Jest's workers, so only spans counted by an earlier end-of-file
-flush are warned about. The JSON upload loses the same results.
+- **Headers and messages:** HTTP/fetch add W3C `traceparent`, visible to exact-header
+  assertions/snapshots; `OTEL_NODE_DISABLED_INSTRUMENTATIONS=http,undici` opts out.
+  Message instrumentations can similarly change headers/attributes/context
+  (Kafka, AMQP, SQS/SNS, Lambda ClientContext), even adding empty `headers: {}`,
+  `MessageAttributes: {}` or `MessageAttributeNames: []` without injecting context.
+  There is no upstream propagation-only switch: disable those instrumentations.
+- **Destructured HTTP:** before the first test/per-test hook,
+  `const { get } = require('http')` or `import { get } from 'node:http'` can capture
+  an unpatched function, giving no client span/header; use `http.get(...)` on
+  the module object (`require('http')` or `import http from 'node:http'`).
+- **nock/MSW:** allow the OTLP host (`nock.enableNetConnect('tests-otlp.buildkite.com')`,
+  plus `127.0.0.1` for bktec) or bypass it in MSW's unhandled-request policy;
+  blanket blocking still active at file end blocks the flush. Reset handlers
+  without blocking export. Restoring HTTP functions with `nock.restore()` or
+  MSW `server.close()` is supported across files; each request passes through
+  at most one active collector wrapper, even beneath retained interceptors.
+  MSW 2.x through 2.15 (`@mswjs/interceptors` <0.42,
+  [#804](https://github.com/mswjs/interceptors/issues/804)) drops caller headers
+  for `http.get/request(urlString, options, cb)` with HTTP instrumentation;
+  use `OTEL_NODE_DISABLED_INSTRUMENTATIONS=http`.
+- **Missing children:** context-manager/instrumentation incompatibility, suite
+  providers and child export errors warn, never trigger JSON fallback; look for
+  `OpenTelemetry child span export disabled` or `OpenTelemetry instrumentation skipped`.
+  A mocked/incomplete API skips package patches for that file with one warning
+  while test spans still export. Project selection applies even in shared workers:
+  an earlier project's HTTP/fetch selection does not add spans/headers to opted-out files.
+- **Dropped children:** the warning is `OpenTelemetry dropped N child span(s)
+  (…); test.execution results are unaffected`, with a total `… so far this run
+  (…)` at worker exit. Reasons include `not-exported` (queue full), `export-failure`
+  (with last OTLP failure), `started after file teardown`, and `still open when
+  the worker exited`. Queue overflow is counted at flush, not immediately;
+  HTTP 403 (for example a child-span limit) counts as failure but later batches still send.
+- **JSON fallback:** missing/incompatible packages, an invalid endpoint or run
+  key, or exporter construction failure warn `OpenTelemetry span export disabled:
+  …` then `otelEnabled is set, but OpenTelemetry could not be configured …`.
+  Missing/mismatched packages include the supported install command. Run keys
+  (`BUILDKITE_ANALYTICS_KEY` or CI-derived) must be 1–255 printable ASCII characters
+  without spaces; validation precedes OTel loading. Configuration is checked before workers start.
+- **Unsupported Jest:** Jest ≤28 or `jest-jasmine2` uses JSON with a warning;
+  upgrade to Jest 29+ and circus. Files with an unextended environment use JSON
+  while managed files still export spans; warnings name the environment once.
+  Projects differing only in `testEnvironmentOptions` (even repeated explicit
+  names/IDs), or custom runners rewriting config, can make file ownership
+  ambiguous: the reporter warns and uploads JSON too, preferring duplicates
+  over lost results. Check per-file `@jest-environment` docblocks.
+- **Credentials on fallback:** JSON requires reporter `token` or
+  `BUILDKITE_ANALYTICS_TOKEN`; OTLP-only credentials (including bktec) cannot
+  upload fallback results. Warnings end `uploading results as JSON instead` or
+  `results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set`.
+  Without either token there is no OTel warning; legacy upload prints
+  `Missing BUILDKITE_ANALYTICS_TOKEN` and sends nothing, as on a developer machine.
+- **Missing results:** OTel errors never fail tests/change Jest's exit code.
+  Worker setup errors warn `OpenTelemetry could not be set up in this test worker`
+  with that file's fallback outcome; span-start errors warn `TEST RESULTS MISSING`.
+  Rejected batches warn `TEST RESULTS MISSING: OpenTelemetry dropped N
+  test.execution span(s) (export-failure: N, last OTLP failure: …)` with HTTP
+  status/timeout/connection error (for example 403, 404, 503, ECONNREFUSED).
+  Spans not reaching the exporter count as `not-exported: N`. Exhausted flush
+  budgets warn `TEST RESULTS MISSING: N test.execution span(s) were still exporting
+  when the collector stopped waiting for them and may not have reached Buildkite
+  Test Engine.` Some may arrive later; each span is counted at most once.
+  A dropped test span is a missing Test Engine execution.
+- **Signals:** SIGTERM/SIGINT mid-file loses that file's spans without a missing-results
+  warning (as JSON loses its results); only earlier flushes can have reported losses.

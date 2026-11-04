@@ -13,6 +13,10 @@ test.each([
   ['disabled wins', 'fs,host-metrics,http', ' fs , host-metrics ', ['http']],
   ['disabled only', '', 'http', []],
   ['all exclusions opt-in', excluded.join(','), '', [...excluded].sort()],
+  ...['pino', 'winston', 'bunyan'].flatMap((name) => [
+    [`${name} opt-in alone`, name, '', [name]],
+    [`${name} disabled wins`, name, name, []],
+  ]),
 ])('declared instrumentation discovery respects %s', (_, enabled, disabled, expected) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-selection-'))
   try {

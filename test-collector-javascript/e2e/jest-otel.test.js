@@ -163,26 +163,13 @@ const otelSupported = jestMajor >= 29
     expect(outcome.children.filter((span) => span.attributes['express.type'])).toEqual([])
   }, 60000)
 
-  test('preserves getter-only module exports in a default Fastify app', async () => {
-    const outcome = await runChildren('fastify', { env: { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'fastify,http,undici' } })
+  test('preserves getter-only module exports', async () => {
+    const outcome = await runChildren('getters')
     if (outcome.result.code) throw new Error(outcome.result.stderr)
     expect([outcome.warnings, outcome.roots.length]).toEqual([[], 1])
-    const root = outcome.rootsNamed('default Fastify route')[0]
+    const root = outcome.rootsNamed('requires getter-only exports')[0]
     expect(root.attributes['test.case.result.status']).toBe('pass')
-    expect(outcome.childrenOf(root).map((span) => span.name).sort()).toEqual(['GET', 'GET /answer', 'request handler - fastify'])
-    expect(outcome.children).toHaveLength(3)
-  }, 60000)
-
-  test.each([
-    ['defaults', {}],
-    ['explicit opt-in', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pino,winston,bunyan' }],
-    ['disabled wins', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pino,winston,bunyan', OTEL_NODE_DISABLED_INSTRUMENTATIONS: 'pino,winston,bunyan' }],
-  ])('preserves logging output with %s selection', async (_, env) => {
-    const outcome = await runChildren('logging', { env })
-    if (outcome.result.code) throw new Error(outcome.result.stderr)
-    expect([outcome.warnings, outcome.roots.length, outcome.children.length]).toEqual([[], 3, 6])
-    for (const child of outcome.children) expect(['setup-file-before', 'setup-file-after']).toContain(child.name)
-    expect(outcome.roots.map((root) => root.attributes['test.case.result.status'])).toEqual(['pass', 'pass', 'pass'])
+    expect(outcome.childrenOf(root).map((span) => span.name)).toEqual(['getter work'])
   }, 60000)
 
   test('exports already-started children after teardown and counts children started too late', async () => {
