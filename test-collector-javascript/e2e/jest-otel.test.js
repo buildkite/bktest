@@ -226,6 +226,44 @@ if (otelSupported) {
     }, 60000)
   }
 
+  test.each(['wrapped', 'subclass'].flatMap((kind) => [true, false].map((enabled) => [kind, enabled])))('preserves a %s environment\'s collector with OTel %s', async (kind, enabled) => {
+    const root = fs.mkdtempSync(path.join(__dirname, '../examples/jest/otel-legacy-'))
+    try {
+      server = await startOtlpServer()
+      fs.writeFileSync(path.join(root, 'cases.js'), "for (const name of ['one', 'two', 'three']) test(name, () => {})")
+      const collector = require.resolve('../jest/environment')
+      const base = kind === 'wrapped' ? require.resolve('jest-environment-node', { paths: [path.dirname(root)] }) : collector
+      fs.writeFileSync(path.join(root, 'environment.js'), `
+        const assert = require('node:assert/strict')
+        const mod = require(${JSON.stringify(base)})
+        class Custom extends (mod.TestEnvironment || mod) {
+          constructor(config, context) {
+            super(config, context)
+            this.collector = { events: [], flush() { assert.equal(this.events.filter(name => name === 'test_start').length, 3) } }
+          }
+          async handleTestEvent(event, state) {
+            this.collector.events.push(event.name)
+            await super.handleTestEvent?.(event, state)
+          }
+          async teardown() { this.collector.flush(); await super.teardown() }
+        }
+        module.exports = ${kind === 'wrapped' ? `require(${JSON.stringify(collector)}).extend(Custom)` : 'Custom'}
+      `)
+      const config = {
+        rootDir: path.dirname(root), roots: [root], testMatch: [path.join(root, 'cases.js')],
+        testEnvironment: path.join(root, 'environment.js'),
+        reporters: ['default', [require.resolve('../jest/reporter'), { otelEnabled: enabled, token: 'test-token', url: server.url }]],
+      }
+      const result = await run(`jest --config ${JSON.stringify(JSON.stringify(config))} --runInBand`, {
+        ...baseEnv, BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+      })
+      if (result.code) throw new Error(result.stderr)
+      expect(result.stderr).not.toContain('[buildkite-test-collector]')
+      expect(server.spans().map((span) => span.attributes['buildkite.test.name']).sort()).toEqual(enabled ? ['one', 'three', 'two'] : [])
+      expect(jsonUpload(result.stdout)?.map((record) => record.name).sort() || []).toEqual(enabled ? [] : ['one', 'three', 'two'])
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  }, 30000)
+
   ;(tools ? test : test.skip)('type-checks reporter options strictly against the selected Jest types', async () => {
     const dir = fs.mkdtempSync(path.join(__dirname, '../examples/jest/otel-types-'))
     try {
