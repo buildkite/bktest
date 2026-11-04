@@ -25,16 +25,21 @@ const installCommand = () => {
   return `npm install --save-dev ${specs.join(' ')}`
 }
 
+const packageVersion = (name) => {
+  for (let directory = path.dirname(require.resolve(name)); directory !== path.dirname(directory); directory = path.dirname(directory)) {
+    const file = path.join(directory, 'package.json')
+    if (fs.existsSync(file) && require(file).name === name) return require(file).version
+  }
+}
+
 // Optional peers must not load until OpenTelemetry is requested.
 const loadSdk = () => {
   const sdk = {}
   try {
     for (const [name, range] of Object.entries(SUPPORTED_VERSIONS)) {
-      // The API doesn't export package.json.
-      let directory = path.dirname(require.resolve(name))
-      while (!fs.existsSync(path.join(directory, 'package.json'))) directory = path.dirname(directory)
-      const { version } = require(path.join(directory, 'package.json'))
-      if (!semver.satisfies(version, range)) throw new Error(`unsupported ${name}@${version} (requires ${range})`)
+      if (name === PACKAGES.api) continue // Install hints cap the API, not runtime compatibility.
+      const version = packageVersion(name)
+      if (version && !semver.satisfies(version, range)) throw new Error(`unsupported ${name}@${version} (requires ${range})`)
     }
     for (const [key, name] of Object.entries(PACKAGES)) sdk[key] = require(name)
   } catch (error) {

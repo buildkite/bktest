@@ -1,3 +1,4 @@
+const { createRequire } = require('module')
 const { resolveSettings, publishSettings, readSettings, isOtelEnabled, isValidRunKey, fallbackOutcome, SETTINGS_ENV, DEFAULT_ENDPOINT } = require('./config')
 
 const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
@@ -254,12 +255,28 @@ describe('resolveSettings', () => {
     expect(readSettings()).toBeNull()
   })
 
+  it('does not use the API install hint as an export compatibility cap', () => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    jest.resetModules()
+    const manifest = createRequire(require.resolve('@opentelemetry/api')).resolve('../../package.json')
+    jest.doMock(manifest, () => ({ name: '@opentelemetry/api', version: '1.10.0' }))
+    try {
+      // The default probe creates and serializes a real SDK 2 span.
+      const settings = resolve({ probe: undefined })
+      expect(warnings()).toEqual([])
+      expect(settings).toMatchObject({ token: 'env-token' })
+    } finally {
+      jest.dontMock(manifest)
+      jest.resetModules()
+    }
+  })
+
   it.each([
     ['@opentelemetry/sdk-trace-base', '1.30.1'],
     ['@opentelemetry/resources', '3.0.0'],
   ])('names unsupported %s %s and explains how to install compatible packages', (name, version) => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
-    jest.doMock(`${name}/package.json`, () => ({ version }))
+    jest.doMock(`${name}/package.json`, () => ({ name, version }))
     try {
       expect(resolve({ probe: undefined })).toBeNull()
     } finally { jest.dontMock(`${name}/package.json`) }
