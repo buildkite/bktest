@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.0
+
+- Add experimental OpenTelemetry export for Jest 29 and 30.2+. Set `otelEnabled: true` on the reporter and add `buildkite-test-collector/jest/runtime`. Keep your usual test environment. JSON uploads remain the default.
+- Send each test result as a span, with HTTP calls, database queries and manual spans underneath. Retries count as one execution per attempt. Test spans cost no extra; child spans are billed by data ingested and need a plan that includes them.
+- Install OpenTelemetry packages only if you use them. The collector no longer declares peers that can break installs next to other SDK versions. Missing child-span dependencies don't prevent test-result export.
+- Type-check reporter options with `jest/reporter.d.ts`. Debug output and OpenTelemetry `diag` show selected instrumentation.
+- Read the [OpenTelemetry guide](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md) before enabling export. Options, environment variables and span shape may change in minor releases. Child spans can contain URLs, query strings and database statements. Default-branch monitors don't include OpenTelemetry results yet.
+
 ## 1.13.0-beta.4
 
 - Set up OpenTelemetry with the reporter and runtime, and keep your own test environment. The beta `jest/environment` setup is gone: use your usual environment and add `runtime`.
