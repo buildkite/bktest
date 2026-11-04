@@ -311,11 +311,12 @@ const createSession = (settings) => {
   }
 
   const forceFlush = async () => {
+    const childFlush = children && awaitWithinBudget(children.flush(), children.metrics).catch(() => true)
     const { drained, failure } = await drain()
     warnUnlessCounted('flush OpenTelemetry spans', failure)
     reportUndelivered({ drained })
     // Rejected child flushes have already counted the failed batch.
-    if (children) children.report(await awaitWithinBudget(children.flush(), children.metrics).catch(() => true))
+    if (children) children.report(await childFlush)
   }
 
   const onExit = () => {
