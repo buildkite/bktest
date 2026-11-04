@@ -1,5 +1,3 @@
-// A worker's built-ins stay patched, but only record while a managed file
-// owns the gate. Spans retain the forwarder of the file where they began.
 const { isBuiltin } = require('module')
 const Debug = require('../util/debug')
 
@@ -21,10 +19,10 @@ const createProvider = (session) => {
     return !worker.enabled.has(name) && Boolean(parent) && session.childExport().isClosedTrace(session.api.trace.getSpanContext(parent)?.traceId)
   }
   const dispatcher = {
-    onStart(span, context) {
+    onStart(span) {
       if (session.childExport().rejectLate(span) || !worker.recording()) return
       owners.set(span, worker.current.forwarder)
-      worker.current.forwarder.onStart(span, context)
+      worker.current.forwarder.onStart(span)
     },
     onEnd(span) {
       owners.get(span)?.onEnd(span)

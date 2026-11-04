@@ -3,8 +3,7 @@ const path = require('path')
 const { isBuiltin } = require('module')
 const semver = require('semver')
 
-// Mirror require-in-the-middle's package/file names, retaining file identity
-// even when an entry point re-exports an internal file (Express).
+// Keep file identity when a package re-exports an internal file, as Express does.
 const packageForFile = (file, runtime, names) => {
   const segments = file.split(path.sep)
   const index = segments.lastIndexOf('node_modules')
@@ -74,8 +73,7 @@ class JestOtelPackages {
           context.cleanups.push(() => instance.disable())
         }
         const instance = this.instances.get(name)
-        // Composite instrumentations (Redis) expose their children's
-        // definitions here, while their own _modules is empty.
+        // Redis's composite exposes child definitions here, not in _modules.
         for (const definition of instance?.getModuleDefinitions() || []) {
           if (definition.name !== record.name) continue
           const targets = record.file === record.name ? [definition] : (definition.files || []).filter((file) => path.normalize(file.name) === path.normalize(record.file))

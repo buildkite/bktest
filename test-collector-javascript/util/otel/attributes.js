@@ -1,11 +1,5 @@
 const workerIdTag = require('../workerIdTag')
 
-const TAG_PREFIX = 'buildkite.tag.'
-
-const isBlank = (value) => value === undefined || value === null || String(value).trim() === ''
-
-// The CI provider's own run id and URL, for correlation with other CI
-// telemetry. The Test Engine run key is a separate identity.
 const ciPipelineRun = (runEnv) => {
   switch (runEnv.ci) {
     case 'buildkite':
@@ -23,8 +17,6 @@ const ciPipelineRun = (runEnv) => {
   }
 }
 
-// Undefined values are fine here and below: the SDK skips them when they
-// become resource or span attributes.
 const resourceAttributes = (runEnv) => {
   const pipelineRun = ciPipelineRun(runEnv)
   const workerId = process.env.BUILDKITE_AGENT_ID
@@ -34,7 +26,7 @@ const resourceAttributes = (runEnv) => {
     'service.namespace': process.env.BUILDKITE_ORGANIZATION_SLUG,
     'cicd.pipeline.run.id': pipelineRun.id,
     'cicd.pipeline.run.url.full': pipelineRun.id ? pipelineRun.url : undefined,
-    'cicd.worker.id': isBlank(workerId) ? undefined : workerId,
+    'cicd.worker.id': workerId?.trim() ? workerId : undefined,
     'process.runtime.version': process.versions.node,
     'vcs.ref.head.name': runEnv.branch,
     'vcs.ref.head.revision': runEnv.commit_sha,
@@ -42,15 +34,6 @@ const resourceAttributes = (runEnv) => {
   }
 }
 
-const tagAttributes = (tags) => {
-  const attributes = {}
-  for (const [key, value] of Object.entries(tags)) {
-    attributes[`${TAG_PREFIX}${key}`] = value
-  }
-  return attributes
-}
-
-// Run metadata the server reads from each test span, plus the run-level tags.
 const runAttributes = ({ runEnv, tags, testRunner, frameworkVersion }) => {
   const pipelineRun = ciPipelineRun(runEnv)
 
@@ -66,7 +49,7 @@ const runAttributes = ({ runEnv, tags, testRunner, frameworkVersion }) => {
     'buildkite.test.framework.name': testRunner,
     'buildkite.test.framework.version': frameworkVersion,
     'buildkite.run_url': runEnv.url && runEnv.url !== pipelineRun.url ? runEnv.url : undefined,
-    ...tagAttributes({ ...workerIdTag(), ...tags }),
+    ...Object.fromEntries(Object.entries({ ...workerIdTag(), ...tags }).map(([key, value]) => [`buildkite.tag.${key}`, value])),
   }
 }
 

@@ -13,9 +13,7 @@ const describeError = (error) => {
   return String(error)
 }
 
-// One warning per run for conditions every test worker would hit: the first
-// process to create the key's marker in the run's directory warns. Without
-// a directory, once per process.
+// Exclusive creation deduplicates warnings across worker processes.
 const warned = new Set()
 const warnOncePerRun = (directory, key, message) => {
   if (warned.has(key)) return

@@ -5,10 +5,8 @@ const EXPORT_TIMEOUT_MILLISECONDS = 30000
 const EXPORT_RESULT_SUCCESS = 0
 const EXPORT_RESULT_FAILED = 1
 
-// The SDK's OTLP exporter reads OTEL_EXPORTER_OTLP_* when it is constructed
-// and merges env headers into explicit ones, so bktec's relay token or a
-// vendor's auth header would leak into the Buildkite request. Only
-// BUILDKITE_* variables may configure this exporter.
+// The SDK merges env headers into explicit headers. Don't leak another
+// destination's credentials into Buildkite requests.
 const withoutExporterEnv = (build) => {
   const removed = {}
   for (const key of Object.keys(process.env)) {
@@ -26,10 +24,7 @@ const withoutExporterEnv = (build) => {
 
 const RESPONSE_CHANNEL = 'http.client.response.finish'
 
-// Names a failed export the way the other collectors do: the HTTP status,
-// "timeout", or the network error's code, falling back to the SDK's message.
-// The SDK reports exhausted retries of a 429, 502, 503 or 504 without the
-// status, so the exporter remembers the status of its last error response.
+// Exhausted SDK retries omit the status; recover it from the last response.
 const failureCause = (error, lastErrorStatus) => {
   if (typeof error?.code === 'number') return String(error.code)
   if (typeof error?.code === 'string') return error.code
@@ -39,18 +34,6 @@ const failureCause = (error, lastErrorStatus) => {
   return String(error)
 }
 
-const errorClass = (error) => (error instanceof Error ? error.name : typeof error)
-
-// Builds one OTLP/HTTP protobuf exporter for a single span stream and counts
-// what passes through it, since the SDK exposes no hook for export outcomes.
-// `metrics` is mutated: handed, exported, failed and lastFailure.
-// `onSettled(spans, succeeded)` runs after every batch's outcome has been
-// counted.
-//
-// The exporter's own concurrency limit (default 30) fails batches outright
-// instead of queueing them; the batch processor already bounds what is in
-// flight (one batch at a time on its timer, the whole queue on a flush), so
-// the limit is lifted rather than turned into a reason to drop results.
 const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, onSettled = () => {} }) => {
   const exporter = withoutExporterEnv(() => new sdk.exporter.OTLPTraceExporter({
     url: endpoint,
@@ -61,6 +44,7 @@ const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, onSettl
     },
     compression: 'gzip',
     timeoutMillis: EXPORT_TIMEOUT_MILLISECONDS,
+    // The processor already bounds batches; another limit would drop results.
     concurrencyLimit: Infinity,
   }))
   const warnedKinds = new Set()
@@ -100,9 +84,8 @@ const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, onSettl
       try {
         exporter.export(spans, settle)
       } catch (error) {
-        // The batch processor does not catch a throwing exporter, so a throw
-        // here would escape into the test run.
-        const kind = errorClass(error)
+        // The batch processor does not catch exporter throws.
+        const kind = error instanceof Error ? error.name : typeof error
         if (!warnedKinds.has(kind)) {
           warnedKinds.add(kind)
           warn(`Could not export OpenTelemetry spans: ${describeError(error)}. Further ${kind} export failures will not be reported.`)

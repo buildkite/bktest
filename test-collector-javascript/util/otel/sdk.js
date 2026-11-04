@@ -1,7 +1,6 @@
 const { createRequire } = require('module')
 const { describeError } = require('./warn')
 
-// Keyed by the name the session uses for each module.
 const PACKAGES = {
   api: '@opentelemetry/api',
   trace: '@opentelemetry/sdk-trace-base',
@@ -9,10 +8,7 @@ const PACKAGES = {
   exporter: '@opentelemetry/exporter-trace-otlp-proto',
 }
 
-// The OpenTelemetry JavaScript 2.x SDK line, which the collector exports
-// with. The peer dependencies only set minimums, so that no other
-// OpenTelemetry user in a project fails to install or is downgraded;
-// assertCanExport decides whether the installed packages work.
+// Peer ranges stay open for suites using newer SDKs; export compatibility is checked below.
 const SUPPORTED_VERSIONS = {
   '@opentelemetry/api': '>=1.9.0 <1.10.0',
   '@opentelemetry/sdk-trace-base': '^2.0.0',
@@ -26,9 +22,7 @@ const installCommand = () => {
   return `npm install --save-dev ${specs.join(' ')}`
 }
 
-// The OpenTelemetry packages are optional peer dependencies: they are only
-// required here, once OTel mode has been requested and the credential and run
-// key have been accepted, never at package load.
+// Optional peers must not load until OpenTelemetry is requested.
 const loadSdk = () => {
   const sdk = {}
   for (const [key, name] of Object.entries(PACKAGES)) {
@@ -45,11 +39,7 @@ const loadSdk = () => {
   return sdk
 }
 
-// Packages from different OpenTelemetry releases load and create spans, then
-// fail every export (an SDK 1.x span has no instrumentationScope for a 0.2xx
-// exporter to read, and the reverse), so a span from a provider built with
-// `providerConfig` is serialized here with the exporter's own transformer
-// before any test runs.
+// Mixed SDK lines can create spans but fail serialization; probe before tests run.
 const assertCanExport = (sdk, providerConfig) => {
   try {
     const exporterRequire = createRequire(require.resolve(PACKAGES.exporter))

@@ -3,18 +3,13 @@ const { warn, describeError } = require('./warn')
 
 const FLUSH_BUDGET_MILLISECONDS = 30000
 
-// One child stream per process: a bounded queue and an exporter labelled
-// `child`, separate from test spans so that a flood, an outage or a refusal of
-// child spans cannot displace, delay or fail results.
+// Child floods and export failures must not displace or delay test results.
 const createChildExport = ({ sdk, settings, processorSizes }) => {
-  // flushBudget is the child stream's own: a child endpoint that hangs never
-  // spends the time test spans need in later files.
   const metrics = { handed: 0, exported: 0, failed: 0, lastFailure: null, flushBudget: FLUSH_BUDGET_MILLISECONDS }
   let offered = 0 // ended children handed to the processor
   let open = 0 // accepted children that have not ended yet
   let startedAfterTeardown = 0
-  // Retain only trace IDs, not closed sandboxes/forwarders, to recognise
-  // descendants started later under a parent from a completed file.
+  // Retain trace IDs, not closed sandboxes, to recognise late descendants.
   const closedTraces = new Set()
 
   const exporter = createExporter({
@@ -28,14 +23,7 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
   })
   const flush = () => processor.forceFlush().finally(() => exporter.forceFlush())
 
-  // A span processor for the provider each test file's children are created
-  // with. It forwards spans that belong to the trace of a test started in
-  // this file, each on its own completion: spans started under a running
-  // test, and spans that continue its trace through propagation, such as an
-  // in-process server handling the test's request. A test's trace ID is
-  // random and only reaches a span through the test, so nothing else
-  // matches: setup and teardown hooks, file loading and detached root spans
-  // start traces of their own.
+  // Trace membership includes propagated server spans, but excludes unrelated work.
   const createForwarder = () => {
     const traces = new Set()
     const tracked = new Set()
@@ -58,8 +46,6 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
           if (!tracked.delete(span.spanContext().spanId)) return
           open -= 1
           offered += 1
-          // The batch processor exports with tracing suppressed, so no
-          // instrumentation records the collector's own requests.
           processor.onEnd(span)
           // There may be no later file teardown to flush this completion.
           if (!active) flush().catch((error) => warn(`Could not flush OpenTelemetry child span: ${describeError(error)}`))
@@ -67,30 +53,21 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
           warn(`Could not export OpenTelemetry child span: ${describeError(error)}`)
         }
       },
-      forceFlush: () => (active ? flush() : Promise.resolve()),
       shutdown: async () => {
         active = false
         for (const traceId of traces) closedTraces.add(traceId)
         traces.clear()
-        // Already-started spans retain this forwarder until they end, even
-        // after the sandbox closes. Only new spans stop being accepted.
       },
     }
   }
 
-  // Children are best-effort, so losses are warned without the TEST RESULTS
-  // MISSING wording and, as in Ruby, the first loss is reported when it is
-  // noticed and the total when the process finishes, rather than after every
-  // test file. A refused batch (403) counts as an export failure, and the
-  // stream keeps sending.
   let warned = 0
   let finished = false
   let notExported = 0
   const report = (drained, { final = false } = {}) => {
     if (finished) return
     finished = final
-    // After a drained flush, a child that never reached the exporter was
-    // dropped from the full queue; the count stands until the next one.
+    // Only a completed flush distinguishes queue drops from spans still waiting.
     if (drained) notExported = offered - metrics.handed
     const late = final ? open : 0
     const lost = notExported + metrics.failed + startedAfterTeardown + late

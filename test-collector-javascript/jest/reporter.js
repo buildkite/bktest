@@ -18,13 +18,9 @@ const jestVersion = (rootDir) => {
   }
 }
 
-// Loads modules the way the project's jest-runner does, from its own
-// dependencies; under Yarn Plug'n'Play the project cannot load them itself.
+// Yarn Plug'n'Play exposes Jest's dependencies to the runner, not the project.
 const runnerRequire = (config) => createRequire(config.runner)
 
-// A test file's `@jest-environment` docblock overrides the project's
-// testEnvironment; jest-runner resolves it the same way just before the file
-// runs, so its own modules are used here to land on the same module.
 const environmentFor = (test) => {
   const { rootDir, testEnvironment } = test.context.config
   try {
@@ -43,9 +39,7 @@ const environmentFor = (test) => {
   }
 }
 
-// Only explains a JSON fallback; whether a file was exported comes from its
-// worker's record. jest-runner loads the environment through the project's
-// transformer, so a Babel or TypeScript environment is loaded the same way.
+// Match jest-runner's loading of Babel and TypeScript environments.
 const isCollectorEnvironment = async (config, environmentPath) => {
   try {
     const { createScriptTransformer } = runnerRequire(config)('@jest/transform')
@@ -58,15 +52,13 @@ const isCollectorEnvironment = async (config, environmentPath) => {
   }
 }
 
-const circusRunner = (config) => process.env.JEST_JASMINE !== '1' && !/jest-jasmine2/.test(config.testRunner)
-
 class JestBuildkiteTestEngineReporter {
   constructor(globalConfig, options) {
     this._globalConfig = globalConfig
     this._options = options
     this._testResults = []
-    this._testEnv = (new CI()).env('jest');
-    this._tags = options?.tags;
+    this._testEnv = new CI().env('jest')
+    this._tags = options?.tags
     this._paths = new Paths(globalConfig, this._testEnv.location_prefix)
     this._fallback = fallbackOutcome({ token: options?.token })
     const frameworkVersion = jestVersion(globalConfig.rootDir)
@@ -94,18 +86,18 @@ class JestBuildkiteTestEngineReporter {
     this._exported = new Map()
   }
 
-  onRunStart(results, options) {
+  onRunStart() {
     if (this._globalConfig.forceExit) {
       console.warn(
         `--forceExit could potentially terminate any ongoing processes that ` +
         `are attempting to send test executions to Buildkite. ` +
         `Have you considered using \`--detectOpenHandles\` to detect ` +
         'async operations that kept running after all tests finished?',
-      );
+      )
     }
   }
 
-  async onRunComplete(_test, _results, _options) {
+  async onRunComplete() {
     try {
       this._uploadAmbiguousExports()
       if (this._otel && this._testResults.length === 0) return
@@ -115,7 +107,6 @@ class JestBuildkiteTestEngineReporter {
     }
   }
 
-  // Leaving the directory behind only costs disk space; it must not fail the run.
   _removeExportRecords() {
     if (!this._exportRecords) return
     try {
@@ -123,9 +114,6 @@ class JestBuildkiteTestEngineReporter {
     } catch (error) {
       warn(`OpenTelemetry could not remove its temporary directory ${this._exportRecords} (${describeError(error)}).`)
     }
-  }
-
-  onTestStart(test) {
   }
 
   async onTestResult(test, testResult) {
@@ -137,25 +125,24 @@ class JestBuildkiteTestEngineReporter {
   }
 
   _addJson(testResult) {
-    const prefixedTestPath = this._paths.prefixTestPath(testResult.testFilePath);
+    const prefixedTestPath = this._paths.prefixTestPath(testResult.testFilePath)
 
     testResult.testResults.forEach((result) => {
       this._testResults.push({
-        'id': randomUUID(),
+        id: randomUUID(),
         ...testEngineRecord(result, prefixedTestPath),
-        'history': {
-          'section': 'top',
-          'start_at': testResult.perfStats.start,
-          'end_at': testResult.perfStats.end,
-          'duration': result.duration / 1000,
+        history: {
+          section: 'top',
+          start_at: testResult.perfStats.start,
+          end_at: testResult.perfStats.end,
+          duration: result.duration / 1000,
         }
       })
     })
   }
 
-  // A result with a record is not uploaded as JSON, but it is kept until the
-  // run ends: projects whose configs differ only in testEnvironmentOptions
-  // share a record key, and one of them may not have exported.
+  // Projects differing only in testEnvironmentOptions share an export key.
+  // Keep their results until every project's export is accounted for.
   _holdIfExported(test, testResult) {
     let key
     try {
@@ -168,9 +155,7 @@ class JestBuildkiteTestEngineReporter {
     return true
   }
 
-  // Fewer records than held results means a project that did not export was
-  // held back along with one that did; which one is unknown, so all of them
-  // go up as JSON, and the exported ones appear twice rather than any being lost.
+  // When ownership is ambiguous, prefer duplicate results over missing ones.
   _uploadAmbiguousExports() {
     for (const [key, testResults] of this._exported) {
       if (exportCount(this._exportRecords, key) >= testResults.length) continue
@@ -182,12 +167,9 @@ class JestBuildkiteTestEngineReporter {
     }
   }
 
-  // Says why a file was not exported. Only jest-circus calls the environment's
-  // handleTestEvent, so files run by jest-jasmine2 cannot export; a file whose
-  // collector environment could not set up OTel was explained by its worker.
   async _warnNotExported(test) {
     const fallback = this._fallback
-    if (!circusRunner(test.context.config)) {
+    if (process.env.JEST_JASMINE === '1' || /jest-jasmine2/.test(test.context.config.testRunner)) {
       this._warnOnce('runner', `otelEnabled is set, but only the jest-circus test runner reports to OpenTelemetry; ${fallback}.`)
       return
     }
