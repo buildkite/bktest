@@ -2,7 +2,7 @@
 
 Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) collectors for JavaScript test frameworks ✨
 
-⚒ **Supported test frameworks:** Jest, Jasmine, Mocha, Cypress, Playwright, Vitest, and [more coming soon](https://github.com/buildkite/test-collector-javascript/issues?q=is%3Aissue+is%3Aopen+label%3A%22test+frameworks%22).
+⚒ **Supported test frameworks:** Jest, Jasmine, Mocha, Cypress, Playwright, Vitest, and [more coming soon](https://github.com/buildkite/bktest/issues).
 
 📦 **Supported CI systems:** Buildkite, GitHub Actions, CircleCI, and others via the `BUILDKITE_ANALYTICS_*` environment variables.
 
@@ -259,7 +259,7 @@ To enable debugging output, set the `BUILDKITE_ANALYTICS_DEBUG_ENABLED` environm
 
 ## 🔜 Roadmap
 
-See the [GitHub 'enhancement' issues](https://github.com/buildkite/test-collector-javascript/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) for planned features. Pull requests are always welcome, and we’ll give you feedback and guidance if you choose to contribute 💚
+See the [GitHub 'enhancement' issues](https://github.com/buildkite/bktest/issues) for planned features. Pull requests are always welcome, and we’ll give you feedback and guidance if you choose to contribute 💚
 
 ## ⚒ Developing
 
@@ -279,7 +279,7 @@ Useful resources for developing collectors include the [Buildkite Test Engine do
 
 ## 👩‍💻 Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/buildkite/test-collector-javascript
+Bug reports and pull requests are welcome on GitHub at https://github.com/buildkite/bktest/issues
 
 ## 🚀 Releasing
 
