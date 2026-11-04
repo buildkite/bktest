@@ -2,6 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const { createRequire } = require('module')
 const { describeError } = require('../util/otel/warn')
+const { packageVersion } = require('../util/otel/sdk')
 const { worker } = require('./otelWorker')
 
 const PREFIX = '@opentelemetry/instrumentation-'
@@ -75,7 +76,7 @@ const loadInstrumentations = (rootDir, warnOnce) => {
           if (!className.endsWith('Instrumentation') || typeof Class !== 'function') continue
           const instance = new Class({ enabled: false })
           // Contrib versions don't identify the SDK line; their base dependency does.
-          const version = SDK_LINES[name] ? instance.instrumentationVersion : createRequire(resolved)('@opentelemetry/instrumentation/package.json').version
+          const version = SDK_LINES[name] ? instance.instrumentationVersion : packageVersion('@opentelemetry/instrumentation', createRequire(resolved))
           const [major, minor] = String(version).split('.').map(Number)
           const [min, max] = SDK_LINES[name] || [200, 300]
           if (major !== 0 || minor < min || minor >= max) throw new Error(`unsupported SDK line (${version})`)

@@ -41,7 +41,8 @@ test.each([
       }
       const sdk = path.join(base, 'node_modules/@opentelemetry/instrumentation')
       fs.mkdirSync(sdk)
-      fs.writeFileSync(path.join(sdk, 'package.json'), JSON.stringify({ version: '0.223.0' }))
+      fs.writeFileSync(path.join(sdk, 'package.json'), JSON.stringify({ name: '@opentelemetry/instrumentation', version: '0.223.0', exports: './index.js' }))
+      fs.writeFileSync(path.join(sdk, 'index.js'), '')
       const output = execFileSync(process.execPath, ['-e', `
         const { loadInstrumentations } = require(${JSON.stringify(require.resolve('./otelInstrumentations'))})
         console.log(JSON.stringify(loadInstrumentations(process.argv[1], (_, message) => { throw new Error(message) }).map(entry => entry.name).sort()))

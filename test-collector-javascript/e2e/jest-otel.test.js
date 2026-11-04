@@ -684,7 +684,7 @@ if (otelSupported) {
       } else {
         // A stand-in for an instrumentation release from another SDK line.
         fs.mkdirSync(target)
-        fs.writeFileSync(path.join(target, 'package.json'), JSON.stringify({ name, version: source.version, main: 'index.js' }))
+        fs.writeFileSync(path.join(target, 'package.json'), JSON.stringify({ name, version: source.version, exports: './index.js' }))
         fs.writeFileSync(path.join(target, 'index.js'), `exports.${source.className} = class { constructor() { this.instrumentationVersion = '${source.version}' } }`)
       }
     }
@@ -769,6 +769,8 @@ if (otelSupported) {
     ['skips another SDK line with one warning', {
       '@opentelemetry/instrumentation-http': { version: '0.300.0', className: 'HttpInstrumentation' },
       '@opentelemetry/instrumentation-undici': { version: '0.34.0', className: 'UndiciInstrumentation' },
+      '@opentelemetry/instrumentation-express': { version: '0.82.0', className: 'ExpressInstrumentation' },
+      '@opentelemetry/instrumentation': { version: '0.300.0' },
     }],
   ])('with only @opentelemetry/auto-instrumentations-node installed, %s', async (_, packages) => {
     const root = projectWithAutoInstrumentations(packages)
@@ -781,7 +783,7 @@ if (otelSupported) {
         for (const test of ['http I/O', 'undici I/O']) expectRequest(outcome, test)
       } else {
         expect(outcome.warnings).toEqual([expect.stringMatching(
-          /OpenTelemetry instrumentation skipped: @opentelemetry\/instrumentation-http .*0\.300\.0.*@opentelemetry\/instrumentation-undici .*0\.34\.0.*2\.x SDK line.*test\.execution export remains enabled\./,
+          /OpenTelemetry instrumentation skipped: @opentelemetry\/instrumentation-http .*0\.300\.0.*@opentelemetry\/instrumentation-undici .*0\.34\.0.*@opentelemetry\/instrumentation-express \(Error: unsupported SDK line \(0\.300\.0\)\).*2\.x SDK line.*test\.execution export remains enabled\./,
         )])
         expect(outcome.children.filter((s) => s.name === 'GET')).toEqual([])
       }
