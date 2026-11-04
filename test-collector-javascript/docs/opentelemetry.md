@@ -217,7 +217,7 @@ load and imports resolved through `moduleNameMapper`. A package mapped to a
 local mock is not mistaken for the real package. Native ESM package patching
 is not supported. Verified package combinations are Express 4.22.3 with
 instrumentation 0.71.1, GraphQL 16.14.2 with 0.69.0, redis 5.12.1 with 0.71.0,
-and pg 8.23.1 with 0.69.0, on Jest 29.7.0 and 30.x. Other installed
+and pg 8.23.1 with 0.69.0, on Jest 29.7.0 and 30.5.2. Other installed
 instrumentations use their upstream definitions and supported-version ranges;
 they are not all individually verified by this collector.
 
