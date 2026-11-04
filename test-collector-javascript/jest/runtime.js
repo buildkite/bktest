@@ -31,14 +31,18 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
     const method = this.cjsLoader ? 'loadModule' : '_loadModule'
     const original = loader[method].bind(loader)
     loader[method] = (localModule, from, moduleName, modulePath, options, moduleRegistry) => {
+      let originalExports
       const load = () => {
         original(localModule, from, moduleName, modulePath, options, moduleRegistry)
-        return localModule.exports
+        return originalExports = localModule.exports
       }
       if (options?.isInternalModule) return load()
       // Jest has resolved aliases, conditions and mocks, and registered the
       // module for circular loads. Store replacement exports in that registry.
-      localModule.exports = this._buildkiteChildren.load(modulePath, load)
+      // Preserve unchanged exports without reading a getter again: modules
+      // such as abstract-logging return a fresh object and have no setter.
+      const patchedExports = this._buildkiteChildren.load(modulePath, load)
+      if (patchedExports !== originalExports) localModule.exports = patchedExports
     }
     this._buildkiteChildren.attachRuntime(this)
   }

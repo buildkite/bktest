@@ -158,6 +158,16 @@ const otelSupported = jestMajor >= 29
     expect(outcome.children.filter((span) => span.attributes['express.type'])).toEqual([])
   }, 60000)
 
+  test('preserves getter-only module exports in a default Fastify app', async () => {
+    const outcome = await runChildren('fastify', { env: { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'fastify,http,undici' } })
+    if (outcome.result.code) throw new Error(outcome.result.stderr)
+    expect([outcome.warnings, outcome.roots.length]).toEqual([[], 1])
+    const root = outcome.rootsNamed('default Fastify route')[0]
+    expect(root.attributes['test.case.result.status']).toBe('pass')
+    expect(outcome.childrenOf(root).map((span) => span.name).sort()).toEqual(['GET', 'GET /answer', 'request handler - fastify'])
+    expect(outcome.children).toHaveLength(3)
+  }, 60000)
+
   test.each([
     ['defaults', {}],
     ['explicit opt-in', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pino,winston,bunyan' }],

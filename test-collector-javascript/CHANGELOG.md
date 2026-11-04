@@ -19,6 +19,10 @@
   when interceptors such as nock have restored `request` or `get`.
 - Skip package patches with one warning when their OpenTelemetry API is mocked
   or incomplete, preserving application behavior and test-result export.
+- Preserve unchanged getter-only module exports instead of assigning them back
+  into Jest's registry, fixing default Fastify apps using `abstract-logging`.
+  Add a real Fastify Jest/OTLP regression and document additional checked
+  integrations, partial incoming propagation and explicit-setup-only packages.
 - Make `pino`, `winston` and `bunyan` opt-in via
   `OTEL_NODE_ENABLED_INSTRUMENTATIONS` so default collection does not change log
   records. Metrics-only `runtime-node` and browser-only `fetch`, `xml-http-request`,

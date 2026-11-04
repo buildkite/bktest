@@ -235,9 +235,24 @@ a mocked or incomplete OpenTelemetry API, package patching is skipped for
 that file with one warning; test results still export. Native ESM package patching
 is not supported. Verified package combinations are Express 4.22.3 with
 instrumentation 0.71.1, GraphQL 16.14.2 with 0.69.0, redis 5.12.1 with 0.71.0,
-and pg 8.23.1 with 0.69.0, on Jest 29.7.0 and 30.5.2. Other selected
-instrumentations use their upstream definitions and supported-version ranges;
-they are not all individually verified by this collector.
+pg 8.23.1 with 0.69.0, and default Fastify 5.12.8 with 0.57.0, on Jest 29.7.0
+and 30.5.2 in CI. The Fastify runtime preserves getter-only dependency exports;
+its standard instrumentation is deprecated upstream in favor of `@fastify/otel`.
+Also checked in a separate compatibility study: Koa 2 routes, NestJS 11 with the
+Express adapter, Apollo Server 5 `executeOperation`, mysql2 3 queries, MongoDB 6 /
+Mongoose 8 operations, ioredis 5, and Knex/Sequelize/TypeORM query paths. These
+checks cover the exercised operations, not full framework/driver feature sets.
+Other selected instrumentations use their upstream definitions and
+supported-version ranges; they are not all individually verified by this collector.
+
+Incoming propagation is partial: the collector does not install a W3C propagator
+in the sandbox, so gRPC server and amqplib consumer spans can start separate
+traces rather than continue the test's trace and are then not exported as its
+children. The checked Socket.IO incoming request/ack path produced no children.
+Installing `@fastify/otel` or `@prisma/instrumentation` alone does not auto-select
+them; explicit setup in the suite worked in the study. No sandbox propagator is
+added by this release. `aws-sdk` is opt-in through
+`OTEL_NODE_ENABLED_INSTRUMENTATIONS`, as described above.
 
 Child spans add billed decoded GB, not additional test executions. Counts
 depend on the operation and instrumentation version/configuration. The

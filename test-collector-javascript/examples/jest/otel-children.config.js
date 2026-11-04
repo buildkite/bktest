@@ -14,7 +14,7 @@ module.exports = {
   testEnvironment: require.resolve('buildkite-test-collector/jest/environment'),
   ...(mode === 'no-runtime' ? {} : { runtime: require.resolve('buildkite-test-collector/jest/runtime') }),
   // Its CommonJS require of the API would load the copy an ES module imports.
-  setupFilesAfterEnv: ['esm', 'aliases', 'mocked-api'].includes(mode) ? [] : [path.join(fixtures, 'support/hooks.setup.js')],
+  setupFilesAfterEnv: ['esm', 'aliases', 'mocked-api', 'fastify'].includes(mode) ? [] : [path.join(fixtures, 'support/hooks.setup.js')],
   testLocationInResults: true,
   ...(mode === 'aliases' ? { moduleNameMapper: {
     '^@fixture/web$': 'express',
@@ -26,7 +26,7 @@ module.exports = {
   // modules, untransformed.
   ...(['optout', 'interceptors'].includes(mode)
     ? { testMatch: [path.join(fixtures, 'io.js'), path.join(fixtures, `${mode}/*.js`)], testSequencer: path.join(fixtures, 'support/sequencer.js') }
-    : { testMatch: [path.join(fixtures, { suite: 'suite/*.js', esm: 'esm/*.mjs', aliases: 'aliases/*.js', late: 'late/*.js', pg: 'pg/*.js', 'mocked-api': 'mocked-api/*.js', logging: 'logging/*.js' }[mode] || '*.js')] }),
+    : { testMatch: [path.join(fixtures, { suite: 'suite/*.js', esm: 'esm/*.mjs', aliases: 'aliases/*.js', late: 'late/*.js', pg: 'pg/*.js', 'mocked-api': 'mocked-api/*.js', logging: 'logging/*.js', fastify: 'fastify/*.js' }[mode] || '*.js')] }),
   ...(mode === 'late' ? { testSequencer: path.join(fixtures, 'support/sequencer.js') } : {}),
   ...(mode === 'esm' ? { transform: {} } : {}),
 }
