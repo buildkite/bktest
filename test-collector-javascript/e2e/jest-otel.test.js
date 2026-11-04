@@ -325,6 +325,27 @@ if (otelSupported) {
   const named = (name) => (span) => span.name === name
   const clientGet = (span) => span.name === 'GET' && span.kind === CLIENT
 
+  test('exports each test once when the collector runtime is extended again', async () => {
+    const dir = fs.mkdtempSync(path.join(__dirname, '../examples/jest/otel-extended-'))
+    try {
+      const jestRuntime = require.resolve('jest-runtime', { paths: [require.resolve('jest', { paths: [path.dirname(dir)] })] })
+      fs.mkdirSync(path.join(dir, 'node_modules'))
+      fs.symlinkSync(path.dirname(path.dirname(jestRuntime)), path.join(dir, 'node_modules/jest-runtime'), 'dir')
+      fs.writeFileSync(path.join(dir, 'runtime.js'), `const runtime = require(${JSON.stringify(require.resolve('../jest/runtime'))}); module.exports = runtime.extend(runtime)`)
+      fs.writeFileSync(path.join(dir, 'cases.js'), "test('one', () => {}); test('two', () => {})")
+      const config = {
+        rootDir: path.dirname(dir), roots: [dir], testMatch: [path.join(dir, 'cases.js')],
+        runtime: path.join(dir, 'runtime.js'),
+        reporters: ['default', [require.resolve('../jest/reporter'), { otelEnabled: true }]],
+      }
+      const outcome = await runChildren('extended', { config: JSON.stringify(config) })
+      if (outcome.result.code) throw new Error(outcome.result.stderr)
+      expect(outcome.result.code).toBe(0)
+      expect(outcome.warnings).toEqual([])
+      expect(outcome.roots.map((span) => span.attributes['buildkite.test.name']).sort()).toEqual(['one', 'two'])
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  }, 60000)
+
   test.each([
     ['all declared', {}, true],
     ['enabled list', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pg' }, true],

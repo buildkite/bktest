@@ -19,6 +19,7 @@ const BaseRuntime = (() => {
 const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
   constructor(config, environment, ...rest) {
     super(config, environment, ...rest)
+    if (environment?._buildkite) return
     const [, , , , testPath, globalConfig] = rest
     require('./otelEnvironment').attach(environment, { globalConfig, projectConfig: config }, { testPath })
     this._buildkiteChildren = environment?._buildkite?.children
