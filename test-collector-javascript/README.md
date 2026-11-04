@@ -54,9 +54,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ];
     ```
 
-    To submit results as OpenTelemetry spans instead of a JSON upload (experimental), set `otelEnabled: true` in the reporter options (only `true` and the case-insensitive string `'true'` turn it on; `'false'`, `'1'` and `1` are off) and use the collector's test environment. Both settings are required: without the `testEnvironment` (or a custom environment not built with the collector's `extend()`), the reporter warns and uploads results as JSON. OpenTelemetry submission supports Jest 29 and newer; on older versions the reporter warns once and uploads JSON, which needs `BUILDKITE_ANALYTICS_TOKEN`. 1.13.0-beta.1 also exported spans on Jest 27 and 28, so a Jest 27 or 28 run whose only credential is `BUILDKITE_TESTS_OTLP_TOKEN` (as with bktec's OTLP relay) reports no results from beta.2 on.
-
-    Setting the collector's Jest `runtime` as well adds child spans under each test. From beta.3, `@opentelemetry/instrumentation-*` packages from the 2.x SDK line are selected when declared in the Jest rootDir's package.json or its ancestors (including workspace roots), or bundled by a resolvable `@opentelemetry/auto-instrumentations-node`. Hoisted transitive packages alone do not opt a project in. Verified examples include HTTP, HTTPS, Node `fetch` (undici), Express, GraphQL, Redis and pg. To preserve suite assertions and limit noise, loggers, message instrumentations (`aws-sdk`, `kafkajs`, `amqplib`), `net`, `dns`, metrics-only and browser-only instrumentations are off by default, as is `fs`. See the guide for the full list and reasons. Opt in with `OTEL_NODE_ENABLED_INSTRUMENTATIONS`; that variable selects only the names it lists. `OTEL_NODE_DISABLED_INSTRUMENTATIONS` always removes its listed names, even when explicitly enabled. Children started before their file finishes can still end and export later under their original test; children started after file teardown are dropped and counted in the warning. Child spans are billed by decoded GB; see [OpenTelemetry submission](docs/opentelemetry.md) for counts per operation, opt-outs and the top-level destructured HTTP import limitation.
+    To try OpenTelemetry submission (experimental), use this configuration:
 
     ```js
     // jest.config.js
@@ -70,6 +68,22 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
       testLocationInResults: true,
     };
     ```
+
+    We send each test result as a timed OpenTelemetry span instead of a JSON upload.
+    Your test names, locations and history stay the same. This needs Jest 29+,
+    the default `jest-circus` runner and the OpenTelemetry JavaScript 2.x SDK.
+    The reporter option and test environment are both required.
+
+    The optional `runtime` setting records work inside tests, such as HTTP requests
+    and database queries. We use instrumentation packages you declare, or those
+    supplied by `@opentelemetry/auto-instrumentations-node`. You can choose them
+    with `OTEL_NODE_ENABLED_INSTRUMENTATIONS` and `OTEL_NODE_DISABLED_INSTRUMENTATIONS`.
+    These extra spans are billed by decoded GB, not test executions.
+
+    See [OpenTelemetry submission](docs/opentelemetry.md) for installation,
+    credentials, examples and known limits. Older Jest versions upload JSON
+    instead, which needs `BUILDKITE_ANALYTICS_TOKEN` or the reporter's `token` option;
+    a relay-only token cannot upload those results.
 
     ### Vitest
 
