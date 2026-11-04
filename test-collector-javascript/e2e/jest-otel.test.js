@@ -87,10 +87,10 @@ const otelSupported = jestMajor >= 29
   // Runs the child span fixtures against a fresh receiver and indexes what
   // arrived. `ownRequests` are spans of the collector's own OTLP requests,
   // which must never be recorded, whoever's instrumentation sees them.
-  const runChildren = async (mode, { args = '--runInBand', env = {}, respond } = {}) => {
+  const runChildren = async (mode, { args = '--runInBand', env = {}, respond, config = 'otel-children.config.js' } = {}) => {
     server = await startOtlpServer({ respond })
     const port = new URL(server.url).port
-    const result = await run(`jest --config otel-children.config.js ${args}`, {
+    const result = await run(`jest --config ${JSON.stringify(config)} ${args}`, {
       ...baseEnv,
       OTEL_CHILD_CASE: mode,
       BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
@@ -393,6 +393,35 @@ const otelSupported = jestMajor >= 29
     return root
   }
   const installed = (name) => path.dirname(require.resolve(`${name}/package.json`, { paths: [path.join(__dirname, '../examples/jest')] }))
+
+  test('enables later projects instrumentation once on the shared worker', async () => {
+    const packages = {
+      '@opentelemetry/instrumentation-http': installed('@opentelemetry/instrumentation-http'),
+      '@opentelemetry/instrumentation-undici': installed('@opentelemetry/instrumentation-undici'),
+    }
+    const roots = [{}, packages, packages].map(projectWithAutoInstrumentations)
+    try {
+      const fixtures = path.join(__dirname, '../examples/jest/otel-children')
+      const config = path.join(roots[0], 'jest.config.json')
+      fs.writeFileSync(config, JSON.stringify({
+        reporters: ['default', [require.resolve('../jest/reporter'), { otelEnabled: true }]],
+        testSequencer: path.join(fixtures, 'support/sequencer.js'),
+        projects: roots.map((root, index) => ({
+          rootDir: root, displayName: String(index), roots: [fixtures], testMatch: [path.join(fixtures, 'io.js')],
+          testEnvironment: require.resolve('../jest/environment'), runtime: require.resolve('../jest/runtime'),
+        })),
+      }))
+      const outcome = await runChildren('projects', { config })
+      if (outcome.result.code) throw new Error(outcome.result.stderr)
+      expect([outcome.warnings, outcome.roots.length]).toEqual([[], 3 * IO_ROOTS])
+      for (const name of ['http I/O', 'undici I/O']) {
+        expect(outcome.rootsNamed(name).map((root) => outcome.childrenOf(root, clientGet).length).sort()).toEqual([0, 1, 1])
+      }
+      for (const child of outcome.children) expect(outcome.rootOf(child)).not.toBeNull()
+    } finally {
+      for (const root of roots) fs.rmSync(root, { recursive: true, force: true })
+    }
+  }, 60000)
 
   test('discovers package instrumentation in non-hoisted auto-instrumentations dependencies', async () => {
     const root = projectWithAutoInstrumentations({ '@opentelemetry/instrumentation-pg': installed('@opentelemetry/instrumentation-pg') })
