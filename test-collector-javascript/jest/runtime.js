@@ -29,7 +29,10 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
     // Newer Jest 30 releases moved the CJS loader off the runtime.
     const loader = this.cjsLoader || this
     const method = this.cjsLoader ? 'loadModule' : '_loadModule'
-    if (typeof loader[method] !== 'function') return this._buildkiteChildren.warnOnce('loader', 'OpenTelemetry package instrumentation skipped: this Jest version has no supported module loader; test.execution export remains enabled.')
+    if (typeof loader[method] !== 'function') {
+      this._buildkiteChildren.warnOnce('loader', 'OpenTelemetry package instrumentation skipped: this Jest version has no supported module loader; test.execution export remains enabled.')
+      return
+    }
     const original = loader[method].bind(loader)
     loader[method] = (localModule, from, moduleName, modulePath, options, moduleRegistry) => {
       let originalExports
