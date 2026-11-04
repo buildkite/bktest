@@ -9,15 +9,15 @@ module.exports = {
     'default',
     ['buildkite-test-collector/jest/reporter', { otelEnabled: true }],
   ],
-  testEnvironment: 'buildkite-test-collector/jest/environment',
-  runtime: 'buildkite-test-collector/jest/runtime', // Optional: record work inside tests
+  testEnvironment: 'node', // Keep your existing environment, or omit for node
+  runtime: 'buildkite-test-collector/jest/runtime',
   testLocationInResults: true,
 }
 ```
 
 We send each Jest result to Test Engine as an OpenTelemetry span: a timed operation.
 You keep the same test names, locations and history as JSON uploads.
-The optional `runtime` setting adds spans for work inside each test, such as HTTP requests and database queries.
+We also record work inside each test, such as HTTP requests and database queries.
 These child spans add billed decoded GB, not test executions. This feature is off by default, supports Jest only, and may change before stable.
 
 ## Setup
@@ -25,41 +25,37 @@ These child spans add billed decoded GB, not test executions. This feature is of
 ```bash
 npm install --save-dev '@opentelemetry/api@~1.9.0' \
   '@opentelemetry/sdk-trace-base@^2.0.0' '@opentelemetry/resources@^2.0.0' \
-  '@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0'
-# Also install this if you want child spans:
-npm install --save-dev '@opentelemetry/context-async-hooks@^2.0.0'
+  '@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0' \
+  '@opentelemetry/context-async-hooks@^2.0.0'
 ```
 
-- Use Jest 29 or newer with its default `jest-circus` runner and the config above. Both the reporter option and environment are required.
-- Use the JavaScript 2.x SDK line: API 1.9, SDK/resources/context 2.x, exporter 0.200–0.2xx. It needs Node.js 18.19 or 20.6 and newer. SDK 3 is not supported; keep these version ranges when installing.
+- Use Jest 29 or newer with its default `jest-circus` runner. Set the reporter option and `runtime`; keep your existing node, jsdom, happy-dom or custom environment. No adapter file is needed.
+- Use the JavaScript 2.x SDK line: SDK/resources/context 2.x and exporter 0.200–0.2xx. It needs Node.js 18.19 or 20.6 and newer. SDK 3 is not supported; keep these version ranges when installing.
+- API compatibility is separate: API 1.9 and 1.10 work with SDK 2.x. Some SDK 2.x packages still cap their API peer range below 1.10, so your package manager may warn or reject that combination; the install example uses API 1.9.
 - Set `BUILDKITE_ANALYTICS_TOKEN` to your suite API token, or use an agent OIDC token with `write_uploads`. You can also pass the reporter's `token` option. A nonblank `BUILDKITE_TESTS_OTLP_TOKEN` takes priority.
 - If you use bktec's local relay, it sets the endpoint and relay token for you. Relay-only credentials cannot upload JSON fallback results.
 - We send to `https://tests-otlp.buildkite.com/v1/traces`. To use another endpoint, set `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` to an HTTP or HTTPS URL with a host.
 - If you use a proxy, forward `Buildkite-Tests-Run-Key` and `Buildkite-Tests-Span-Stream` (`test` or `child`). Requests use gzip protobuf over HTTP and `Authorization: Token token="…"`.
 - Reporter `tags` still work. Only `true` or the case-insensitive string `'true'` enables `otelEnabled`; `'false'`, `'1'` and `1` do not.
-- On Yarn Plug'n'Play, declare `jest-environment-node` at the same version as Jest. Changing the environment or runtime may make the first run slower while Jest rebuilds its cache.
+- Changing the runtime may make the first run slower while Jest rebuilds its cache. A custom runtime can use `require('buildkite-test-collector/jest/runtime').extend(MyRuntime)`.
 
-For jsdom, happy-dom or a custom environment, wrap your existing class:
-
-```js
-// buildkite-jsdom-environment.js
-const { extend } = require('buildkite-test-collector/jest/environment')
-module.exports = extend(require('jest-environment-jsdom').default)
-// jest.config.js: testEnvironment: './buildkite-jsdom-environment.js'
-```
-
-You can keep your environment's setup methods. For TypeScript, type `extend` with your base class:
+For TypeScript, check the collector options alongside Jest's config:
 
 ```ts
-import NodeEnvironment from 'jest-environment-node'
-const { extend } = require('buildkite-test-collector/jest/environment') as {
-  extend: (Base: typeof NodeEnvironment) => typeof NodeEnvironment
-}
-export default class BuildkiteEnvironment extends extend(NodeEnvironment) {}
-// jest.config.js: testEnvironment: './buildkite-environment.ts'
+import type { Config } from 'jest'
+import type { Options } from 'buildkite-test-collector/jest/reporter'
+
+export default {
+  reporters: ['default', ['buildkite-test-collector/jest/reporter', {
+    otelEnabled: true, tags: { team: 'payments' },
+  } satisfies Options]],
+  runtime: 'buildkite-test-collector/jest/runtime',
+} satisfies Config
 ```
 
-A custom runtime can use `require('buildkite-test-collector/jest/runtime').extend(MyRuntime)` too.
+Jest's usual TypeScript config loader is still required.
+
+**Migrating from beta.3:** your `jest/environment` and `extend()` setups keep working, including result-only export without a runtime. With the runtime configured, a `@jest-environment` docblock no longer opts a file out; to opt a project out, omit `runtime` and use its regular environment. The legacy collector environment still needs `jest-environment-node` declared under Yarn Plug'n'Play.
 
 ## What gets recorded
 
@@ -71,6 +67,8 @@ test('does work', async () => {
   })
 })
 ```
+
+A suite registering its own tracer provider keeps its own child spans; we send test spans only. To collect children in Buildkite, skip your application's provider setup when `JEST_WORKER_ID` is set.
 
 - Every test gets a `test.execution` span, including skipped and todo tests. Retries get one span per attempt, including Jest 30.5's `entireDescribe` retries.
 - Tests keep separate traces. Agent v3.110+ with tracing enabled connects them to the job using `TRACEPARENT` and `TRACESTATE`.
@@ -103,6 +101,7 @@ Other SDK lines warn and are skipped without affecting test results or manual sp
 - We also exclude `net`, `dns` and `fs` to reduce noise; `host-metrics` and `runtime-node` only collect metrics.
 - Browser instrumentations `fetch`, `xml-http-request`, `document-load`, `user-interaction` and `long-task` are off. For Node's `fetch`, use `undici`.
 - Set `BUILDKITE_ANALYTICS_DEBUG_ENABLED=true` to see selected names once per worker. Selection stays specific to each project, even when projects share a worker.
+- If you configure an OpenTelemetry `diag` logger at DEBUG, it receives selected names once per file we record children for; `OTEL_LOG_LEVEL=DEBUG` alone does not install a logger.
 
 Typical counts below exclude the test span. Versions and settings can change these counts.
 
@@ -123,9 +122,9 @@ Manual checks also covered operations in Fastify 5, Koa 2, NestJS 11, Apollo Ser
 
 ## Troubleshooting and known limits
 
-- **No spans:** check the reporter and environment settings, installed SDK versions, endpoint and run key; configuration errors warn and use JSON if a JSON token is available.
+- **No spans:** check the reporter and runtime settings, installed SDK versions, endpoint and run key; configuration errors warn and use JSON if a JSON token is available.
 - **Unsupported Jest:** Jest 28 and older or `jest-jasmine2` use JSON; upgrade to Jest 29+ and `jest-circus`. Beta.1 supported Jest 27/28, but beta.2 onward needs a JSON token on those versions.
-- **Wrong environment:** files without the collector environment use JSON while other files export spans; check per-file `@jest-environment` comments or wrap your custom environment with `extend`.
+- **Missing runtime:** files without the runtime or legacy collector environment use JSON; add `runtime` to each project you want to record. Keep your existing environment.
 - **No fallback results:** JSON needs reporter `token` or `BUILDKITE_ANALYTICS_TOKEN`; set one if you rely on fallback. With no credential, OpenTelemetry stays off and legacy upload reports a missing token.
 - **Invalid run key:** `BUILDKITE_ANALYTICS_KEY` or its CI-derived value must be 1–255 printable ASCII characters without spaces; fix it before rerunning. Use a new process if you need to change the run key after export starts.
 - **`TEST RESULTS MISSING`:** an export failed or timed out; check the reported HTTP status/network error and allow the endpoint. Tests still keep their normal exit code. Pending exports may arrive later; dropped test spans mean missing executions.
@@ -134,12 +133,12 @@ Manual checks also covered operations in Fastify 5, Koa 2, NestJS 11, Apollo Ser
 - **Your own provider:** setup code, hooks or `NODE_OPTIONS` registering a provider leave test results only; skip your provider setup when `JEST_WORKER_ID` is set to collect children. SDK 2.x cannot add processors later.
 - **Dropped children:** warnings count queue overflow, export failure, children started after teardown and children still open at exit; end spans and close connections before the file finishes. Jest clears sandbox timers and can force-exit workers.
 - **Changed headers/messages:** HTTP/fetch add `traceparent`, and message instrumentations can add empty fields too; disable affected names with `OTEL_NODE_DISABLED_INSTRUMENTATIONS`. There is no propagation-only switch.
-- **Changed stacks:** package instrumentation adds a few collector frames to errors created while modules load, which can change test names or snapshots containing stacks; select only `http,undici` if you need to avoid those extra frames.
+- **Changed stacks:** package instrumentation adds extra collector frames to errors created while modules load, which can change stack-based test names or snapshots; select only `http,undici` to keep beta.2's stacks, which can already include a collector frame in required helpers.
 - **Destructured HTTP imports:** top-level `const { get } = require('http')` or `import { get } from 'node:http'` can miss client spans/headers; use `http.get(...)` on the module object instead.
 - **nock/MSW blocking export:** allow `tests-otlp.buildkite.com` and the local relay's `127.0.0.1`, or bypass them in MSW. Restoring HTTP with `nock.restore()` or `server.close()` across files is supported.
 - **MSW headers:** MSW 2.x through 2.15 (`@mswjs/interceptors` <0.42, [issue #804](https://github.com/mswjs/interceptors/issues/804)) can drop caller headers for URL-string requests; disable `http` instrumentation.
 - **Native ESM:** `--experimental-vm-modules` supports manual, HTTP and fetch spans, not package instrumentation; use CommonJS for automatic package spans. CommonJS aliases are supported; local mapped mocks are left alone.
-- **Browser environments:** jsdom has no fetch; supply your own if needed. Happy-dom's fetch records HTTP spans. These environments support children when wrapped with `extend`.
+- **Browser environments:** jsdom has no fetch; supply your own if needed. Happy-dom's fetch records HTTP spans. Keep either environment unchanged and add the collector runtime.
 - **Incoming messages:** gRPC/amqplib can start separate traces, and a checked Socket.IO request/ack produced no children; configure your suite's incoming propagation if needed.
 - **Other instrumentation:** upstream packages are not all verified; test your operations before relying on them. `@fastify/otel` and `@prisma/instrumentation` need explicit suite setup; Fastify's standard instrumentation is deprecated in favor of `@fastify/otel`.
 - **Names and failure text:** execution-name prefixes/suffixes are not sent; use tags or JSON if you need them. Jest 30.5+ spans omit extra internal frames for non-Error throws; Jest 29–30.4 circular causes can stop JSON results, so upgrade to 30.5+.
