@@ -121,7 +121,7 @@ class JestOtelEnvironment {
       const settings = readSettings()
       if (!settings) return
       fallback = settings.fallback
-      const paths = new Paths({ rootDir: globalConfig.rootDir }, settings.runEnv.location_prefix)
+      const paths = new Paths({ rootDir: globalConfig?.rootDir ?? settings.rootDir }, settings.runEnv.location_prefix)
       this._buildkite.testPath = paths.prefixTestPath(context.testPath)
       this._buildkite.record = () => recordExport(settings.exportRecords, recordKey(projectConfig, context.testPath))
       this._buildkite.fallback = fallback

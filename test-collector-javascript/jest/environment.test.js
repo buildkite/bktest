@@ -10,6 +10,7 @@ jest.mock('../util/otel/session', () => ({
 }))
 const { sessionFor } = require('../util/otel/session')
 jest.mock('../util/uploadTestResults', () => jest.fn(() => Promise.resolve()))
+jest.mock('jest-runtime', () => class {}, { virtual: true })
 const uploadTestResults = require('../util/uploadTestResults')
 const { extend } = require('./environment')
 const Reporter = require('./reporter')
@@ -61,6 +62,36 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     expect(sessionFor).toHaveBeenCalledWith(settings)
     expect(environment._buildkite.session).toEqual({ fake: true })
     expect(warnings()).toEqual([])
+  })
+
+  it('uses the reporter root and prefix when an older runner omits globalConfig from the runtime', async () => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'secret'
+    process.env.BUILDKITE_ANALYTICS_LOCATION_PREFIX = 'app'
+    const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
+    const project = { rootDir: '/proj/pkg', cwd: '/elsewhere' }
+    const environment = { setup: async () => {}, teardown: async () => {} }
+    const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn(), forceFlush: async () => {} }
+    sessionFor.mockReturnValueOnce(session)
+    const Runtime = require('./runtime').extend(class {})
+
+    new Runtime(project, environment, null, null, new Map(), {}, context.testPath)
+    await environment.setup()
+    expect(warnings()).toEqual([])
+    const test = { name: 'sums', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: new Error() }
+    await environment.handleTestEvent({ name: 'test_start', test }, {})
+    await environment.handleTestEvent({ name: 'test_done', test }, {})
+    await environment.teardown()
+    await reporter.onRunComplete()
+
+    const jsonReporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: false })
+    await jsonReporter.onTestResult({}, {
+      testFilePath: context.testPath, perfStats: { start: 1, end: 2 },
+      testResults: [{ title: 'sums', ancestorTitles: [], status: 'passed', duration: 1, failureMessages: [] }],
+    })
+    await jsonReporter.onRunComplete()
+    const jsonPath = uploadTestResults.mock.calls[0][2][0].file_name
+    expect(jsonPath).toBe('app/pkg/sum.test.js')
+    expect(session.startTestSpan.mock.calls[0][0].file_name).toBe(jsonPath)
   })
 
   it('runs the tests as the base environment would when OTel mode is off', async () => {

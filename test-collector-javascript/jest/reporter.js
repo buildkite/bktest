@@ -37,7 +37,7 @@ class JestBuildkiteTestEngineReporter {
     if (this._otel) {
       try {
         this._exportRecords = createRecords()
-        publishSettings({ ...this._otel, exportRecords: this._exportRecords, fallback: this._fallback })
+        publishSettings({ ...this._otel, rootDir: globalConfig.rootDir, exportRecords: this._exportRecords, fallback: this._fallback })
       } catch (error) {
         warn(`OpenTelemetry span export disabled: could not create a temporary directory (${describeError(error)}); ${this._fallback}.`)
         publishSettings(null)
