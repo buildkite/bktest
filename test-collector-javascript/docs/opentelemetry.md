@@ -266,7 +266,10 @@ registers is used as is. Children otherwise use the SDK's defaults and `OTEL_*`
 settings, as Ruby's do: `OTEL_TRACES_SAMPLER=traceidratio` can sample children
 out, but never test spans, whose provider is separate and always samples.
 Node's built-in modules, which Jest shares between test files, are patched
-once per worker and stay wrapped. A gate closes at file teardown or while a
+once per worker and stay wrapped. Each managed project's instrumentation
+selection still applies: HTTP/fetch requests are not traced or given trace
+headers merely because an earlier project selected their instrumentation.
+A gate closes at file teardown or while a
 suite owns its provider, so opted-out files record nothing and do not gain
 trace headers on requests without an existing trace context. Package copies
 and their instrumentation belong to the file's sandbox. If your project

@@ -7,3 +7,6 @@
   `fs` and `host-metrics` are off by default unless named in
   `OTEL_NODE_ENABLED_INSTRUMENTATIONS`; `OTEL_NODE_DISABLED_INSTRUMENTATIONS`
   always takes precedence.
+- Shared Jest workers respect each project's instrumentation selection regardless
+  of project order, including HTTP/fetch spans and trace headers, without
+  duplicating built-in patches or interrupting already-started requests.

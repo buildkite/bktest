@@ -399,7 +399,11 @@ const otelSupported = jestMajor >= 29
       '@opentelemetry/instrumentation-http': installed('@opentelemetry/instrumentation-http'),
       '@opentelemetry/instrumentation-undici': installed('@opentelemetry/instrumentation-undici'),
     }
-    const roots = [{}, packages, packages].map(projectWithAutoInstrumentations)
+    const selections = [{}, packages, {},
+      { '@opentelemetry/instrumentation-http': packages['@opentelemetry/instrumentation-http'] },
+      { '@opentelemetry/instrumentation-undici': packages['@opentelemetry/instrumentation-undici'] },
+      packages]
+    const roots = selections.map(projectWithAutoInstrumentations)
     try {
       const fixtures = path.join(__dirname, '../examples/jest/otel-children')
       const config = path.join(roots[0], 'jest.config.json')
@@ -409,13 +413,21 @@ const otelSupported = jestMajor >= 29
         projects: roots.map((root, index) => ({
           rootDir: root, displayName: String(index), roots: [fixtures], testMatch: [path.join(fixtures, 'io.js')],
           testEnvironment: require.resolve('../jest/environment'), runtime: require.resolve('../jest/runtime'),
+          globals: { expectRequestTracing: {
+            http: Boolean(selections[index]['@opentelemetry/instrumentation-http']),
+            undici: Boolean(selections[index]['@opentelemetry/instrumentation-undici']),
+          } },
         })),
       }))
       const outcome = await runChildren('projects', { config })
       if (outcome.result.code) throw new Error(outcome.result.stderr)
-      expect([outcome.warnings, outcome.roots.length]).toEqual([[], 3 * IO_ROOTS])
+      expect([outcome.warnings, outcome.roots.length]).toEqual([[], 6 * IO_ROOTS])
       for (const name of ['http I/O', 'undici I/O']) {
-        expect(outcome.rootsNamed(name).map((root) => outcome.childrenOf(root, clientGet).length).sort()).toEqual([0, 1, 1])
+        expect(outcome.rootsNamed(name).map((root) => outcome.childrenOf(root, clientGet).length).sort()).toEqual([0, 0, 0, 1, 1, 1])
+        // A fetch server can continue the test only when both undici (the
+        // trace header) and http (the server span) are selected.
+        const servers = name === 'http I/O' ? [0, 0, 0, 1, 1, 1] : [0, 0, 0, 0, 1, 1]
+        expect(outcome.rootsNamed(name).map((root) => outcome.childrenOf(root, (span) => span.kind === SERVER).length).sort()).toEqual(servers)
       }
       for (const child of outcome.children) expect(outcome.rootOf(child)).not.toBeNull()
     } finally {

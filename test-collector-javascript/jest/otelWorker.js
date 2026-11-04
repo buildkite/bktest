@@ -29,14 +29,16 @@ const workerFor = (session, instances) => {
         getTracer(...args) {
           const tracer = provider.getTracer(...args)
           const noop = new session.api.ProxyTracerProvider().getTracer(...args)
+          const active = () => current && (!enabled.has(args[0]) || worker.selected(args[0]))
           return {
-            startSpan: (...args) => (current ? tracer : noop).startSpan(...args),
-            startActiveSpan: (...args) => (current ? tracer : noop).startActiveSpan(...args),
+            startSpan: (...args) => (active() ? tracer : noop).startSpan(...args),
+            startActiveSpan: (...args) => (active() ? tracer : noop).startActiveSpan(...args),
           }
         },
       }
       worker = {
         tracerProvider,
+        selected(name) { return Boolean(current?.instrumentations?.some((entry) => entry.instance.instrumentationName === name)) },
         open(file) { current = file },
         close(file) { if (current === file) current = null },
       }
@@ -49,7 +51,19 @@ const workerFor = (session, instances) => {
       if (enabled.has(instance.instrumentationName)) continue
       for (const definition of instance._modules || []) if (isBuiltin(definition.name)) require(definition.name)
       instance.setTracerProvider(worker.tracerProvider)
-      instance.setConfig({ ...instance.getConfig(), enabled: true })
+      const config = { ...instance.getConfig(), enabled: true }
+      // A noop tracer alone still propagates the active test's traceparent.
+      // Ignore new requests for unselected projects without unpatching or
+      // unsubscribing callbacks needed to finish already-started requests.
+      const hooks = {
+        '@opentelemetry/instrumentation-http': ['ignoreIncomingRequestHook', 'ignoreOutgoingRequestHook'],
+        '@opentelemetry/instrumentation-undici': ['ignoreRequestHook'],
+      }[instance.instrumentationName] || []
+      for (const hook of hooks) {
+        const ignore = config[hook]
+        config[hook] = (...args) => !worker.selected(instance.instrumentationName) || Boolean(ignore?.(...args))
+      }
+      instance.setConfig(config)
       instance.enable()
       for (const definition of instance._modules || []) {
         if (!isBuiltin(definition.name) || typeof definition.patch !== 'function') continue
