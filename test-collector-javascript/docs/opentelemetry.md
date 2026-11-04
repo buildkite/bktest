@@ -34,10 +34,8 @@ API 1.9 and 1.10 work with SDK 2.x, but some SDK packages cap their API peer ran
 Reporter `token` and `tags` options still work. Enable export with `otelEnabled: true` or the string `'true'` (case-insensitive).
 For TypeScript, check your reporter options with `satisfies Options`, importing `Options` from `buildkite-test-collector/jest/reporter`.
 
-**Migrating from beta.3:** `jest/environment` and `extend()` setups keep working, including result-only export without a runtime.
-A `@jest-environment` docblock no longer opts a file out when runtime is set; omit runtime from a project and use its regular environment to opt out.
+To leave a project out, don't set `runtime`. A `@jest-environment` docblock doesn't opt a file out.
 For a custom runtime, use `require('buildkite-test-collector/jest/runtime').extend(MyRuntime)`.
-The legacy collector environment needs `jest-environment-node` declared under Yarn Plug'n'Play.
 
 ## Settings
 

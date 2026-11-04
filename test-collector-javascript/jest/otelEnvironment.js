@@ -142,7 +142,7 @@ class JestOtelEnvironment {
 
     switch (event.name) {
       case 'run_start':
-        if (children.canExportChildren) this._wrapFunctions(state.rootDescribeBlock)
+        this._wrapFunctions(state.rootDescribeBlock)
         break
       case 'include_test_location_in_result':
         this._buildkite.includeLocation = true
@@ -263,7 +263,6 @@ class JestOtelEnvironment {
 }
 
 const attach = (environment, config, context) => {
-  if (environment._buildkite) return
   const collector = new JestOtelEnvironment(config, context)
   if (!collector._buildkite.session) return
   environment._buildkite = collector._buildkite

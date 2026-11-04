@@ -8,7 +8,7 @@ const config = {
       tags: { hello: "jest" }
     }]
   ],
-  testEnvironment: 'buildkite-test-collector/jest/environment',
+  runtime: 'buildkite-test-collector/jest/runtime',
   testLocationInResults: true,
   testMatch: ['<rootDir>/otel-many-files/*.test.js']
 };

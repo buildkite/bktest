@@ -11,8 +11,7 @@ module.exports = {
   rootDir: process.env.OTEL_PROJECT_ROOT || __dirname,
   roots: [fixtures],
   reporters: ['default', [require.resolve('buildkite-test-collector/jest/reporter'), { otelEnabled: true }]],
-  testEnvironment: require.resolve('buildkite-test-collector/jest/environment'),
-  ...(mode === 'no-runtime' ? {} : { runtime: require.resolve('buildkite-test-collector/jest/runtime') }),
+  runtime: require.resolve('buildkite-test-collector/jest/runtime'),
   // Its CommonJS require of the API would load the copy an ES module imports.
   setupFilesAfterEnv: ['esm', 'aliases', 'mocked-api', 'mapped-api', 'getters'].includes(mode) ? [] : [path.join(fixtures, 'support/hooks.setup.js')],
   testLocationInResults: true,

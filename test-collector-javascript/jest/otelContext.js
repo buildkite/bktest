@@ -96,14 +96,9 @@ class JestOtelContext {
     if (this.mode === 'managed') this._fill()
   }
 
-  get canExportChildren() {
-    return Boolean(this.runtime)
-  }
-
   setup() {
     if (this.mode !== null) return
     this.mode = 'off'
-    if (!this.runtime) return
     try {
       this.api = this.runtime.requireModule(this.testPath, '@opentelemetry/api')
       this.loadedApi(this.api)
@@ -149,7 +144,7 @@ class JestOtelContext {
 
   began(started) {
     const traceId = started?.handle?.span?.spanContext?.().traceId
-    if (!traceId || !this.runtime) return
+    if (!traceId) return
     this.traces.add(traceId)
     if (this.mode === 'managed') this.forwarder.addTrace(traceId)
   }

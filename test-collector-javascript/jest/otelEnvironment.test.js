@@ -12,22 +12,12 @@ const { sessionFor } = require('../util/otel/session')
 jest.mock('../util/uploadTestResults', () => jest.fn(() => Promise.resolve()))
 jest.mock('jest-runtime', () => class {}, { virtual: true })
 const uploadTestResults = require('../util/uploadTestResults')
-const { extend } = require('./environment')
+const { JestOtelEnvironment: Environment } = require('./otelEnvironment')
 const Reporter = require('./reporter')
 const { recordKey, exportCount } = require('./exportRecords')
 
 const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
 const warnings = () => consoleWarnSpy.mock.calls.map(([message]) => message)
-
-class Base {
-  constructor(config, context) {
-    this.config = config
-    this.context = context
-  }
-
-  async teardown() {}
-}
-const Environment = extend(Base)
 
 const exportRecords = fs.mkdtempSync(path.join(os.tmpdir(), 'bk-export-records-'))
 const settings = {
@@ -160,7 +150,7 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
   // Jest accepts the same explicit project id twice.
   it('uploads JSON for a project running a file another project with the same id exported', async () => {
     const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-    const collectorProject = { id: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/buildkite-test-collector/jest/environment.js' }
+    const collectorProject = { id: 'same', rootDir: '/proj', runtime: '/proj/node_modules/buildkite-test-collector/jest/runtime.js' }
     const plainProject = { id: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/jest-environment-node/build/index.js' }
     await new Environment(configFor(collectorProject), { testPath }).handleTestEvent({ name: 'setup' }, {})
 
