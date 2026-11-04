@@ -64,6 +64,19 @@ test('runs the selected Jest version', () => {
 // OpenTelemetry submission needs Jest 29 or newer; older versions upload JSON.
 const otelSupported = jestMajor >= 29
 
+let tools
+if (otelSupported) {
+  try {
+    tools = require('../.buildkite/install-jest-otel-tools')
+    for (const name of ['jest-environment-jsdom', '@happy-dom/jest-environment', 'typescript']) tools.resolve(name)
+  } catch (error) {
+    tools = null
+    const message = 'Install OTel e2e tools: node .buildkite/install-jest-otel-tools.js'
+    if (process.env.EXPECTED_JEST_VERSION || process.env.CI || process.env.BUILDKITE) throw new Error(message, { cause: error })
+    console.warn(`${message} (skipping jsdom, happy-dom and tsc locally)`)
+  }
+}
+
 // Runs with the example's Jest, not the outer test runner's. Keeping this in
 // the OTel e2e suite also runs it in the newest-SDK soft-fail leg.
 ;(otelSupported ? test : test.skip)('Jest and OpenTelemetry internals still satisfy the child-span contract', async () => {
@@ -161,14 +174,67 @@ const otelSupported = jestMajor >= 29
 }, 60000)
 
 ;(otelSupported ? describe : describe.skip)('examples/jest in OTel mode', () => {
-  test('keeps module-load error stacks free of collector frames with only HTTP and undici', async () => {
+  for (const [kind, environment] of [
+    ['node', 'node'],
+    ['jsdom', tools?.resolve('jest-environment-jsdom')],
+    ['happy-dom', tools?.resolve('@happy-dom/jest-environment')],
+    ['custom', path.join(__dirname, '../examples/jest/otel-native/custom-environment.js')],
+    ['legacy', require.resolve('../jest/environment')],
+  ]) {
+    ;(environment ? test : test.skip)(`records results and parented children with the unchanged ${kind} environment`, async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-native-'))
+      try {
+        server = await startOtlpServer()
+        const rootDir = path.join(__dirname, '../examples/jest')
+        const config = {
+          rootDir, testMatch: [path.join(rootDir, 'otel-native/attempts.js')],
+          reporters: ['default', [require.resolve('../jest/reporter'), { otelEnabled: true }]],
+          testEnvironment: environment, runtime: require.resolve('../jest/runtime'),
+          testEnvironmentOptions: { report: path.join(dir, 'environment.json') }, globals: { nativeEnvironment: kind },
+        }
+        const result = await run(`jest --config ${JSON.stringify(JSON.stringify(config))} --runInBand`, {
+          ...baseEnv, BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+          OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'http,undici',
+        })
+        expect(result.code).toBe(1)
+        expect(result.stderr).toContain('native beforeAll failure')
+        expect(result.stderr).not.toContain('[buildkite-test-collector]')
+        expect(jsonUpload(result.stdout)).toBeNull()
+        const roots = server.spans().filter((span) => span.name === 'test.execution')
+        expect(roots.map((span) => [span.attributes['buildkite.test.name'], span.attributes['test.case.result.status']]).sort()).toEqual([
+          ['ordinary', 'pass'], ['slow', 'pass'], ['fast', 'pass'], ['retried', 'fail'], ['retried', 'pass'], ['one', 'fail'], ['two', 'fail'],
+        ].sort())
+        expect(new Set(roots.map((span) => span.traceId)).size).toBe(7)
+        const children = server.spans().filter((span) => span.name !== 'test.execution')
+        expect(children.map((span) => span.name).sort()).toEqual(['ordinary child', 'slow child', 'fast child', 'retry child 1', 'retry child 2'].sort())
+        for (const child of children) {
+          const root = roots.find((span) => span.spanId === child.parentSpanId)
+          const name = child.name.startsWith('retry') ? 'retried' : child.name.split(' ')[0]
+          expect([root?.traceId, root?.attributes['buildkite.test.name']]).toEqual([child.traceId, name])
+          if (name === 'retried') expect(root.attributes['test.case.result.status']).toBe(child.name.endsWith('1') ? 'fail' : 'pass')
+        }
+        if (kind === 'custom') {
+          const report = JSON.parse(fs.readFileSync(path.join(dir, 'environment.json')))
+          expect(report.setup).toBe(true)
+          expect(report.events.filter((name) => name === 'test_start')).toHaveLength(7)
+          expect(report.events).toContain('run_finish')
+        }
+      } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+    }, 60000)
+  }
+
+  test('keeps beta.2 module-load stacks with only HTTP and undici', async () => {
     const root = fs.mkdtempSync(path.join(__dirname, '../examples/jest/otel-stack-'))
     try {
+      fs.writeFileSync(path.join(root, 'helper.js'), "module.exports = new Error('helper error')")
       fs.writeFileSync(path.join(root, 'stack.js'), `
         const error = new Error('module-load error')
+        const helper = require('./helper')
         test('module-load stack', () => {
           expect(error.stack).toContain('module-load error')
           expect(error.stack).not.toMatch(/buildkite-test-collector|test-collector-javascript[\\\\/]jest[\\\\/]/)
+          expect(helper.stack).toContain('requireModuleOrMock')
+          expect(helper.stack).not.toMatch(/JestOtelPackages|JestOtelContext|loader\\.<computed>/)
         })
       `)
       server = await startOtlpServer()
@@ -463,9 +529,9 @@ const otelSupported = jestMajor >= 29
     expect(outcome.childrenOf(outcome.rootsNamed('esm after reset')[0], named('esm-child'))).toHaveLength(1)
   }, 60000)
 
-  // A later opted-out file sends no trace headers through the worker-wide
+  // A later project without the runtime sends no trace headers through the worker-wide
   // wrappers, including when a disabled instrumentation preloaded http.
-  test('gates built-ins in a later file that opted out of the collector environment', async () => {
+  test('gates built-ins in a later project without the collector runtime', async () => {
     const prime = path.join(__dirname, '../examples/jest/otel-children/support/prime.js')
     const outcome = await runChildren('optout', {
       env: { BUILDKITE_ANALYTICS_TOKEN: 'xyz', NODE_OPTIONS: `--require ${JSON.stringify(prime)}` },
@@ -888,8 +954,8 @@ const otelSupported = jestMajor >= 29
     })
 
     expect(result.code).toBe(1)
-    expect(result.stderr.match(/is not buildkite-test-collector\/jest\/environment/g)).toHaveLength(1)
-    expect(result.stderr).toMatch(/for test files using it, uploading results as JSON instead\./)
+    expect(result.stderr.match(/No OpenTelemetry events were recorded/g)).toHaveLength(1)
+    expect(result.stderr).toMatch(/use runtime: 'buildkite-test-collector\/jest\/runtime'; uploading results as JSON instead\./)
     expect(jsonUpload(result.stdout)).toHaveLength(EXPECTED_JSON_RESULTS)
     expect(server.requests).toHaveLength(0)
   }, 30000)
@@ -903,7 +969,7 @@ const otelSupported = jestMajor >= 29
     })
 
     expect(result.code).toBe(1)
-    expect(result.stderr).toMatch(/is not buildkite-test-collector\/jest\/environment .*for test files using it, results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set\./)
+    expect(result.stderr).toMatch(/use runtime: 'buildkite-test-collector\/jest\/runtime'; results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set\./)
     expect(result.stderr).not.toMatch(/as JSON/)
     expect(jsonUpload(result.stdout)).toBeNull()
     expect(server.requests).toHaveLength(0)
@@ -912,6 +978,24 @@ const otelSupported = jestMajor >= 29
   describe('with files that choose their environment through @jest-environment', () => {
     const spanNames = () => server.spans().map((span) => span.attributes['buildkite.test.name']).sort()
     const jsonNames = (stdout) => (jsonUpload(stdout) || []).map((record) => record.name).sort()
+
+    for (const name of ['jest-environment-jsdom', '@happy-dom/jest-environment']) {
+      ;(tools ? test : test.skip)(`keeps tracing a node docblock overriding ${name} with the runtime`, async () => {
+        server = await startOtlpServer()
+        const config = { ...require('../examples/jest/otel-docblock.config'), rootDir: path.join(__dirname, '../examples/jest'),
+          runtime: require.resolve('../jest/runtime'), testEnvironment: tools.resolve(name) }
+        const result = await run(`jest --config ${JSON.stringify(JSON.stringify(config))} --runInBand`, {
+          ...baseEnv, BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+        })
+        expect([result.code, jsonUpload(result.stdout)]).toEqual([0, null])
+        expect(result.stderr).not.toContain('[buildkite-test-collector]')
+        const roots = server.spans().filter((span) => span.name === 'test.execution')
+        expect(roots).toHaveLength(3)
+        const root = roots.find((span) => span.attributes['buildkite.test.name'] === 'runs under the node environment')
+        const children = server.spans().filter((span) => span.name !== 'test.execution')
+        expect(children.map((span) => [span.name, span.traceId, span.parentSpanId])).toEqual([['docblock child', root.traceId, root.spanId]])
+      }, 30000)
+    }
 
     test('uploads the file that opted out of the collector environment as JSON, the rest over OTLP', async () => {
       server = await startOtlpServer()
@@ -923,7 +1007,7 @@ const otelSupported = jestMajor >= 29
       })
 
       expect(result.code).toBe(0)
-      expect(result.stderr.match(/is not buildkite-test-collector\/jest\/environment/g)).toHaveLength(1)
+      expect(result.stderr.match(/No OpenTelemetry events were recorded/g)).toHaveLength(1)
       expect(spanNames()).toEqual(['runs under the collector environment', 'runs under the default environment'])
       expect(jsonNames(result.stdout)).toEqual(['runs under the node environment'])
     }, 30000)
@@ -938,7 +1022,7 @@ const otelSupported = jestMajor >= 29
       })
 
       expect(result.code).toBe(0)
-      expect(result.stderr.match(/is not buildkite-test-collector\/jest\/environment/g)).toHaveLength(1)
+      expect(result.stderr.match(/No OpenTelemetry events were recorded/g)).toHaveLength(1)
       expect(spanNames()).toEqual(['runs under the collector environment'])
       expect(jsonNames(result.stdout)).toEqual(['runs under the default environment', 'runs under the node environment'])
     }, 30000)

@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  */
-// Runs after io.js in the same process, outside the collector's environment:
+// Runs after io.js in the same process, in a project without the runtime:
 // worker-wide wrappers remain, but their closed gate must neither record
 // requests nor inject trace headers.
 const http = require('http')

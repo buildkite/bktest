@@ -20,13 +20,18 @@ module.exports = {
     '^@fixture/web$': 'express',
     '^express$': process.env.OTEL_MAPPED_MOCK ? path.join(fixtures, 'support/mapped-web.js') : 'express',
   } } : {}),
-  // OTEL_CHILD_CASE=optout runs a managed file, then one that opted out of the
-  // collector's environment, in that order in one process. OTEL_CHILD_CASE=suite
-  // runs files that configure OpenTelemetry themselves, and esm native ES
-  // modules, untransformed.
-  ...(['optout', 'interceptors'].includes(mode)
+  // Suite files configure their own providers; native ESM is untransformed.
+  ...(mode === 'interceptors'
     ? { testMatch: [path.join(fixtures, 'io.js'), path.join(fixtures, `${mode}/*.js`)], testSequencer: path.join(fixtures, 'support/sequencer.js') }
     : { testMatch: [path.join(fixtures, { suite: 'suite/*.js', esm: 'esm/*.mjs', aliases: 'aliases/*.js', late: 'late/*.js', pg: 'pg/*.js', 'mocked-api': 'mocked-api/*.js', getters: 'getters/*.js' }[mode] || '*.js')] }),
   ...(mode === 'late' ? { testSequencer: path.join(fixtures, 'support/sequencer.js') } : {}),
   ...(mode === 'esm' ? { transform: {} } : {}),
+}
+
+if (mode === 'optout') {
+  const { reporters, runtime, ...config } = module.exports
+  module.exports = { reporters, testSequencer: path.join(fixtures, 'support/sequencer.js'), projects: [
+    { ...config, runtime, testMatch: [path.join(fixtures, 'io.js')] },
+    { ...config, testEnvironment: 'node', setupFilesAfterEnv: [], testMatch: [path.join(fixtures, 'optout/*.js')] },
+  ] }
 }
