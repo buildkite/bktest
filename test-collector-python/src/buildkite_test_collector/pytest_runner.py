@@ -245,7 +245,13 @@ class PytestRunner:
             return
 
         known = {item.nodeid for item, _, _ in self.tests}
-        items = session.perform_collect([str(path) for path in paths])
+        # Collection errors are reported per batch below, so keep the collector
+        # from sending a span for them now.
+        otel, collector.otel = collector.otel, None
+        try:
+            items = session.perform_collect([str(path) for path in paths])
+        finally:
+            collector.otel = otel
         self.collected.extend(paths)
         self.tests.extend((item, Path(str(item.path)), item.nodeid.split("::")[1:])
                           for item in items if item.nodeid not in known)
@@ -344,7 +350,10 @@ class PytestRunner:
             path = Path(os.path.abspath(error.file_name or ""))
             if any(path == selected or path in selected.parents or selected in path.parents
                    for selected, _ in selectors):
-                collector.payload = collector.payload.push_test_data(replace(error, id=uuid4()))
+                execution = replace(error, id=uuid4())
+                collector.payload = collector.payload.push_test_data(execution)
+                if collector.otel is not None:
+                    collector.otel.report(execution)
 
         report = list(collector.payload.as_json()["data"])
         # Upload executions before acknowledging the batch; bktec decides its outcome.
@@ -378,7 +387,7 @@ class PytestRunner:
         """Upload and discard the collector's test executions"""
         payload = collector.payload
         collector.payload = replace(payload, data=())
-        if payload.data and self.api.token:
+        if payload.data and self.api.token and collector.otel is None:
             list(self.api.submit(payload))
 
     def _finish(self, session: pytest.Session, collector: Any) -> None:

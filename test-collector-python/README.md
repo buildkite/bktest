@@ -101,6 +101,10 @@ process. Each test file is imported and collected the first time a batch needs
 it, and session-scoped fixtures are set up once per job. Module- and
 class-scoped fixtures are torn down after each batch.
 
+pytest support in `bktec pool exec` requires bktec v3.4.0 or later (a
+pre-release at the time of writing); bktec v3.3.0 rejects it with
+`pool planning requires rspec`.
+
 ```sh
 BUILDKITE_TEST_ENGINE_TEST_RUNNER=pytest bktec pool exec -- buildkite-pytest [pytest options]
 ```
@@ -130,6 +134,28 @@ Note: the Ruby test collector is the only Test Engine collector that automatical
 - A test whose fixture teardown raises is uploaded as failed, with the teardown error as the reason. It used to be uploaded with the result from before teardown (passed or skipped), except under pytest-forked, which already uploaded it as failed. If the test had already failed, that failure now stays the reason and the teardown error is added as a further `failure_expanded` entry; under pytest-forked the teardown error used to replace the reason.
 - With pytest-rerunfailures (`--reruns`), each attempt is uploaded as its own execution: an attempt pytest reports as `rerun` is failed, and the last attempt has its own result. Previously no result was uploaded for any test in a `--reruns` run, with a `has no result set` warning.
 - Test locations use 1-based line numbers (`tests/test_x.py:1` for a test on the first line). They were one line early. Test identity is unchanged.
+
+## 🌏 Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `BUILDKITE_ANALYTICS_TOKEN` | Suite API token. Required for the JSON upload; also the OpenTelemetry credential when `BUILDKITE_TESTS_OTLP_TOKEN` is not set. |
+| `BUILDKITE_ANALYTICS_API_URL` | Base URL of the JSON upload API. Default `https://analytics-api.buildkite.com/v1`. |
+| `BUILDKITE_ANALYTICS_OTEL_ENABLED` | `true` (or `1`) sends results over OpenTelemetry instead; see below. |
+| `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | `1` logs the collector's hooks and uploads. |
+
+Run metadata overrides are listed [above](#-run-metadata-overrides) and apply to both JSON and OpenTelemetry uploads.
+
+## 🔭 OpenTelemetry submission (experimental)
+
+The collector can send each test to Test Engine as an OpenTelemetry `test.execution` span over OTLP instead of the JSON upload, with your tests' own OpenTelemetry spans nested under it. Install the optional dependencies and switch it on:
+
+```sh
+pip install "buildkite-test-collector[otel]"
+BUILDKITE_ANALYTICS_OTEL_ENABLED=true pytest
+```
+
+See [docs/opentelemetry.md](docs/opentelemetry.md) for what is sent, how child spans and the span filter work, and what the warnings mean.
 
 ## 🔜 Roadmap
 
