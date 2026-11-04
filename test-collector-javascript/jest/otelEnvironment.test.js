@@ -84,6 +84,30 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     expect(session.startTestSpan.mock.calls[0][0].file_name).toBe(jsonPath)
   })
 
+  it('exports test results when package instrumentation has no supported Jest loader', async () => {
+    const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true, token: 'secret' })
+    const environment = { setup: async () => {}, teardown: async () => {} }
+    const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn(), forceFlush: async () => {} }
+    sessionFor.mockReturnValueOnce(session)
+    const attachRuntime = jest.spyOn(require('./otelContext').prototype, 'attachRuntime').mockImplementation(function () {
+      this.packages = { names: new Set(['express']) }
+    })
+    try {
+      const Runtime = require('./runtime').extend(class {})
+      new Runtime({ rootDir: '/proj' }, environment, null, null, new Map(), {}, context.testPath)
+      await environment.setup()
+      const test = { name: 'sums', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: new Error() }
+      await environment.handleTestEvent({ name: 'test_start', test }, {})
+      await environment.handleTestEvent({ name: 'test_done', test }, {})
+      await environment.teardown()
+      expect(session.finishTestSpan.mock.calls[0][1]).toMatchObject({ name: 'sums', result: 'passed' })
+      expect(warnings()).toEqual([expect.stringMatching(/package instrumentation skipped: this Jest version has no supported module loader; test.execution export remains enabled\./)])
+    } finally {
+      attachRuntime.mockRestore()
+      await reporter.onRunComplete()
+    }
+  })
+
   it('runs the tests as the base environment would when OTel mode is off', async () => {
     const environment = new Environment(configFor({ rootDir: '/proj' }), context)
 

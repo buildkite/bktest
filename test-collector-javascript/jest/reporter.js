@@ -81,7 +81,7 @@ class JestBuildkiteTestEngineReporter {
   async onTestResult(test, testResult) {
     if (this._otel) {
       if (this._holdIfExported(test, testResult)) return
-      this._warnNotExported(test)
+      if (!testResult.testExecError || testResult.testResults.length) this._warnNotExported(test)
     }
     this._addJson(testResult)
   }
