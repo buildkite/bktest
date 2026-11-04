@@ -21,6 +21,8 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
     super(config, environment, ...rest)
     this._buildkiteChildren = environment?._buildkite?.children
     if (!this._buildkiteChildren) return
+    this._buildkiteChildren.attachRuntime(this)
+    if (!this._buildkiteChildren.packages.names.size) return
     // Newer Jest 30 releases moved the CJS loader off the runtime.
     const loader = this.cjsLoader || this
     const method = this.cjsLoader ? 'loadModule' : '_loadModule'
@@ -37,7 +39,6 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
       const patchedExports = this._buildkiteChildren.load(modulePath, load)
       if (patchedExports !== originalExports) localModule.exports = patchedExports
     }
-    this._buildkiteChildren.attachRuntime(this)
   }
 
   // resetModules creates API copies; ESM imports arrive as resolved paths.

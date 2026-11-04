@@ -161,6 +161,31 @@ const otelSupported = jestMajor >= 29
 }, 60000)
 
 ;(otelSupported ? describe : describe.skip)('examples/jest in OTel mode', () => {
+  test('keeps module-load error stacks free of collector frames with only HTTP and undici', async () => {
+    const root = fs.mkdtempSync(path.join(__dirname, '../examples/jest/otel-stack-'))
+    try {
+      fs.writeFileSync(path.join(root, 'stack.js'), `
+        const error = new Error('module-load error')
+        test('module-load stack', () => {
+          expect(error.stack).toContain('module-load error')
+          expect(error.stack).not.toMatch(/buildkite-test-collector|test-collector-javascript[\\\\/]jest[\\\\/]/)
+        })
+      `)
+      server = await startOtlpServer()
+      const config = {
+        rootDir: path.dirname(root), roots: [root], testMatch: [path.join(root, 'stack.js')],
+        reporters: ['default', [require.resolve('../jest/reporter'), { otelEnabled: true }]],
+        testEnvironment: require.resolve('../jest/environment'), runtime: require.resolve('../jest/runtime'),
+      }
+      const result = await run(`jest --config ${JSON.stringify(JSON.stringify(config))} --runInBand --no-cache`, {
+        ...baseEnv, OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'http,undici', OTEL_NODE_DISABLED_INSTRUMENTATIONS: '',
+        BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+      })
+      if (result.code) throw new Error(result.stderr)
+      expect(server.spans().filter((span) => span.name === 'test.execution')).toHaveLength(1)
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  }, 60000)
+
   // 24 tests across the child fixtures; again.js retries one test once.
   const CHILD_FIXTURE_ROOTS = 25
   const CLIENT = 3
