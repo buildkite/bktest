@@ -1,4 +1,4 @@
-
+import os
 from dataclasses import replace
 from datetime import timedelta
 from random import randint
@@ -9,6 +9,14 @@ import pytest
 from buildkite_test_collector.collector.payload import TestData, TestResultPassed, TestHistory, Payload, TestResultFailed, TestResultSkipped
 from buildkite_test_collector.collector.run_env import RunEnv
 from buildkite_test_collector.collector.instant import Instant
+
+
+@pytest.fixture(autouse=True)
+def isolate_upload_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep fixture subprocesses offline; restore CI configuration before the suite uploads."""
+    for name in list(os.environ):
+        if name.startswith(("BUILDKITE_ANALYTICS_", "BUILDKITE_TESTS_", "OTEL_")):
+            monkeypatch.delenv(name)
 
 
 @pytest.fixture
