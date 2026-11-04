@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.0-beta.4
+
+- Set up OpenTelemetry with the reporter and runtime, and keep your own test environment. beta.3 setups still work.
+- Type-check reporter options in `jest.config.ts` with `jest/reporter.d.ts`.
+- Send selected instrumentation names to your OpenTelemetry `diag` logger.
+- Keep beta.2's error stacks when no package instrumentation is selected.
+- Simplify setup instructions, settings and troubleshooting.
+
 ## 1.13.0-beta.3
 
 - Select project/ancestor-declared 2.x instrumentations and resolvable auto-instrumentations-node bundles, not incidental hoisted dependencies.
