@@ -54,7 +54,17 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ];
     ```
 
-    To try OpenTelemetry submission (experimental), use this configuration:
+    To try OpenTelemetry submission (experimental), install the packages and add the runtime:
+
+    ```sh
+    npm install --save-dev buildkite-test-collector \
+      '@opentelemetry/sdk-trace-base@^2' \
+      '@opentelemetry/context-async-hooks@^2' \
+      '@opentelemetry/exporter-trace-otlp-proto@<0.300'
+    ```
+
+    With pnpm or Yarn, also add `@opentelemetry/api@~1.9.0`.
+    Install the versions above. SDK 3 and `@opentelemetry/api` 1.10 aren't supported yet.
 
     ```js
     // jest.config.js
@@ -63,7 +73,6 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
         "default",
         ["buildkite-test-collector/jest/reporter", { otelEnabled: true }],
       ],
-      testEnvironment: "node", // Keep your existing environment
       runtime: "buildkite-test-collector/jest/runtime",
       testLocationInResults: true,
     };
@@ -73,6 +82,13 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     underneath. Test spans count as test executions, like JSON uploads, at no extra charge.
     Child spans are billed by data ingested and need a plan that includes them;
     without it, we still record test results and warn that child spans were dropped.
+
+    Use Jest 29 or 30.2+ with `jest-circus`, and Node.js 18.19+, 20.6+, 22, 24 or 26.
+    OpenTelemetry options, environment variables and span shape may change in minor releases.
+    Retries count as one test execution per attempt. Child spans can contain URLs,
+    query strings and database statements. A resolvable `@opentelemetry/auto-instrumentations-node`
+    enables its bundle, with the exclusions in the guide below.
+    OpenTelemetry results aren't treated as default-branch results yet, so default-branch monitors ignore them.
 
     Upgrading from a 1.13 beta? Remove `testEnvironment: 'buildkite-test-collector/jest/environment'` and add `runtime`.
 
