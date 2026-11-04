@@ -359,6 +359,15 @@ describe('createSession', () => {
     process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE = '11'
     await createSession(settings()).shutdown()
     expect(warnings()).toEqual([expect.stringMatching(/BATCH_SIZE must be <= BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults \(batch 120, queue 8192\)/)])
+
+    consoleWarnSpy.mockClear()
+    delete process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE
+    process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE = '200'
+    await createSession(settings()).shutdown()
+    expect(warnings()).toEqual([])
+    process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE = '201'
+    await createSession(settings()).shutdown()
+    expect(warnings()).toEqual([expect.stringMatching(/BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE must be a positive integer up to 200, using default 120/)])
   })
 })
 

@@ -50,9 +50,8 @@ describe('per-test hooks', () => {
         const response = await get(url)
         expect(response.body).toBe('real I/O')
         if (process.env.OTEL_CHILD_CASE === 'projects') expect(Boolean(response.traceparent)).toBe(globalThis.expectRequestTracing.http)
-        // Without the collector's runtime, or with OpenTelemetry configured
-        // outside the sandbox, nothing sets up the sandbox's API.
-        if (!['preload', 'no-runtime'].includes(process.env.OTEL_CHILD_CASE)) expect(trace.getActiveSpan()).toBe(span)
+        // A provider outside the sandbox leaves the sandbox's API alone.
+        if (process.env.OTEL_CHILD_CASE !== 'preload') expect(trace.getActiveSpan()).toBe(span)
       } finally {
         span.end()
       }

@@ -1,5 +1,4 @@
-// Files that pick their own environment through the @jest-environment
-// docblock: the e2e tests check each file takes the path its environment implies.
+// A docblock changes the environment without opting out of the runtime.
 const config = {
   reporters: [
     'default',
@@ -8,7 +7,7 @@ const config = {
       tags: { hello: "jest" }
     }]
   ],
-  testEnvironment: 'buildkite-test-collector/jest/environment',
+  runtime: 'buildkite-test-collector/jest/runtime',
   testLocationInResults: true,
   testMatch: ['<rootDir>/otel-docblock/*.js']
 };

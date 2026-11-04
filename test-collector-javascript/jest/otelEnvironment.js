@@ -38,11 +38,7 @@ const stackWithCauses = (isError) => {
   return (error) => format(error, new Set())
 }
 
-// Failures are formatted the way the jest-circus running the file formats
-// them, with the modules it loads. How it turns an error into text changed in
-// Jest 30.1 (an empty stack falls back to the message), 30.4 (causes are
-// appended) and 30.5 (jest-message-util's flattenErrorStack, which also
-// appends an AggregateError's errors, and non-Error throws are wrapped).
+// Use the running Circus version's failure text so JSON and spans agree.
 const failureFormatting = (projectConfig, circusDir) => {
   const dirs = [circusDir, projectConfig.testRunner && path.dirname(projectConfig.testRunner), projectConfig.rootDir, __dirname].filter(Boolean)
   const prettyFormat = tryRequireFrom('pretty-format', dirs)
@@ -61,8 +57,7 @@ const failureFormatting = (projectConfig, circusDir) => {
   }
 }
 
-// The jest-circus dispatching an event is the one running the file, even when
-// a custom testRunner delegates to a copy other than the one beside it.
+// A custom runner may use a different Circus than the one installed beside it.
 const JEST_CIRCUS_BUILD_FILE = /^(.*[\\/]jest-circus)[\\/]build[\\/]/
 const dispatchingJestCircus = (stack) => {
   for (const line of stack.split('\n').slice(1)) {
@@ -72,18 +67,12 @@ const dispatchingJestCircus = (stack) => {
   return null
 }
 
-// parseStackLine through assertionResult mirror how jest-circus turns a
-// finished test into the assertion result the reporter sees, so the span
-// carries the same title, ancestors, location and failure text.
 const parseStackLine = (line) => {
   const match = STACK_LINE.exec(line || '')
   return match ? { file: match[1], line: Number(match[2]), column: Number(match[3]) } : null
 }
 
-// Under test.each and describe.each the first frame is inside jest-each, and
-// jest-circus reads the line from a fixed later frame: the fourth before
-// Jest 30, the second since. Skipping every frame inside jest-each or without
-// a file position lands on that frame in both.
+// each() adds internal frames; skipping them finds the user frame on Jest 29 and 30.
 const testLocation = (test) => {
   const frames = test.asyncError.stack.split('\n').slice(1).map(parseStackLine)
   let parsed = frames[0]
@@ -101,27 +90,20 @@ const failureMessage = (errors, { format, errorText, wrapsThrownValues }) => {
     asyncError.message = message
     return errorText(asyncError)
   }
-  // Jest 30.5 wraps a non-Error throw in a new Error caused by the test's own
-  // error. Jest creates that Error while building its results, so its stack
-  // is Jest's internal frames; the copy here has none.
+  // Jest 30.5's wrapper stack contains only internal frames; omit those here.
   const thrown = asyncError ? new Error(message, { cause: asyncError }) : new Error(message)
   thrown.stack = `Error: ${message}`
   return errorText(thrown)
 }
 
-// `status` is undefined while the test is still running. V8 formats an
-// error's stack on first access using the message at that moment, and jest
-// rewrites asyncError.message for non-Error throws before it reads the
-// location, so the location is only read once the test has settled.
+// Defer reading the stack until Circus has rewritten non-Error throws.
 const assertionResult = (test, status, { includeLocation, formatting }) => {
   const names = []
   for (let block = test; block; block = block.parent) names.unshift(block.name)
-  // jest-circus filters the root marker out of the whole path before it
-  // pops the title, so a test titled ROOT_DESCRIBE_BLOCK keeps its title but
-  // loses its describe blocks; the JSON upload has the same identity.
+  // Match Circus even when a test itself is named ROOT_DESCRIBE_BLOCK.
   const ancestorTitles = names.filter((name) => name !== ROOT_DESCRIBE_BLOCK_NAME)
   ancestorTitles.pop()
-  const title = names[names.length - 1]
+  const title = names.at(-1)
 
   const failureMessages = status === 'failed' ? test.errors.map((errors) => failureMessage(errors, formatting)) : []
   const location = includeLocation && status ? testLocation(test) : null
@@ -129,25 +111,9 @@ const assertionResult = (test, status, { includeLocation, formatting }) => {
   return { ancestorTitles, title, location, status, failureMessages }
 }
 
-const BaseEnvironment = (() => {
-  const mod = tryRequireFrom('jest-environment-node', [process.cwd(), __dirname])
-  if (!mod) throw new Error("buildkite-test-collector/jest/environment requires 'jest-environment-node' to be installed")
-  return mod.default || mod.TestEnvironment || mod
-})()
-
-// Adds Buildkite Test Engine OTel export to any Jest environment class. Each
-// worker process owns one export session; this environment starts a
-// test.execution span when a test starts, finishes it with the result jest
-// settled on, and flushes when the test file is torn down (jest-worker exits
-// the process without any later hook).
-const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
-  static buildkiteTestEngine = true
-
-  // Nothing after super() may stop the tests from running: without a session
-  // the file is simply not recorded as exported, and the reporter uploads its
-  // results as JSON.
+class JestOtelEnvironment {
+  // Setup failures must leave tests running and eligible for JSON upload.
   constructor(config, context) {
-    super(config, context)
     const { globalConfig, projectConfig } = config
     this._buildkite = { session: null, started: false, spans: new Map(), includeLocation: false, formatting: null, projectConfig, testPath: context?.testPath }
     let fallback = 'its results go to the JSON upload instead'
@@ -155,7 +121,7 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
       const settings = readSettings()
       if (!settings) return
       fallback = settings.fallback
-      const paths = new Paths({ rootDir: globalConfig.rootDir }, settings.runEnv.location_prefix)
+      const paths = new Paths({ rootDir: globalConfig?.rootDir ?? settings.rootDir }, settings.runEnv.location_prefix)
       this._buildkite.testPath = paths.prefixTestPath(context.testPath)
       this._buildkite.record = () => recordExport(settings.exportRecords, recordKey(projectConfig, context.testPath))
       this._buildkite.fallback = fallback
@@ -168,15 +134,15 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
     }
   }
 
-  async handleTestEvent(event, state) {
+  async handleTestEvent(event, state, handleTestEvent) {
     if (this._buildkite.session && !this._buildkite.started) this._start(new Error().stack)
-    if (super.handleTestEvent) await super.handleTestEvent(event, state)
+    if (handleTestEvent) await handleTestEvent(event, state)
     const { session, spans, children } = this._buildkite
     if (!session) return
 
     switch (event.name) {
       case 'run_start':
-        if (children.canExportChildren) this._wrapFunctions(state.rootDescribeBlock)
+        this._wrapFunctions(state.rootDescribeBlock)
         break
       case 'include_test_location_in_result':
         this._buildkite.includeLocation = true
@@ -214,7 +180,7 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   _begin(test) {
     const { session, spans, children, testPath } = this._buildkite
     if (spans.has(test)) return spans.get(test)
-    const result = this._assertionResult(test, undefined)
+    const result = assertionResult(test, undefined, this._buildkite)
     const record = { id: randomUUID(), ...testEngineRecord(result, testPath) }
     const handle = session.startTestSpan(record, { startTime: Date.now() })
     const started = { handle, id: record.id }
@@ -224,15 +190,14 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   }
 
   _wrapFunctions(block) {
-    const env = this
     const { children, spans } = this._buildkite
     const wrap = (entry, test) => {
       const fn = entry.fn
       if (!fn) return
       const invoke = (receiver, args) => {
-        const owner = test || env._buildkite.hookTest
+        const owner = test || this._buildkite.hookTest
         if (!owner || (!test && !['beforeEach', 'afterEach'].includes(entry.type))) return fn.apply(receiver, args)
-        const started = test ? env._begin(owner) : spans.get(owner)
+        const started = test ? this._begin(owner) : spans.get(owner)
         return children.run(started, fn, receiver, args)
       }
       // Circus uses .length to distinguish callback tests/hooks. Do not
@@ -250,9 +215,6 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
     }
   }
 
-  // Runs on the first event, before any span: records the file as exported so
-  // the reporter skips its JSON, and picks the failure formatting of the
-  // jest-circus on the stack that dispatched the event.
   _start(stack) {
     this._buildkite.started = true
     try {
@@ -265,11 +227,6 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
     this._buildkite.formatting = failureFormatting(this._buildkite.projectConfig, dispatchingJestCircus(stack))
   }
 
-  _assertionResult(test, status) {
-    const { includeLocation, formatting } = this._buildkite
-    return assertionResult(test, status, { includeLocation, formatting })
-  }
-
   _finish(test, status) {
     const { session, spans, testPath } = this._buildkite
     const started = spans.get(test)
@@ -280,7 +237,7 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
     let record = { id: started.id }
     let line
     try {
-      const result = this._assertionResult({ ...test, errors }, status || (errors.length ? 'failed' : 'passed'))
+      const result = assertionResult({ ...test, errors }, status || (errors.length ? 'failed' : 'passed'), this._buildkite)
       record = { ...record, ...testEngineRecord(result, testPath) }
       line = result.location?.line
     } catch (error) {
@@ -290,25 +247,36 @@ const extend = (Base) => class BuildkiteTestEngineEnvironment extends Base {
   }
 
   async teardown() {
-    try {
-      const { session, spans } = this._buildkite
-      if (session) {
-        // Late test-owned rejections can arrive during afterAll. Circus has
-        // settled the file's results before tearing down its environment.
-        for (const test of spans.keys()) this._finish(test)
-        try {
-          await this._buildkite.children.teardown()
-        } catch (error) {
-          warn(`Could not shut down OpenTelemetry child instrumentation: ${describeError(error)}`)
-        } finally {
-          await session.forceFlush()
-        }
+    const { session, spans } = this._buildkite
+    if (session) {
+      // Late test-owned rejections can arrive during afterAll.
+      for (const test of spans.keys()) this._finish(test)
+      try {
+        await this._buildkite.children.teardown()
+      } catch (error) {
+        warn(`Could not shut down OpenTelemetry child instrumentation: ${describeError(error)}`)
+      } finally {
+        await session.forceFlush()
       }
-    } finally {
-      await super.teardown()
     }
   }
 }
 
-module.exports = extend(BaseEnvironment)
-module.exports.extend = extend
+const attach = (environment, config, context) => {
+  const collector = new JestOtelEnvironment(config, context)
+  if (!collector._buildkite.session) return
+  environment._buildkite = collector._buildkite
+  const setup = environment.setup.bind(environment)
+  environment.setup = async () => {
+    await setup()
+    // Custom environments may install their handler during setup.
+    const handleTestEvent = environment.handleTestEvent?.bind(environment)
+    environment.handleTestEvent = (event, state) => collector.handleTestEvent(event, state, handleTestEvent)
+    const teardown = environment.teardown.bind(environment)
+    environment.teardown = async () => {
+      try { await collector.teardown() } finally { await teardown() }
+    }
+  }
+}
+
+module.exports = { attach, JestOtelEnvironment }

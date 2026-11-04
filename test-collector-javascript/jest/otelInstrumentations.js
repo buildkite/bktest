@@ -2,6 +2,7 @@ const fs = require('fs')
 const path = require('path')
 const { createRequire } = require('module')
 const { describeError } = require('../util/otel/warn')
+const { worker } = require('./otelWorker')
 
 const PREFIX = '@opentelemetry/instrumentation-'
 const SDK_LINES = { http: [200, 300], undici: [11, 34] }
@@ -25,12 +26,9 @@ const enabledByEnv = (name) => (process.env.OTEL_NODE_ENABLED_INSTRUMENTATIONS
   : !DEFAULT_EXCLUDED.includes(name)) &&
   !listedIn('OTEL_NODE_DISABLED_INSTRUMENTATIONS', name)
 
-// Resolve from the project first, then the auto-instrumentations bundle's
-// dependencies (which pnpm does not hoist). Only project/workspace manifests
-// and the bundle choose packages, never incidental hoisted dependencies.
-const sets = new Map()
+// Declarations opt in, not incidental hoisting from another dependency.
 const loadInstrumentations = (rootDir, warnOnce) => {
-  if (sets.has(rootDir)) return sets.get(rootDir)
+  if (worker.sets.has(rootDir)) return worker.sets.get(rootDir)
   const project = createRequire(path.join(rootDir, 'package.json'))
   const loaders = [project]
   const manifests = []
@@ -41,8 +39,7 @@ const loadInstrumentations = (rootDir, warnOnce) => {
   try {
     const auto = project.resolve('@opentelemetry/auto-instrumentations-node')
     loaders.push(createRequire(auto))
-    // The bundle does not export package.json. Read its dependency names
-    // from disk as well, so discovery does not require node_modules (PnP).
+    // The bundle does not export package.json; find it without assuming node_modules.
     let directory = path.dirname(auto)
     while (!fs.existsSync(path.join(directory, 'package.json')) && directory !== path.dirname(directory)) directory = path.dirname(directory)
     manifests.push(path.join(directory, 'package.json'))
@@ -77,8 +74,7 @@ const loadInstrumentations = (rootDir, warnOnce) => {
         for (const [className, Class] of Object.entries(mod)) {
           if (!className.endsWith('Instrumentation') || typeof Class !== 'function') continue
           const instance = new Class({ enabled: false })
-          // Core instrumentations use their own version; contrib releases use
-          // the instrumentation base they depend on to identify the SDK line.
+          // Contrib versions don't identify the SDK line; their base dependency does.
           const version = SDK_LINES[name] ? instance.instrumentationVersion : createRequire(resolved)('@opentelemetry/instrumentation/package.json').version
           const [major, minor] = String(version).split('.').map(Number)
           const [min, max] = SDK_LINES[name] || [200, 300]
@@ -96,7 +92,7 @@ const loadInstrumentations = (rootDir, warnOnce) => {
   }
   if (skipped.length) warnOnce('instrumentation', `OpenTelemetry instrumentation skipped: ${skipped.join(', ')}. ` +
     'The collector records child spans with instrumentation from the OpenTelemetry JavaScript 2.x SDK line; test.execution export remains enabled.')
-  sets.set(rootDir, entries)
+  worker.sets.set(rootDir, entries)
   return entries
 }
 

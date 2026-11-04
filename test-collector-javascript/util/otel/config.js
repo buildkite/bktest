@@ -3,19 +3,14 @@ const { warn, describeError } = require('./warn')
 
 const DEFAULT_ENDPOINT = 'https://tests-otlp.buildkite.com/v1/traces'
 
-// The receiver derives the run from this header and rejects anything else
-// with a 400, so the key is checked before any OTel code is loaded.
+// Reject invalid header values before loading the optional SDK.
 const RUN_KEY_FORMAT = /^[!-~]{1,255}$/
 
-// Carries the main process's decision to the test workers, which inherit the
-// environment but not the reporter's options.
+// Workers inherit the environment, not reporter options.
 const SETTINGS_ENV = 'BUILDKITE_TEST_COLLECTOR_OTEL_SETTINGS'
 
 const isValidRunKey = (runKey) => typeof runKey === 'string' && RUN_KEY_FORMAT.test(runKey)
 
-// Reporter options can arrive as strings from a CLI (`otelEnabled=false`), so
-// only `true` and the string 'true', in any case, turn OTel on; 'false', '1'
-// and 1 stay off.
 const isOtelEnabled = (value) => value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true')
 
 const otlpEndpoint = () => (process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT ?? DEFAULT_ENDPOINT).trim()
@@ -31,16 +26,10 @@ const isValidEndpoint = (endpoint) => {
 
 const jsonTokenFor = (token) => (token || process.env.BUILDKITE_ANALYTICS_TOKEN || '').trim()
 
-// What happens to results when OTel is on but cannot be used: the JSON path
-// runs only when it has a token of its own.
-const fallbackOutcome = ({ token } = {}) => {
-  return jsonTokenFor(token)
-    ? 'uploading results as JSON instead'
-    : 'results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set'
-}
+const fallbackOutcome = ({ token } = {}) => jsonTokenFor(token)
+  ? 'uploading results as JSON instead'
+  : 'results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set'
 
-// Tag values travel to the workers as JSON and to Test Engine as string
-// attributes, so they are stringified once here.
 const stringTags = (tags) => {
   const result = {}
   for (const [key, value] of Object.entries(tags || {})) {
@@ -49,28 +38,18 @@ const stringTags = (tags) => {
   return result
 }
 
-// Builds and discards a session so that a missing SDK or a broken
-// configuration surfaces here, before any test worker needs it.
 const buildSession = (settings) => {
   const { createSession } = require('./session')
   createSession(settings).shutdown().catch(() => {})
 }
 
-// Decides, once per run, whether results go over OTLP. Returns the settings a
-// session is built from, or null when the JSON path should run instead, and
-// warns about every misconfiguration except a missing credential. The
-// decision is published to the workers either way, so a stale value from a
-// parent process cannot turn OTel on.
-//
-// `probe` receives the settings and must throw if a session cannot be built;
-// tests replace it.
+// Always publish the decision so stale parent settings cannot enable export.
 const resolveSettings = (options) => {
   const settings = decideSettings(options)
   publishSettings(settings)
   return settings
 }
 
-// `unsupported` names why the framework version in use cannot export spans.
 const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runEnv, tags, unsupported, probe = buildSession }) => {
   if (!isOtelEnabled(otelEnabled)) return null
 
@@ -119,8 +98,8 @@ const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runE
   try {
     probe(settings)
   } catch (error) {
-    warn(`OpenTelemetry span export disabled: ${describeError(error)}`)
-    return couldNotConfigure()
+    warn(`OpenTelemetry span export disabled: ${describeError(error)}; ${fallbackOutcome({ token })}.`)
+    return null
   }
 
   return settings

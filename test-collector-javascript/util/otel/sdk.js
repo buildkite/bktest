@@ -1,7 +1,9 @@
 const { createRequire } = require('module')
+const fs = require('fs')
+const path = require('path')
+const semver = require('semver')
 const { describeError } = require('./warn')
 
-// Keyed by the name the session uses for each module.
 const PACKAGES = {
   api: '@opentelemetry/api',
   trace: '@opentelemetry/sdk-trace-base',
@@ -9,10 +11,7 @@ const PACKAGES = {
   exporter: '@opentelemetry/exporter-trace-otlp-proto',
 }
 
-// The OpenTelemetry JavaScript 2.x SDK line, which the collector exports
-// with. The peer dependencies only set minimums, so that no other
-// OpenTelemetry user in a project fails to install or is downgraded;
-// assertCanExport decides whether the installed packages work.
+// Optional peers permit JSON-only suites; export compatibility is checked below.
 const SUPPORTED_VERSIONS = {
   '@opentelemetry/api': '>=1.9.0 <1.10.0',
   '@opentelemetry/sdk-trace-base': '^2.0.0',
@@ -22,34 +21,37 @@ const SUPPORTED_VERSIONS = {
 }
 
 const installCommand = () => {
-  const specs = Object.values(PACKAGES).map((name) => `"${name}@${SUPPORTED_VERSIONS[name]}"`)
+  const specs = Object.entries(SUPPORTED_VERSIONS).map(([name, range]) => `"${name}@${range}"`)
   return `npm install --save-dev ${specs.join(' ')}`
 }
 
-// The OpenTelemetry packages are optional peer dependencies: they are only
-// required here, once OTel mode has been requested and the credential and run
-// key have been accepted, never at package load.
+const packageVersion = (name) => {
+  for (let directory = path.dirname(require.resolve(name)); directory !== path.dirname(directory); directory = path.dirname(directory)) {
+    const file = path.join(directory, 'package.json')
+    if (fs.existsSync(file) && require(file).name === name) return require(file).version
+  }
+}
+
+// Optional peers must not load until OpenTelemetry is requested.
 const loadSdk = () => {
   const sdk = {}
-  for (const [key, name] of Object.entries(PACKAGES)) {
-    try {
-      sdk[key] = require(name)
-    } catch (error) {
-      if (error.code !== 'MODULE_NOT_FOUND') throw error
-      // The first line names the module; the rest is the require stack.
-      throw new Error(`${String(error.message).split('\n')[0]}. Install the OpenTelemetry packages with: ${installCommand()}`)
+  try {
+    for (const [name, range] of Object.entries(SUPPORTED_VERSIONS)) {
+      if (name === PACKAGES.api) continue // Install hints cap the API, not runtime compatibility.
+      const version = packageVersion(name)
+      if (version && !semver.satisfies(version, range)) throw new Error(`unsupported ${name}@${version} (requires ${range})`)
     }
+    for (const [key, name] of Object.entries(PACKAGES)) sdk[key] = require(name)
+  } catch (error) {
+    // The first line names the module; the rest is the require stack.
+    throw new Error(`${String(error.message).split('\n')[0]}. Install the OpenTelemetry packages with: ${installCommand()}`)
   }
   // W3C propagators; a dependency of the trace SDK rather than a peer of ours.
   sdk.core = createRequire(require.resolve(PACKAGES.trace))('@opentelemetry/core')
   return sdk
 }
 
-// Packages from different OpenTelemetry releases load and create spans, then
-// fail every export (an SDK 1.x span has no instrumentationScope for a 0.2xx
-// exporter to read, and the reverse), so a span from a provider built with
-// `providerConfig` is serialized here with the exporter's own transformer
-// before any test runs.
+// Mixed SDK lines can create spans but fail serialization; probe before tests run.
 const assertCanExport = (sdk, providerConfig) => {
   try {
     const exporterRequire = createRequire(require.resolve(PACKAGES.exporter))

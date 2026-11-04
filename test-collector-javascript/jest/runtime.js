@@ -1,9 +1,7 @@
 const path = require('path')
 const { createRequire } = require('module')
 
-// Extends the jest-runtime that the requiring jest-runner uses (Jest loads
-// this file through the project's `runtime` option), falling back to the
-// project's and then this package's own copy.
+// Prefer the running jest-runner's dependencies, including under Plug'n'Play.
 const BaseRuntime = (() => {
   const candidates = [module.parent?.filename, path.join(process.cwd(), 'package.json'), __filename].filter(Boolean)
   for (const from of candidates) {
@@ -17,18 +15,24 @@ const BaseRuntime = (() => {
   throw new Error("buildkite-test-collector/jest/runtime requires 'jest-runtime' to be installed")
 })()
 
-// Turns on child spans: the collector's test environment uses it to load the
-// OpenTelemetry API and SDK into the file's sandbox, whose module registry a
-// test environment cannot reach on its own. Without the collector's
-// environment it behaves exactly like its base.
+// Only the runtime can reach Jest's sandbox module registry.
 const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
   constructor(config, environment, ...rest) {
     super(config, environment, ...rest)
+    if (environment?._buildkite) return
+    const [, , , , testPath, globalConfig] = rest
+    require('./otelEnvironment').attach(environment, { globalConfig, projectConfig: config }, { testPath })
     this._buildkiteChildren = environment?._buildkite?.children
     if (!this._buildkiteChildren) return
+    this._buildkiteChildren.attachRuntime(this)
+    if (!this._buildkiteChildren.packages.names.size) return
     // Newer Jest 30 releases moved the CJS loader off the runtime.
     const loader = this.cjsLoader || this
     const method = this.cjsLoader ? 'loadModule' : '_loadModule'
+    if (typeof loader[method] !== 'function') {
+      this._buildkiteChildren.warnOnce('loader', 'OpenTelemetry package instrumentation skipped: this Jest version has no supported module loader; test.execution export remains enabled.')
+      return
+    }
     const original = loader[method].bind(loader)
     loader[method] = (localModule, from, moduleName, modulePath, options, moduleRegistry) => {
       let originalExports
@@ -37,19 +41,14 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
         return originalExports = localModule.exports
       }
       if (options?.isInternalModule) return load()
-      // Jest has resolved aliases, conditions and mocks, and registered the
-      // module for circular loads. Store replacement exports in that registry.
-      // Preserve unchanged exports without reading a getter again: modules
-      // such as abstract-logging return a fresh object and have no setter.
+      // Preserve unchanged exports: getter-only modules can return a fresh
+      // object each time and cannot accept an assignment.
       const patchedExports = this._buildkiteChildren.load(modulePath, load)
       if (patchedExports !== originalExports) localModule.exports = patchedExports
     }
-    this._buildkiteChildren.attachRuntime(this)
   }
 
-  // The test file's require: tells the environment about each copy of the
-  // OpenTelemetry API it loads, which jest.resetModules() can multiply. An ES
-  // module's import of it arrives here as the resolved file.
+  // resetModules creates API copies; ESM imports arrive as resolved paths.
   requireModuleOrMock(from, moduleName) {
     const exports = super.requireModuleOrMock(from, moduleName)
     if (/^@opentelemetry\/api$|[\\/]@opentelemetry[\\/]api[\\/]/.test(moduleName)) this._buildkiteChildren?.loadedApi(exports)

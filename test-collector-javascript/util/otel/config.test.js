@@ -1,3 +1,4 @@
+const { createRequire } = require('module')
 const { resolveSettings, publishSettings, readSettings, isOtelEnabled, isValidRunKey, fallbackOutcome, SETTINGS_ENV, DEFAULT_ENDPOINT } = require('./config')
 
 const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
@@ -208,8 +209,7 @@ describe('resolveSettings', () => {
 
     expect(resolve({ probe })).toBeNull()
     expect(warnings()).toEqual([
-      "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'",
-      expect.stringMatching(/could not be configured .*uploading results as JSON instead/),
+      "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'; uploading results as JSON instead.",
     ])
   })
 
@@ -227,8 +227,8 @@ describe('resolveSettings', () => {
     expect(warnings()).toEqual([
       "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'. " +
       'Install the OpenTelemetry packages with: npm install --save-dev "@opentelemetry/api@>=1.9.0 <1.10.0" ' +
-      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0"',
-      expect.stringMatching(/could not be configured .*uploading results as JSON instead/),
+      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0" ' +
+      '"@opentelemetry/context-async-hooks@^2.0.0"; uploading results as JSON instead.',
     ])
     expect(readSettings()).toBeNull()
   })
@@ -249,9 +249,43 @@ describe('resolveSettings', () => {
     expect(warnings()).toEqual([
       "[buildkite-test-collector] OpenTelemetry span export disabled: Error: the installed OpenTelemetry packages cannot export spans together (TypeError: Cannot read properties of undefined (reading 'name')). " +
       'Install matching versions with: npm install --save-dev "@opentelemetry/api@>=1.9.0 <1.10.0" ' +
-      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0"',
-      expect.stringMatching(/could not be configured .*uploading results as JSON instead/),
+      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0" ' +
+      '"@opentelemetry/context-async-hooks@^2.0.0"; uploading results as JSON instead.',
     ])
+    expect(readSettings()).toBeNull()
+  })
+
+  it('does not use the API install hint as an export compatibility cap', () => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    jest.resetModules()
+    const manifest = createRequire(require.resolve('@opentelemetry/api')).resolve('../../package.json')
+    jest.doMock(manifest, () => ({ name: '@opentelemetry/api', version: '1.10.0' }))
+    try {
+      // The default probe creates and serializes a real SDK 2 span.
+      const settings = resolve({ probe: undefined })
+      expect(warnings()).toEqual([])
+      expect(settings).toMatchObject({ token: 'env-token' })
+    } finally {
+      jest.dontMock(manifest)
+      jest.resetModules()
+    }
+  })
+
+  it.each([
+    ['@opentelemetry/sdk-trace-base', '1.30.1'],
+    ['@opentelemetry/resources', '3.0.0'],
+  ])('names unsupported %s %s and explains how to install compatible packages', (name, version) => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    jest.doMock(`${name}/package.json`, () => ({ name, version }))
+    try {
+      expect(resolve({ probe: undefined })).toBeNull()
+    } finally { jest.dontMock(`${name}/package.json`) }
+    expect(warnings()).toEqual([
+      expect.stringContaining(`unsupported ${name}@${version}`),
+    ])
+    expect(warnings()[0]).toContain('Install the OpenTelemetry packages with: npm install --save-dev')
+    expect(warnings()[0]).toContain('@opentelemetry/context-async-hooks@^2.0.0')
+    expect(warnings()[0]).toContain('uploading results as JSON instead')
     expect(readSettings()).toBeNull()
   })
 
@@ -260,7 +294,7 @@ describe('resolveSettings', () => {
     const probe = () => { throw new Error('boom') }
 
     expect(resolve({ probe })).toBeNull()
-    expect(warnings()[1]).toMatch(/results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set/)
+    expect(warnings()).toEqual([expect.stringMatching(/results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set/)])
   })
 })
 

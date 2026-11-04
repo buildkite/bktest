@@ -10,23 +10,14 @@ jest.mock('../util/otel/session', () => ({
 }))
 const { sessionFor } = require('../util/otel/session')
 jest.mock('../util/uploadTestResults', () => jest.fn(() => Promise.resolve()))
+jest.mock('jest-runtime', () => class {}, { virtual: true })
 const uploadTestResults = require('../util/uploadTestResults')
-const { extend } = require('./environment')
+const { JestOtelEnvironment: Environment } = require('./otelEnvironment')
 const Reporter = require('./reporter')
 const { recordKey, exportCount } = require('./exportRecords')
 
 const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
 const warnings = () => consoleWarnSpy.mock.calls.map(([message]) => message)
-
-class Base {
-  constructor(config, context) {
-    this.config = config
-    this.context = context
-  }
-
-  async teardown() {}
-}
-const Environment = extend(Base)
 
 const exportRecords = fs.mkdtempSync(path.join(os.tmpdir(), 'bk-export-records-'))
 const settings = {
@@ -52,7 +43,7 @@ afterAll(() => {
   fs.rmSync(exportRecords, { recursive: true, force: true })
 })
 
-describe('BuildkiteTestEngineEnvironment constructor', () => {
+describe('JestOtelEnvironment constructor', () => {
   it('makes paths relative to the run\'s rootDir, as the JSON upload does, not the project\'s or the worker\'s cwd', () => {
     publishSettings(settings)
     const environment = new Environment(configFor({ rootDir: '/proj/pkg', cwd: '/elsewhere' }, '/proj'), context)
@@ -61,6 +52,60 @@ describe('BuildkiteTestEngineEnvironment constructor', () => {
     expect(sessionFor).toHaveBeenCalledWith(settings)
     expect(environment._buildkite.session).toEqual({ fake: true })
     expect(warnings()).toEqual([])
+  })
+
+  it('uses the reporter root and prefix when an older runner omits globalConfig from the runtime', async () => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'secret'
+    process.env.BUILDKITE_ANALYTICS_LOCATION_PREFIX = 'app'
+    const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
+    const project = { rootDir: '/proj/pkg', cwd: '/elsewhere' }
+    const environment = { setup: async () => {}, teardown: async () => {} }
+    const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn(), forceFlush: async () => {} }
+    sessionFor.mockReturnValueOnce(session)
+    const Runtime = require('./runtime').extend(class {})
+
+    new Runtime(project, environment, null, null, new Map(), {}, context.testPath)
+    await environment.setup()
+    expect(warnings()).toEqual([])
+    const test = { name: 'sums', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: new Error() }
+    await environment.handleTestEvent({ name: 'test_start', test }, {})
+    await environment.handleTestEvent({ name: 'test_done', test }, {})
+    await environment.teardown()
+    await reporter.onRunComplete()
+
+    const jsonReporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: false })
+    await jsonReporter.onTestResult({}, {
+      testFilePath: context.testPath, perfStats: { start: 1, end: 2 },
+      testResults: [{ title: 'sums', ancestorTitles: [], status: 'passed', duration: 1, failureMessages: [] }],
+    })
+    await jsonReporter.onRunComplete()
+    const jsonPath = uploadTestResults.mock.calls[0][2][0].file_name
+    expect(jsonPath).toBe('app/pkg/sum.test.js')
+    expect(session.startTestSpan.mock.calls[0][0].file_name).toBe(jsonPath)
+  })
+
+  it('exports test results when package instrumentation has no supported Jest loader', async () => {
+    const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true, token: 'secret' })
+    const environment = { setup: async () => {}, teardown: async () => {} }
+    const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn(), forceFlush: async () => {} }
+    sessionFor.mockReturnValueOnce(session)
+    const attachRuntime = jest.spyOn(require('./otelContext').prototype, 'attachRuntime').mockImplementation(function () {
+      this.packages = { names: new Set(['express']) }
+    })
+    try {
+      const Runtime = require('./runtime').extend(class {})
+      new Runtime({ rootDir: '/proj' }, environment, null, null, new Map(), {}, context.testPath)
+      await environment.setup()
+      const test = { name: 'sums', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: new Error() }
+      await environment.handleTestEvent({ name: 'test_start', test }, {})
+      await environment.handleTestEvent({ name: 'test_done', test }, {})
+      await environment.teardown()
+      expect(session.finishTestSpan.mock.calls[0][1]).toMatchObject({ name: 'sums', result: 'passed' })
+      expect(warnings()).toEqual([expect.stringMatching(/package instrumentation skipped: this Jest version has no supported module loader; test.execution export remains enabled\./)])
+    } finally {
+      attachRuntime.mockRestore()
+      await reporter.onRunComplete()
+    }
   })
 
   it('runs the tests as the base environment would when OTel mode is off', async () => {
@@ -129,7 +174,7 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
   // Jest accepts the same explicit project id twice.
   it('uploads JSON for a project running a file another project with the same id exported', async () => {
     const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-    const collectorProject = { id: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/buildkite-test-collector/jest/environment.js' }
+    const collectorProject = { id: 'same', rootDir: '/proj', runtime: '/proj/node_modules/buildkite-test-collector/jest/runtime.js' }
     const plainProject = { id: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/jest-environment-node/build/index.js' }
     await new Environment(configFor(collectorProject), { testPath }).handleTestEvent({ name: 'setup' }, {})
 
@@ -244,7 +289,7 @@ const STACKS = [
   )],
 ]
 
-describe('BuildkiteTestEngineEnvironment test locations', () => {
+describe('JestOtelEnvironment test locations', () => {
   it.each(STACKS)('reports the line Jest reports for a %s', async (_, line, asyncErrorStack) => {
     publishSettings({ ...settings, runEnv: { key: 'run-1' } })
     const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }
@@ -311,7 +356,7 @@ const FAILURES = [
     'Error: thrown: "oops"\n\n[cause]: Error\n    at Object.test (/repo/fail.test.js:3:1)'],
 ]
 
-describe('BuildkiteTestEngineEnvironment failure text', () => {
+describe('JestOtelEnvironment failure text', () => {
   it.each(FAILURES)('%s', async (_, version, messageUtil, errors, text) => {
     publishSettings({ ...settings, runEnv: { key: 'run-1' } })
     const session = { startTestSpan: jest.fn(() => 'handle'), finishTestSpan: jest.fn(), forceFlush: jest.fn() }

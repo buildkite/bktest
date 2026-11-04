@@ -7,9 +7,9 @@
     "buildkite-test-analytics",
     "buildkite-test-collector"
   ],
-  "version": "1.13.0-beta.3",
+  "version": "1.13.0-beta.4",
   "homepage": "https://buildkite.com/platform/test-engine",
-  "bugs": "https://github.com/buildkite/test-collector-javascript/issues",
+  "bugs": "https://github.com/buildkite/bktest/issues",
   "license": "MIT",
   "files": [
     "LICENSE.md",
@@ -21,21 +21,22 @@
     "playwright/",
     "cypress/",
     "vitest/",
-    "util/"
+    "util/",
+    "!**/*.test.js"
   ],
   "dependencies": {
     "axios": "^1.8.2",
     "dotenv": "^16.0.2",
     "request-spy": "^0.0.10",
-    "semver": "^7.8.6",
+    "semver": "^7.5.2",
     "strip-ansi": "^6.0.0"
   },
   "peerDependencies": {
-    "@opentelemetry/api": ">=1.9.0",
-    "@opentelemetry/context-async-hooks": ">=2.0.0",
-    "@opentelemetry/exporter-trace-otlp-proto": ">=0.200.0",
-    "@opentelemetry/resources": ">=2.0.0",
-    "@opentelemetry/sdk-trace-base": ">=2.0.0"
+    "@opentelemetry/api": "*",
+    "@opentelemetry/context-async-hooks": "*",
+    "@opentelemetry/exporter-trace-otlp-proto": "*",
+    "@opentelemetry/resources": "*",
+    "@opentelemetry/sdk-trace-base": "*"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/api": {
@@ -95,7 +96,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/buildkite/test-collector-javascript.git"
+    "url": "https://github.com/buildkite/bktest.git",
+    "directory": "test-collector-javascript"
   },
   "engines": {
     "npm": ">=7.0.0"

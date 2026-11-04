@@ -13,38 +13,31 @@ const SPAN_STREAM = 'test'
 const FLUSH_BUDGET_MILLISECONDS = 30000
 const TIMED_OUT = Symbol('timed out')
 
-// The span's own string attributes are cut to 10,243 code points here: the
-// server truncates test names to 10,240 before deriving the test ID, so a
-// long name keeps the identity of its JSON upload. The SDK applies one limit,
-// in UTF-16 code units, to span and event attributes alike, so it is set to
-// the widest encoding of the event attribute limit the other collectors use
-// (16,384 code points) and only ever cuts a value the collector missed.
+// Match server code-point limits before the SDK applies its UTF-16 limit.
 const SPAN_ATTRIBUTE_VALUE_MAX_LENGTH = 10243
 const SPAN_LIMITS = {
   attributeCountLimit: 128,
   attributeValueLengthLimit: 2 * 16384,
   eventCountLimit: 100,
   attributePerEventCountLimit: 128,
+  linkCountLimit: 128,
+  attributePerLinkCountLimit: 128,
 }
 
-const limitAttributes = (attributes) => {
-  const limited = {}
-  for (const [key, value] of Object.entries(attributes)) {
-    limited[key] = typeof value === 'string' ? truncate(value, SPAN_ATTRIBUTE_VALUE_MAX_LENGTH) : value
-  }
-  return limited
-}
+const limitAttributes = (attributes) => Object.fromEntries(Object.entries(attributes).map(([key, value]) => [
+  key, typeof value === 'string' ? truncate(value, SPAN_ATTRIBUTE_VALUE_MAX_LENGTH) : value,
+]))
 
 const PROCESSOR_DEFAULTS = { queue: 8192, batch: 120 }
 const PROCESSOR_SIZE_LIMIT = 2147483647
 const SCHEDULE_DELAY_MILLISECONDS = 1000
 
-const processorSize = (name, fallback) => {
+const processorSize = (name, fallback, limit = PROCESSOR_SIZE_LIMIT) => {
   const raw = process.env[name]
   if (raw === undefined) return fallback
   const value = /^[0-9]+$/.test(raw) ? Number(raw) : NaN
-  if (value >= 1 && value <= PROCESSOR_SIZE_LIMIT) return value
-  warn(`${name} must be a positive integer up to ${PROCESSOR_SIZE_LIMIT}, using default ${fallback}`)
+  if (value >= 1 && value <= limit) return value
+  warn(`${name} must be a positive integer up to ${limit}, using default ${fallback}`)
   return fallback
 }
 
@@ -52,7 +45,7 @@ const processorSizes = (stream = 'TEST', defaults = PROCESSOR_DEFAULTS) => {
   const queueName = `BUILDKITE_TESTS_OTEL_${stream}_SPAN_QUEUE_SIZE`
   const batchName = `BUILDKITE_TESTS_OTEL_${stream}_SPAN_BATCH_SIZE`
   const queue = processorSize(queueName, defaults.queue)
-  const batch = processorSize(batchName, defaults.batch)
+  const batch = processorSize(batchName, defaults.batch, stream === 'TEST' ? 200 : PROCESSOR_SIZE_LIMIT)
   if (batch > queue) {
     warn(`${batchName} must be <= ${queueName}; using defaults (batch ${defaults.batch}, queue ${defaults.queue})`)
     return defaults
@@ -73,23 +66,16 @@ const idGenerator = {
   generateSpanId: () => randomHex(8),
 }
 
-// W3C traceparent: version 00 has exactly four fields; later versions may
-// append more, version ff is reserved.
-const TRACEPARENT = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})(-.*)?$/
-
-// The Agent exports its job span's context; a link (not a parent) keeps the
-// test span a trace root while still connecting the two.
-const jobSpanLinks = (api) => {
-  const match = TRACEPARENT.exec((process.env.TRACEPARENT || '').trim())
-  if (!match || match[1] === 'ff' || (match[1] === '00' && match[5])) return []
-  const [, , traceId, spanId, flags] = match
-  const traceState = process.env.TRACESTATE ? api.createTraceState(process.env.TRACESTATE) : undefined
-  const context = { traceId, spanId, traceFlags: parseInt(flags, 16), traceState, isRemote: true }
-  return api.isSpanContextValid(context) ? [{ context }] : []
+// Link to the Agent job without making otherwise independent tests share a trace.
+const jobSpanLinks = ({ api, core }) => {
+  const context = core.parseTraceParent((process.env.TRACEPARENT || '').trim())
+  if (!context) return []
+  context.traceState = process.env.TRACESTATE ? api.createTraceState(process.env.TRACESTATE) : undefined
+  context.isRemote = true
+  return [{ context }]
 }
 
-// One console.warn call keeps both lines together in interleaved worker
-// output; each carries the prefix so either line can be grepped.
+// Keep both lines together in interleaved worker output.
 const missingResults = (count, detail) => {
   warn(
     `TEST RESULTS MISSING: OpenTelemetry dropped ${count} test.execution span(s) (${detail}).\n` +
@@ -104,9 +90,7 @@ const pendingResults = (count) => {
   )
 }
 
-// Owns the private tracer provider for one run in this process: every test
-// span is a trace root exported on the `test` stream with explicit settings,
-// so customer OTEL_* configuration cannot sample, trim or redirect results.
+// Explicit settings keep suite OTEL_* settings from sampling or redirecting results.
 const createSession = (settings) => {
   const sdk = loadSdk()
   const { api, trace, resources } = sdk
@@ -134,11 +118,7 @@ const createSession = (settings) => {
   }
   let reportedFailures = 0
 
-  // Every ended span stays here until its export settles or a warning has
-  // counted it, so each span is reported once at most: as an export failure,
-  // as never exported, or as pending when a flush stops waiting for it. A
-  // worker that Jest force-exits has then already warned about every span it
-  // could not deliver.
+  // Report each failed or pending span once, including before Jest force-exits.
   const unsettled = new Set()
   let unreportedFailures = 0
   const settle = (spans, succeeded) => {
@@ -148,12 +128,7 @@ const createSession = (settings) => {
     feedHeldSpans()
   }
 
-  // The batch processor drops a span when its queue is full, and a run of
-  // fast tests ends spans faster than one Node thread can export them, so
-  // spans that would overflow the queue are held here instead and handed
-  // over as exports complete. Memory is the only cap. The queue's length is
-  // tracked as spans handed to the processor minus spans it has handed on,
-  // which the processor does synchronously as it starts each export.
+  // Hold overflow in memory: the SDK would drop results from a full queue.
   const sizes = processorSizes()
   const held = []
   let queued = 0
@@ -195,20 +170,13 @@ const createSession = (settings) => {
   const tracer = provider.getTracer(TRACER_NAME, version)
   const run = runAttributes(settings)
   let children
-  const childExport = () => {
-    if (!children) children = createChildExport({ sdk, settings, processorSizes })
-    return children
-  }
-  // Children keep the collector's resource and CSPRNG ids but, as in Ruby,
-  // the SDK's own sampler and limits, including OTEL_TRACES_SAMPLER.
+  const childExport = () => children ||= createChildExport({ sdk, settings, processorSizes })
+  // Unlike test results, children honor the suite's sampler and span limits.
   const childProviderConfig = { resource: providerConfig.resource, idGenerator }
   let propagator
-  const childPropagator = () => {
-    propagator = propagator || new sdk.core.CompositePropagator({
-      propagators: [new sdk.core.W3CTraceContextPropagator(), new sdk.core.W3CBaggagePropagator()],
-    })
-    return propagator
-  }
+  const childPropagator = () => propagator ||= new sdk.core.CompositePropagator({
+    propagators: [new sdk.core.W3CTraceContextPropagator(), new sdk.core.W3CBaggagePropagator()],
+  })
 
   const startTestSpan = (record, { line, startTime } = {}) => {
     try {
@@ -217,7 +185,7 @@ const createSession = (settings) => {
         root: true,
         kind: api.SpanKind.INTERNAL,
         startTime,
-        links: jobSpanLinks(api),
+        links: jobSpanLinks(sdk),
         attributes: limitAttributes({
           'buildkite.execution.via': 'otlp',
           'buildkite.run_key': runKey,
@@ -256,9 +224,7 @@ const createSession = (settings) => {
     }
     try {
       if (description) {
-        for (const [key, value] of Object.entries(limitAttributes({ ...description.attributes, ...run }))) {
-          span.setAttribute(key, value)
-        }
+        span.setAttributes(limitAttributes({ ...description.attributes, ...run }))
       }
     } catch (error) {
       warn(`Could not describe OpenTelemetry test span: ${describeError(error)}`)
@@ -275,18 +241,8 @@ const createSession = (settings) => {
     }
   }
 
-  // Flush and shutdown share one 30 s budget per process: waits that end in
-  // failure or run out of time consume it, and once it is gone later flushes
-  // stop waiting (export continues in the background). A healthy endpoint
-  // never consumes it, so a long run of test files keeps waiting for each one.
-  //
-  // Failure is judged by the exporter's count, not by the promise: a batch
-  // the processor timer handed over before the flush fails inside
-  // exporter.forceFlush(), which resolves, so a rejected promise alone would
-  // let an outage charge every test file the full retry delay.
-  //
-  // `account` is the stream's metrics: test spans and children each spend
-  // their own budget, so trouble with children never costs test spans time.
+  // Each stream spends its own budget only on failures/timeouts. The exporter's
+  // flush can resolve despite failed batches, so also check its failure count.
   const awaitWithinBudget = async (promise, account = metrics) => {
     if (account.flushBudget <= 0) {
       promise.catch(() => {})
@@ -315,8 +271,7 @@ const createSession = (settings) => {
     }
   }
 
-  // After a completed drain, a span that never settled never reached the
-  // exporter; otherwise it may still be exporting and is reported as pending.
+  // Only a completed drain proves an unsettled span never reached the exporter.
   const reportUndelivered = ({ drained }) => {
     reportedFailures = metrics.failed
     const leftover = unsettled.size
@@ -333,22 +288,11 @@ const createSession = (settings) => {
     if (!drained && leftover > 0) pendingResults(leftover)
   }
 
-  // The processor rejects a flush when any batch in it failed, which the
-  // exporter wrapper has already counted; only an unexpected failure is worth
-  // its own warning.
-  const unexplained = (error) => metrics.failed === reportedFailures && describeError(error)
-
-  // The processor's flush only covers its queue; a batch its timer already
-  // handed to the exporter (retries included) is joined through the exporter,
-  // and spans held back from a full queue are fed in and flushed again until
-  // none are left or the budget runs out. A failed batch has been counted by
-  // the exporter and does not stop the rest from being sent.
+  // Join in-flight exports as well as queued batches, including spans fed during a flush.
   const drain = async () => {
     let failure = null
     for (;;) {
       feedHeldSpans()
-      // Spans fed while this flush ran sit in the queue behind it, so the
-      // loop flushes once more until a flush fed nothing and held none back.
       const queuedBefore = queued
       try {
         if (!await awaitWithinBudget(processor.forceFlush().finally(() => exporter.forceFlush()))) return { drained: false, failure }
@@ -356,24 +300,23 @@ const createSession = (settings) => {
         failure = error
       }
       if (held.length === 0 && queued === queuedBefore) return { drained: true, failure }
-      // The flush emptied the queue, so held spans must fit now; if none do,
-      // the processor has shut down and nothing will drain it.
+      // Nothing fitting an emptied queue means the processor has shut down.
       if (held.length > 0 && feedHeldSpans() === 0) return { drained: false, failure }
     }
   }
 
   const warnUnlessCounted = (action, failure) => {
-    const cause = failure && unexplained(failure)
+    const cause = failure && metrics.failed === reportedFailures && describeError(failure)
     if (cause) warn(`Could not ${action}: ${cause}`)
   }
 
   const forceFlush = async () => {
+    const childFlush = children && awaitWithinBudget(children.flush(), children.metrics).catch(() => true)
     const { drained, failure } = await drain()
     warnUnlessCounted('flush OpenTelemetry spans', failure)
     reportUndelivered({ drained })
-    // A rejected flush means a batch failed, which the exporter has counted
-    // and report() warns about.
-    if (children) children.report(await awaitWithinBudget(children.flush(), children.metrics).catch(() => true))
+    // Rejected child flushes have already counted the failed batch.
+    if (children) children.report(await childFlush)
   }
 
   const onExit = () => {
@@ -400,9 +343,6 @@ const createSession = (settings) => {
   return { api, runKey, metrics, startTestSpan, finishTestSpan, forceFlush, shutdown, childExport, childProviderConfig, childPropagator }
 }
 
-// One session per process: a run's identity is fixed once export is
-// configured, so a second configuration with a different key keeps the first
-// until it is shut down.
 let current = null
 
 const sessionFor = (settings) => {

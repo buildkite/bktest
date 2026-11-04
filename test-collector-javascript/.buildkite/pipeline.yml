@@ -26,7 +26,8 @@ steps:
           - "cd test-collector-javascript"
           - "npm ci"
           - "npx playwright install --with-deps chromium"
-          - "npm test"
+          - "node .buildkite/install-jest-otel-tools.js"
+          - "EXPECTED_JEST_VERSION=29.7.0 npm test"
         plugins:
           - docker#v3.7.0:
               image: cypress/base:22.15.0
@@ -45,24 +46,25 @@ steps:
           - "npm ci"
           - "node -e 'const specs = Object.entries(require(\"./util/otel/sdk\").SUPPORTED_VERSIONS).map(([name, range]) => name + \"@\" + range); require(\"child_process\").execFileSync(\"npm\", [\"install\", \"--no-save\", ...specs], { stdio: \"inherit\" })'"
           - "npm ls @opentelemetry/api @opentelemetry/sdk-trace-base @opentelemetry/resources @opentelemetry/exporter-trace-otlp-proto"
-          - "npm test -- otel"
+          - "node .buildkite/install-jest-otel-tools.js"
+          - "EXPECTED_JEST_VERSION=29.7.0 npm test -- otel"
         plugins:
           - docker#v3.7.0:
               image: node:22.15.0
               mount-buildkite-agent: false
       - label: ":opentelemetry: OTel tests against the oldest OpenTelemetry versions the collector supports"
-        # The peer dependencies and instrumentation gates are minimums; this
-        # step installs exactly those minimums.
+        # Pair the documented Node floor with the supported SDK minimums.
         command:
           - "cd test-collector-javascript"
           - "npm ci"
           # npm ls would call these invalid against the root's devDependencies,
           # so the installed versions are checked directly.
           - "node -e 'const floors = { \"@opentelemetry/api\": \"1.9.0\", \"@opentelemetry/sdk-trace-base\": \"2.0.0\", \"@opentelemetry/resources\": \"2.0.0\", \"@opentelemetry/context-async-hooks\": \"2.0.0\", \"@opentelemetry/exporter-trace-otlp-proto\": \"0.200.0\", \"@opentelemetry/instrumentation-http\": \"0.200.0\", \"@opentelemetry/instrumentation-undici\": \"0.11.0\" }; require(\"child_process\").execFileSync(\"npm\", [\"install\", \"--no-save\", ...Object.entries(floors).map(([name, version]) => name + \"@\" + version)], { stdio: \"inherit\" }); for (const [name, version] of Object.entries(floors)) { const installed = JSON.parse(require(\"fs\").readFileSync(\"node_modules/\" + name + \"/package.json\")).version; console.log(name, installed); if (installed !== version) process.exit(1) }'"
+          - "node .buildkite/install-jest-otel-tools.js"
           - "EXPECTED_JEST_VERSION=29.7.0 npm test -- --runInBand e2e/jest-otel.test.js"
         plugins:
           - docker#v3.7.0:
-              image: node:22.15.0
+              image: node:18.19.0
               mount-buildkite-agent: false
       - label: ":jest: Jest {{matrix}} OTel compatibility"
         # 28.1.3 checks that unsupported Jest falls back to JSON.
@@ -80,6 +82,7 @@ steps:
           - "npm pkg set 'devDependencies.jest={{matrix}}' 'devDependencies.jest-environment-node={{matrix}}' --workspace examples/jest"
           - "node -e 'const fs = require(\"fs\"); const lock = JSON.parse(fs.readFileSync(\"package-lock.json\")); for (const key of Object.keys(lock.packages)) if (key.startsWith(\"examples/jest/node_modules/\")) delete lock.packages[key]; fs.writeFileSync(\"package-lock.json\", JSON.stringify(lock))'"
           - "npm install --ignore-scripts --legacy-peer-deps"
+          - "node .buildkite/install-jest-otel-tools.js"
           - "EXPECTED_JEST_VERSION={{matrix}} npm test -- --runInBand e2e/jest-otel.test.js"
         plugins:
           - docker#v3.7.0:

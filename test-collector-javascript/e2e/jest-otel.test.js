@@ -2,6 +2,7 @@ const { exec, execFile } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const stripAnsi = require('strip-ansi')
 const { startOtlpServer } = require('./support/otlpServer')
 
 // examples/jest/otel.config.js runs: example.test.js (2), passed.test.js (1),
@@ -64,6 +65,103 @@ test('runs the selected Jest version', () => {
 // OpenTelemetry submission needs Jest 29 or newer; older versions upload JSON.
 const otelSupported = jestMajor >= 29
 
+let tools
+if (otelSupported) {
+  try {
+    tools = require('../.buildkite/install-jest-otel-tools')
+    for (const name of ['jest-environment-jsdom', '@happy-dom/jest-environment', 'typescript']) tools.resolve(name)
+  } catch (error) {
+    tools = null
+    const message = 'Install OTel e2e tools: node .buildkite/install-jest-otel-tools.js'
+    if (process.env.EXPECTED_JEST_VERSION || process.env.CI || process.env.BUILDKITE) throw new Error(message, { cause: error })
+    console.warn(`${message} (skipping jsdom, happy-dom and tsc locally)`)
+  }
+}
+
+// Runs with the example's Jest, not the outer test runner's. Keeping this in
+// the OTel e2e suite also runs it in the newest-SDK soft-fail leg.
+;(otelSupported ? test : test.skip)('Jest and OpenTelemetry internals still satisfy the child-span contract', async () => {
+  const canary = async () => {
+    const assert = require('node:assert/strict')
+    const { createRequire } = require('node:module')
+    const load = createRequire(require.resolve('jest'))
+    const Runtime = load('jest-runtime').default
+    const { projectConfig, globalConfig } = await load('jest-config').readConfig({}, process.cwd())
+    const Environment = require('jest-environment-node').TestEnvironment
+    const environment = new Environment({ projectConfig, globalConfig }, { console, testPath: __filename })
+    const { resolver } = await Runtime.createContext(projectConfig, { maxWorkers: 1, watchman: false })
+    const transformer = await load('@jest/transform').createScriptTransformer(projectConfig)
+    const runtime = new Runtime(projectConfig, environment, resolver, transformer, new Map(), {}, __filename, globalConfig)
+    try {
+      const loader = runtime.cjsLoader || runtime
+      const method = runtime.cjsLoader ? 'loadModule' : '_loadModule'
+      assert.equal(typeof loader[method], 'function', `Jest ${method}`)
+      assert.equal(loader[method].length, 6, `Jest ${method} arguments`)
+      const resolution = runtime._resolution || runtime
+      const resolve = runtime._resolution ? 'resolveCjs' : '_resolveCjsModule'
+      assert.equal(typeof resolution[resolve], 'function', `Jest ${resolve}`)
+      assert.equal(resolution[resolve](require.resolve('express/package.json'), 'express'), require.resolve('express'))
+
+      const api = require('@opentelemetry/api')
+      const proxy = api.trace.getTracerProvider()
+      assert.equal(typeof proxy.getDelegate, 'function')
+      assert.equal(typeof proxy.setDelegate, 'function')
+      assert.equal(proxy.getDelegate(), new api.ProxyTracerProvider().getDelegate())
+      const tracer = proxy.getTracer('canary')
+      const provider = { getTracer: () => ({ startSpan: () => 'delegated' }) }
+      proxy.setDelegate(provider)
+      assert.equal(tracer.startSpan('early tracer'), 'delegated')
+      assert.equal(api.trace.setGlobalTracerProvider(provider), true, 'delegation must not register a provider')
+      api.trace.disable()
+
+      assert.equal(typeof api.context._getContextManager, 'function')
+      const fallback = api.context._getContextManager()
+      assert.equal(fallback.constructor.name, 'NoopContextManager')
+      const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks')
+      const manager = new AsyncLocalStorageContextManager().enable()
+      for (const method of ['active', 'with', 'bind']) fallback[method] = manager[method].bind(manager)
+      const key = api.createContextKey('canary')
+      const context = api.ROOT_CONTEXT.setValue(key, true)
+      assert.equal(api.context.with(context, () => api.context.active().getValue(key)), true, 'noop methods must be writable and used by the API')
+      assert.equal(api.context.bind(context, () => api.context.active().getValue(key))(), true)
+      assert.equal(api.context.setGlobalContextManager(manager), true, 'fallback must not block suite registration')
+      api.context.disable()
+
+      const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http')
+      const http = new HttpInstrumentation({ enabled: false })
+      assert.ok(Array.isArray(http._modules), 'live instrumentation definitions')
+      assert.deepEqual(http._modules.map((definition) => definition.name).sort(), ['http', 'https'])
+      assert.equal(typeof http._wrap, 'function')
+      for (const definition of http._modules) {
+        assert.equal(typeof definition.patch, 'function')
+        assert.equal(typeof definition.unpatch, 'function')
+        const exports = { request() {}, get() {}, Server: { prototype: { emit() {} } } }
+        definition.moduleExports = exports
+        assert.equal(definition.moduleExports, exports, 'live exports slot must be writable')
+        definition.patch(exports)
+        const wrapped = exports.request
+        assert.equal(typeof wrapped.__original, 'function', '_wrap must install a wrapper')
+        definition.unpatch() // Must reset the guard without unwrapping replacements.
+        assert.equal(exports.request, wrapped)
+        definition.patch(exports)
+        assert.notEqual(exports.request, wrapped, 'unpatch() must allow a fresh patch')
+        definition.unpatch(exports)
+      }
+      const target = { call: () => 7 }
+      const wrapped = http._wrap(target, 'call', (original) => new Proxy(original, {}))
+      assert.equal(target.call, wrapped, '_wrap must return the installed Proxy')
+      assert.equal(wrapped(), 7)
+    } finally {
+      runtime.teardown()
+      await environment.teardown()
+    }
+  }
+  await new Promise((resolve, reject) => {
+    execFile(process.execPath, ['-e', `(${canary})().catch(error => { console.error(error); process.exitCode = 1 })`],
+      { cwd: path.join(__dirname, '../examples/jest') }, (error, stdout, stderr) => error ? reject(new Error(stderr)) : resolve())
+  })
+}, 60000)
+
 ;(otelSupported ? test.skip : test)('warns once and uploads JSON on Jest 28 and older', async () => {
   server = await startOtlpServer()
   const result = await run('jest --config otel-children.config.js', {
@@ -77,6 +175,110 @@ const otelSupported = jestMajor >= 29
 }, 60000)
 
 ;(otelSupported ? describe : describe.skip)('examples/jest in OTel mode', () => {
+  for (const [kind, environment] of [
+    ['node', 'node'],
+    ['jsdom', tools?.resolve('jest-environment-jsdom')],
+    ['happy-dom', tools?.resolve('@happy-dom/jest-environment')],
+    ['custom', path.join(__dirname, '../examples/jest/otel-native/custom-environment.js')],
+  ]) {
+    ;(environment ? test : test.skip)(`records results and parented children with the unchanged ${kind} environment`, async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-native-'))
+      try {
+        server = await startOtlpServer()
+        const rootDir = path.join(__dirname, '../examples/jest')
+        const config = {
+          rootDir, testMatch: [path.join(rootDir, 'otel-native/attempts.js')],
+          reporters: ['default', [require.resolve('../jest/reporter'), { otelEnabled: true }]],
+          testEnvironment: environment, runtime: require.resolve('../jest/runtime'),
+          testEnvironmentOptions: { report: path.join(dir, 'environment.json') }, globals: { nativeEnvironment: kind },
+          setupFilesAfterEnv: kind === 'node' ? [path.join(rootDir, 'otel-native/diag.setup.js')] : [],
+        }
+        const result = await run(`jest --config ${JSON.stringify(JSON.stringify(config))} --runInBand`, {
+          ...baseEnv, BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+          OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'http,undici', OTEL_NODE_DISABLED_INSTRUMENTATIONS: '', OTEL_LOG_LEVEL: 'DEBUG',
+        })
+        expect(result.code).toBe(1)
+        expect(result.stderr).toContain('native beforeAll failure')
+        expect(result.stderr).not.toContain('[buildkite-test-collector]')
+        expect(result.stdout.match(/OpenTelemetry instrumentations selected in this worker:/g)).toHaveLength(1)
+        expect(result.stdout + result.stderr).not.toContain('instrumentations selected for this file:')
+        expect(jsonUpload(result.stdout)).toBeNull()
+        const roots = server.spans().filter((span) => span.name === 'test.execution')
+        expect(roots.map((span) => [span.attributes['buildkite.test.name'], span.attributes['test.case.result.status']]).sort()).toEqual([
+          ['ordinary', 'pass'], ['slow', 'pass'], ['fast', 'pass'], ['retried', 'fail'], ['retried', 'pass'], ['one', 'fail'], ['two', 'fail'],
+        ].sort())
+        expect(new Set(roots.map((span) => span.traceId)).size).toBe(7)
+        const children = server.spans().filter((span) => span.name !== 'test.execution')
+        expect(children.map((span) => span.name).sort()).toEqual(['ordinary child', 'slow child', 'fast child', 'retry child 1', 'retry child 2'].sort())
+        for (const child of children) {
+          const root = roots.find((span) => span.spanId === child.parentSpanId)
+          const name = child.name.startsWith('retry') ? 'retried' : child.name.split(' ')[0]
+          expect([root?.traceId, root?.attributes['buildkite.test.name']]).toEqual([child.traceId, name])
+          if (name === 'retried') expect(root.attributes['test.case.result.status']).toBe(child.name.endsWith('1') ? 'fail' : 'pass')
+        }
+        if (kind === 'custom') {
+          const report = JSON.parse(fs.readFileSync(path.join(dir, 'environment.json')))
+          expect(report.setup).toBe(true)
+          expect(report.events.filter((name) => name === 'test_start')).toHaveLength(7)
+          expect(report.events).toContain('run_finish')
+        }
+      } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+    }, 60000)
+  }
+
+  ;(tools ? test : test.skip)('type-checks reporter options strictly against the selected Jest types', async () => {
+    const dir = fs.mkdtempSync(path.join(__dirname, '../examples/jest/otel-types-'))
+    try {
+      fs.writeFileSync(path.join(dir, 'config.ts'), `
+        import type { Config } from 'jest'
+        import type { Options } from 'buildkite-test-collector/jest/reporter'
+        const options = { otelEnabled: true, token: 'token', tags: { count: 2, enabled: false }, url: 'https://example.test' } satisfies Options
+        const stringOption = { otelEnabled: 'true' } satisfies Options
+        // @ts-expect-error The collector option is otelEnabled, not otelEnable.
+        const misspelled = { otelEnable: true } satisfies Options
+        export default { reporters: [['buildkite-test-collector/jest/reporter', options]], runtime: 'buildkite-test-collector/jest/runtime' } satisfies Config
+      `)
+      const jestPackage = require.resolve('jest/package.json', { paths: [path.dirname(dir)] })
+      fs.writeFileSync(path.join(dir, 'tsconfig.json'), JSON.stringify({
+        compilerOptions: { strict: true, noEmit: true, target: 'ES2022', module: 'CommonJS', esModuleInterop: true, types: [],
+          paths: { jest: [path.join(path.dirname(jestPackage), require(jestPackage).types)] } }, files: ['config.ts'],
+      }))
+      await new Promise((resolve, reject) => {
+        execFile(process.execPath, [tools.resolve('typescript/bin/tsc'), '-p', path.join(dir, 'tsconfig.json')],
+          (error, stdout, stderr) => error ? reject(new Error(stdout + stderr)) : resolve())
+      })
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  }, 30000)
+
+  test('keeps beta.2 module-load stacks with only HTTP and undici', async () => {
+    const root = fs.mkdtempSync(path.join(__dirname, '../examples/jest/otel-stack-'))
+    try {
+      fs.writeFileSync(path.join(root, 'helper.js'), "module.exports = new Error('helper error')")
+      fs.writeFileSync(path.join(root, 'stack.js'), `
+        const error = new Error('module-load error')
+        const helper = require('./helper')
+        test('module-load stack', () => {
+          expect(error.stack).toContain('module-load error')
+          expect(error.stack).not.toMatch(/buildkite-test-collector|test-collector-javascript[\\\\/]jest[\\\\/]/)
+          expect(helper.stack).toContain('requireModuleOrMock')
+          expect(helper.stack).not.toMatch(/JestOtelPackages|JestOtelContext|loader\\.<computed>/)
+        })
+      `)
+      server = await startOtlpServer()
+      const config = {
+        rootDir: path.dirname(root), roots: [root], testMatch: [path.join(root, 'stack.js')],
+        reporters: ['default', [require.resolve('../jest/reporter'), { otelEnabled: true }]],
+        runtime: require.resolve('../jest/runtime'),
+      }
+      const result = await run(`jest --config ${JSON.stringify(JSON.stringify(config))} --runInBand --no-cache`, {
+        ...baseEnv, OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'http,undici', OTEL_NODE_DISABLED_INSTRUMENTATIONS: '',
+        BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+      })
+      if (result.code) throw new Error(result.stderr)
+      expect(server.spans().filter((span) => span.name === 'test.execution')).toHaveLength(1)
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  }, 60000)
+
   // 24 tests across the child fixtures; again.js retries one test once.
   const CHILD_FIXTURE_ROOTS = 25
   const CLIENT = 3
@@ -123,6 +325,38 @@ const otelSupported = jestMajor >= 29
   const named = (name) => (span) => span.name === name
   const clientGet = (span) => span.name === 'GET' && span.kind === CLIENT
 
+  test('exports each test once when the collector runtime is extended again', async () => {
+    const dir = fs.mkdtempSync(path.join(__dirname, '../examples/jest/otel-extended-'))
+    try {
+      const jestRuntime = require.resolve('jest-runtime', { paths: [require.resolve('jest', { paths: [path.dirname(dir)] })] })
+      fs.mkdirSync(path.join(dir, 'node_modules'))
+      fs.symlinkSync(path.dirname(path.dirname(jestRuntime)), path.join(dir, 'node_modules/jest-runtime'), 'dir')
+      fs.writeFileSync(path.join(dir, 'runtime.js'), `const runtime = require(${JSON.stringify(require.resolve('../jest/runtime'))}); module.exports = runtime.extend(runtime)`)
+      fs.writeFileSync(path.join(dir, 'cases.js'), "test('one', () => {}); test('two', () => {})")
+      const config = {
+        rootDir: path.dirname(dir), roots: [dir], testMatch: [path.join(dir, 'cases.js')],
+        runtime: path.join(dir, 'runtime.js'),
+        reporters: ['default', [require.resolve('../jest/reporter'), { otelEnabled: true }]],
+      }
+      const outcome = await runChildren('extended', { config: JSON.stringify(config) })
+      if (outcome.result.code) throw new Error(outcome.result.stderr)
+      expect(outcome.result.code).toBe(0)
+      expect(outcome.warnings).toEqual([])
+      expect(outcome.roots.map((span) => span.attributes['buildkite.test.name']).sort()).toEqual(['one', 'two'])
+    } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+  }, 60000)
+
+  test('does not call the suite\'s automocked API functions', async () => {
+    const config = {
+      ...require('../examples/jest/otel-children.config'),
+      rootDir: path.join(__dirname, '../examples/jest'), setupFilesAfterEnv: [],
+      testMatch: [path.join(__dirname, '../examples/jest/otel-children/automock/*.js')],
+    }
+    const outcome = await runChildren('automock', { config: JSON.stringify(config) })
+    if (outcome.result.code) throw new Error(outcome.result.stderr)
+    expect(outcome.roots.map(spanRecord)).toEqual([expect.objectContaining({ name: 'leaves API mocks alone', result: 'pass' })])
+  }, 60000)
+
   test.each([
     ['all declared', {}, true],
     ['enabled list', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pg' }, true],
@@ -161,6 +395,32 @@ const otelSupported = jestMajor >= 29
       expect.stringMatching(/OpenTelemetry package instrumentation skipped.*mocked.*test.execution export remains enabled/),
     ])
     expect(outcome.children.filter((span) => span.attributes['express.type'])).toEqual([])
+  }, 60000)
+
+  test('runs failing test bodies with a mapped API and resetMocks', async () => {
+    const outcome = await runChildren('mapped-api')
+    expect(outcome.result.code).toBe(1)
+    expect(stripAnsi(outcome.result.stderr)).toContain('Expected: "failure"')
+    expect(outcome.roots.map(spanRecord)).toEqual([expect.objectContaining({
+      name: 'still fails with a mapped API and resetMocks', result: 'fail',
+      failure_reason: expect.stringContaining('expect(received).toBe(expected)'),
+    })])
+    expect(outcome.roots[0].status.code).toBe(2)
+    expect(outcome.result.stdout).not.toContain('Test Engine Sending:')
+  }, 60000)
+
+  test('does not expose the mutable test span to app code', async () => {
+    const outcome = await runChildren('active-span')
+    expect(outcome.result.code).toBe(0)
+    expect(outcome.warnings).toEqual([])
+    expect(outcome.roots).toHaveLength(1)
+    const [root] = outcome.roots
+    expect(root).toMatchObject({ name: 'test.execution', status: { code: 0 } })
+    expect(root.attributes['test.case.result.status']).toBe('pass')
+    expect(root.attributes['user.id']).toBeUndefined()
+    expect(outcome.childrenOf(root, named('manual child'))).toEqual([
+      expect.objectContaining({ traceId: root.traceId, parentSpanId: root.spanId }),
+    ])
   }, 60000)
 
   test('preserves getter-only module exports', async () => {
@@ -351,12 +611,17 @@ const otelSupported = jestMajor >= 29
   test('exports children from a tracer an ES module obtained before a reset in beforeAll', async () => {
     const outcome = await runChildren('esm', { env: { NODE_OPTIONS: '--experimental-vm-modules' } })
     expect([outcome.result.code, outcome.warnings, outcome.roots.length]).toEqual([0, [], 1])
-    expect(outcome.childrenOf(outcome.rootsNamed('esm after reset')[0], named('esm-child'))).toHaveLength(1)
+    const root = outcome.rootsNamed('esm after reset')[0]
+    expect(outcome.childrenOf(root, named('esm-child'))).toHaveLength(1)
+    expect(outcome.childrenOf(root, clientGet)).toEqual([
+      expect.objectContaining({ parentSpanId: root.spanId, traceId: root.traceId }),
+      expect.objectContaining({ parentSpanId: root.spanId, traceId: root.traceId }),
+    ])
   }, 60000)
 
-  // A later opted-out file sends no trace headers through the worker-wide
+  // A later project without the runtime sends no trace headers through the worker-wide
   // wrappers, including when a disabled instrumentation preloaded http.
-  test('gates built-ins in a later file that opted out of the collector environment', async () => {
+  test('gates built-ins in a later project without the collector runtime', async () => {
     const prime = path.join(__dirname, '../examples/jest/otel-children/support/prime.js')
     const outcome = await runChildren('optout', {
       env: { BUILDKITE_ANALYTICS_TOKEN: 'xyz', NODE_OPTIONS: `--require ${JSON.stringify(prime)}` },
@@ -383,13 +648,6 @@ const otelSupported = jestMajor >= 29
     expect(recorded.some((s) => s.name === 'GET')).toBe(true)
     // The preloaded instrumentation never records the collector's requests.
     expect(ownClientRequests(recorded, outcome.port)).toEqual([])
-  }, 60000)
-
-  test('exports test spans only, without a warning, without the collector runtime', async () => {
-    const outcome = await runChildren('no-runtime', { args: '--maxWorkers=2 --no-cache' })
-    expectAllResults(outcome)
-    expect(outcome.warnings).toEqual([])
-    expect(outcome.children).toEqual([])
   }, 60000)
 
   // As @opentelemetry/auto-instrumentations-node reads them: short names, the
@@ -457,7 +715,7 @@ const otelSupported = jestMajor >= 29
         testSequencer: path.join(fixtures, 'support/sequencer.js'),
         projects: roots.map((root, index) => ({
           rootDir: root, displayName: String(index), roots: [fixtures], testMatch: [path.join(fixtures, 'io.js')],
-          testEnvironment: require.resolve('../jest/environment'), runtime: require.resolve('../jest/runtime'),
+          runtime: require.resolve('../jest/runtime'),
           globals: { expectRequestTracing: {
             http: Boolean(selections[index]['@opentelemetry/instrumentation-http']),
             undici: Boolean(selections[index]['@opentelemetry/instrumentation-undici']),
@@ -727,6 +985,7 @@ const otelSupported = jestMajor >= 29
       OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:9/v1/traces',
       OTEL_TRACES_SAMPLER: 'always_off',
       OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT: '2',
+      OTEL_SPAN_LINK_COUNT_LIMIT: '0',
     })
 
     expect(result.code).toBe(1)
@@ -740,6 +999,7 @@ const otelSupported = jestMajor >= 29
     for (const span of server.spans()) {
       expect(span.droppedAttributesCount).toBe(0)
       expect(span.attributes['buildkite.tag.hello']).toBe('jest')
+      expect(span.links).toEqual([expect.objectContaining({ traceId: '0af7651916cd43dd8448eb211c80319c' })])
     }
   }, 30000)
 
@@ -769,9 +1029,10 @@ const otelSupported = jestMajor >= 29
     expect(server.requests).toHaveLength(0)
   }, 30000)
 
-  test('warns and uploads JSON for files that did not run under the collector environment', async () => {
+  test('warns and uploads JSON for files without the collector runtime', async () => {
     server = await startOtlpServer()
-    const result = await run('jest --config otel.config.js --testEnvironment node', {
+    const config = { ...require('../examples/jest/otel.config'), rootDir: path.join(__dirname, '../examples/jest'), runtime: undefined }
+    const result = await run(`jest --config ${JSON.stringify(JSON.stringify(config))}`, {
       ...baseEnv,
       BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
       BUILDKITE_ANALYTICS_TOKEN: 'xyz',
@@ -779,101 +1040,47 @@ const otelSupported = jestMajor >= 29
     })
 
     expect(result.code).toBe(1)
-    expect(result.stderr.match(/is not buildkite-test-collector\/jest\/environment/g)).toHaveLength(1)
-    expect(result.stderr).toMatch(/for test files using it, uploading results as JSON instead\./)
+    expect(result.stderr.match(/OpenTelemetry didn't record/g)).toHaveLength(1)
+    expect(result.stderr).toMatch(/check that runtime is set to 'buildkite-test-collector\/jest\/runtime' and see any earlier warnings; uploading results as JSON instead\./)
     expect(jsonUpload(result.stdout)).toHaveLength(EXPECTED_JSON_RESULTS)
     expect(server.requests).toHaveLength(0)
   }, 30000)
 
   test('says results will not be uploaded when the fallback has no JSON token', async () => {
     server = await startOtlpServer()
-    const result = await run('jest --config otel.config.js --testEnvironment node', {
+    const config = { ...require('../examples/jest/otel.config'), rootDir: path.join(__dirname, '../examples/jest'), runtime: undefined }
+    const result = await run(`jest --config ${JSON.stringify(JSON.stringify(config))}`, {
       ...baseEnv,
       BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
       BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
     })
 
     expect(result.code).toBe(1)
-    expect(result.stderr).toMatch(/is not buildkite-test-collector\/jest\/environment .*for test files using it, results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set\./)
+    expect(result.stderr).toMatch(/check that runtime is set to 'buildkite-test-collector\/jest\/runtime' and see any earlier warnings; results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set\./)
     expect(result.stderr).not.toMatch(/as JSON/)
     expect(jsonUpload(result.stdout)).toBeNull()
     expect(server.requests).toHaveLength(0)
   }, 30000)
 
   describe('with files that choose their environment through @jest-environment', () => {
-    const spanNames = () => server.spans().map((span) => span.attributes['buildkite.test.name']).sort()
-    const jsonNames = (stdout) => (jsonUpload(stdout) || []).map((record) => record.name).sort()
-
-    test('uploads the file that opted out of the collector environment as JSON, the rest over OTLP', async () => {
-      server = await startOtlpServer()
-      const result = await run('jest --config otel-docblock.config.js', {
-        ...baseEnv,
-        BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
-        BUILDKITE_ANALYTICS_TOKEN: 'xyz',
-        BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
-      })
-
-      expect(result.code).toBe(0)
-      expect(result.stderr.match(/is not buildkite-test-collector\/jest\/environment/g)).toHaveLength(1)
-      expect(spanNames()).toEqual(['runs under the collector environment', 'runs under the default environment'])
-      expect(jsonNames(result.stdout)).toEqual(['runs under the node environment'])
-    }, 30000)
-
-    test('exports only the file that opted in when the default environment is node', async () => {
-      server = await startOtlpServer()
-      const result = await run('jest --config otel-docblock.config.js --testEnvironment node', {
-        ...baseEnv,
-        BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
-        BUILDKITE_ANALYTICS_TOKEN: 'xyz',
-        BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
-      })
-
-      expect(result.code).toBe(0)
-      expect(result.stderr.match(/is not buildkite-test-collector\/jest\/environment/g)).toHaveLength(1)
-      expect(spanNames()).toEqual(['runs under the collector environment'])
-      expect(jsonNames(result.stdout)).toEqual(['runs under the default environment', 'runs under the node environment'])
-    }, 30000)
+    for (const name of ['jest-environment-jsdom', '@happy-dom/jest-environment']) {
+      ;(tools ? test : test.skip)(`keeps tracing a node docblock overriding ${name} with the runtime`, async () => {
+        server = await startOtlpServer()
+        const config = { ...require('../examples/jest/otel-docblock.config'), rootDir: path.join(__dirname, '../examples/jest'),
+          runtime: require.resolve('../jest/runtime'), testEnvironment: tools.resolve(name) }
+        const result = await run(`jest --config ${JSON.stringify(JSON.stringify(config))} --runInBand`, {
+          ...baseEnv, BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+        })
+        expect([result.code, jsonUpload(result.stdout)]).toEqual([0, null])
+        expect(result.stderr).not.toContain('[buildkite-test-collector]')
+        const roots = server.spans().filter((span) => span.name === 'test.execution')
+        expect(roots).toHaveLength(2)
+        const root = roots.find((span) => span.attributes['buildkite.test.name'] === 'runs under the node environment')
+        const children = server.spans().filter((span) => span.name !== 'test.execution')
+        expect(children.map((span) => [span.name, span.traceId, span.parentSpanId])).toEqual([['docblock child', root.traceId, root.spanId]])
+      }, 30000)
+    }
   })
-
-  test('exports once, and uploads no JSON, when the environment only loads through the project transformer', async () => {
-    server = await startOtlpServer()
-    // --no-cache keeps the environment out of the main process's module
-    // cache, so the reporter has to load it the way the workers do.
-    const result = await run('jest --config otel-transformed.config.js --no-cache --maxWorkers=2', {
-      ...baseEnv,
-      BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
-      BUILDKITE_ANALYTICS_TOKEN: 'xyz',
-      BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
-    })
-
-    expect(result.code).toBe(0)
-    expect(result.stderr).not.toMatch(/is not buildkite-test-collector\/jest\/environment/)
-    expect(result.stdout).not.toMatch(/Test Engine Sending:/)
-    expect(server.spans().map((span) => span.attributes['buildkite.test.name']).sort()).toEqual([
-      'runs under the transformed environment (first file)',
-      'runs under the transformed environment (second file)',
-    ])
-  }, 30000)
-
-  test('sends each test once when the reporter cannot load the environment its workers ran', async () => {
-    server = await startOtlpServer()
-    const cacheDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'jest-cache-'))
-    // A fresh cache has no timings, so Jest runs the two files in worker processes.
-    const result = await run(`jest --config otel-worker-only.config.js --maxWorkers=2 --cacheDirectory ${cacheDirectory}`, {
-      ...baseEnv,
-      BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
-      BUILDKITE_ANALYTICS_TOKEN: 'xyz',
-      BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
-    })
-    fs.rmSync(cacheDirectory, { recursive: true, force: true })
-
-    expect(result.code).toBe(0)
-    expect(result.stdout).not.toMatch(/Test Engine Sending:/)
-    expect(server.spans().map((span) => span.attributes['buildkite.test.name']).sort()).toEqual([
-      'runs in a worker (first file)',
-      'runs in a worker (second file)',
-    ])
-  }, 30000)
 
   test('warns TEST RESULTS MISSING and keeps a passing exit code when the endpoint is unreachable', async () => {
     const closed = await startOtlpServer()
