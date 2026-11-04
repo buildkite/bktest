@@ -191,14 +191,17 @@ if (otelSupported) {
           reporters: ['default', [require.resolve('../jest/reporter'), { otelEnabled: true }]],
           testEnvironment: environment, runtime: require.resolve('../jest/runtime'),
           testEnvironmentOptions: { report: path.join(dir, 'environment.json') }, globals: { nativeEnvironment: kind },
+          setupFilesAfterEnv: kind === 'node' ? [path.join(rootDir, 'otel-native/diag.setup.js')] : [],
         }
         const result = await run(`jest --config ${JSON.stringify(JSON.stringify(config))} --runInBand`, {
           ...baseEnv, BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token', BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
-          OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'http,undici',
+          OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'http,undici', OTEL_NODE_DISABLED_INSTRUMENTATIONS: '', OTEL_LOG_LEVEL: 'DEBUG',
         })
         expect(result.code).toBe(1)
         expect(result.stderr).toContain('native beforeAll failure')
         expect(result.stderr).not.toContain('[buildkite-test-collector]')
+        expect(result.stdout.match(/OpenTelemetry instrumentations selected in this worker:/g)).toHaveLength(1)
+        expect(result.stdout + result.stderr).not.toContain('instrumentations selected for this file:')
         expect(jsonUpload(result.stdout)).toBeNull()
         const roots = server.spans().filter((span) => span.name === 'test.execution')
         expect(roots.map((span) => [span.attributes['buildkite.test.name'], span.attributes['test.case.result.status']]).sort()).toEqual([

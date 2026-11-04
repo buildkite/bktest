@@ -120,6 +120,7 @@ class JestOtelContext {
       this.worker.refresh()
       this.mode = 'managed'
       for (const traceId of this.traces) this.forwarder.addTrace(traceId)
+      this.api.diag?.debug('buildkite-test-collector: OpenTelemetry instrumentations selected for this file:', (this.instrumentations || []).map((entry) => entry.name).sort().join(', ') || '(none)')
     } catch (error) {
       this._cleanUp()
       this.mode = 'off'
