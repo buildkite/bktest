@@ -137,7 +137,7 @@ class JestBuildkiteTestEngineReporter {
     }
     this._warnOnce(
       'runtime',
-      `No OpenTelemetry events were recorded for ${test.path}; use runtime: 'buildkite-test-collector/jest/runtime'; ${fallback}.`
+      `OpenTelemetry didn't record ${test.path}; check that runtime is set to 'buildkite-test-collector/jest/runtime' and see any earlier warnings. ${fallback}.`
     )
   }
 

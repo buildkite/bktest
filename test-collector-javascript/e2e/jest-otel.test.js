@@ -981,8 +981,8 @@ if (otelSupported) {
     })
 
     expect(result.code).toBe(1)
-    expect(result.stderr.match(/No OpenTelemetry events were recorded/g)).toHaveLength(1)
-    expect(result.stderr).toMatch(/use runtime: 'buildkite-test-collector\/jest\/runtime'; uploading results as JSON instead\./)
+    expect(result.stderr.match(/OpenTelemetry didn't record/g)).toHaveLength(1)
+    expect(result.stderr).toMatch(/check that runtime is set to 'buildkite-test-collector\/jest\/runtime' and see any earlier warnings\. uploading results as JSON instead\./)
     expect(jsonUpload(result.stdout)).toHaveLength(EXPECTED_JSON_RESULTS)
     expect(server.requests).toHaveLength(0)
   }, 30000)
@@ -996,7 +996,7 @@ if (otelSupported) {
     })
 
     expect(result.code).toBe(1)
-    expect(result.stderr).toMatch(/use runtime: 'buildkite-test-collector\/jest\/runtime'; results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set\./)
+    expect(result.stderr).toMatch(/check that runtime is set to 'buildkite-test-collector\/jest\/runtime' and see any earlier warnings\. results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set\./)
     expect(result.stderr).not.toMatch(/as JSON/)
     expect(jsonUpload(result.stdout)).toBeNull()
     expect(server.requests).toHaveLength(0)
@@ -1034,7 +1034,7 @@ if (otelSupported) {
       })
 
       expect(result.code).toBe(0)
-      expect(result.stderr.match(/No OpenTelemetry events were recorded/g)).toHaveLength(1)
+      expect(result.stderr.match(/OpenTelemetry didn't record/g)).toHaveLength(1)
       expect(spanNames()).toEqual(['runs under the collector environment', 'runs under the default environment'])
       expect(jsonNames(result.stdout)).toEqual(['runs under the node environment'])
     }, 30000)
@@ -1049,7 +1049,7 @@ if (otelSupported) {
       })
 
       expect(result.code).toBe(0)
-      expect(result.stderr.match(/No OpenTelemetry events were recorded/g)).toHaveLength(1)
+      expect(result.stderr.match(/OpenTelemetry didn't record/g)).toHaveLength(1)
       expect(spanNames()).toEqual(['runs under the collector environment'])
       expect(jsonNames(result.stdout)).toEqual(['runs under the default environment', 'runs under the node environment'])
     }, 30000)
