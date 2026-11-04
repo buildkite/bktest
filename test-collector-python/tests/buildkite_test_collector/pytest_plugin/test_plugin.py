@@ -1,10 +1,10 @@
 import json
-import os
 from types import SimpleNamespace
 
 import pytest
 
 from buildkite_test_collector.collector.payload import Payload, TestData, TestResultFailed, TestResultPassed, TestResultSkipped
+from buildkite_test_collector.collector.run_env import RunEnv
 from buildkite_test_collector.pytest_plugin import BuildkitePlugin
 
 from _pytest._code.code import ExceptionInfo
@@ -172,10 +172,11 @@ def test_pytest_runtest_logreport_fail_exception_in_teardown(fake_env):
     teardown_report = TestReport(nodeid="", location=location, keywords={}, outcome="failed", longrepr=longrepr, when="teardown")
 
     plugin.pytest_runtest_logreport(teardown_report)
-    test_data = plugin.in_flight.get(teardown_report.nodeid)
     plugin.pytest_runtest_logfinish(teardown_report.nodeid, location)
 
-    # Verify teardown failure overrides the passed result
+    # Verify teardown failure overrides the passed result in the finalized test
+    assert teardown_report.nodeid not in plugin.in_flight
+    [test_data] = plugin.payload.data
     assert isinstance(test_data, TestData)
     assert isinstance(test_data.result, TestResultFailed)
     assert test_data.result.failure_reason == "Exception: a fake teardown exception"
@@ -486,7 +487,7 @@ def test_runtest_logstart_normalizes_path_in_monorepo(fake_env, tmp_path, monkey
 
     test_data = plugin.in_flight.get(nodeid)
     assert test_data.file_name == "test_bar.py"
-    assert test_data.location == "test_bar.py:10"
+    assert test_data.location == "test_bar.py:11"
 
 
 def test_runtest_logstart_no_change_when_rootpath_is_cwd(fake_env, tmp_path, monkeypatch):
@@ -503,7 +504,7 @@ def test_runtest_logstart_no_change_when_rootpath_is_cwd(fake_env, tmp_path, mon
 
     test_data = plugin.in_flight.get(nodeid)
     assert test_data.file_name == "tests/test_bar.py"
-    assert test_data.location == "tests/test_bar.py:10"
+    assert test_data.location == "tests/test_bar.py:11"
 
 
 def test_runtest_logstart_no_rootpath_leaves_path_untouched(fake_env):
@@ -574,12 +575,11 @@ def test_pytest_collectreport_deduplicates(fake_env):
 # fork-per-test runners (e.g. pytest-forked)
 # ---------------------------------------------------------------------------
 
-def test_finalize_test_skipped_in_forked_child(fake_env):
-    """A fork-per-test child holds a discarded copy of the plugin state, so
-    finalizing there must be a no-op — it would otherwise emit a spurious
-    'no result set at finalization' warning for every test, because the
-    child runs the test protocol with log=False (no logreport in-child).
-    The owning process finalizes from the replayed reports instead.
+def test_teardown_makereport_does_not_finalize_before_the_report_is_logged(fake_env: RunEnv) -> None:
+    """pytest_runtest_makereport(teardown) fires before pytest logs the teardown
+    report, so finalizing there would miss a failing fixture finalizer and, under
+    runners that log reports late (pytest-rerunfailures, pytest-forked), would
+    export tests without any result at all.
     """
     payload = Payload.init(fake_env)
     plugin = BuildkitePlugin(payload)
@@ -587,14 +587,35 @@ def test_finalize_test_skipped_in_forked_child(fake_env):
     location = ("", None, "")
     nodeid = "test_sample.py::test_happy"
     plugin.pytest_runtest_logstart(nodeid, location)
+    item = SimpleNamespace(nodeid=nodeid, iter_markers=lambda name: [])
+    plugin.pytest_runtest_makereport(item, SimpleNamespace(when="teardown"))
 
-    # Simulate running in a forked child: the current pid no longer matches
-    # the pid recorded when the plugin was constructed.
-    plugin._owner_pid = os.getpid() + 1
-
-    assert plugin.finalize_test(nodeid) is False
     assert nodeid in plugin.in_flight
     assert len(plugin.payload.data) == 0
+
+    teardown_report = TestReport(nodeid=nodeid, location=location, keywords={}, outcome="failed", longrepr="cleanup exploded", when="teardown")
+    plugin.pytest_runtest_logreport(teardown_report)
+
+    assert nodeid not in plugin.in_flight
+    assert isinstance(plugin.payload.data[0].result, TestResultFailed)
+
+
+def test_rerun_report_fails_the_attempt(fake_env: RunEnv) -> None:
+    """A pytest-rerunfailures "rerun" outcome is a failed execution of that attempt."""
+    payload = Payload.init(fake_env)
+    plugin = BuildkitePlugin(payload)
+
+    location = ("", None, "")
+    nodeid = "test_sample.py::test_flaky"
+    plugin.pytest_runtest_logstart(nodeid, location)
+    plugin.pytest_runtest_logreport(TestReport(nodeid=nodeid, location=location, keywords={}, outcome="passed", longrepr=None, when="setup"))
+    plugin.pytest_runtest_logreport(TestReport(nodeid=nodeid, location=location, keywords={}, outcome="rerun", longrepr="first attempt fails", when="call"))
+    plugin.pytest_runtest_logfinish(nodeid, location)
+
+    [attempt] = plugin.payload.data
+    assert isinstance(attempt.result, TestResultFailed)
+    assert attempt.result.failure_reason == "first attempt fails"
+    assert nodeid not in plugin.in_flight
 
 
 def test_finalize_test_runs_in_owning_process(fake_env):
@@ -678,6 +699,7 @@ def test_collection_time_tags_do_not_overwrite_runtime_tags(fake_env):
     )
     call = SimpleNamespace(when="teardown")
     plugin.pytest_runtest_makereport(runtime_item, call)
+    plugin.pytest_runtest_logfinish(nodeid, location)
 
     assert len(plugin.payload.data) == 1
     assert plugin.payload.data[0].tags == {"team": "frontend", "priority": "high"}

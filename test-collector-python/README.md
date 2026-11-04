@@ -107,6 +107,12 @@ You may also need to manually capture the data you wish to trace for your use ca
 
 Note: the Ruby test collector is the only Test Engine collector that automatically captures and transmits span data. This Python collector can transmit information, but data capture must be done manually at this time.
 
+## 🔄 Pytest result reporting
+
+- A test whose fixture teardown raises is uploaded as failed, with the teardown error as the reason. It used to be uploaded with the result from before teardown (passed or skipped), except under pytest-forked, which already uploaded it as failed. If the test had already failed, that failure now stays the reason and the teardown error is added as a further `failure_expanded` entry; under pytest-forked the teardown error used to replace the reason.
+- With pytest-rerunfailures (`--reruns`), each attempt is uploaded as its own execution: an attempt pytest reports as `rerun` is failed, and the last attempt has its own result. Previously no result was uploaded for any test in a `--reruns` run, with a `has no result set` warning.
+- Test locations use 1-based line numbers (`tests/test_x.py:1` for a test on the first line). They were one line early. Test identity is unchanged.
+
 ## 🔜 Roadmap
 
 See the [GitHub 'enhancement' issues](https://github.com/buildkite/test-collector-python/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) for planned features. Pull requests are always welcome, and we’ll give you feedback and guidance if you choose to contribute 💚
