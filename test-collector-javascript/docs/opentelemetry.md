@@ -238,7 +238,7 @@ instrumentation 0.71.1, GraphQL 16.14.2 with 0.69.0, redis 5.12.1 with 0.71.0,
 pg 8.23.1 with 0.69.0, and default Fastify 5.12.8 with 0.57.0, on Jest 29.7.0
 and 30.5.2 in CI. The Fastify runtime preserves getter-only dependency exports;
 its standard instrumentation is deprecated upstream in favor of `@fastify/otel`.
-Also checked in a separate compatibility study: Koa 2 routes, NestJS 11 with the
+Also checked manually outside CI: Koa 2 routes, NestJS 11 with the
 Express adapter, Apollo Server 5 `executeOperation`, mysql2 3 queries, MongoDB 6 /
 Mongoose 8 operations, ioredis 5, and Knex/Sequelize/TypeORM query paths. These
 checks cover the exercised operations, not full framework/driver feature sets.
@@ -643,7 +643,14 @@ using bktec's relay); for MSW, bypass the OTLP endpoint in the unhandled-request
 policy. Reset request handlers between tests without blocking the export host.
 If cleanup restores Node's HTTP functions (`nock.restore()` or MSW's `server.close()`),
 the next managed file checks HTTP/HTTPS `request`/`get` at its first activation
-and reapplies missing upstream patches without wrapping intact functions twice.
+and reapplies missing upstream patches. If an interceptor retains an older
+collector wrapper underneath, each request still passes through at most one
+active collector request wrapper.
+MSW 2.x through 2.15 (`@mswjs/interceptors` <0.42,
+[mswjs/interceptors#804](https://github.com/mswjs/interceptors/issues/804)) drops
+the caller's headers for `http.get/request(urlString, options, cb)` while HTTP
+instrumentation is active, including on beta.2; use
+`OTEL_NODE_DISABLED_INSTRUMENTATIONS=http` as the workaround.
 
 One worker process reports one run. Run identity is fixed when export starts in
 a worker: reconfiguring with a different run key warns and keeps attributing

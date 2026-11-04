@@ -114,6 +114,7 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
   return {
     metrics,
     createForwarder,
+    isClosedTrace: (traceId) => closedTraces.has(traceId),
     rejectLate(span) {
       if (!closedTraces.has(span.spanContext().traceId)) return false
       startedAfterTeardown += 1

@@ -139,11 +139,16 @@ const otelSupported = jestMajor >= 29
   test('recovers HTTP and HTTPS instrumentation after interceptors restore built-ins', async () => {
     const outcome = await runChildren('interceptors')
     if (outcome.result.code) throw new Error(outcome.result.stderr)
-    expect([outcome.warnings, outcome.roots.length]).toEqual([[], 9])
-    for (const name of ['requests before restoring nock', 'requests after restoring nock']) {
-      expect(outcome.childrenOf(outcome.rootsNamed(name)[0], clientGet)).toHaveLength(2)
+    expect([outcome.warnings, outcome.roots.length]).toEqual([[], 2 * IO_ROOTS + 4])
+    for (const name of ['requests before restoring nock', 'requests after restoring nock',
+      'requests without restoring nock', 'requests with an earlier nock still active']) {
+      const root = outcome.rootsNamed(name)[0]
+      expect([name, outcome.childrenOf(root, clientGet).length]).toEqual([name, 3])
+      expect(outcome.childrenOf(root, (span) => span.kind === SERVER)).toHaveLength(1)
     }
-    for (const name of ['http I/O', 'undici I/O']) expect(outcome.childrenOf(outcome.rootsNamed(name)[0], clientGet)).toHaveLength(1)
+    for (const name of ['http I/O', 'undici I/O']) for (const root of outcome.rootsNamed(name)) {
+      expect([name, outcome.childrenOf(root, clientGet).length]).toEqual([name, 1])
+    }
     for (const child of outcome.children) expect(outcome.rootOf(child)).not.toBeNull()
   }, 60000)
 
@@ -336,6 +341,7 @@ const otelSupported = jestMajor >= 29
   test('never blocks or replaces what a suite registers, and fills in what it resets', async () => {
     const outcome = await runChildren('suite', { env: { BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE: '1' } })
     const { result, roots, children, rootsNamed, childrenOf, isOwnRequest, warnings } = outcome
+    if (result.code) throw new Error(result.stderr)
     // From the first test the suite's provider records.
     expect(warnings).toEqual([expect.stringMatching(SUITE_PROVIDER_WARNING)])
     expect(children.filter((s) => s.name.startsWith('own-'))).toEqual([])
@@ -350,7 +356,6 @@ const otelSupported = jestMajor >= 29
       expect([child, childrenOf(rootsNamed('reset second')[0], named(child)).length]).toEqual([child, 1])
     }
     expect(children.filter(isOwnRequest)).toEqual([])
-    expect(result.code).toBe(0)
     expect(roots.map((root) => root.attributes['test.case.result.status'])).toEqual(['pass', 'pass', 'pass', 'pass'])
   }, 60000)
 

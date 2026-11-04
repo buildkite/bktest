@@ -6,6 +6,7 @@ const Debug = require('../util/debug')
 let worker
 const enabled = new Map()
 const httpWrappers = new WeakMap()
+let requesting = false
 const workerFor = (session, instances) => {
   if (worker?.error) throw worker.error
   try {
@@ -34,12 +35,15 @@ const workerFor = (session, instances) => {
         getTracer(...args) {
           const tracer = provider.getTracer(...args)
           const noop = new session.api.ProxyTracerProvider().getTracer(...args)
-          // Manual tracers may outlive their sandbox. Let the dispatcher
-          // count late children even between managed files.
-          const active = () => !enabled.has(args[0]) || worker.selected(args[0])
+          // Outside a managed file, only closed test traces reach the
+          // dispatcher, so late children count without tracing suite work.
+          const active = (parent) => current
+            ? !enabled.has(args[0]) || worker.selected(args[0])
+            : !enabled.has(args[0]) && session.childExport().isClosedTrace(
+              session.api.trace.getSpanContext(parent || session.api.context.active())?.traceId)
           return {
-            startSpan: (...args) => (active() ? tracer : noop).startSpan(...args),
-            startActiveSpan: (...args) => (active() ? tracer : noop).startActiveSpan(...args),
+            startSpan: (...args) => (active(args[2]) ? tracer : noop).startSpan(...args),
+            startActiveSpan: (...args) => (active(args.length === 4 ? args[2] : undefined) ? tracer : noop).startActiveSpan(...args),
           }
         },
       }
@@ -77,7 +81,14 @@ const workerFor = (session, instances) => {
         const wrap = instance._wrap.bind(instance)
         instance._wrap = (exports, name, wrapper) => {
           const patched = wrap(exports, name, (original, ...args) => new Proxy(wrapper(original, ...args), {
-            apply: (patched, receiver, args) => Reflect.apply(worker.selected(instance.instrumentationName) ? patched : original, receiver, args),
+            apply(patched, receiver, args) {
+              if (!worker.selected(instance.instrumentationName) || (name === 'request' && requesting)) return Reflect.apply(original, receiver, args)
+              // An interceptor may retain an intact older wrapper. Only
+              // request owns the guard: patched get calls patched request.
+              if (name !== 'request') return Reflect.apply(patched, receiver, args)
+              requesting = true
+              try { return Reflect.apply(patched, receiver, args) } finally { requesting = false }
+            },
           }))
           if (name === 'request' || name === 'get') {
             if (!httpWrappers.has(exports)) httpWrappers.set(exports, {})
