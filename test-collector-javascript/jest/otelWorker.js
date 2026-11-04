@@ -20,7 +20,7 @@ const createProvider = (session) => {
   }
   const dispatcher = {
     onStart(span) {
-      if (session.childExport().rejectLate(span) || !worker.recording()) return
+      if (session.childExport().rejectLate(span) || !worker.current) return
       owners.set(span, worker.current.forwarder)
       worker.current.forwarder.onStart(span)
     },
