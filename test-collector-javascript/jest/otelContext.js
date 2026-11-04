@@ -86,7 +86,7 @@ class JestOtelContext {
   }
 
   loadedApi(api) {
-    if (this.apis.has(api)) return
+    if (this.apis.has(api) || api?.trace?.getTracerProvider?._isMockFunction) return
     try {
       if (typeof api.trace.getTracerProvider().setDelegate !== 'function') return
     } catch {

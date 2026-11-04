@@ -346,6 +346,17 @@ if (otelSupported) {
     } finally { fs.rmSync(dir, { recursive: true, force: true }) }
   }, 60000)
 
+  test('does not call the suite\'s automocked API functions', async () => {
+    const config = {
+      ...require('../examples/jest/otel-children.config'),
+      rootDir: path.join(__dirname, '../examples/jest'), setupFilesAfterEnv: [],
+      testMatch: [path.join(__dirname, '../examples/jest/otel-children/automock/*.js')],
+    }
+    const outcome = await runChildren('automock', { config: JSON.stringify(config) })
+    if (outcome.result.code) throw new Error(outcome.result.stderr)
+    expect(outcome.roots.map(spanRecord)).toEqual([expect.objectContaining({ name: 'leaves API mocks alone', result: 'pass' })])
+  }, 60000)
+
   test.each([
     ['all declared', {}, true],
     ['enabled list', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pg' }, true],
