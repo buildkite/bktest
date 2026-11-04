@@ -12,6 +12,10 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
   const metrics = { handed: 0, exported: 0, failed: 0, lastFailure: null, flushBudget: FLUSH_BUDGET_MILLISECONDS }
   let offered = 0 // ended children handed to the processor
   let open = 0 // accepted children that have not ended yet
+  let startedAfterTeardown = 0
+  // Retain only trace IDs, not closed sandboxes/forwarders, to recognise
+  // descendants started later under a parent from a completed file.
+  const closedTraces = new Set()
 
   const exporter = createExporter({
     sdk, endpoint: settings.endpoint, token: settings.token,
@@ -66,6 +70,7 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
       forceFlush: () => (active ? flush() : Promise.resolve()),
       shutdown: async () => {
         active = false
+        for (const traceId of traces) closedTraces.add(traceId)
         traces.clear()
         // Already-started spans retain this forwarder until they end, even
         // after the sandbox closes. Only new spans stop being accepted.
@@ -88,12 +93,13 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
     // dropped from the full queue; the count stands until the next one.
     if (drained) notExported = offered - metrics.handed
     const late = final ? open : 0
-    const lost = notExported + metrics.failed + late
+    const lost = notExported + metrics.failed + startedAfterTeardown + late
     if (lost > warned && (warned === 0 || final)) {
       const cause = metrics.lastFailure ? `, last OTLP failure: ${metrics.lastFailure}` : ''
       const reasons = [
         notExported && `not-exported: ${notExported}`,
         metrics.failed && `export-failure: ${metrics.failed}${cause}`,
+        startedAfterTeardown && `started after file teardown: ${startedAfterTeardown}`,
         late && `still open when the worker exited: ${late}`,
       ].filter(Boolean).join(', ')
       warn(`OpenTelemetry dropped ${lost} child span(s)${warned ? ' so far this run' : ''} (${reasons}); test.execution results are unaffected.`)
@@ -108,6 +114,11 @@ const createChildExport = ({ sdk, settings, processorSizes }) => {
   return {
     metrics,
     createForwarder,
+    rejectLate(span) {
+      if (!closedTraces.has(span.spanContext().traceId)) return false
+      startedAfterTeardown += 1
+      return true
+    },
     flush,
     report,
   }

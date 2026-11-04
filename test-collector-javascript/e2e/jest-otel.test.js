@@ -124,7 +124,7 @@ const otelSupported = jestMajor >= 29
   const clientGet = (span) => span.name === 'GET' && span.kind === CLIENT
 
   test.each([
-    ['all installed', {}, true],
+    ['all declared', {}, true],
     ['enabled list', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pg' }, true],
     ['disabled wins', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pg', OTEL_NODE_DISABLED_INSTRUMENTATIONS: 'pg' }, false],
   ])('discovers pg instrumentation with %s selection', async (_, env, enabled) => {
@@ -136,10 +136,44 @@ const otelSupported = jestMajor >= 29
     for (const span of spans) expect(span.parentSpanId).toBe(root.spanId)
   }, 60000)
 
-  test('exports a child ending in the next file under its original test, and counts only never-ended children', async () => {
+  test('recovers HTTP and HTTPS instrumentation after interceptors restore built-ins', async () => {
+    const outcome = await runChildren('interceptors')
+    if (outcome.result.code) throw new Error(outcome.result.stderr)
+    expect([outcome.warnings, outcome.roots.length]).toEqual([[], 9])
+    for (const name of ['requests before restoring nock', 'requests after restoring nock']) {
+      expect(outcome.childrenOf(outcome.rootsNamed(name)[0], clientGet)).toHaveLength(2)
+    }
+    for (const name of ['http I/O', 'undici I/O']) expect(outcome.childrenOf(outcome.rootsNamed(name)[0], clientGet)).toHaveLength(1)
+    for (const child of outcome.children) expect(outcome.rootOf(child)).not.toBeNull()
+  }, 60000)
+
+  test('leaves Express unpatched when its instrumentation sees a mocked API', async () => {
+    const outcome = await runChildren('mocked-api')
+    if (outcome.result.code) throw new Error(outcome.result.stderr)
+    expect(outcome.roots.map((root) => root.attributes['test.case.result.status'])).toEqual(['pass', 'pass'])
+    expect(outcome.warnings).toEqual([
+      expect.stringMatching(/OpenTelemetry package instrumentation skipped.*mocked.*test.execution export remains enabled/),
+      expect.stringMatching(/OpenTelemetry package instrumentation skipped.*mocked.*test.execution export remains enabled/),
+    ])
+    expect(outcome.children.filter((span) => span.attributes['express.type'])).toEqual([])
+  }, 60000)
+
+  test.each([
+    ['defaults', {}],
+    ['explicit opt-in', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pino,winston,bunyan' }],
+    ['disabled wins', { OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'pino,winston,bunyan', OTEL_NODE_DISABLED_INSTRUMENTATIONS: 'pino,winston,bunyan' }],
+  ])('preserves logging output with %s selection', async (_, env) => {
+    const outcome = await runChildren('logging', { env })
+    if (outcome.result.code) throw new Error(outcome.result.stderr)
+    expect([outcome.warnings, outcome.roots.length, outcome.children.length]).toEqual([[], 3, 6])
+    for (const child of outcome.children) expect(['setup-file-before', 'setup-file-after']).toContain(child.name)
+    expect(outcome.roots.map((root) => root.attributes['test.case.result.status'])).toEqual(['pass', 'pass', 'pass'])
+  }, 60000)
+
+  test('exports already-started children after teardown and counts children started too late', async () => {
     const outcome = await runChildren('late', { args: '--runInBand' })
     expect([outcome.result.code, outcome.roots.length]).toEqual([0, 2])
-    expect(outcome.warnings).toEqual([expect.stringMatching(LATE_WARNING)])
+    expect(outcome.warnings.at(-1)).toMatch(/OpenTelemetry dropped 3 child span\(s\).*started after file teardown: 2.*still open when the worker exited: 1.*test\.execution results are unaffected\./)
     const first = outcome.rootsNamed('starts children for later')[0]
     const second = outcome.rootsNamed('ends the previous file child')[0]
     expect(outcome.childrenOf(first, named('ends-in-next-file'))).toEqual([
@@ -147,6 +181,7 @@ const otelSupported = jestMajor >= 29
     ])
     expect(outcome.childrenOf(second, named('next-file-child'))).toHaveLength(1)
     expect(outcome.children.filter(named('never-ends'))).toEqual([])
+    expect(outcome.children.filter((span) => ['before-next-file-activation', 'started-in-next-file'].includes(span.name))).toEqual([])
   }, 60000)
 
   test('instruments Jest aliases by resolved path, but not mapped package mocks', async () => {
@@ -377,7 +412,10 @@ const otelSupported = jestMajor >= 29
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-auto-'))
     const auto = path.join(root, 'node_modules/@opentelemetry/auto-instrumentations-node')
     fs.mkdirSync(path.join(auto, 'node_modules/@opentelemetry'), { recursive: true })
-    fs.writeFileSync(path.join(auto, 'package.json'), JSON.stringify({ name: '@opentelemetry/auto-instrumentations-node', version: '0.0.0', main: 'index.js' }))
+    fs.writeFileSync(path.join(auto, 'package.json'), JSON.stringify({
+      name: '@opentelemetry/auto-instrumentations-node', version: '0.0.0', main: 'index.js',
+      dependencies: Object.fromEntries(Object.keys(packages).map((name) => [name, '*'])),
+    }))
     fs.writeFileSync(path.join(auto, 'index.js'), '')
     for (const [name, source] of Object.entries(packages)) {
       const target = path.join(auto, 'node_modules', name)
@@ -405,6 +443,11 @@ const otelSupported = jestMajor >= 29
       packages]
     const roots = selections.map(projectWithAutoInstrumentations)
     try {
+      // Hoisted transitive packages do not opt either project into tracing,
+      // before or after a project that explicitly selects instrumentation.
+      for (const index of [0, 2]) for (const [name, source] of Object.entries(packages)) {
+        fs.symlinkSync(source, path.join(roots[index], 'node_modules', name))
+      }
       const fixtures = path.join(__dirname, '../examples/jest/otel-children')
       const config = path.join(roots[0], 'jest.config.json')
       fs.writeFileSync(config, JSON.stringify({
@@ -422,6 +465,9 @@ const otelSupported = jestMajor >= 29
       const outcome = await runChildren('projects', { config })
       if (outcome.result.code) throw new Error(outcome.result.stderr)
       expect([outcome.warnings, outcome.roots.length]).toEqual([[], 6 * IO_ROOTS])
+      expect(outcome.result.stdout.split('\n').filter((line) => line.startsWith('OpenTelemetry instrumentations selected in this worker:'))).toEqual([
+        'OpenTelemetry instrumentations selected in this worker: @opentelemetry/instrumentation-http, @opentelemetry/instrumentation-undici',
+      ])
       for (const name of ['http I/O', 'undici I/O']) {
         expect(outcome.rootsNamed(name).map((root) => outcome.childrenOf(root, clientGet).length).sort()).toEqual([0, 0, 0, 1, 1, 1])
         // A fetch server can continue the test only when both undici (the
@@ -435,14 +481,23 @@ const otelSupported = jestMajor >= 29
     }
   }, 60000)
 
-  test('discovers package instrumentation in non-hoisted auto-instrumentations dependencies', async () => {
+  test.each(['bundle', 'ancestor', 'undeclared'])('selects package instrumentation from %s dependencies', async (layout) => {
     const root = projectWithAutoInstrumentations({ '@opentelemetry/instrumentation-pg': installed('@opentelemetry/instrumentation-pg') })
     try {
-      const outcome = await runChildren('pg', { args: '--runInBand', env: { OTEL_PROJECT_ROOT: root } })
+      const project = path.join(root, 'tests')
+      fs.mkdirSync(project)
+      if (layout !== 'bundle') {
+        fs.rmSync(path.join(root, 'node_modules/@opentelemetry/auto-instrumentations-node'), { recursive: true })
+        fs.symlinkSync(installed('@opentelemetry/instrumentation-pg'), path.join(root, 'node_modules/@opentelemetry/instrumentation-pg'))
+        fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+          devDependencies: layout === 'ancestor' ? { '@opentelemetry/instrumentation-pg': '*' } : {},
+        }))
+      }
+      const outcome = await runChildren('pg', { args: '--runInBand', env: { OTEL_PROJECT_ROOT: project } })
       expect([outcome.result.code, outcome.warnings, outcome.roots.length]).toEqual([0, [], 1])
       const testRoot = outcome.rootsNamed('pg connect and query')[0]
       expect(outcome.childrenOf(testRoot, (span) => span.name.startsWith('pg.')).map((span) => span.name).sort())
-        .toEqual(['pg.connect', 'pg.query:SELECT fixture'])
+        .toEqual(layout === 'undeclared' ? [] : ['pg.connect', 'pg.query:SELECT fixture'])
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   }, 60000)
 

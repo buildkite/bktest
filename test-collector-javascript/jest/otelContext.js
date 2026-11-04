@@ -145,6 +145,7 @@ class JestOtelContext {
       if (this.session.api.propagation.fields().length === 0) this.session.api.propagation.setGlobalPropagator(this.session.childPropagator())
       this.forwarder = this.session.childExport().createForwarder()
       this.provider = this._worker().tracerProvider
+      this.worker.refreshHttp()
       this.mode = 'managed'
       for (const traceId of this.traces) this.forwarder.addTrace(traceId)
     } catch (error) {

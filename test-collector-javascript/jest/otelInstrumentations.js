@@ -5,23 +5,39 @@ const { describeError } = require('../util/otel/warn')
 
 const PREFIX = '@opentelemetry/instrumentation-'
 const SDK_LINES = { http: [200, 300], undici: [11, 34] }
+const DEFAULT_EXCLUDED = [
+  // auto-instrumentations-node's default exclusions.
+  'fs', 'host-metrics',
+  // Log correlation/sending changes records the suite may assert on.
+  'pino', 'winston', 'bunyan',
+  // Message instrumentation changes payload/header carriers, even without propagation.
+  'aws-sdk', 'kafkajs', 'amqplib',
+  // Low-level connection/lookup noise beneath HTTP spans.
+  'net', 'dns',
+  // Metrics only: this collector exports spans.
+  'runtime-node',
+  // Browser globals, not Node I/O (Node fetch is covered by undici).
+  'fetch', 'xml-http-request', 'document-load', 'user-interaction', 'long-task',
+]
 const listedIn = (variable, name) => (process.env[variable] || '').split(',').some((entry) => entry.trim() === name)
-// Match auto-instrumentations-node's default exclusions, even for packages
-// discovered only by scanning node_modules.
 const enabledByEnv = (name) => (process.env.OTEL_NODE_ENABLED_INSTRUMENTATIONS
   ? listedIn('OTEL_NODE_ENABLED_INSTRUMENTATIONS', name)
-  : !['fs', 'host-metrics'].includes(name)) &&
+  : !DEFAULT_EXCLUDED.includes(name)) &&
   !listedIn('OTEL_NODE_DISABLED_INSTRUMENTATIONS', name)
 
 // Resolve from the project first, then the auto-instrumentations bundle's
-// dependencies (which pnpm does not hoist). Discover, rather than allowlist,
-// optional instrumentation packages visible from either location.
+// dependencies (which pnpm does not hoist). Only project/workspace manifests
+// and the bundle choose packages, never incidental hoisted dependencies.
 const sets = new Map()
 const loadInstrumentations = (rootDir, warnOnce) => {
   if (sets.has(rootDir)) return sets.get(rootDir)
   const project = createRequire(path.join(rootDir, 'package.json'))
   const loaders = [project]
-  const manifests = [path.join(rootDir, 'package.json')]
+  const manifests = []
+  for (let directory = rootDir; ; directory = path.dirname(directory)) {
+    manifests.push(path.join(directory, 'package.json'))
+    if (directory === path.dirname(directory)) break
+  }
   try {
     const auto = project.resolve('@opentelemetry/auto-instrumentations-node')
     loaders.push(createRequire(auto))
@@ -33,22 +49,13 @@ const loadInstrumentations = (rootDir, warnOnce) => {
   } catch (error) {
     if (error.code !== 'MODULE_NOT_FOUND') throw error
   }
-  const names = new Set(Object.keys(SDK_LINES).map((name) => PREFIX + name))
+  const names = new Set()
   for (const file of manifests) {
     try {
       const manifest = JSON.parse(fs.readFileSync(file, 'utf8'))
       for (const name of Object.keys({ ...manifest.dependencies, ...manifest.devDependencies, ...manifest.optionalDependencies })) names.add(name)
     } catch (error) {
       if (error.code !== 'ENOENT') throw error // Jest rootDir need not contain a manifest.
-    }
-  }
-  for (const load of loaders) {
-    for (const directory of load.resolve.paths(PREFIX + 'http') || []) {
-      try {
-        for (const name of fs.readdirSync(path.join(directory, '@opentelemetry'))) names.add(`@opentelemetry/${name}`)
-      } catch (error) {
-        if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error
-      }
     }
   }
   const entries = []

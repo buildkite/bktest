@@ -3,30 +3,37 @@ const os = require('os')
 const path = require('path')
 const { execFileSync } = require('child_process')
 
+const excluded = ['fs', 'host-metrics', 'pino', 'winston', 'bunyan', 'aws-sdk', 'kafkajs', 'amqplib', 'net', 'dns', 'runtime-node',
+  'fetch', 'xml-http-request', 'document-load', 'user-interaction', 'long-task']
+
 test.each([
   ['defaults', '', '', ['http']],
   ['explicit opt-in', ' fs , host-metrics , http ', '', ['fs', 'host-metrics', 'http']],
   ['partial opt-in', 'fs,http', '', ['fs', 'http']],
   ['disabled wins', 'fs,host-metrics,http', ' fs , host-metrics ', ['http']],
   ['disabled only', '', 'http', []],
-])('instrumentation discovery follows auto-instrumentations-node %s', (_, enabled, disabled, expected) => {
+  ['all exclusions opt-in', excluded.join(','), '', [...excluded].sort()],
+])('declared instrumentation discovery respects %s', (_, enabled, disabled, expected) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-selection-'))
   try {
-    // Exercise declared dependencies and packages found only by scanning
-    // node_modules, including non-hoisted auto-instrumentations dependencies.
-    for (const nested of [false, true]) {
-      const project = path.join(root, String(nested))
-      const base = nested ? path.join(project, 'node_modules/@opentelemetry/auto-instrumentations-node') : project
+    // The same declared set is selected from a project, its workspace
+    // ancestor, or a non-hoisted auto-instrumentations bundle.
+    for (const layout of ['project', 'ancestor', 'bundle']) {
+      const workspace = path.join(root, layout)
+      const project = path.join(workspace, 'packages/tests')
+      const base = layout === 'bundle' ? path.join(project, 'node_modules/@opentelemetry/auto-instrumentations-node')
+        : layout === 'ancestor' ? workspace : project
+      fs.mkdirSync(project, { recursive: true })
       fs.mkdirSync(base, { recursive: true })
-      fs.writeFileSync(path.join(project, 'package.json'), '{}')
       fs.writeFileSync(path.join(base, 'package.json'), JSON.stringify({
-        main: 'index.js', dependencies: { '@opentelemetry/instrumentation-fs': '*' },
+        main: 'index.js', dependencies: Object.fromEntries([...excluded, 'http'].map((name) => [`@opentelemetry/instrumentation-${name}`, '*'])),
       }))
       fs.writeFileSync(path.join(base, 'index.js'), '')
-      for (const name of ['fs', 'host-metrics', 'http']) {
+      // Undici is visible but undeclared, as when hoisted from @sentry/node.
+      for (const name of [...excluded, 'http', 'undici']) {
         const directory = path.join(base, 'node_modules/@opentelemetry', `instrumentation-${name}`)
         fs.mkdirSync(directory, { recursive: true })
-        fs.writeFileSync(path.join(directory, 'index.js'), `exports.TestInstrumentation = class { constructor() { this.instrumentationVersion = '0.223.0' } }`)
+        fs.writeFileSync(path.join(directory, 'index.js'), `exports.TestInstrumentation = class { constructor() { this.instrumentationVersion = '${name === 'undici' ? '0.33.0' : '0.223.0'}' } }`)
       }
       const sdk = path.join(base, 'node_modules/@opentelemetry/instrumentation')
       fs.mkdirSync(sdk)

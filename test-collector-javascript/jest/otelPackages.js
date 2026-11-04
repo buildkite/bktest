@@ -59,6 +59,13 @@ class JestOtelPackages {
         if (!this.instances.has(name)) {
           this.instances.set(name, null)
           const { context } = this
+          const api = context.runtime.requireModuleOrMock(resolved, '@opentelemetry/api')
+          if (typeof api?.trace?.getSpan !== 'function' || typeof api?.context?.with !== 'function' ||
+              typeof api?.context?.active !== 'function' || typeof api.context.active()?.getValue !== 'function') {
+            this.entries = []
+            context.warnOnce(`package-api:${context.testPath}`, 'OpenTelemetry package instrumentation skipped because its API is mocked or incomplete; test.execution export remains enabled.')
+            return exports
+          }
           const mod = context.runtime.requireModule(context.testPath, resolved)
           const instance = new mod[className]({ enabled: false })
           instance.setTracerProvider(context._worker().tracerProvider)

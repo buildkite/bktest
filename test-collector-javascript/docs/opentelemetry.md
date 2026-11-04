@@ -174,8 +174,9 @@ npm install --save-dev '@opentelemetry/context-async-hooks@^2.0.0'
 
 Requests are recorded with OpenTelemetry's own instrumentation,
 `@opentelemetry/instrumentation-http` (HTTP and HTTPS) and
-`@opentelemetry/instrumentation-undici` (`fetch`), whenever the project can
-load them: installed directly, or as dependencies of
+`@opentelemetry/instrumentation-undici` (`fetch`), when declared in the Jest
+`rootDir`'s package.json or an ancestor package.json (including workspace
+roots), or bundled as dependencies of a resolvable
 `@opentelemetry/auto-instrumentations-node`, which pnpm does not hoist. Only
 releases from the 2.x SDK line are used: `@opentelemetry/instrumentation-http`
 0.200 to 0.2xx and `@opentelemetry/instrumentation-undici` 0.11 to 0.33, which
@@ -202,43 +203,68 @@ in-process server continues the test's trace, so a test that asserts or
 snapshots a request's exact headers can see a new one. Set
 `OTEL_NODE_DISABLED_INSTRUMENTATIONS=http,undici` to send requests unchanged.
 
-Starting with **1.13.0-beta.3**, installed
+Starting with **1.13.0-beta.3**, project-declared
 `@opentelemetry/instrumentation-*` packages from the 2.x SDK line are selected
-by default, including packages inside non-hoisted
-`@opentelemetry/auto-instrumentations-node` dependencies, except for `fs` and
-`host-metrics`, which are off by default just as in auto-instrumentations-node.
-Enable either explicitly with `OTEL_NODE_ENABLED_INSTRUMENTATIONS`, for example
+from the Jest `rootDir`'s package.json and its ancestors up to the filesystem
+root, plus a resolvable `@opentelemetry/auto-instrumentations-node` bundle's
+dependencies, including non-hoisted packages. Incidental transitive packages
+(for example, instrumentations hoisted from `@sentry/node`) are not selected.
+Selection is on by default unless instrumentation changes observable log records
+or message payloads (`pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`),
+adds low-level connection/lookup noise (`net`, `dns`), produces only metrics
+(`host-metrics`, `runtime-node`), or is browser-only (`fetch`, `xml-http-request`,
+`document-load`, `user-interaction`, `long-task`; Node `fetch` uses `undici`).
+`fs` is also off by default, as in auto-instrumentations-node, to avoid a span
+for every filesystem call. Opt in explicitly with
+`OTEL_NODE_ENABLED_INSTRUMENTATIONS`, for example
 `OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,fs`. The enabled list selects only its
 listed names; `OTEL_NODE_DISABLED_INSTRUMENTATIONS` still wins when a name is
 in both lists. The same environment switches narrow selection; for example,
 `OTEL_NODE_DISABLED_INSTRUMENTATIONS=express,graphql,redis,pg` turns off those
 package spans without turning off test results or HTTP spans. No new reporter
 option, `otelInstrumentations` option or `jest/otel` bridge is needed.
+With the existing `BUILDKITE_ANALYTICS_DEBUG_ENABLED=true` switch, the worker
+logs the union of its selected instrumentation names once when it exits,
+including selections from later projects in the same worker.
 
 CommonJS packages are patched from the upstream instrumentation's module and
 file definitions as Jest loads them, including routes registered at file
 load and imports resolved through `moduleNameMapper`. A package mapped to a
-local mock is not mistaken for the real package. Native ESM package patching
+local mock is not mistaken for the real package. If the instrumentation sees
+a mocked or incomplete OpenTelemetry API, package patching is skipped for
+that file with one warning; test results still export. Native ESM package patching
 is not supported. Verified package combinations are Express 4.22.3 with
 instrumentation 0.71.1, GraphQL 16.14.2 with 0.69.0, redis 5.12.1 with 0.71.0,
-and pg 8.23.1 with 0.69.0, on Jest 29.7.0 and 30.5.2. Other installed
+and pg 8.23.1 with 0.69.0, on Jest 29.7.0 and 30.5.2. Other selected
 instrumentations use their upstream definitions and supported-version ranges;
 they are not all individually verified by this collector.
 
 Child spans add billed decoded GB, not additional test executions. Counts
 depend on the operation and instrumentation version/configuration. The
-verified default examples add the following children, in addition to the one
+examples add the following children when selected, in addition to the one
 `test.execution` root:
 
 | Instrumentation | Children per operation |
 | --- | --- |
 | `http` | 1 client span per HTTP/HTTPS request; another server span when the server runs in the instrumented worker |
 | `undici` | 1 client span per `fetch`; an in-process server can add an `http` server span |
+| `net` (opt-in) | 1 `tcp.connect` span per new TCP connection; a request can add this beneath its HTTP client span |
+| `dns` (opt-in) | 1 span per DNS lookup; a request can add multiple lookups (the observed Express request added 2 `dns.lookup` spans) |
 | `express` | 1 span per middleware/handler run: the simple Express 4 route has 3 (query, expressInit, handler), plus the 2 HTTP spans when `http` is enabled |
+| `router` | Remains on by default when selected; Express 5 is instrumented by both `express` and `router`, so one supertest request can add about 11 spans across the selected instrumentations |
 | `graphql` | Parse + validate + execute + resolver spans: 4 for the one-field async query; more resolved fields can add more spans |
 | `redis` | 1 connect span and 1 per command: connect/SET/GET adds 3 |
 | `pg` | 1 connect span and 1 per query: a direct connect/SELECT adds 2; acquiring a pooled connection can add a pool-connect span |
 | Manual spans | 1 per ended span in the test's trace |
+
+Message instrumentations such as `kafkajs`, `amqplib` and `aws-sdk` (SQS/SNS
+and Lambda ClientContext) are opt-in because they can change message headers,
+attributes or context, just as HTTP adds `traceparent`. Empty carriers such as
+`headers: {}`, `MessageAttributes: {}` or `MessageAttributeNames: []` can be added
+even without trace context injection. Tests asserting exact messages can see
+those changes. There is no upstream propagation-only switch; use
+`OTEL_NODE_DISABLED_INSTRUMENTATIONS=kafkajs,amqplib,aws-sdk` to opt out of
+those package patches.
 
 Built-in instrumentation may not be active until the first test/per-test
 hook. A top-level `const { get } = require('http')` or native ESM
@@ -302,12 +328,15 @@ propagation, such as an in-process server handling a request the test made.
 Spans from `beforeAll`, `afterAll`, file loading or roots you start yourself
 are in traces of their own and are not exported.
 
-Each child is exported when it ends, including a child that ends after its
+Each accepted child is exported when it ends, including a child that ends after its
 test file finishes but before the worker exits. It retains its original
 test's trace and parent even while the worker runs a later file. Ending such
 a child triggers a flush rather than waiting for another file's teardown.
-Only children still open at worker exit are counted in the `OpenTelemetry
-dropped N child span(s)` warning as `still open when the worker exited`.
+Children started under that trace only after their original file's teardown
+are not accepted, even while a later file runs; the `OpenTelemetry dropped N
+child span(s)` warning counts them as `started after file teardown`.
+Already-started children still open at worker exit are counted as
+`still open when the worker exited`.
 Jest clears sandbox timers at teardown and can force-exit workers: the
 collector cannot export a span that never gets to end. Close long-lived
 connections and end spans when their work completes.
@@ -595,7 +624,11 @@ test sandbox, so a blanket `nock.disableNetConnect()` or
 `onUnhandledRequest: 'error'` that is still active when the test file finishes
 blocks the flush. Allow the host with
 `nock.enableNetConnect('tests-otlp.buildkite.com')` (plus `127.0.0.1` when
-using bktec's relay) or restore the interceptors in `afterAll`.
+using bktec's relay); for MSW, bypass the OTLP endpoint in the unhandled-request
+policy. Reset request handlers between tests without blocking the export host.
+If cleanup restores Node's HTTP functions (`nock.restore()` or MSW's `server.close()`),
+the next managed file checks HTTP/HTTPS `request`/`get` at its first activation
+and reapplies missing upstream patches without wrapping intact functions twice.
 
 One worker process reports one run. Run identity is fixed when export starts in
 a worker: reconfiguring with a different run key warns and keeps attributing
