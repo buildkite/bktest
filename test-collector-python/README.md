@@ -44,6 +44,37 @@ uv run pytest
 
 If all is well, you should see the test run in the Test Engine section of the Buildkite dashboard.
 
+## 🌏 Run metadata overrides
+
+Run metadata is detected from Buildkite, GitHub Actions or CircleCI. You can
+override individual fields with the variables below, including outside these CI
+systems. Unset or empty values keep the detected defaults; the detected CI system
+is unchanged. These variables previously had no effect in the Python collector,
+so existing exports will start taking effect when you upgrade.
+
+| Variable | Run field |
+| --- | --- |
+| `BUILDKITE_ANALYTICS_KEY` | Run key (grouping identifier). |
+| `BUILDKITE_ANALYTICS_URL` | URL linking back to the build, not the upload API endpoint. |
+| `BUILDKITE_ANALYTICS_BRANCH` | Branch or reference. |
+| `BUILDKITE_ANALYTICS_SHA` | Commit SHA. |
+| `BUILDKITE_ANALYTICS_NUMBER` | Build number. |
+| `BUILDKITE_ANALYTICS_JOB_ID` | Job ID. |
+| `BUILDKITE_ANALYTICS_MESSAGE` | Commit message or build description. |
+
+Uploads to the same suite with the same key are grouped into one run. The default
+key is the Buildkite build ID, `GITHUB_ACTION-GITHUB_RUN_NUMBER-GITHUB_RUN_ATTEMPT`,
+`CIRCLE_WORKFLOW_ID-CIRCLE_BUILD_NUM`, or a new random UUID per collector process
+outside those CI systems. Use a shared key across processes for one run, and a
+different key for each independent run to avoid combining unrelated results.
+
+For Buildkite, keep the default key to retain automatic association with the
+originating build. This collector does not send a separate `build_id`, so a custom
+key that differs from `BUILDKITE_BUILD_ID` loses that association. The build URL is
+independent: overriding only the key preserves the detected URL, and
+`BUILDKITE_ANALYTICS_URL` can supply a link when no URL was detected. A custom key
+alone does not create or remove that URL link.
+
 ## 🏷️ Filtering Tests by Tags
 
 You can filter which tests to run based on execution tags using the `--tag-filters` option.

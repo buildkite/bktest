@@ -1,6 +1,9 @@
 import sys
 from random import randint
+from typing import Dict, Optional
 from uuid import uuid4, UUID
+
+import pytest
 
 from buildkite_test_collector.collector.constants import VERSION
 from buildkite_test_collector.collector.run_env import RunEnvBuilder
@@ -101,6 +104,90 @@ def test_detect_env_with_generic_env_vars():
     assert run_env.number is None
     assert run_env.job_id is None
     assert run_env.message is None
+
+
+@pytest.fixture(params=[
+    {"BUILDKITE_BUILD_ID": "build-id", "BUILDKITE_BUILD_URL": "https://example.test/build",
+     "BUILDKITE_BRANCH": "main", "BUILDKITE_COMMIT": "abc123",
+     "BUILDKITE_BUILD_NUMBER": "42", "BUILDKITE_JOB_ID": "job-id",
+     "BUILDKITE_MESSAGE": "detected message"},
+    {"GITHUB_ACTION": "test", "GITHUB_RUN_NUMBER": "43", "GITHUB_RUN_ATTEMPT": "2",
+     "GITHUB_REPOSITORY": "org/repo", "GITHUB_RUN_ID": "123",
+     "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "def456",
+     "TEST_ANALYTICS_COMMIT_MESSAGE": "detected message"},
+    {"CIRCLE_BUILD_NUM": "44", "CIRCLE_WORKFLOW_ID": "workflow-id",
+     "CIRCLE_BUILD_URL": "https://example.test/circle", "CIRCLE_BRANCH": "main",
+     "CIRCLE_SHA1": "fed321", "TEST_ANALYTICS_COMMIT_MESSAGE": "detected message"},
+    {},
+], ids=["buildkite", "github-actions", "circleci", "generic"])
+def ci_env(request: pytest.FixtureRequest) -> Dict[str, Optional[str]]:
+    return request.param.copy()
+
+
+def test_nonempty_analytics_overrides_reach_run_json(ci_env: Dict[str, Optional[str]]) -> None:
+    detected_ci = RunEnvBuilder(ci_env).build().ci
+    ci_env.update({
+        "BUILDKITE_ANALYTICS_KEY": "custom-run",
+        "BUILDKITE_ANALYTICS_URL": "https://example.test/custom-run",
+        "BUILDKITE_ANALYTICS_BRANCH": "custom-branch",
+        "BUILDKITE_ANALYTICS_SHA": "987abc",
+        "BUILDKITE_ANALYTICS_NUMBER": "0",
+        "BUILDKITE_ANALYTICS_JOB_ID": "custom-job",
+        "BUILDKITE_ANALYTICS_MESSAGE": "custom message",
+    })
+
+    metadata = RunEnvBuilder(ci_env).build().as_json()
+
+    assert metadata.items() >= {
+        "CI": detected_ci,
+        "key": "custom-run",
+        "url": "https://example.test/custom-run",
+        "branch": "custom-branch",
+        "commit_sha": "987abc",
+        "number": "0",
+        "job_id": "custom-job",
+        "message": "custom message",
+    }.items()
+
+
+def test_key_override_preserves_other_metadata(ci_env: Dict[str, Optional[str]]) -> None:
+    expected = RunEnvBuilder(ci_env).build().as_json()
+    expected["key"] = "custom-run"
+    ci_env["BUILDKITE_ANALYTICS_KEY"] = "custom-run"
+
+    assert RunEnvBuilder(ci_env).build().as_json() == expected
+
+
+def test_metadata_override_does_not_require_a_key() -> None:
+    metadata = RunEnvBuilder({
+        "BUILDKITE_ANALYTICS_KEY": "",
+        "BUILDKITE_ANALYTICS_BRANCH": "custom-branch",
+    }).build().as_json()
+
+    assert metadata["CI"] == "generic"
+    assert UUID(metadata["key"]).version == 4
+    assert metadata["branch"] == "custom-branch"
+    assert "url" not in metadata
+
+
+@pytest.mark.parametrize("value", [None, ""])
+def test_empty_analytics_overrides_preserve_detected_metadata(
+    ci_env: Dict[str, Optional[str]], value: Optional[str]
+) -> None:
+    expected = RunEnvBuilder(ci_env).build().as_json()
+    ci_env.update({
+        f"BUILDKITE_ANALYTICS_{suffix}": value
+        for suffix in ("KEY", "URL", "BRANCH", "SHA", "NUMBER", "JOB_ID", "MESSAGE")
+    })
+
+    metadata = RunEnvBuilder(ci_env).build().as_json()
+
+    if expected["CI"] == "generic":
+        assert UUID(metadata["key"]).version == 4
+        del expected["key"]
+        del metadata["key"]
+    assert metadata == expected
+
 
 def test_env_as_json(fake_env):
     json = fake_env.as_json()
