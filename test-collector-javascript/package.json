@@ -31,30 +31,6 @@
     "semver": "^7.5.2",
     "strip-ansi": "^6.0.0"
   },
-  "peerDependencies": {
-    "@opentelemetry/api": "*",
-    "@opentelemetry/context-async-hooks": "*",
-    "@opentelemetry/exporter-trace-otlp-proto": "*",
-    "@opentelemetry/resources": "*",
-    "@opentelemetry/sdk-trace-base": "*"
-  },
-  "peerDependenciesMeta": {
-    "@opentelemetry/api": {
-      "optional": true
-    },
-    "@opentelemetry/exporter-trace-otlp-proto": {
-      "optional": true
-    },
-    "@opentelemetry/resources": {
-      "optional": true
-    },
-    "@opentelemetry/sdk-trace-base": {
-      "optional": true
-    },
-    "@opentelemetry/context-async-hooks": {
-      "optional": true
-    }
-  },
   "overrides": {
     "serialize-javascript": "^7.0.5"
   },
