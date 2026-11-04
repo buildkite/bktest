@@ -73,7 +73,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     underneath. Child spans add data volume, not test executions.
     Existing beta.3 environment setups keep working.
 
-    See [OpenTelemetry (experimental)](docs/opentelemetry.md) for installation,
+    See [OpenTelemetry (experimental)](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md) for installation,
     supported versions, settings and known limits.
 
     ### Vitest

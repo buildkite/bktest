@@ -8,7 +8,7 @@ const PACKAGES = {
   exporter: '@opentelemetry/exporter-trace-otlp-proto',
 }
 
-// Peer ranges stay open for suites using newer SDKs; export compatibility is checked below.
+// Optional peers permit JSON-only suites; export compatibility is checked below.
 const SUPPORTED_VERSIONS = {
   '@opentelemetry/api': '>=1.9.0 <1.10.0',
   '@opentelemetry/sdk-trace-base': '^2.0.0',
@@ -18,7 +18,7 @@ const SUPPORTED_VERSIONS = {
 }
 
 const installCommand = () => {
-  const specs = Object.values(PACKAGES).map((name) => `"${name}@${SUPPORTED_VERSIONS[name]}"`)
+  const specs = Object.entries(SUPPORTED_VERSIONS).map(([name, range]) => `"${name}@${range}"`)
   return `npm install --save-dev ${specs.join(' ')}`
 }
 
