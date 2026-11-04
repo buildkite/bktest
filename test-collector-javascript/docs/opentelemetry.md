@@ -202,11 +202,15 @@ in-process server continues the test's trace, so a test that asserts or
 snapshots a request's exact headers can see a new one. Set
 `OTEL_NODE_DISABLED_INSTRUMENTATIONS=http,undici` to send requests unchanged.
 
-Starting with **1.13.0-beta.3**, every installed
-`@opentelemetry/instrumentation-*` package from the 2.x SDK line is selected
+Starting with **1.13.0-beta.3**, installed
+`@opentelemetry/instrumentation-*` packages from the 2.x SDK line are selected
 by default, including packages inside non-hoisted
-`@opentelemetry/auto-instrumentations-node` dependencies. The same environment
-switches narrow that selection; for example,
+`@opentelemetry/auto-instrumentations-node` dependencies, except for `fs` and
+`host-metrics`, which are off by default just as in auto-instrumentations-node.
+Enable either explicitly with `OTEL_NODE_ENABLED_INSTRUMENTATIONS`, for example
+`OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,fs`. The enabled list selects only its
+listed names; `OTEL_NODE_DISABLED_INSTRUMENTATIONS` still wins when a name is
+in both lists. The same environment switches narrow selection; for example,
 `OTEL_NODE_DISABLED_INSTRUMENTATIONS=express,graphql,redis,pg` turns off those
 package spans without turning off test results or HTTP spans. No new reporter
 option, `otelInstrumentations` option or `jest/otel` bridge is needed.

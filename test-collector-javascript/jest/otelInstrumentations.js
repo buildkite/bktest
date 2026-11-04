@@ -6,7 +6,11 @@ const { describeError } = require('../util/otel/warn')
 const PREFIX = '@opentelemetry/instrumentation-'
 const SDK_LINES = { http: [200, 300], undici: [11, 34] }
 const listedIn = (variable, name) => (process.env[variable] || '').split(',').some((entry) => entry.trim() === name)
-const enabledByEnv = (name) => (!process.env.OTEL_NODE_ENABLED_INSTRUMENTATIONS || listedIn('OTEL_NODE_ENABLED_INSTRUMENTATIONS', name)) &&
+// Match auto-instrumentations-node's default exclusions, even for packages
+// discovered only by scanning node_modules.
+const enabledByEnv = (name) => (process.env.OTEL_NODE_ENABLED_INSTRUMENTATIONS
+  ? listedIn('OTEL_NODE_ENABLED_INSTRUMENTATIONS', name)
+  : !['fs', 'host-metrics'].includes(name)) &&
   !listedIn('OTEL_NODE_DISABLED_INSTRUMENTATIONS', name)
 
 // Resolve from the project first, then the auto-instrumentations bundle's
