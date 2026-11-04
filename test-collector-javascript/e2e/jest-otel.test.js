@@ -403,6 +403,32 @@ if (otelSupported) {
     expect(outcome.children.filter((span) => span.attributes['express.type'])).toEqual([])
   }, 60000)
 
+  test('runs failing test bodies with a mapped API and resetMocks', async () => {
+    const outcome = await runChildren('mapped-api')
+    expect(outcome.result.code).toBe(1)
+    expect(outcome.result.stderr).toContain('Expected: "failure"')
+    expect(outcome.roots.map(spanRecord)).toEqual([expect.objectContaining({
+      name: 'still fails with a mapped API and resetMocks', result: 'fail',
+      failure_reason: expect.stringContaining('expect(received).toBe(expected)'),
+    })])
+    expect(outcome.roots[0].status.code).toBe(2)
+    expect(outcome.result.stdout).not.toContain('Test Engine Sending:')
+  }, 60000)
+
+  test('does not expose the mutable test span to app code', async () => {
+    const outcome = await runChildren('active-span')
+    expect(outcome.result.code).toBe(0)
+    expect(outcome.warnings).toEqual([])
+    expect(outcome.roots).toHaveLength(1)
+    const [root] = outcome.roots
+    expect(root).toMatchObject({ name: 'test.execution', status: { code: 0 } })
+    expect(root.attributes['test.case.result.status']).toBe('pass')
+    expect(root.attributes['user.id']).toBeUndefined()
+    expect(outcome.childrenOf(root, named('manual child'))).toEqual([
+      expect.objectContaining({ traceId: root.traceId, parentSpanId: root.spanId }),
+    ])
+  }, 60000)
+
   test('preserves getter-only module exports', async () => {
     const outcome = await runChildren('getters')
     if (outcome.result.code) throw new Error(outcome.result.stderr)

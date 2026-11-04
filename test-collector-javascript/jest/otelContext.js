@@ -107,6 +107,7 @@ class JestOtelContext {
     try {
       this.api = this.runtime.requireModule(this.testPath, '@opentelemetry/api')
       this.loadedApi(this.api)
+      if (!this.apis.has(this.api)) this.api = this.session.api // a mapped or manual mock
       // NODE_OPTIONS can register a provider outside the sandbox too.
       if (!emptyProxies([...this.apis, this.session.api])) {
         this.warnOnce('suite-provider', SUITE_PROVIDER)
@@ -158,7 +159,7 @@ class JestOtelContext {
     this.setup()
     if (this.mode !== 'managed' || !started?.handle || !this._fill()) return fn.apply(receiver, args)
     const { span } = started.handle
-    const contexts = [...new Set([this.api, this.session.api])].map((api) => [api, api.trace.setSpan(api.context.active(), span)])
+    const contexts = [...new Set([this.api, this.session.api])].map((api) => [api, api.trace.setSpan(api.context.active(), api.trace.wrapSpanContext(span.spanContext()))])
     const enter = (index) => (index === contexts.length
       ? fn.apply(receiver, args)
       : contexts[index][0].context.with(contexts[index][1], () => enter(index + 1)))
