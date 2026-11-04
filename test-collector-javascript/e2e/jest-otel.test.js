@@ -3,6 +3,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const stripAnsi = require('strip-ansi')
+const semver = require('semver')
 const { startOtlpServer } = require('./support/otlpServer')
 
 // examples/jest/otel.config.js runs: example.test.js (2), passed.test.js (1),
@@ -949,7 +950,7 @@ if (otelSupported) {
       expect(otel.stdout).not.toMatch(/Test Engine Sending:/)
       expect(otel.stderr).not.toMatch(/\[buildkite-test-collector\]/)
       expect(otelResult.numTotalTests).toBe(2)
-      expect(otelResult.numFailedTests).toBe(jestMajor >= 30 ? 1 : 0)
+      expect(otelResult.numFailedTests).toBe(semver.gte(jestVersion, '30.5.0') ? 1 : 0)
       const assertions = (result) => sortedBy(result.testResults.flatMap((file) => file.assertionResults).map(({ title, status, failureMessages }) => ({ title, status, failureMessages })), (test) => test.title)
       expect(assertions(otelResult)).toEqual(assertions(jsonResult))
 
@@ -959,7 +960,7 @@ if (otelSupported) {
       expect(late).toHaveLength(1)
       const [span] = late
       const record = jsonRecords.find((record) => record.name === 'rejects after test_done during afterAll')
-      expect(record.result).toBe(jestMajor >= 30 ? 'failed' : 'passed')
+      expect(record.result).toBe(semver.gte(jestVersion, '30.5.0') ? 'failed' : 'passed')
       expect(spanRecord(span)).toEqual({
         scope: record.scope, name: record.name, location: record.location, file_name: record.file_name,
         result: record.result === 'failed' ? 'fail' : 'pass', failure_reason: record.failure_reason,
