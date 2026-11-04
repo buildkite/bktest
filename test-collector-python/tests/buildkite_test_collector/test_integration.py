@@ -3,8 +3,59 @@ import os
 import pytest
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
     
 from pathlib import Path
+
+def test_only_outer_suite_uploads_not_its_failing_fixtures(tmp_path: Path) -> None:
+    """Report the outer suite without uploading its intentional fixture failures."""
+    uploads: list[dict] = []
+
+    class UploadHandler(BaseHTTPRequestHandler):
+        """Record uploads sent to a loopback endpoint."""
+
+        def do_POST(self) -> None:
+            """Accept a test-results upload."""
+            uploads.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(202)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, format: str, *args: object) -> None:
+            """Suppress HTTP request logging."""
+
+    test_file = Path(__file__).parent / "test_integration_import_error.py"
+    name = "test_import_error_captured_in_json_report"
+    json_output = tmp_path / "outer-results.json"
+    with HTTPServer(("127.0.0.1", 0), UploadHandler) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("BUILDKITE_ANALYTICS_", "BUILDKITE_TESTS_", "OTEL_"))}
+            env.update({
+                "BUILDKITE_ANALYTICS_TOKEN": "fake-ci-token",
+                "BUILDKITE_ANALYTICS_API_URL": f"http://127.0.0.1:{server.server_port}/v1",
+                "BUILDKITE_BUILD_ID": "fixture-isolation-build",
+            })
+            result = subprocess.run(
+                [sys.executable, "-m", "pytest", str(test_file), "-k", name,
+                 f"--json={json_output}"],
+                env=env, capture_output=True, text=True, check=False, timeout=60,
+            )
+        finally:
+            server.shutdown()
+            thread.join()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    results = json.loads(json_output.read_text())
+    assert [(test["name"], test["result"]) for test in results] == [(name, "passed")]
+    assert len(uploads) == 1, uploads
+    assert [(test["name"], test["result"]) for test in uploads[0]["data"]] == [(name, "passed")]
+    assert uploads[0]["run_env"]["key"] == "fixture-isolation-build"
+
 
 def test_add_tag_to_execution_data(tmp_path, fake_env):
     """Verify that tags added via the execution_tag marker are correctly captured in the test data."""
