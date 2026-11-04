@@ -44,6 +44,24 @@ uv run pytest
 
 If all is well, you should see the test run in the Test Engine section of the Buildkite dashboard.
 
+## 🌏 Run metadata overrides
+
+Non-empty values override detected run metadata; unset or empty values preserve
+the defaults.
+
+| Variable | Run field |
+| --- | --- |
+| `BUILDKITE_ANALYTICS_KEY` | Run key (grouping identifier). |
+| `BUILDKITE_ANALYTICS_URL` | URL linking back to the build, not the upload API endpoint. |
+| `BUILDKITE_ANALYTICS_BRANCH` | Branch or reference. |
+| `BUILDKITE_ANALYTICS_SHA` | Commit SHA. |
+| `BUILDKITE_ANALYTICS_NUMBER` | Build number. |
+| `BUILDKITE_ANALYTICS_JOB_ID` | Job ID. |
+| `BUILDKITE_ANALYTICS_MESSAGE` | Commit message or build description. |
+
+Uploads sharing a key within a suite are grouped into one run. A custom key can
+lose automatic Buildkite build association, but the build URL remains independent.
+
 ## 🏷️ Filtering Tests by Tags
 
 You can filter which tests to run based on execution tags using the `--tag-filters` option.
