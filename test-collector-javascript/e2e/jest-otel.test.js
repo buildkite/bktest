@@ -578,7 +578,12 @@ if (otelSupported) {
   test('exports children from a tracer an ES module obtained before a reset in beforeAll', async () => {
     const outcome = await runChildren('esm', { env: { NODE_OPTIONS: '--experimental-vm-modules' } })
     expect([outcome.result.code, outcome.warnings, outcome.roots.length]).toEqual([0, [], 1])
-    expect(outcome.childrenOf(outcome.rootsNamed('esm after reset')[0], named('esm-child'))).toHaveLength(1)
+    const root = outcome.rootsNamed('esm after reset')[0]
+    expect(outcome.childrenOf(root, named('esm-child'))).toHaveLength(1)
+    expect(outcome.childrenOf(root, clientGet)).toEqual([
+      expect.objectContaining({ parentSpanId: root.spanId, traceId: root.traceId }),
+      expect.objectContaining({ parentSpanId: root.spanId, traceId: root.traceId }),
+    ])
   }, 60000)
 
   // A later project without the runtime sends no trace headers through the worker-wide
