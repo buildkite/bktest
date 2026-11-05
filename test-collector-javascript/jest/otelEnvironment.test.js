@@ -152,13 +152,17 @@ describe('JestBuildkiteTestEngineReporter without JSON fallback', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'secret'
   })
 
-  it('never uploads JSON for a project without the runtime', async () => {
+  it('warns once plus a final summary, and never uploads JSON for projects without the runtime', async () => {
     const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
     const plainProject = { id: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/jest-environment-node/build/index.js' }
-    await reporter.onTestResult({ path: testPath, context: { config: plainProject } }, testResult)
+    for (let i = 0; i < 10; i++) await reporter.onTestResult({ path: testPath, context: { config: plainProject } }, testResult)
+    expect(warnings()).toEqual([])
     await reporter.onRunComplete()
     expect(jsonNames()).toEqual([])
-    expect(warnings()).toContainEqual(expect.stringMatching(/TEST RESULTS MISSING: 1 test.execution span.*set runtime/))
+    expect(warnings()).toEqual([
+      expect.stringMatching(/TEST RESULTS MISSING:.*set runtime/),
+      expect.stringMatching(/TEST RESULTS MISSING: 10 file\(s\), 10 test\(s\) never recorded spans \(no runtime: 10 file\(s\), 10 test\(s\)/),
+    ])
   })
 
   it('keeps the run passing and uploads no JSON when local cleanup fails', async () => {

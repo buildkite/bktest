@@ -22,6 +22,9 @@ class JestBuildkiteTestEngineReporter {
     this._tags = options?.tags
     this._paths = new Paths(globalConfig, this._testEnv.location_prefix)
     this._otelEnabled = options?.otelEnabled === true
+    this._hasCredential = [process.env.BUILDKITE_TESTS_OTLP_TOKEN, options?.token, process.env.BUILDKITE_ANALYTICS_TOKEN].some((value) => value?.trim())
+    this._missingFiles = 0
+    this._missingTests = 0
     const frameworkVersion = jestVersion(globalConfig.rootDir)
     const settings = resolveSettings({
       otelEnabled: this._otelEnabled, token: options?.token,
@@ -31,14 +34,15 @@ class JestBuildkiteTestEngineReporter {
     if (settings) {
       try {
         this._spool = fs.mkdtempSync(path.join(os.tmpdir(), 'buildkite-otel-'))
-        this._sender = require('../util/otel/exporter').createSender(settings, this._spool)
+        this._sender = require('../util/otel/uploads').createUploads(settings, this._spool)
         publishSettings({ ...settings, rootDir: globalConfig.rootDir, spool: this._spool })
         this._sigterm = () => {
           this._stopping = true
           this._terminated = true
-          this._finish().finally(() => {
-            process.removeAllListeners('SIGTERM')
-            process.kill(process.pid, 'SIGTERM')
+          this._finish(5000).finally(() => {
+            if (process.listenerCount('SIGTERM')) return
+            if (process.pid === 1) process.exit(143)
+            else process.kill(process.pid, 'SIGTERM')
           })
         }
         process.once('SIGTERM', this._sigterm)
@@ -60,27 +64,24 @@ class JestBuildkiteTestEngineReporter {
     }
   }
 
-  // The public start hook is awaited before dispatch. Gate new files as soon
-  // as bail is reached; otherwise Jest keeps scheduling while completion awaits
-  // HTTP. Already running files are not stopped. Jest owns the eventual exit.
+  // Jest calls completion directly on bail. Gate further dispatch while that
+  // completion awaits uploads; already running files are not stopped.
   onTestFileStart() {
     if (this._stopping) return new Promise(() => {})
   }
 
   onTestFileResult(test, testResult, results) {
     if (!this._otelEnabled) return this._addJson(testResult)
-    if (this._globalConfig.bail && results?.numFailedTests >= this._globalConfig.bail &&
-      !this._globalConfig.watch && !this._globalConfig.watchAll) this._stopping = true
-    if (this._completion) return // Late arrivals are counted outside the fixed drain snapshot.
+    if (testResult.testExecError && !testResult.testResults.length) return
+    if (!this._hasCredential) return // The single configuration warning is enough.
     if (!this._sender) {
-      warn(`TEST RESULTS MISSING: ${testResult.testResults.length} test.execution span(s), unknown child count for ${test.path} were not uploaded; fix the earlier OpenTelemetry configuration warning and rerun (no JSON fallback).`)
+      this._missingFiles++
+      this._missingTests += testResult.testResults.length
       return
     }
-    if (!this._sender.collect(testResult.testFilePath)) {
-      const runner = process.env.JEST_JASMINE === '1' || /jest-jasmine2/.test(test.context.config.testRunner)
-      const fix = runner ? 'use the jest-circus test runner' : "set runtime to 'buildkite-test-collector/jest/runtime' and see earlier worker warnings"
-      warn(`TEST RESULTS MISSING: ${testResult.testResults.length} test.execution span(s), unknown child count for ${test.path} were not uploaded; ${fix}, then rerun (no JSON fallback).`)
-    }
+    const jasmine = process.env.JEST_JASMINE === '1' || /jest-jasmine2/.test(test.context.config.testRunner)
+    const reason = jasmine ? 'jasmine' : test.context.config.runtime ? 'setup failed' : 'no runtime'
+    this._sender.collect(testResult.testFilePath, testResult.testResults.length, reason)
   }
 
   // Kept for consumers invoking the legacy reporter callback directly.
@@ -91,9 +92,12 @@ class JestBuildkiteTestEngineReporter {
     return this._finish()
   }
 
-  _finish() {
+  _finish(budget = 30000) {
+    this._stopping = true
+    const drain = this._sender?.drain(budget)
     return this._completion ||= (async () => {
-      try { await this._sender?.drain() } finally {
+      try { await drain } finally {
+        if (this._missingFiles) warn(`TEST RESULTS MISSING: ${this._missingFiles} file(s), ${this._missingTests} test(s) were not uploaded (settings unusable); fix the earlier OpenTelemetry configuration warning and rerun (unknown child count; no JSON fallback).`)
         if (this._sigterm) process.off('SIGTERM', this._sigterm)
         // A terminating run can still have workers committing files. Do not
         // remove their destination while they are alive.
@@ -103,7 +107,7 @@ class JestBuildkiteTestEngineReporter {
               warn(`OpenTelemetry could not remove its temporary directory (${describeError(error)}).`)
             }
           }
-          if (this._stopping) process.once('exit', cleanup)
+          if (this._globalConfig.bail) process.once('exit', cleanup)
           else cleanup()
         }
       }

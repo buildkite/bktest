@@ -116,7 +116,7 @@ const createSession = (settings) => {
 let current = null
 const sessionFor = (settings) => {
   if (current) {
-    if (settings.spool !== current.spool) throw new Error('a new OpenTelemetry run requires a new worker process')
+    current.settings.spool = settings.spool
     if (settings.runEnv.key !== current.session.runKey) warn(`OpenTelemetry span export is already configured for run ${JSON.stringify(current.session.runKey)} and cannot switch to run ${JSON.stringify(settings.runEnv.key)}: use a new process.`)
     return current.session
   }
@@ -126,7 +126,7 @@ const sessionFor = (settings) => {
     await shutdown()
     if (current?.session === session) current = null
   }
-  current = { spool: settings.spool, session }
+  current = { settings, session }
   return session
 }
 

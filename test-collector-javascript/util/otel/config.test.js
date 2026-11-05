@@ -91,7 +91,7 @@ describe('resolveSettings', () => {
     expect(resolve().endpoint).toBe('http://127.0.0.1:4318/v1/traces')
   })
 
-  it('warns and falls back for an endpoint that is not an http(s) URL with a host, without probing the SDK', () => {
+  it('warns once for an endpoint that is not an http(s) URL with a host, without probing the SDK', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
     const probe = jest.fn()
 
@@ -102,12 +102,11 @@ describe('resolveSettings', () => {
       expect(readSettings()).toBeNull()
     }
     expect(probe).not.toHaveBeenCalled()
-    expect(warnings()).toHaveLength(endpoints.length * 2)
+    expect(warnings()).toHaveLength(endpoints.length)
     expect(warnings()[0]).toBe(
       "[buildkite-test-collector] OpenTelemetry span export disabled: endpoint '' is invalid. " +
-      'BUILDKITE_ANALYTICS_OTLP_ENDPOINT must be an http or https URL with a host.'
+      'BUILDKITE_ANALYTICS_OTLP_ENDPOINT must be an http or https URL with a host; results were not uploaded; fix the OpenTelemetry configuration and rerun (no JSON fallback).'
     )
-    expect(warnings()[1]).toMatch(/could not be configured .*results were not uploaded/)
   })
 
   it('carries the run environment, framework and tags into the settings', () => {
@@ -152,7 +151,7 @@ describe('resolveSettings', () => {
     expect(warnings()).toEqual([])
   })
 
-  it('warns and falls back to JSON for an invalid run key without probing the SDK', () => {
+  it('warns once for an invalid run key without probing the SDK', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
     const probe = jest.fn()
 
@@ -160,7 +159,6 @@ describe('resolveSettings', () => {
     expect(probe).not.toHaveBeenCalled()
     expect(warnings()).toEqual([
       expect.stringMatching(/OpenTelemetry span export disabled: run key 'bad key' is invalid/),
-      expect.stringMatching(/otelEnabled is set, but OpenTelemetry could not be configured .*results were not uploaded/),
     ])
     for (const key of ['', 'x'.repeat(256), 'tab\there', 'ünïcode', undefined]) {
       expect(resolve({ runEnv: runEnv({ key }), probe })).toBeNull()

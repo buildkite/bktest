@@ -295,7 +295,7 @@ describe('createSession', () => {
   })
 
   it('names the network error when the endpoint is unreachable', async () => {
-    const { requests, flushed, warnings } = await runSession({ unreachable: true, forceFlush: true })
+    const { requests, flushed, warnings } = await runSession({ unreachable: true, forceFlush: true, drainBudget: 5000 })
 
     expect(requests).toHaveLength(0)
     expect(flushed.warnings).toEqual([expect.stringMatching(/1 test.execution span.*ECONNREFUSED/)])
@@ -303,7 +303,7 @@ describe('createSession', () => {
   }, 15000)
 
   it('names the HTTP status when the exporter gives up retrying a 503', async () => {
-    const { requests, flushed } = await runSession({ respond: '503-always', forceFlush: true })
+    const { requests, flushed } = await runSession({ respond: '503-always', forceFlush: true, drainBudget: 5000 })
 
     expect(requests.length).toBeGreaterThan(1)
     expect(requests.every((request) => request.status === 503)).toBe(true)

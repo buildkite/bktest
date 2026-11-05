@@ -4,7 +4,7 @@ const { types } = require('util')
 const Paths = require('../util/paths')
 const { readSettings } = require('../util/otel/config')
 const { sessionFor } = require('../util/otel/session')
-const { warn, describeError } = require('../util/otel/warn')
+const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
 const JestOtelContext = require('./otelContext')
 
@@ -115,8 +115,9 @@ class JestOtelEnvironment {
   constructor(config, context) {
     const { globalConfig, projectConfig } = config
     this._buildkite = { session: null, started: false, spans: new Map(), includeLocation: false, formatting: null, projectConfig, testPath: context?.testPath }
+    let settings
     try {
-      const settings = readSettings()
+      settings = readSettings()
       if (!settings) return
       const paths = new Paths({ rootDir: globalConfig?.rootDir ?? settings.rootDir }, settings.runEnv.location_prefix)
       this._buildkite.testPath = paths.prefixTestPath(context.testPath)
@@ -127,7 +128,7 @@ class JestOtelEnvironment {
       })
     } catch (error) {
       this._buildkite.session = null
-      warn(`TEST RESULTS MISSING: OpenTelemetry could not be set up in this test worker (${describeError(error)}); results for ${this._buildkite.testPath} were not uploaded. Fix the SDK/runtime configuration and rerun (no JSON fallback).`)
+      warnOncePerRun(settings?.spool, 'worker-setup', `TEST RESULTS MISSING: OpenTelemetry could not be set up in this test worker (${describeError(error)}); results for ${this._buildkite.testPath} were not uploaded. Fix the SDK/runtime configuration and rerun (no JSON fallback).`)
     }
   }
 

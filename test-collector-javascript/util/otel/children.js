@@ -4,7 +4,7 @@ const { size, commitFile } = require('./spool')
 // Child floods never displace test results. The cap includes open children and
 // is per file, not per export batch. Late completions get their own commit.
 const createChildExport = (settings) => {
-  const cap = size('CHILD_SPAN_QUEUE_SIZE', 2048)
+  const cap = size('CHILD_SPAN_QUEUE_SIZE', 2048, undefined, settings.spool)
   const closedTraces = new Set()
   let spans = []
   let open = 0
@@ -34,7 +34,7 @@ const createChildExport = (settings) => {
         if (active) spans.push(span)
         else {
           try { commitFile(settings.spool, undefined, { child: [span] }) } catch (error) {
-            warn(`TEST RESULTS MISSING: 0 test.execution span(s), 1 late child span was not uploaded: ${error.message}; check temporary directory permissions/free space and rerun.`)
+            warn(`OpenTelemetry dropped 1 late child span: ${error.message}; test.execution results are unaffected. Check temporary directory permissions/free space and rerun.`)
           }
         }
       },

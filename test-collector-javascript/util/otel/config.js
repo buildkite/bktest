@@ -63,27 +63,22 @@ const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runE
     return null
   }
 
-  const couldNotConfigure = () => {
-    warn(`otelEnabled is set, but OpenTelemetry could not be configured (see the warning above); ${NOT_UPLOADED}`)
-    return null
-  }
-
   if (!isValidRunKey(runEnv.key)) {
     warn(
       `OpenTelemetry span export disabled: run key ${inspect(runEnv.key)} is invalid. ` +
       'Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); ' +
-      'it must be 1-255 printable ASCII characters without spaces.'
+      `it must be 1-255 printable ASCII characters without spaces; ${NOT_UPLOADED}.`
     )
-    return couldNotConfigure()
+    return null
   }
 
   const endpoint = otlpEndpoint()
   if (!isValidEndpoint(endpoint)) {
     warn(
       `OpenTelemetry span export disabled: endpoint ${inspect(endpoint)} is invalid. ` +
-      'BUILDKITE_ANALYTICS_OTLP_ENDPOINT must be an http or https URL with a host.'
+      `BUILDKITE_ANALYTICS_OTLP_ENDPOINT must be an http or https URL with a host; ${NOT_UPLOADED}.`
     )
-    return couldNotConfigure()
+    return null
   }
 
   const settings = {

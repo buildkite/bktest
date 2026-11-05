@@ -47,8 +47,8 @@ const main = async () => {
     frameworkVersion: '29.7.0',
   }
   const session = createSession(settings)
-  const { createSender } = require('../../util/otel/exporter')
-  const sender = createSender(settings, spool)
+  const { createUploads } = require('../../util/otel/uploads')
+  const sender = createUploads(settings, spool)
 
   for (const step of scenario.tests || []) {
     for (let i = 0; i < (step.repeat || 1); i++) {
@@ -60,7 +60,7 @@ const main = async () => {
   sender.collect('session.test.js')
   if (scenario.waitBeforeFlush) await new Promise((resolve) => setTimeout(resolve, scenario.waitBeforeFlush))
   let flushed = null
-  const counts = await sender.drain()
+  const counts = await sender.drain(scenario.drainBudget)
   const metrics = { exported: server.spans().length, failed: counts.test }
   if (scenario.forceFlush) {
     flushed = { requests: server.requests.map((request) => request.status), metrics, warnings: [...warnings] }

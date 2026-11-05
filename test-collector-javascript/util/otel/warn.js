@@ -15,7 +15,9 @@ const describeError = (error) => {
 
 // Exclusive creation deduplicates warnings across worker processes.
 const warned = new Set()
+let warnedDirectory
 const warnOncePerRun = (directory, key, message) => {
+  if (directory !== warnedDirectory) { warned.clear(); warnedDirectory = directory }
   if (warned.has(key)) return
   warned.add(key)
   if (directory) {
