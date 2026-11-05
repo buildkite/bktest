@@ -1,6 +1,6 @@
 declare namespace JestBuildkiteTestEngineReporter {
   interface Options {
-    otelEnabled?: boolean | string
+    otelEnabled?: boolean
     token?: string
     tags?: Record<string, unknown>
     url?: string

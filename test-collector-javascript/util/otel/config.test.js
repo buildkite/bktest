@@ -1,5 +1,5 @@
 const { createRequire } = require('module')
-const { resolveSettings, publishSettings, readSettings, isOtelEnabled, isValidRunKey, fallbackOutcome, SETTINGS_ENV, DEFAULT_ENDPOINT } = require('./config')
+const { resolveSettings, publishSettings, readSettings } = require('./config')
 
 const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
 
@@ -24,58 +24,12 @@ beforeEach(() => {
   delete process.env.BUILDKITE_ANALYTICS_TOKEN
   delete process.env.BUILDKITE_TESTS_OTLP_TOKEN
   delete process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT
-  delete process.env[SETTINGS_ENV]
+  publishSettings(null)
   consoleWarnSpy.mockClear()
 })
 
 afterAll(() => {
   process.env = OLD_ENV
-})
-
-describe('isValidRunKey', () => {
-  it('accepts printable ASCII without spaces, from 1 to 255 characters', () => {
-    expect(isValidRunKey('a')).toBe(true)
-    expect(isValidRunKey('x'.repeat(255))).toBe(true)
-    expect(isValidRunKey('01234-abc_DEF.~!@#$%^&*()+=[]{}|;:\'",<>?/`\\')).toBe(true)
-  })
-
-  it('rejects empty, too long, whitespace, control and non-ASCII keys', () => {
-    expect(isValidRunKey('')).toBe(false)
-    expect(isValidRunKey('x'.repeat(256))).toBe(false)
-    expect(isValidRunKey('has space')).toBe(false)
-    expect(isValidRunKey('tab\there')).toBe(false)
-    expect(isValidRunKey('ünïcode')).toBe(false)
-    expect(isValidRunKey(undefined)).toBe(false)
-  })
-})
-
-describe('isOtelEnabled', () => {
-  it('accepts only true and the string true, in any case', () => {
-    expect(isOtelEnabled(true)).toBe(true)
-    expect(isOtelEnabled('true')).toBe(true)
-    expect(isOtelEnabled('TRUE')).toBe(true)
-    expect(isOtelEnabled(' true ')).toBe(true)
-  })
-
-  it('treats every other value as off, including truthy strings and numbers', () => {
-    for (const value of ['false', 'FALSE', 0, '0', 1, '1', 'yes', 'on', '', false, null, undefined, {}, []]) {
-      expect(isOtelEnabled(value)).toBe(false)
-    }
-  })
-})
-
-describe('fallbackOutcome', () => {
-  it('says JSON uploads when the reporter option or BUILDKITE_ANALYTICS_TOKEN holds a token', () => {
-    expect(fallbackOutcome({ token: 'option-token' })).toBe('uploading results as JSON instead')
-    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
-    expect(fallbackOutcome()).toBe('uploading results as JSON instead')
-  })
-
-  it('says nothing uploads when only the relay token is set', () => {
-    process.env.BUILDKITE_TESTS_OTLP_TOKEN = 'relay-token'
-    process.env.BUILDKITE_ANALYTICS_TOKEN = '  '
-    expect(fallbackOutcome({ token: '' })).toBe('results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set')
-  })
 })
 
 describe('resolveSettings', () => {
@@ -89,24 +43,23 @@ describe('resolveSettings', () => {
     expect(warnings()).toEqual([])
   })
 
-  it('reads otelEnabled strictly, so a CLI string "false" stays off and "TRUE" turns on', () => {
+  it('enables export only for boolean true', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'json-token'
 
-    expect(resolve({ otelEnabled: 'false' })).toBeNull()
-    expect(resolve({ otelEnabled: 0 })).toBeNull()
-    expect(resolve({ otelEnabled: '0' })).toBeNull()
-    expect(resolve({ otelEnabled: 1 })).toBeNull()
-    expect(resolve({ otelEnabled: 'true' })).not.toBeNull()
-    expect(resolve({ otelEnabled: 'TRUE' })).not.toBeNull()
+    for (const otelEnabled of ['true', 'TRUE', 'false', 0, 1]) {
+      expect(resolve({ otelEnabled })).toBeNull()
+      expect(readSettings()).toBeNull()
+    }
+    expect(resolve({ otelEnabled: true })).not.toBeNull()
     expect(warnings()).toEqual([])
   })
 
-  it('returns null silently when no credential is available', () => {
+  it('warns without probing when no credential is available', () => {
     const probe = jest.fn()
 
     expect(resolve({ probe })).toBeNull()
     expect(probe).not.toHaveBeenCalled()
-    expect(warnings()).toEqual([])
+    expect(warnings()).toEqual([expect.stringMatching(/results were not uploaded: set BUILDKITE_TESTS_OTLP_TOKEN/)])
   })
 
   it('treats a blank relay token as unset', () => {
@@ -132,14 +85,13 @@ describe('resolveSettings', () => {
   it('uses the default endpoint unless BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
 
-    expect(resolve().endpoint).toBe(DEFAULT_ENDPOINT)
-    expect(DEFAULT_ENDPOINT).toBe('https://tests-otlp.buildkite.com/v1/traces')
+    expect(resolve().endpoint).toBe('https://tests-otlp.buildkite.com/v1/traces')
 
     process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT = ' http://127.0.0.1:4318/v1/traces\n'
     expect(resolve().endpoint).toBe('http://127.0.0.1:4318/v1/traces')
   })
 
-  it('warns and falls back for an endpoint that is not an http(s) URL with a host, without probing the SDK', () => {
+  it('warns once for an endpoint that is not an http(s) URL with a host, without probing the SDK', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
     const probe = jest.fn()
 
@@ -150,19 +102,18 @@ describe('resolveSettings', () => {
       expect(readSettings()).toBeNull()
     }
     expect(probe).not.toHaveBeenCalled()
-    expect(warnings()).toHaveLength(endpoints.length * 2)
+    expect(warnings()).toHaveLength(endpoints.length)
     expect(warnings()[0]).toBe(
       "[buildkite-test-collector] OpenTelemetry span export disabled: endpoint '' is invalid. " +
-      'BUILDKITE_ANALYTICS_OTLP_ENDPOINT must be an http or https URL with a host.'
+      'BUILDKITE_ANALYTICS_OTLP_ENDPOINT must be an http or https URL with a host; results were not uploaded; fix the OpenTelemetry configuration and rerun (no JSON fallback).'
     )
-    expect(warnings()[1]).toMatch(/could not be configured .*uploading results as JSON instead/)
   })
 
   it('carries the run environment, framework and tags into the settings', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
 
     expect(resolve()).toEqual({
-      endpoint: DEFAULT_ENDPOINT,
+      endpoint: 'https://tests-otlp.buildkite.com/v1/traces',
       token: 'env-token',
       runEnv: runEnv(),
       tags: { hello: 'world' },
@@ -183,15 +134,24 @@ describe('resolveSettings', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
     const settings = resolve({ tags: { shard: 3 } })
 
-    expect(readSettings()).toEqual(settings)
+    const { token, ...workerSettings } = settings
+    expect(readSettings()).toEqual(workerSettings)
+    expect(process.env.BUILDKITE_TEST_COLLECTOR_OTEL_SETTINGS).not.toContain(token)
     expect(readSettings().tags).toEqual({ shard: '3' })
 
     expect(resolve({ otelEnabled: false })).toBeNull()
-    expect(process.env[SETTINGS_ENV]).toBeUndefined()
     expect(readSettings()).toBeNull()
   })
 
-  it('warns and falls back to JSON for an invalid run key without probing the SDK', () => {
+  it('accepts printable ASCII run keys from 1 to 255 characters without spaces', () => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    for (const key of ['a', 'x'.repeat(255), '01234-abc_DEF.~!@#$%^&*()+=[]{}|;:\'",<>?/`\\']) {
+      expect(resolve({ runEnv: runEnv({ key }) }).runEnv.key).toBe(key)
+    }
+    expect(warnings()).toEqual([])
+  })
+
+  it('warns once for an invalid run key without probing the SDK', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
     const probe = jest.fn()
 
@@ -199,8 +159,12 @@ describe('resolveSettings', () => {
     expect(probe).not.toHaveBeenCalled()
     expect(warnings()).toEqual([
       expect.stringMatching(/OpenTelemetry span export disabled: run key 'bad key' is invalid/),
-      expect.stringMatching(/otelEnabled is set, but OpenTelemetry could not be configured .*uploading results as JSON instead/),
     ])
+    for (const key of ['', 'x'.repeat(256), 'tab\there', 'ünïcode', undefined]) {
+      expect(resolve({ runEnv: runEnv({ key }), probe })).toBeNull()
+      expect(readSettings()).toBeNull()
+    }
+    expect(probe).not.toHaveBeenCalled()
   })
 
   it('warns and falls back to JSON when the probe fails', () => {
@@ -209,7 +173,7 @@ describe('resolveSettings', () => {
 
     expect(resolve({ probe })).toBeNull()
     expect(warnings()).toEqual([
-      "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'; uploading results as JSON instead.",
+      expect.stringMatching(/Cannot find module '@opentelemetry\/sdk-trace-base'; results were not uploaded/),
     ])
   })
 
@@ -226,9 +190,8 @@ describe('resolveSettings', () => {
     }
     expect(warnings()).toEqual([
       "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'. " +
-      'Install the OpenTelemetry packages with: npm install --save-dev "@opentelemetry/api@>=1.9.0 <1.10.0" ' +
-      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0" ' +
-      '"@opentelemetry/context-async-hooks@^2.0.0"; uploading results as JSON instead.',
+      'Install the OpenTelemetry packages with: npm install --save-dev "@opentelemetry/sdk-trace-base@^2" ' +
+      '"@opentelemetry/context-async-hooks@^2" "@opentelemetry/exporter-trace-otlp-proto@<0.300"; results were not uploaded; fix the OpenTelemetry configuration and rerun (no JSON fallback).',
     ])
     expect(readSettings()).toBeNull()
   })
@@ -248,17 +211,17 @@ describe('resolveSettings', () => {
     }
     expect(warnings()).toEqual([
       "[buildkite-test-collector] OpenTelemetry span export disabled: Error: the installed OpenTelemetry packages cannot export spans together (TypeError: Cannot read properties of undefined (reading 'name')). " +
-      'Install matching versions with: npm install --save-dev "@opentelemetry/api@>=1.9.0 <1.10.0" ' +
-      '"@opentelemetry/sdk-trace-base@^2.0.0" "@opentelemetry/resources@^2.0.0" "@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0" ' +
-      '"@opentelemetry/context-async-hooks@^2.0.0"; uploading results as JSON instead.',
+      'Install matching versions with: npm install --save-dev "@opentelemetry/sdk-trace-base@^2" ' +
+      '"@opentelemetry/context-async-hooks@^2" "@opentelemetry/exporter-trace-otlp-proto@<0.300"; results were not uploaded; fix the OpenTelemetry configuration and rerun (no JSON fallback).',
     ])
     expect(readSettings()).toBeNull()
   })
 
-  it('does not use the API install hint as an export compatibility cap', () => {
+  it('does not use API metadata as an export compatibility cap', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
     jest.resetModules()
-    const manifest = createRequire(require.resolve('@opentelemetry/api')).resolve('../../package.json')
+    const fromTrace = createRequire(require.resolve('@opentelemetry/sdk-trace-base'))
+    const manifest = createRequire(fromTrace.resolve('@opentelemetry/api')).resolve('../../package.json')
     jest.doMock(manifest, () => ({ name: '@opentelemetry/api', version: '1.10.0' }))
     try {
       // The default probe creates and serializes a real SDK 2 span.
@@ -271,21 +234,45 @@ describe('resolveSettings', () => {
     }
   })
 
+  it.each(['missing', '1.30.1'])('exports test spans when the child context package is %s', (version) => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    jest.resetModules()
+    const manifest = require.resolve('@opentelemetry/context-async-hooks/package.json')
+    jest.doMock(manifest, () => {
+      if (version === 'missing') throw new Error('context package is not installed')
+      return { name: '@opentelemetry/context-async-hooks', version }
+    })
+    try {
+      // The default probe must still serialize a real test span.
+      expect(resolve({ probe: undefined })).toMatchObject({ token: 'env-token' })
+      expect(warnings()).toEqual([])
+    } finally {
+      jest.dontMock(manifest)
+      jest.resetModules()
+    }
+  })
+
   it.each([
     ['@opentelemetry/sdk-trace-base', '1.30.1'],
-    ['@opentelemetry/resources', '3.0.0'],
+    ['@opentelemetry/sdk-trace-base', '3.0.0'],
+    ['@opentelemetry/exporter-trace-otlp-proto', '0.300.0'],
   ])('names unsupported %s %s and explains how to install compatible packages', (name, version) => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    jest.resetModules()
     jest.doMock(`${name}/package.json`, () => ({ name, version }))
     try {
       expect(resolve({ probe: undefined })).toBeNull()
-    } finally { jest.dontMock(`${name}/package.json`) }
+    } finally {
+      jest.dontMock(`${name}/package.json`)
+      jest.resetModules()
+    }
     expect(warnings()).toEqual([
       expect.stringContaining(`unsupported ${name}@${version}`),
     ])
     expect(warnings()[0]).toContain('Install the OpenTelemetry packages with: npm install --save-dev')
-    expect(warnings()[0]).toContain('@opentelemetry/context-async-hooks@^2.0.0')
-    expect(warnings()[0]).toContain('uploading results as JSON instead')
+    expect(warnings()[0]).toContain('@opentelemetry/context-async-hooks@^2')
+    expect(warnings()[0]).not.toContain('@opentelemetry/api@')
+    expect(warnings()[0]).toContain('results were not uploaded')
     expect(readSettings()).toBeNull()
   })
 
@@ -294,7 +281,7 @@ describe('resolveSettings', () => {
     const probe = () => { throw new Error('boom') }
 
     expect(resolve({ probe })).toBeNull()
-    expect(warnings()).toEqual([expect.stringMatching(/results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set/)])
+    expect(warnings()).toEqual([expect.stringMatching(/results were not uploaded.*no JSON fallback/)])
   })
 })
 
@@ -304,10 +291,10 @@ describe('publishSettings / readSettings', () => {
     const settings = resolve()
 
     publishSettings(settings)
-    expect(readSettings()).toEqual(settings)
+    const { token, ...workerSettings } = settings
+    expect(readSettings()).toEqual(workerSettings)
 
     publishSettings(null)
-    expect(process.env[SETTINGS_ENV]).toBeUndefined()
     expect(readSettings()).toBeNull()
   })
 })

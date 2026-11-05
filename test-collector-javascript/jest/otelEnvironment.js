@@ -4,9 +4,8 @@ const { types } = require('util')
 const Paths = require('../util/paths')
 const { readSettings } = require('../util/otel/config')
 const { sessionFor } = require('../util/otel/session')
-const { warn, describeError } = require('../util/otel/warn')
+const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
-const { recordKey, recordExport } = require('./exportRecords')
 const JestOtelContext = require('./otelContext')
 
 const ROOT_DESCRIBE_BLOCK_NAME = 'ROOT_DESCRIBE_BLOCK'
@@ -112,25 +111,24 @@ const assertionResult = (test, status, { includeLocation, formatting }) => {
 }
 
 class JestOtelEnvironment {
-  // Setup failures must leave tests running and eligible for JSON upload.
+  // Setup failures leave tests running, but never switch the upload format.
   constructor(config, context) {
     const { globalConfig, projectConfig } = config
     this._buildkite = { session: null, started: false, spans: new Map(), includeLocation: false, formatting: null, projectConfig, testPath: context?.testPath }
-    let fallback = 'its results go to the JSON upload instead'
+    let settings
     try {
-      const settings = readSettings()
+      settings = readSettings()
       if (!settings) return
-      fallback = settings.fallback
       const paths = new Paths({ rootDir: globalConfig?.rootDir ?? settings.rootDir }, settings.runEnv.location_prefix)
       this._buildkite.testPath = paths.prefixTestPath(context.testPath)
-      this._buildkite.record = () => recordExport(settings.exportRecords, recordKey(projectConfig, context.testPath))
-      this._buildkite.fallback = fallback
+      this._buildkite.sourcePath = context.testPath
       this._buildkite.session = sessionFor(settings)
       this._buildkite.children = new JestOtelContext({
         session: this._buildkite.session, settings, testPath: context.testPath, rootDir: projectConfig.rootDir,
       })
     } catch (error) {
-      warn(`OpenTelemetry could not be set up in this test worker (${describeError(error)}); for ${this._buildkite.testPath}, ${fallback}.`)
+      this._buildkite.session = null
+      warnOncePerRun(settings?.spool, 'worker-setup', `TEST RESULTS MISSING: OpenTelemetry could not be set up in this test worker (${describeError(error)}); results for ${this._buildkite.testPath} were not uploaded. Fix the SDK/runtime configuration and rerun (no JSON fallback).`)
     }
   }
 
@@ -217,13 +215,6 @@ class JestOtelEnvironment {
 
   _start(stack) {
     this._buildkite.started = true
-    try {
-      this._buildkite.record()
-    } catch (error) {
-      warn(`OpenTelemetry could not record ${this._buildkite.testPath} as exported (${describeError(error)}); ${this._buildkite.fallback}.`)
-      this._buildkite.session = null
-      return
-    }
     this._buildkite.formatting = failureFormatting(this._buildkite.projectConfig, dispatchingJestCircus(stack))
   }
 
@@ -237,7 +228,7 @@ class JestOtelEnvironment {
     let record = { id: started.id }
     let line
     try {
-      const result = assertionResult({ ...test, errors }, status || (errors.length ? 'failed' : 'passed'), this._buildkite)
+      const result = assertionResult({ ...test, errors }, status || (errors.length ? 'failed' : started.endTime !== undefined ? 'passed' : undefined), this._buildkite)
       record = { ...record, ...testEngineRecord(result, testPath) }
       line = result.location?.line
     } catch (error) {
@@ -247,8 +238,8 @@ class JestOtelEnvironment {
   }
 
   async teardown() {
-    const { session, spans } = this._buildkite
-    if (session) {
+    const { session, spans, started } = this._buildkite
+    if (session && started) {
       // Late test-owned rejections can arrive during afterAll.
       for (const test of spans.keys()) this._finish(test)
       try {
@@ -256,7 +247,7 @@ class JestOtelEnvironment {
       } catch (error) {
         warn(`Could not shut down OpenTelemetry child instrumentation: ${describeError(error)}`)
       } finally {
-        await session.forceFlush()
+        await session.forceFlush(this._buildkite.sourcePath, this._buildkite.projectConfig.id)
       }
     }
   }

@@ -11,8 +11,6 @@ const SETTINGS_ENV = 'BUILDKITE_TEST_COLLECTOR_OTEL_SETTINGS'
 
 const isValidRunKey = (runKey) => typeof runKey === 'string' && RUN_KEY_FORMAT.test(runKey)
 
-const isOtelEnabled = (value) => value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true')
-
 const otlpEndpoint = () => (process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT ?? DEFAULT_ENDPOINT).trim()
 
 const isValidEndpoint = (endpoint) => {
@@ -26,9 +24,7 @@ const isValidEndpoint = (endpoint) => {
 
 const jsonTokenFor = (token) => (token || process.env.BUILDKITE_ANALYTICS_TOKEN || '').trim()
 
-const fallbackOutcome = ({ token } = {}) => jsonTokenFor(token)
-  ? 'uploading results as JSON instead'
-  : 'results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set'
+const NOT_UPLOADED = 'results were not uploaded; fix the OpenTelemetry configuration and rerun (no JSON fallback)'
 
 const stringTags = (tags) => {
   const result = {}
@@ -38,9 +34,10 @@ const stringTags = (tags) => {
   return result
 }
 
-const buildSession = (settings) => {
-  const { createSession } = require('./session')
-  createSession(settings).shutdown().catch(() => {})
+const buildSession = () => {
+  const { loadSdk, assertCanExport } = require('./sdk')
+  const sdk = loadSdk()
+  assertCanExport(sdk, { sampler: new sdk.trace.AlwaysOnSampler() })
 }
 
 // Always publish the decision so stale parent settings cannot enable export.
@@ -51,20 +48,18 @@ const resolveSettings = (options) => {
 }
 
 const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runEnv, tags, unsupported, probe = buildSession }) => {
-  if (!isOtelEnabled(otelEnabled)) return null
+  if (otelEnabled !== true) return null
 
   const jsonToken = jsonTokenFor(token)
   const relayToken = (process.env.BUILDKITE_TESTS_OTLP_TOKEN || '').trim()
   const credential = relayToken || jsonToken
-  if (!credential) return null
-
-  if (unsupported) {
-    warn(`otelEnabled is set, but ${unsupported}; ${fallbackOutcome({ token })}`)
+  if (!credential) {
+    warn('otelEnabled is set, but results were not uploaded: set BUILDKITE_TESTS_OTLP_TOKEN, reporter token, or BUILDKITE_ANALYTICS_TOKEN and rerun (no JSON fallback).')
     return null
   }
 
-  const couldNotConfigure = () => {
-    warn(`otelEnabled is set, but OpenTelemetry could not be configured (see the warning above); ${fallbackOutcome({ token })}`)
+  if (unsupported) {
+    warn(`otelEnabled is set, but ${unsupported}; ${NOT_UPLOADED}`)
     return null
   }
 
@@ -72,18 +67,18 @@ const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runE
     warn(
       `OpenTelemetry span export disabled: run key ${inspect(runEnv.key)} is invalid. ` +
       'Fix BUILDKITE_ANALYTICS_KEY (or the CI variable used to generate it); ' +
-      'it must be 1-255 printable ASCII characters without spaces.'
+      `it must be 1-255 printable ASCII characters without spaces; ${NOT_UPLOADED}.`
     )
-    return couldNotConfigure()
+    return null
   }
 
   const endpoint = otlpEndpoint()
   if (!isValidEndpoint(endpoint)) {
     warn(
       `OpenTelemetry span export disabled: endpoint ${inspect(endpoint)} is invalid. ` +
-      'BUILDKITE_ANALYTICS_OTLP_ENDPOINT must be an http or https URL with a host.'
+      `BUILDKITE_ANALYTICS_OTLP_ENDPOINT must be an http or https URL with a host; ${NOT_UPLOADED}.`
     )
-    return couldNotConfigure()
+    return null
   }
 
   const settings = {
@@ -98,7 +93,7 @@ const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runE
   try {
     probe(settings)
   } catch (error) {
-    warn(`OpenTelemetry span export disabled: ${describeError(error)}; ${fallbackOutcome({ token })}.`)
+    warn(`OpenTelemetry span export disabled: ${describeError(error)}; ${NOT_UPLOADED}.`)
     return null
   }
 
@@ -107,7 +102,8 @@ const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runE
 
 const publishSettings = (settings) => {
   if (settings) {
-    process.env[SETTINGS_ENV] = JSON.stringify(settings)
+    const { token, ...workerSettings } = settings
+    process.env[SETTINGS_ENV] = JSON.stringify(workerSettings)
   } else {
     delete process.env[SETTINGS_ENV]
   }
@@ -119,11 +115,6 @@ const readSettings = () => {
 }
 
 module.exports = {
-  DEFAULT_ENDPOINT,
-  SETTINGS_ENV,
-  isOtelEnabled,
-  isValidRunKey,
-  fallbackOutcome,
   resolveSettings,
   publishSettings,
   readSettings,

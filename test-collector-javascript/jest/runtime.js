@@ -34,10 +34,11 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
       return
     }
     const original = loader[method].bind(loader)
-    loader[method] = (localModule, from, moduleName, modulePath, options, moduleRegistry) => {
+    loader[method] = (...args) => {
+      const [localModule, , , modulePath, options] = args
       let originalExports
       const load = () => {
-        original(localModule, from, moduleName, modulePath, options, moduleRegistry)
+        original(...args)
         return originalExports = localModule.exports
       }
       if (options?.isInternalModule) return load()

@@ -256,7 +256,7 @@ describe('createSession', () => {
 
     expect(spans).toHaveLength(1)
     expect(spans[0].attributes['test.case.result.status']).toBe('unset')
-    expect(warnings).toEqual([expect.stringMatching(/Could not record the OpenTelemetry test result: TypeError/)])
+    expect(warnings).toEqual([expect.stringMatching(/Could not describe OpenTelemetry test span: TypeError/)])
   })
 
   it('retries a 503 with the same stream header and forgets the failure once it succeeds', async () => {
@@ -265,7 +265,7 @@ describe('createSession', () => {
     expect(flushed.requests).toEqual([503, 200])
     expect(requests.map((request) => request.headers['buildkite-tests-span-stream'])).toEqual(['test', 'test'])
     expect(spans).toHaveLength(1)
-    expect(flushed.metrics).toMatchObject({ exported: 1, failed: 0, lastFailure: null })
+    expect(flushed.metrics).toMatchObject({ exported: 1, failed: 0 })
     expect(flushed.warnings).toEqual([])
   })
 
@@ -273,18 +273,15 @@ describe('createSession', () => {
     const { flushed } = await runSession({ respond: '503-once', waitBeforeFlush: 1200, forceFlush: true })
 
     expect(flushed.requests).toEqual([503, 200])
-    expect(flushed.metrics).toMatchObject({ exported: 1, failed: 0, flushBudget: 30000 })
+    expect(flushed.metrics).toMatchObject({ exported: 1, failed: 0 })
   })
 
-  it('charges the flush budget for a timer-handed batch that fails while the flush waits on it', async () => {
+  it('reports a permanent error from an already in-flight request', async () => {
     const { flushed } = await runSession({ respond: '401-slow', waitBeforeFlush: 1200, forceFlush: true })
 
     expect(flushed.requests).toEqual([401])
-    expect(flushed.metrics).toMatchObject({ failed: 1, lastFailure: '401' })
-    // The 401 arrives ~1.5 s after the timer handed the batch over, ~1.2 s of
-    // which the flush spent waiting; a healthy flush would leave 30000.
-    expect(flushed.metrics.flushBudget).toBeLessThanOrEqual(30000 - 1000)
-    expect(flushed.metrics.flushBudget).toBeGreaterThan(30000 - 5000)
+    expect(flushed.metrics).toMatchObject({ failed: 1 })
+    expect(flushed.warnings).toEqual([expect.stringMatching(/1 test.execution span.*HTTP 401/)])
   })
 
   it('warns TEST RESULTS MISSING once, naming the status, when export fails for good', async () => {
@@ -292,26 +289,26 @@ describe('createSession', () => {
 
     expect(requests).toHaveLength(1)
     expect(flushed.warnings).toEqual([
-      '[buildkite-test-collector] TEST RESULTS MISSING: OpenTelemetry dropped 2 test.execution span(s) (export-failure: 2, last OTLP failure: 401).\n' +
-      '[buildkite-test-collector] OpenTelemetry is the only upload path, so those test executions were not uploaded to Buildkite Test Engine.',
+      expect.stringMatching(/TEST RESULTS MISSING: 2 test.execution span\(s\), 0 child span\(s\) were not acknowledged \(HTTP 401\)/),
     ])
     expect(warnings).toEqual(flushed.warnings)
   })
 
   it('names the network error when the endpoint is unreachable', async () => {
-    const { requests, flushed, warnings } = await runSession({ unreachable: true, forceFlush: true })
+    const { requests, flushed, warnings } = await runSession({ unreachable: true, forceFlush: true, drainBudget: 5000 })
 
     expect(requests).toHaveLength(0)
-    expect(flushed.warnings).toEqual([expect.stringMatching(/dropped 1 test\.execution span\(s\) \(export-failure: 1, last OTLP failure: ECONNREFUSED\)/)])
+    expect(flushed.warnings).toEqual([expect.stringMatching(/1 test.execution span.*ECONNREFUSED/)])
     expect(warnings).toEqual(flushed.warnings)
   }, 15000)
 
   it('names the HTTP status when the exporter gives up retrying a 503', async () => {
-    const { requests, flushed } = await runSession({ respond: '503-always', forceFlush: true })
+    const { requests, flushed } = await runSession({ respond: '503-always', forceFlush: true, drainBudget: 5000 })
 
-    expect(requests.map((request) => request.status)).toEqual([503, 503, 503, 503, 503, 503])
-    expect(flushed.warnings).toEqual([expect.stringMatching(/dropped 1 test\.execution span\(s\) \(export-failure: 1, last OTLP failure: 503\)\./)])
-  })
+    expect(requests.length).toBeGreaterThan(1)
+    expect(requests.every((request) => request.status === 503)).toBe(true)
+    expect(flushed.warnings).toEqual([expect.stringMatching(/1 test.execution span.*HTTP 503/)])
+  }, 15000)
 
   it('exports every span of a synchronous burst larger than the queue', async () => {
     const { spans, flushed, warnings } = await runSession({
@@ -320,7 +317,7 @@ describe('createSession', () => {
     })
 
     expect(spans).toHaveLength(10000)
-    expect(flushed.metrics).toMatchObject({ ended: 10000, exported: 10000, failed: 0 })
+    expect(flushed.metrics).toMatchObject({ exported: 10000, failed: 0 })
     expect(warnings).toEqual([])
   }, 60000)
 
@@ -345,29 +342,14 @@ describe('createSession', () => {
     })
 
     expect(requests).toHaveLength(3)
-    expect(flushed.metrics).toMatchObject({ ended: 5, handed: 5, exported: 0, failed: 5 })
-    expect(warnings).toEqual([expect.stringMatching(/dropped 5 test\.execution span\(s\) \(export-failure: 5, last OTLP failure: 401\)/)])
+    expect(flushed.metrics).toMatchObject({ exported: 0, failed: 5 })
+    expect(warnings).toEqual([expect.stringMatching(/5 test.execution span.*HTTP 401/)])
   })
 
-  it('validates the queue and batch size overrides', async () => {
-    process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE = 'lots'
-    await createSession(settings()).shutdown()
-    expect(warnings()).toEqual([expect.stringMatching(/BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE must be a positive integer up to 2147483647, using default 8192/)])
-
-    consoleWarnSpy.mockClear()
-    process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE = '10'
-    process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE = '11'
-    await createSession(settings()).shutdown()
-    expect(warnings()).toEqual([expect.stringMatching(/BATCH_SIZE must be <= BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE; using defaults \(batch 120, queue 8192\)/)])
-
-    consoleWarnSpy.mockClear()
-    delete process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE
-    process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE = '200'
-    await createSession(settings()).shutdown()
-    expect(warnings()).toEqual([])
-    process.env.BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE = '201'
-    await createSession(settings()).shutdown()
-    expect(warnings()).toEqual([expect.stringMatching(/BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE must be a positive integer up to 200, using default 120/)])
+  it.each(['1000', '1001'])('validates batch size %s while ignoring the removed test queue size', async (size) => {
+    const result = await runSession({ env: { BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE: 'lots', BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE: size } })
+    expect(result.spans).toHaveLength(1)
+    expect(result.warnings).toEqual(size === '1000' ? [] : [expect.stringMatching(/BATCH_SIZE must be a positive integer up to 1000, using default 1000/)])
   })
 })
 

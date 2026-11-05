@@ -1,12 +1,13 @@
 const diagnosticsChannel = require('diagnostics_channel')
-const { warn, describeError } = require('./warn')
+const { warnOncePerRun, describeError } = require('./warn')
 
-const EXPORT_TIMEOUT_MILLISECONDS = 30000
-const EXPORT_RESULT_SUCCESS = 0
-const EXPORT_RESULT_FAILED = 1
+// Keep the stock timeout; shutdown also aborts sockets, including connects.
+const EXPORT_TIMEOUT_MILLISECONDS = 10000
+const RESPONSE_CHANNEL = 'http.client.response.finish'
+const REQUEST_CHANNEL = 'http.client.request.created'
+const START_CHANNEL = 'http.client.request.start'
 
-// The SDK merges env headers into explicit headers. Don't leak another
-// destination's credentials into Buildkite requests.
+// Do not merge another OTLP destination's credentials into our headers.
 const withoutExporterEnv = (build) => {
   const removed = {}
   for (const key of Object.keys(process.env)) {
@@ -15,26 +16,18 @@ const withoutExporterEnv = (build) => {
       delete process.env[key]
     }
   }
-  try {
-    return build()
-  } finally {
-    Object.assign(process.env, removed)
-  }
+  try { return build() } finally { Object.assign(process.env, removed) }
 }
 
-const RESPONSE_CHANNEL = 'http.client.response.finish'
-
-// Exhausted SDK retries omit the status; recover it from the last response.
 const failureCause = (error, lastErrorStatus) => {
-  if (typeof error?.code === 'number') return String(error.code)
-  if (typeof error?.code === 'string') return error.code
+  if (typeof error?.code === 'number' || typeof error?.code === 'string') return String(error.code)
   if (/^Request (timed out|Timeout)$/.test(error?.message)) return 'timeout'
   if (lastErrorStatus && /retryable status/.test(error?.message)) return String(lastErrorStatus)
-  if (error instanceof Error) return error.message.split('\n')[0]
-  return String(error)
+  return error instanceof Error ? error.message.split('\n')[0] : String(error)
 }
 
-const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, onSettled = () => {} }) => {
+const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, directory }) => {
+  const controller = new AbortController()
   const exporter = withoutExporterEnv(() => new sdk.exporter.OTLPTraceExporter({
     url: endpoint,
     headers: {
@@ -42,59 +35,71 @@ const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, onSettl
       'Buildkite-Tests-Run-Key': runKey,
       'Buildkite-Tests-Span-Stream': stream,
     },
-    compression: 'gzip',
-    timeoutMillis: EXPORT_TIMEOUT_MILLISECONDS,
-    // The processor already bounds batches; another limit would drop results.
-    concurrencyLimit: Infinity,
+    compression: 'gzip', timeoutMillis: EXPORT_TIMEOUT_MILLISECONDS, concurrencyLimit: Infinity,
+    // Agent options forward to net/tls sockets even on exporter 0.200.
+    httpAgentOptions: { keepAlive: true, timeout: EXPORT_TIMEOUT_MILLISECONDS, signal: controller.signal },
   }))
-  const warnedKinds = new Set()
-
-  let lastErrorStatus = null
+  let lastErrorStatus
+  const agents = new Set()
+  const matches = (request) => request.getHeader('buildkite-tests-run-key') === runKey &&
+    request.getHeader('buildkite-tests-span-stream') === stream
+  const recordRequest = ({ request }) => {
+    try {
+      if (matches(request)) {
+        agents.add(request.agent)
+        request.once('error', (error) => { metrics.lastFailure = failureCause(error, lastErrorStatus) })
+      }
+    } catch { /* Diagnostics must not affect HTTP callers. */ }
+  }
   const recordStatus = ({ request, response }) => {
     try {
-      if (response.statusCode >= 300 && request.getHeader('buildkite-tests-run-key') === runKey &&
-        request.getHeader('buildkite-tests-span-stream') === stream) {
+      if (response.statusCode >= 300 && matches(request)) {
         lastErrorStatus = response.statusCode
+        metrics.lastFailure = String(response.statusCode)
+        const value = response.headers['retry-after']
+        const seconds = Number(value)
+        if (value !== undefined) metrics.retryAt = Number.isFinite(seconds)
+          ? Date.now() + Math.max(0, seconds * 1000) : Date.parse(value)
       }
-    } catch {
-      // Every HTTP response in the process passes through here; none may throw.
-    }
+    } catch { /* HTTP diagnostics must never break the test run. */ }
   }
+  diagnosticsChannel.subscribe(REQUEST_CHANNEL, recordRequest)
+  diagnosticsChannel.subscribe(START_CHANNEL, recordRequest)
   diagnosticsChannel.subscribe(RESPONSE_CHANNEL, recordStatus)
 
   return {
     export(spans, resultCallback) {
       metrics.handed += spans.length
       let settled = false
-      const settle = (result, cause) => {
+      const settle = (result) => {
         if (settled) return
         settled = true
-        const succeeded = result?.code === EXPORT_RESULT_SUCCESS
-        if (succeeded) {
+        if (result?.code === 0) {
           metrics.exported += spans.length
           metrics.lastFailure = null
         } else {
           metrics.failed += spans.length
-          metrics.lastFailure = cause ?? failureCause(result?.error, lastErrorStatus)
+          metrics.lastFailure = failureCause(result?.error, lastErrorStatus)
         }
-        onSettled(spans, succeeded)
         resultCallback(result)
       }
-
       try {
-        exporter.export(spans, settle)
+        // BSP normally suppresses export tracing. There is no BSP in the parent.
+        sdk.api.context.with(sdk.core.suppressTracing(sdk.api.ROOT_CONTEXT), () => exporter.export(spans, settle))
       } catch (error) {
-        // The batch processor does not catch exporter throws.
-        const kind = error instanceof Error ? error.name : typeof error
-        if (!warnedKinds.has(kind)) {
-          warnedKinds.add(kind)
-          warn(`Could not export OpenTelemetry spans: ${describeError(error)}. Further ${kind} export failures will not be reported.`)
-        }
-        settle({ code: EXPORT_RESULT_FAILED, error }, kind)
+        warnOncePerRun(directory, `export-${error.name}`, `Could not export OpenTelemetry spans: ${describeError(error)}`)
+        settle({ code: 1, error })
       }
     },
-    forceFlush: () => exporter.forceFlush(),
-    shutdown: () => {
+    shutdown() {
+      // A queued stock retry must fail without constructing a Socket with an
+      // already-aborted signal (which can emit an unhandled Socket error).
+      for (const agent of agents) agent.createConnection = (_options, callback) => {
+        process.nextTick(callback, Object.assign(new Error('Export drain ended'), { code: 'ABORT_ERR' }))
+      }
+      controller.abort()
+      diagnosticsChannel.unsubscribe(REQUEST_CHANNEL, recordRequest)
+      diagnosticsChannel.unsubscribe(START_CHANNEL, recordRequest)
       diagnosticsChannel.unsubscribe(RESPONSE_CHANNEL, recordStatus)
       return exporter.shutdown()
     },

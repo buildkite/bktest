@@ -7,7 +7,7 @@
     "buildkite-test-analytics",
     "buildkite-test-collector"
   ],
-  "version": "1.13.0-beta.4",
+  "version": "1.13.0-beta.5",
   "homepage": "https://buildkite.com/platform/test-engine",
   "bugs": "https://github.com/buildkite/bktest/issues",
   "license": "MIT",
@@ -30,30 +30,6 @@
     "request-spy": "^0.0.10",
     "semver": "^7.5.2",
     "strip-ansi": "^6.0.0"
-  },
-  "peerDependencies": {
-    "@opentelemetry/api": "*",
-    "@opentelemetry/context-async-hooks": "*",
-    "@opentelemetry/exporter-trace-otlp-proto": "*",
-    "@opentelemetry/resources": "*",
-    "@opentelemetry/sdk-trace-base": "*"
-  },
-  "peerDependenciesMeta": {
-    "@opentelemetry/api": {
-      "optional": true
-    },
-    "@opentelemetry/exporter-trace-otlp-proto": {
-      "optional": true
-    },
-    "@opentelemetry/resources": {
-      "optional": true
-    },
-    "@opentelemetry/sdk-trace-base": {
-      "optional": true
-    },
-    "@opentelemetry/context-async-hooks": {
-      "optional": true
-    }
   },
   "overrides": {
     "serialize-javascript": "^7.0.5"

@@ -54,7 +54,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ];
     ```
 
-    To try OpenTelemetry submission (experimental), use this configuration:
+    Experimental OpenTelemetry submission sends test results as spans, with HTTP calls,
+    database queries and manual spans underneath. JSON uploads remain the default.
 
     ```js
     // jest.config.js
@@ -63,21 +64,15 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
         "default",
         ["buildkite-test-collector/jest/reporter", { otelEnabled: true }],
       ],
-      testEnvironment: "node", // Keep your existing environment
       runtime: "buildkite-test-collector/jest/runtime",
       testLocationInResults: true,
     };
     ```
 
-    Each test becomes a span, with work such as HTTP calls and database queries
-    underneath. Test spans count as test executions, like JSON uploads, at no extra charge.
-    Child spans are billed by data ingested and need a plan that includes them;
-    without it, we still record test results and warn that child spans were dropped.
-
-    Upgrading from a 1.13 beta? Remove `testEnvironment: 'buildkite-test-collector/jest/environment'` and add `runtime`.
-
-    See [OpenTelemetry (experimental)](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md) for installation,
-    supported versions, settings and known limits.
+    See the [OpenTelemetry guide](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md)
+    for required packages, billing and limits before enabling it.
+    Workers commit results locally; the parent batches and uploads them without a per-file network wait. OTel mode never falls back to JSON. Linux and macOS are supported; Windows is untested. SIGTERM gets a bounded drain; SIGKILL loses files not yet uploaded.
+    bktec's relay is optional, useful if you already use bktec or need an HTTP(S) proxy; see the guide (proxy behavior is code-checked, not tested).
 
     ### Vitest
 
