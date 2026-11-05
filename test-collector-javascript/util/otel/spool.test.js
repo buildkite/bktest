@@ -11,7 +11,8 @@ test('preserves non-finite numbers in span, event, link and distinct resource at
   const { ProtobufTraceSerializer } = load('@opentelemetry/otlp-transformer')
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-spool-test-'))
   const providers = []
-  const attributes = { nan: NaN, positive: Infinity, negative: -Infinity, array: [NaN, Infinity, -Infinity, 1] }
+  const attributes = { $number: 'Infinity', other: 'value', attributes: Infinity,
+    nan: NaN, positive: Infinity, negative: -Infinity, array: [NaN, Infinity, -Infinity, 1] }
   try {
     const spans = [NaN, Infinity, -Infinity].map((number) => {
       const provider = new sdk.trace.BasicTracerProvider({ resource: sdk.resources.resourceFromAttributes({ ...attributes, distinct: number }) })
@@ -21,6 +22,7 @@ test('preserves non-finite numbers in span, event, link and distinct resource at
         links: [{ context: { traceId: '0123456789abcdef0123456789abcdef', spanId: '0123456789abcdef', traceFlags: 1 }, attributes }],
       })
       span.addEvent('numbers', attributes)
+      span.addEvent('marker-only', { $number: 'NaN' })
       span.end()
       return span
     })
@@ -31,6 +33,7 @@ test('preserves non-finite numbers in span, event, link and distinct resource at
     for (const [index, span] of restored.entries()) {
       expect(span.attributes).toEqual(attributes)
       expect(span.events[0].attributes).toEqual(attributes)
+      expect(span.events[1].attributes).toEqual({ $number: 'NaN' })
       expect(span.links[0].attributes).toEqual(attributes)
       expect(span.resource.attributes).toEqual({ ...attributes, distinct: [NaN, Infinity, -Infinity][index] })
     }

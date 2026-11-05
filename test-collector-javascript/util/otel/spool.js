@@ -19,8 +19,21 @@ const batchSize = (stream, directory) => stream === 'test'
 
 const stringify = (value) => JSON.stringify(value, (_key, value) => typeof value === 'number' && !Number.isFinite(value)
   ? { $number: String(value) } : value)
-const parseFile = (text) => JSON.parse(text, (_key, value) => value && typeof value === 'object' &&
-  ['NaN', 'Infinity', '-Infinity'].includes(value.$number) ? Number(value.$number) : value)
+const parseFile = (text) => {
+  const file = JSON.parse(text)
+  const number = (value) => value && typeof value === 'object' &&
+    ['NaN', 'Infinity', '-Infinity'].includes(value.$number) ? Number(value.$number) : value
+  // Attribute containers can themselves contain a legitimate "$number" key.
+  // Only values (including array entries), never containers, are markers.
+  for (const spans of Object.values(file.streams)) for (const span of spans) {
+    for (const attributes of [span.attributes, span.resource.attributes, span.instrumentationScope?.attributes,
+      ...span.events.map((event) => event.attributes), ...span.links.map((link) => link.attributes)]) {
+      for (const key of Object.keys(attributes || {})) attributes[key] = Array.isArray(attributes[key])
+        ? attributes[key].map(number) : number(attributes[key])
+    }
+  }
+  return file
+}
 
 const spanData = (span) => {
   const context = (value) => value && { ...value, traceState: value.traceState?.serialize() }
