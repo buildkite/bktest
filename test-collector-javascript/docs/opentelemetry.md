@@ -5,9 +5,8 @@ Each test becomes a span. With Jest, the work inside it (HTTP calls, database qu
 
 ## Playwright
 
-Enable `otelEnabled` on the reporter; no fixture or test changes are needed.
-Only boolean `true` or a case-insensitive, whitespace-trimmed string `"true"`
-enables it; `"false"`, `"1"` and numeric `1` leave it off.
+Install the dependencies in [Setup](#setup), then enable `otelEnabled` on the
+reporter. No fixture or test changes are needed, and Jest's runtime is not required.
 
 ```js
 // playwright.config.js
@@ -19,49 +18,20 @@ module.exports = {
 }
 ```
 
-Install the optional OpenTelemetry packages in [Setup](#setup).
-The reporter decides the submission mode in `onBegin`, before tests run.
-It records one root span per reported attempt, including retries and skips,
-using Playwright's start time and duration (including hooks). Each completed
-attempt is committed to a private local spool; the shared uploader sends
-batches during the run and drains in `onEnd` with a 10-second budget.
-Export failures do not change Playwright's exit code. With OTel enabled there
-is no JSON fallback, including when setup fails. Without a credential, the
-collector prints one configuration warning and uploads nothing.
+Each test attempt becomes a `test.execution` span, including retries and skips,
+using Playwright's timings. Test identity and failure details match JSON reporting.
+Interrupted attempts are reported as skipped; expected failures remain failures,
+as in JSON mode.
 
-Scope, name, file, line, column and `@key:value` tags use the same record as
-the JSON upload. Scope is `titlePath()` joined with spaces: root suite,
-project, file, describe titles and test title. Empty titles stay in, so the
-empty root adds a leading space and an unnamed project adds another.
-Per-test tags override reporter tags and the automatic `ci.worker.id` tag.
-Each attempt gets a fresh UUID; retries keep the same scope and name.
+Reporter `token` and `tags` options and the shared [settings](#settings) apply.
+Per-test `@key:value` tags override reporter tags.
 
-`passed` maps to `pass`, `failed` and `timedOut` to `fail`, and `skipped` to
-`skipped`. `interrupted` maps to `skipped` in OpenTelemetry: cancellation by
-Ctrl-C or `--max-failures` is not a test failure (the JSON path retains its
-existing `unknown`). As in JSON, `expectedStatus` does not override the
-actual attempt's result: expected failures are `fail`, unexpected passes are
-`pass`. A failing `beforeAll` hook fails the entering test; subsequent tests
-that Playwright reports as skipped get skipped spans. Failure messages and
-stack traces use the JSON failure detail in an `exception` event.
+With OTel enabled, configuration or upload failures warn without falling back to
+JSON or changing Playwright's exit code. Turn `otelEnabled` off to use JSON again.
 
-The reporter runs in the main process, separate from the test workers. It
-does not export child spans, phase spans, browser instrumentation or in-test
-annotations, and does not install or change a global OpenTelemetry provider.
-`otelSpanFilter`, `annotate` and per-execution tagging helpers are unavailable;
-per-test tags come from Playwright's `@key:value` test tags.
-HTTP mocks inside workers do not affect its exporter; HTTP mocks in the main
-process must allow the OTLP endpoint.
-
-The endpoint, token precedence, run-key validation, test batch limits and
-`TEST RESULTS MISSING` warnings described below also apply to Playwright.
-Jest's runtime and worker setup are not needed. Playwright's
-`buildkite.test.framework.name` is `playwright` and
-`buildkite.test.framework.version` is Playwright's version.
-
-Playwright handles SIGINT (Ctrl-C): interrupted attempts are reported as
-skipped in OTel and flushed in `onEnd`. The collector installs no signal
-handlers; SIGTERM can lose queued executions without a missing-results warning.
+This reports test results only: no step child spans, worker or browser
+instrumentation, or in-test annotations. Ctrl-C allows results to flush;
+SIGTERM can lose pending results.
 
 ## Jest
 
