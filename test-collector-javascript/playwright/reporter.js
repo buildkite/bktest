@@ -38,13 +38,13 @@ class PlaywrightBuildkiteTestEngineReporter {
     this._session = null;
     const enabled = options?.otelEnabled;
     this._otelEnabled = enabled === true || (typeof enabled === 'string' && enabled.trim().toLowerCase() === 'true');
-    this._hasCredential = [process.env.BUILDKITE_TESTS_OTLP_TOKEN, options?.token, process.env.BUILDKITE_ANALYTICS_TOKEN].some(value => value?.trim());
     this._missingTests = 0;
   }
 
   onBegin(config) {
     if (!this._otelEnabled) return;
 
+    this._hasCredential = [process.env.BUILDKITE_TESTS_OTLP_TOKEN, this._options.token, process.env.BUILDKITE_ANALYTICS_TOKEN].some(value => value?.trim());
     const settings = resolveSettings({
       otelEnabled: true,
       token: this._options.token,

@@ -186,6 +186,7 @@ describe('examples/playwright in OTel mode', () => {
     BUILDKITE_AGENT_ID: 'agent-e2e',
     JEST_WORKER_ID: undefined,
     PLAYWRIGHT_OTEL_ENABLED: undefined,
+    PLAYWRIGHT_OTEL_SETUP_TOKEN: undefined,
   };
 
   const run = async (args = [], env = {}) => {
@@ -341,6 +342,21 @@ describe('examples/playwright in OTel mode', () => {
     expect(result.stderr).toMatch(/results were not uploaded: set BUILDKITE_TESTS_OTLP_TOKEN/);
     expect(result.stdout).not.toMatch(/Test Engine Sending:/);
     expect(server.requests).toHaveLength(0);
+  }, 30000);
+
+  test.each(['BUILDKITE_ANALYTICS_TOKEN', 'BUILDKITE_TESTS_OTLP_TOKEN'])('uploads with %s loaded in globalSetup', async tokenVariable => {
+    server = await startOtlpServer();
+    const result = await run(['--grep', 'passes with tags'], {
+      BUILDKITE_TESTS_OTLP_TOKEN: undefined,
+      PLAYWRIGHT_OTEL_SETUP_TOKEN: tokenVariable,
+    });
+    expect(result.code).toBe(0);
+    expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]|Error in reporter/);
+    expect(result.stdout).not.toMatch(/Test Engine Sending:/);
+    expect(server.spans()).toHaveLength(1);
+    expect(server.spans()[0].attributes['buildkite.test.name']).toBe('passes with tags');
+    expect(server.spans()[0].attributes['test.case.result.status']).toBe('pass');
+    expect(server.requests[0].headers.authorization).toBe('Token token="setup-token"');
   }, 30000);
 
   test.each([
