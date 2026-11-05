@@ -1,7 +1,42 @@
 # OpenTelemetry (experimental)
 
-From collector 1.13.0, Test Engine can receive your Jest results as OpenTelemetry traces.
-Each test becomes a span, and the work inside it (HTTP calls, database queries, your own spans) shows up underneath.
+Test Engine can receive your Jest and Playwright results as OpenTelemetry traces.
+Each test becomes a span. With Jest, the work inside it (HTTP calls, database queries, your own spans) shows up underneath.
+
+## Playwright
+
+Install the dependencies in [Setup](#setup), then enable `otelEnabled` on the
+reporter. No fixture or test changes are needed, and Jest's runtime is not required.
+
+```js
+// playwright.config.js
+module.exports = {
+  reporter: [
+    ['line'],
+    ['buildkite-test-collector/playwright/reporter', { otelEnabled: true }],
+  ],
+}
+```
+
+Each test attempt becomes a `test.execution` span, including retries and skips,
+using Playwright's timings. Test identity and failure details match JSON reporting.
+Interrupted attempts are reported as skipped; expected failures remain failures,
+as in JSON mode.
+
+Reporter `token` and `tags` options and the shared [settings](#settings) apply.
+Per-test `@key:value` tags override reporter tags.
+
+With OTel enabled, configuration or upload failures warn without falling back to
+JSON or changing Playwright's exit code. Turn `otelEnabled` off to use JSON again.
+
+This reports test results only: no step child spans, worker or browser
+instrumentation, or in-test annotations. Ctrl-C allows results to flush;
+SIGTERM can lose pending results.
+
+## Jest
+
+Jest runs tests in worker processes and reporters in the main process.
+The runtime records spans in the workers; the reporter uploads them.
 
 ```js
 // jest.config.js

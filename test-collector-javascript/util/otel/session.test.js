@@ -108,6 +108,29 @@ describe('createSession', () => {
     expect(warnings).toEqual([])
   })
 
+  it('exports optional columns as integers and lets stringified per-test tags override run tags', async () => {
+    const { spans } = await runSession({ tests: [
+      { start: record(), line: 3, column: 7, finish: record({ tags: { hello: 'test', 'ci.worker.id': 'test-worker', count: 42, enabled: false } }) },
+      { start: record(), line: 3 },
+    ] })
+
+    expect(spans).toHaveLength(2)
+    expect(spans[0].attributes).toMatchObject({
+      'code.line.number': '3',
+      'code.column.number': '7',
+      'buildkite.tag.hello': 'test',
+      'buildkite.tag.ci.worker.id': 'test-worker',
+      'buildkite.tag.count': '42',
+      'buildkite.tag.enabled': 'false',
+    })
+    expect(spans[0].attributeTypes['code.column.number']).toBe('int')
+    expect(spans[0].attributeTypes['buildkite.tag.count']).toBe('string')
+    expect(spans[1].attributes).not.toHaveProperty('code.column.number')
+    expect(spans[1].attributes['buildkite.tag.hello']).toBe('world')
+    expect(spans[1].attributes['buildkite.tag.ci.worker.id']).toBe('agent-1')
+    expect(spans[1].attributes).not.toHaveProperty('buildkite.tag.count')
+  })
+
   it('records a failure as an ERROR status with the reason and exception events', async () => {
     const { spans } = await runSession({ tests: [{ start: record(), finish: failing, line: 3 }] })
 
@@ -126,7 +149,7 @@ describe('createSession', () => {
       tests: [
         {
           start: record({ name }),
-          finish: record({ name, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }] }),
+          finish: record({ name, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }], tags: { detail: 't'.repeat(11000) } }),
           line: 3,
         },
         // A finish that cannot be described leaves the span with its start-time attributes.
@@ -137,6 +160,7 @@ describe('createSession', () => {
     const [span, startOnly] = spans
     expect(span.attributes['buildkite.test.name']).toBe(`${'n'.repeat(10240)}...`)
     expect(span.attributes['test.case.name']).toHaveLength(10243)
+    expect(span.attributes['buildkite.tag.detail']).toBe(`${'t'.repeat(10240)}...`)
     expect(span.events[0].attributes['exception.message']).toBe(`${'m'.repeat(10240)}...`)
     expect(span.droppedAttributesCount).toBe(0)
     expect(startOnly.attributes['buildkite.test.name']).toBe(`${'n'.repeat(10240)}...`)
@@ -149,13 +173,15 @@ describe('createSession', () => {
     const message = '😀'.repeat(10244)
     const { spans } = await runSession({
       tests: [
-        { start: record({ name: whole }), line: 3 },
-        { start: record({ name: over }), finish: record({ name: over, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }] }), line: 3 },
+        { start: record({ name: whole, tags: { detail: whole } }), line: 3 },
+        { start: record({ name: over }), finish: record({ name: over, tags: { detail: over }, result: 'failed', failure_reason: 'boom', failure_expanded: [{ expanded: [message] }] }), line: 3 },
       ],
     })
 
     expect(spans[0].attributes['buildkite.test.name']).toBe(whole)
+    expect(spans[0].attributes['buildkite.tag.detail']).toBe(whole)
     expect(spans[1].attributes['buildkite.test.name']).toBe(`${'😀'.repeat(10240)}...`)
+    expect(spans[1].attributes['buildkite.tag.detail']).toBe(`${'😀'.repeat(10240)}...`)
     expect(spans[1].events[0].attributes['exception.message']).toBe(`${'😀'.repeat(10240)}...`)
     expect(spans[1].droppedAttributesCount).toBe(0)
   })
@@ -249,6 +275,20 @@ describe('createSession', () => {
     const [span] = spans
     expect(BigInt(span.endTimeUnixNano) >= BigInt(span.startTimeUnixNano)).toBe(true)
     expect(BigInt(span.endTimeUnixNano) >= before).toBe(true)
+  })
+
+  it('reports a span-start failure once without repeating it at shutdown', async () => {
+    const session = createSession(settings())
+    try {
+      const broken = { ...record(), get scope() { throw new Error('scope failed') } }
+      expect(session.startTestSpan(broken)).toBeNull()
+      await session.shutdown()
+      expect(warnings()).toEqual([
+        expect.stringContaining('TEST RESULTS MISSING: could not start 1 test.execution span (Error: scope failed); results were not uploaded.'),
+      ])
+    } finally {
+      await session.shutdown()
+    }
   })
 
   it('still finishes the span when the result cannot be described', async () => {

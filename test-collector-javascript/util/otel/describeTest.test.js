@@ -34,6 +34,12 @@ describe('describeTest', () => {
     expect(describeTest(record(), { line: '12' }).attributes['code.line.number']).toBeUndefined()
   })
 
+  it('includes an optional integer column without inventing one when absent', () => {
+    expect(describeTest(record(), { line: 12, column: 7 }).attributes['code.column.number']).toBe(7)
+    expect(describeTest(record(), { line: 12 }).attributes['code.column.number']).toBeUndefined()
+    expect(describeTest(record(), { column: '7' }).attributes['code.column.number']).toBeUndefined()
+  })
+
   it('maps every Test Engine result to a span status', () => {
     expect(describeTest(record({ result: 'passed' })).status).toBe('pass')
     expect(describeTest(record({ result: 'failed' })).status).toBe('fail')
