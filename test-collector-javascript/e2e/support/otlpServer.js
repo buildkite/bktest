@@ -149,7 +149,7 @@ const startOtlpServer = ({ respond } = {}) => new Promise((resolve) => {
       const index = requests.length
       const response = (respond && respond(index, req.headers)) || 200
       const { status = 200, delay = 0, headers = {} } = typeof response === 'number' ? { status: response } : response
-      requests.push({ headers: req.headers, decoded, decodeError, status })
+      requests.push({ headers: req.headers, decoded, decodeError, status, bytes: body.length, compressedBytes: raw.length, receivedAt: Date.now() })
       setTimeout(() => {
         res.writeHead(status, { 'Content-Type': 'application/x-protobuf', ...headers })
         res.end(Buffer.alloc(0))

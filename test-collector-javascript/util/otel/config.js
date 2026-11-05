@@ -24,9 +24,7 @@ const isValidEndpoint = (endpoint) => {
 
 const jsonTokenFor = (token) => (token || process.env.BUILDKITE_ANALYTICS_TOKEN || '').trim()
 
-const fallbackOutcome = ({ token } = {}) => jsonTokenFor(token)
-  ? 'uploading results as JSON instead'
-  : 'results will not be uploaded because BUILDKITE_ANALYTICS_TOKEN is not set'
+const NOT_UPLOADED = 'results were not uploaded; fix the OpenTelemetry configuration and rerun (no JSON fallback)'
 
 const stringTags = (tags) => {
   const result = {}
@@ -36,9 +34,10 @@ const stringTags = (tags) => {
   return result
 }
 
-const buildSession = (settings) => {
-  const { createSession } = require('./session')
-  createSession(settings).shutdown().catch(() => {})
+const buildSession = () => {
+  const { loadSdk, assertCanExport } = require('./sdk')
+  const sdk = loadSdk()
+  assertCanExport(sdk, { sampler: new sdk.trace.AlwaysOnSampler() })
 }
 
 // Always publish the decision so stale parent settings cannot enable export.
@@ -54,15 +53,18 @@ const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runE
   const jsonToken = jsonTokenFor(token)
   const relayToken = (process.env.BUILDKITE_TESTS_OTLP_TOKEN || '').trim()
   const credential = relayToken || jsonToken
-  if (!credential) return null
+  if (!credential) {
+    warn('otelEnabled is set, but results were not uploaded: set BUILDKITE_TESTS_OTLP_TOKEN, reporter token, or BUILDKITE_ANALYTICS_TOKEN and rerun (no JSON fallback).')
+    return null
+  }
 
   if (unsupported) {
-    warn(`otelEnabled is set, but ${unsupported}; ${fallbackOutcome({ token })}`)
+    warn(`otelEnabled is set, but ${unsupported}; ${NOT_UPLOADED}`)
     return null
   }
 
   const couldNotConfigure = () => {
-    warn(`otelEnabled is set, but OpenTelemetry could not be configured (see the warning above); ${fallbackOutcome({ token })}`)
+    warn(`otelEnabled is set, but OpenTelemetry could not be configured (see the warning above); ${NOT_UPLOADED}`)
     return null
   }
 
@@ -96,7 +98,7 @@ const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runE
   try {
     probe(settings)
   } catch (error) {
-    warn(`OpenTelemetry span export disabled: ${describeError(error)}; ${fallbackOutcome({ token })}.`)
+    warn(`OpenTelemetry span export disabled: ${describeError(error)}; ${NOT_UPLOADED}.`)
     return null
   }
 
@@ -105,7 +107,8 @@ const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runE
 
 const publishSettings = (settings) => {
   if (settings) {
-    process.env[SETTINGS_ENV] = JSON.stringify(settings)
+    const { token, ...workerSettings } = settings
+    process.env[SETTINGS_ENV] = JSON.stringify(workerSettings)
   } else {
     delete process.env[SETTINGS_ENV]
   }
@@ -117,7 +120,6 @@ const readSettings = () => {
 }
 
 module.exports = {
-  fallbackOutcome,
   resolveSettings,
   publishSettings,
   readSettings,

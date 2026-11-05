@@ -14,15 +14,14 @@ jest.mock('jest-runtime', () => class {}, { virtual: true })
 const uploadTestResults = require('../util/uploadTestResults')
 const { JestOtelEnvironment: Environment } = require('./otelEnvironment')
 const Reporter = require('./reporter')
-const { recordKey, exportCount } = require('./exportRecords')
 
 const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
 const warnings = () => consoleWarnSpy.mock.calls.map(([message]) => message)
 
 const exportRecords = fs.mkdtempSync(path.join(os.tmpdir(), 'bk-export-records-'))
 const settings = {
-  endpoint: 'http://127.0.0.1:9/v1/traces', token: 'secret', runEnv: { key: 'run-1', location_prefix: 'app' }, tags: {},
-  exportRecords, fallback: 'uploading results as JSON instead',
+  endpoint: 'http://127.0.0.1:9/v1/traces', runEnv: { key: 'run-1', location_prefix: 'app' }, tags: {},
+  spool: exportRecords,
 }
 const context = { testPath: '/proj/pkg/sum.test.js' }
 // What Jest passes a test environment for a project in a run rooted at rootDir.
@@ -124,41 +123,23 @@ describe('JestOtelEnvironment constructor', () => {
     expect(environment._buildkite.session).toBeNull()
     await expect(environment.handleTestEvent({ name: 'test_start', test: {} }, {})).resolves.toBeUndefined()
     expect(warnings()).toEqual([
-      expect.stringMatching(/^\[buildkite-test-collector\] OpenTelemetry could not be set up in this test worker \(SyntaxError: .*\); for \/proj\/pkg\/sum\.test\.js, its results go to the JSON upload instead\.$/),
+      expect.stringMatching(/TEST RESULTS MISSING: OpenTelemetry could not be set up in this test worker \(SyntaxError: .*results.*were not uploaded.*no JSON fallback/),
     ])
   })
 
-  it('records the file as exported before its first span, so the reporter skips its JSON', async () => {
+  it('does not report an attempt still open at teardown as passed', async () => {
     publishSettings(settings)
-    const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn() }
+    const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn(), forceFlush: async () => {} }
     sessionFor.mockReturnValueOnce(session)
-    const project = { rootDir: '/proj', id: 'project-a' }
-    const environment = new Environment(configFor(project), context)
-
-    expect(exportCount(exportRecords, recordKey(project, context.testPath))).toBe(0)
-    await environment.handleTestEvent({ name: 'setup' }, {})
-    expect(exportCount(exportRecords, recordKey(project, context.testPath))).toBe(1)
-    expect(exportCount(exportRecords, recordKey({ ...project, id: 'project-b' }, context.testPath))).toBe(0)
-  })
-
-  it('exports nothing from a file it cannot record, leaving it to the JSON upload', async () => {
-    publishSettings({ ...settings, exportRecords: path.join(exportRecords, 'missing', 'dir') })
-    const session = { startTestSpan: jest.fn(), finishTestSpan: jest.fn() }
-    sessionFor.mockReturnValueOnce(session)
-    const environment = new Environment(configFor({ rootDir: '/proj', id: 'project-a' }), context)
+    const environment = new Environment(configFor({ rootDir: '/proj' }), context)
     const test = { name: 'sums', parent: { name: 'ROOT_DESCRIBE_BLOCK' }, errors: [], asyncError: new Error() }
-
     await environment.handleTestEvent({ name: 'test_start', test }, {})
-    await environment.handleTestEvent({ name: 'test_done', test }, {})
-
-    expect(session.startTestSpan).not.toHaveBeenCalled()
-    expect(warnings()).toEqual([
-      expect.stringMatching(/^\[buildkite-test-collector\] OpenTelemetry could not record app\/pkg\/sum\.test\.js as exported \(.*ENOENT.*\); uploading results as JSON instead\.$/),
-    ])
+    await environment.teardown()
+    expect(session.finishTestSpan.mock.calls[0][1]).toMatchObject({ name: 'sums', result: undefined })
   })
 })
 
-describe('JestBuildkiteTestEngineReporter with export records', () => {
+describe('JestBuildkiteTestEngineReporter without JSON fallback', () => {
   const testPath = '/proj/same.test.js'
   const testResult = {
     testFilePath: testPath,
@@ -171,71 +152,18 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'secret'
   })
 
-  // Jest accepts the same explicit project id twice.
-  it('uploads JSON for a project running a file another project with the same id exported', async () => {
+  it('never uploads JSON for a project without the runtime', async () => {
     const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-    const collectorProject = { id: 'same', rootDir: '/proj', runtime: '/proj/node_modules/buildkite-test-collector/jest/runtime.js' }
     const plainProject = { id: 'same', rootDir: '/proj', testEnvironment: '/proj/node_modules/jest-environment-node/build/index.js' }
-    await new Environment(configFor(collectorProject), { testPath }).handleTestEvent({ name: 'setup' }, {})
-
-    await reporter.onTestResult({ path: testPath, context: { config: collectorProject } }, testResult)
     await reporter.onTestResult({ path: testPath, context: { config: plainProject } }, testResult)
     await reporter.onRunComplete()
-
-    expect(jsonNames()).toEqual(['adds'])
-  })
-
-  it('finds the record a worker wrote from its copy of the project config', async () => {
-    const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-    const project = { id: 'a', rootDir: '/proj', testEnvironmentOptions: { url: 'http://a' }, resolver: undefined, testRegex: ['\\.test\\.js$'] }
-    // The worker gets the config as JSON, with the file's @jest-environment-options merged in.
-    const workerCopy = { ...JSON.parse(JSON.stringify(project)), testEnvironmentOptions: { url: 'http://a', from: 'docblock' } }
-    await new Environment(configFor(workerCopy), { testPath }).handleTestEvent({ name: 'setup' }, {})
-
-    await reporter.onTestResult({ path: testPath, context: { config: project } }, testResult)
-    await reporter.onRunComplete()
-
     expect(jsonNames()).toEqual([])
+    expect(warnings()).toContainEqual(expect.stringMatching(/TEST RESULTS MISSING: 1 test.execution span.*set runtime/))
   })
 
-  describe('for projects with the same id whose configs differ only in testEnvironmentOptions', () => {
-    const projects = ['one', 'two'].map((which) => ({ id: 'same', rootDir: '/proj', testEnvironmentOptions: { which } }))
-    const run = async (reporter) => {
-      for (const project of projects) {
-        await new Environment(configFor(project), { testPath }).handleTestEvent({ name: 'setup' }, {})
-      }
-      for (const project of projects) {
-        await reporter.onTestResult({ path: testPath, context: { config: project } }, testResult)
-      }
-      await reporter.onRunComplete()
-    }
-
-    it('uploads both as JSON when only one exported, rather than losing the other', async () => {
-      const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-      sessionFor.mockReturnValueOnce({ fake: true }).mockImplementationOnce(() => { throw new Error('the SDK is unavailable in this worker') })
-
-      await run(reporter)
-
-      expect(jsonNames()).toEqual(['adds', 'adds'])
-      expect(warnings()).toContainEqual(
-        `[buildkite-test-collector] Jest projects with the same configuration apart from testEnvironmentOptions ran ${testPath}, ` +
-        'and not all of them exported it to OpenTelemetry; uploading their results as JSON as well, so some may appear twice.'
-      )
-    })
-
-    it('uploads no JSON when both exported', async () => {
-      const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-
-      await run(reporter)
-
-      expect(jsonNames()).toEqual([])
-      expect(warnings()).toEqual([])
-    })
-  })
-
-  it('uploads the JSON, and keeps the run passing, when it cannot remove its records afterwards', async () => {
+  it('keeps the run passing and uploads no JSON when local cleanup fails', async () => {
     const reporter = new Reporter({ rootDir: '/proj' }, { otelEnabled: true })
-    const { exportRecords: dir } = readSettings()
+    const { spool: dir } = readSettings()
     await reporter.onTestResult({ path: testPath, context: { config: { rootDir: '/proj', id: 'plain' } } }, testResult)
     let uploadsBeforeCleanup
     const rmSync = jest.spyOn(fs, 'rmSync').mockImplementationOnce(() => {
@@ -247,10 +175,10 @@ describe('JestBuildkiteTestEngineReporter with export records', () => {
     rmSync.mockRestore()
     fs.rmSync(dir, { recursive: true, force: true })
 
-    expect(uploadsBeforeCleanup).toBe(1)
-    expect(jsonNames()).toEqual(['adds'])
+    expect(uploadsBeforeCleanup).toBe(0)
+    expect(jsonNames()).toEqual([])
     expect(warnings()).toContainEqual(
-      `[buildkite-test-collector] OpenTelemetry could not remove its temporary directory ${dir} (Error: EACCES, Permission denied: '${dir}').`
+      `[buildkite-test-collector] OpenTelemetry could not remove its temporary directory (Error: EACCES, Permission denied: '${dir}').`
     )
   })
 })

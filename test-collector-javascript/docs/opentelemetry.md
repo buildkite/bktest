@@ -27,23 +27,24 @@ npm install --save-dev buildkite-test-collector \
 With pnpm or Yarn, also add `@opentelemetry/api@~1.9.0`.
 Under Yarn Plug'n'Play, declare these packages in the root workspace.
 
-Use Jest 29 or 30.2+ with `jest-circus`. OpenTelemetry SDK 2 needs Node.js 18.19+ or 20.6+.
+Use Jest 29 or 30 with `jest-circus` (tested with 29.7.0 and 30.5.2). OpenTelemetry SDK 2 needs Node.js 18.19+ or 20.6+.
 Jest 30.0 and 30.1 can drop `afterEach` children in files mixing concurrent and sequential tests.
 It's experimental and off by default.
+Supported platforms are Linux and macOS; Windows is untested.
 OpenTelemetry options, environment variables and span shape may change in minor releases.
 Test spans count as test executions, like JSON uploads, at no extra charge. Child spans are billed by data ingested and need a plan that includes them; without it, we still record test results and warn that child spans were dropped.
 
-Install the versions above. SDK 3 and `@opentelemetry/api` 1.10 aren't supported yet.
+Install the versions above. The collector checks SDK 2 and exporter 0.200–0.2xx compatibility, including a serialization probe. SDK 3 is unsupported; API package versions are not independently gated.
 
 Reporter `token` and `tags` options work as usual.
 For TypeScript, check your reporter options with `satisfies Options`, importing `Options` from `buildkite-test-collector/jest/reporter`.
 
 Upgrading from a 1.13 beta? Remove `testEnvironment: 'buildkite-test-collector/jest/environment'` and add `runtime`.
-To leave a project out, don't set `runtime`. That project prints one "OpenTelemetry didn't record" warning and needs a JSON token for fallback results.
+With `otelEnabled: true`, every project needs `runtime`. A project without it warns and uploads nothing. There is **no JSON fallback**, including for unsupported Jest/SDK versions, invalid settings, worker setup failures, or an unwritable temporary directory. Fix the warning and rerun. To use JSON instead, turn `otelEnabled` off for the run.
 A `@jest-environment` docblock doesn't opt a file out.
 For a custom runtime, use `require('buildkite-test-collector/jest/runtime').extend(MyRuntime)`.
 
-If you use nock's `disableNetConnect`, allow the collector's POST:
+The parent reporter uploads, not the workers. Worker HTTP mocks do not intercept uploads. In-band tests or parent-process mocks can still intercept them; if you use nock's `disableNetConnect` there, allow the collector's POST:
 
 ```js
 nock.enableNetConnect(/tests-otlp\.buildkite\.com|127\.0\.0\.1/)
@@ -65,29 +66,29 @@ The run key is the ID that groups results from one test run. It must be 1–255 
 | `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | Prints selected instrumentation and JSON upload debug output | `false` |
 | `OTEL_NODE_ENABLED_INSTRUMENTATIONS` | Selects only these comma-separated short names | Declared packages, with exclusions below |
 | `OTEL_NODE_DISABLED_INSTRUMENTATIONS` | Removes names, even from the enabled list | None |
-| `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` and `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | Sets queue and batch sizes (batch maximum 200). Overflow waits in memory | 8,192 queued, 120 per batch |
-| `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` and `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` | Sets queue and batch sizes. Overflow drops children | 2,048 queued, 512 per batch |
+| `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | Maximum test spans in a parent upload (at most 200) | 120 |
+| `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` | Maximum child spans in a parent upload | 512 |
+| `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` | Child spans accepted per test file, including still-open spans. Further children are dropped and counted | 2,048 |
 | `OTEL_RESOURCE_ATTRIBUTES` | Adds resource attributes to every span | None |
 
 OTLP export doesn't use `HTTP_PROXY` or `HTTPS_PROXY`. JSON uploads honour them. Use [bktec's relay](#bktecs-relay) for OTLP through a proxy.
 If you route OTLP through your own endpoint, forward `Authorization`, `Buildkite-Tests-Run-Key` and `Buildkite-Tests-Span-Stream`.
-We ignore `OTEL_EXPORTER_OTLP_*`, `OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_TRACES_SAMPLER` for test results. Normal child sampling and limits still apply.
-Sizes must be whole numbers, with batch no larger than queue (at most 200 for test spans). Invalid values print a warning and use the defaults.
+We ignore `OTEL_EXPORTER_OTLP_*`, `OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_TRACES_SAMPLER` for test results. Children use the environment's sampler and span limits, not a suite provider's code-configured sampler. `OTEL_BSP_*` does not control either stream.
+Sizes must be positive whole numbers (at most 200 for test batches). Invalid values warn and use defaults. The old `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` is ignored: test results are no longer fed through a bounded SDK queue.
 An OpenTelemetry `diag` logger at DEBUG receives selected names once per test file. `OTEL_LOG_LEVEL=DEBUG` alone doesn't install a logger.
 
 ### bktec's relay
 
-On Buildkite Pipelines, we recommend running Jest through `bktec run` (3.5.0 or later) with its relay:
+The relay is optional. It is useful if you already run tests through `bktec run` (3.5.0 or later), or your CI needs an HTTP(S) proxy. Enable it with:
 
 ```sh
 export BUILDKITE_TESTS_OTLP_RELAY=true
 export BUILDKITE_TESTS_OTLP_RELAY_BATCHING=true
 ```
 
-The relay sets the endpoint and token for the collector, acknowledges each export locally, and retries delivery in the background with fewer uploads.
-A slow or unreachable endpoint then doesn't stall each test file, and the relay uses `HTTPS_PROXY`.
+The relay sets the endpoint and token for the collector, acknowledges each export locally, and retries delivery in the background. Beta.5 removes per-file network waits even without the relay.
+The relay uses Go's default HTTP transport, which reads `HTTP_PROXY` and `HTTPS_PROXY`. This proxy behavior was checked in bktec's code, not tested end to end.
 Keep bktec's own upload off (`BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`).
-The relay's token can't upload JSON, so also set `BUILDKITE_ANALYTICS_TOKEN` for the fallback.
 
 ## What gets recorded
 
@@ -103,12 +104,13 @@ test('does work', async () => {
 If your suite registers its own tracer provider, it keeps its own child spans and we send test spans only.
 To collect children in Buildkite, skip your application's provider setup when `JEST_WORKER_ID` is set.
 
-- Every test gets a `test.execution` span, including skipped and todo tests. Retries get one span and count as one test execution per attempt.
+- Every test gets a `test.execution` span, including skipped and todo tests. Each retry attempt gets a separate span and execution ID.
 - Results keep names, locations, failures, tags and CI details. Durations use real time and stop when the test finishes.
 - Tests have separate traces. The Agent with tracing enabled links them to the job using `TRACEPARENT` and `TRACESTATE`.
 - Children belong to tests, `beforeEach` and `afterEach`, not file loading, `beforeAll` or `afterAll`.
 - Concurrent tests, callbacks, generators, fake timers and module resets work. Results include hook failures.
-- We always sample test results, never trace our own uploads, and leave your registered OpenTelemetry setup alone.
+- We always sample test results and never trace our own uploads, including in band. We do not replace a suite-owned provider. Where none exists, the collector installs a worker context manager and propagator, fills sandbox noop context managers, and delegates sandbox tracer proxies to its provider. Cached tracers follow a provider registered later by the suite.
+- An attempt still open at file teardown without errors retains the `unset` result, not `pass` (matching the Ruby collector's unknown-result convention). Such an attempt does not become a passed execution in Test Engine.
 
 `trace.getActiveSpan()` in a test is non-recording. It carries the parent context for children, but changing or ending it doesn't change the test result.
 Child spans can contain URLs, query strings and database statements. Check what your instrumentation records before enabling it.
@@ -124,8 +126,8 @@ OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici npx jest
 
 We select instrumentation declared in your Jest `rootDir`'s package.json or its parents, including workspace roots (under Yarn Plug'n'Play, the workspace that runs Jest).
 If `@opentelemetry/auto-instrumentations-node` is resolvable, we select its whole bundle, with the exclusions below.
-Packages installed incidentally by another dependency don't opt you in.
-Use the SDK 2.x line: HTTP 0.200–0.2xx, undici 0.11–0.33, or auto-instrumentations-node 0.57 to 0.81.
+Individual packages installed incidentally by another dependency don't opt you in; a resolvable auto-instrumentations bundle does.
+Use the SDK 2.x line: HTTP 0.200–0.2xx and undici 0.11–0.33. Other instrumentations are checked against their base instrumentation dependency (0.200–0.2xx), not a fixed auto-instrumentations bundle version range.
 Incompatible instrumentation warns and is skipped without affecting results or manual spans.
 
 We leave logs and messages (`pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`), low-level I/O (`net`, `dns`, `fs`) and metrics (`host-metrics`, `runtime-node`) off by default.
@@ -133,17 +135,26 @@ Browser instrumentation (`fetch`, `xml-http-request`, `document-load`, `user-int
 You can opt in by listing short names in `OTEL_NODE_ENABLED_INSTRUMENTATIONS`. The disabled list always wins.
 We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2. Test other packages against your own operations before relying on them.
 
+## Delivery and interruptions
+
+At file teardown the worker serializes that file's test and child spans with the installed exporter's OTLP protobuf serializer. It writes a private local spool file and atomically renames it before returning. This waits for local I/O only, not the network; it is not fsync/power-loss durability. The reporter creates the per-run temporary directory. Its worker settings contain no OTLP token.
+
+The parent picks up committed files from Jest's file-result callback and uploads in separate test and child lanes, with up to four requests in flight per lane. It batches across files for up to one second, retaining span-count caps and a **750 KiB uncompressed protobuf** cap per request to leave headroom below the endpoint's 900 KiB limit. Uploads use gzip, the authorization/run-key/stream headers, and 30-second request timeouts. Failed batches remain on disk and retry through the run for network errors, 429 and 5xx, honoring `Retry-After`. Other HTTP errors are reported without retries. Lost acknowledgments can cause duplicates; delivery is not exactly once.
+
+Normal completion and `--bail` share one memoized final drain over a fixed snapshot, with at most five seconds of additional waiting and no batching delay. Bail gates new files through the reporter's public start callback, so awaiting uploads does not keep dispatching files. Already running files can finish. SIGTERM gates new files too, drains for at most five seconds, and then exits with SIGTERM. Files arriving after the snapshot are not added to the drain. Unacknowledged test and child counts are reported as `TEST RESULTS MISSING`; no JSON is sent. Completed runs remove their spool directory; terminated runs may leave it behind. There is no replay tool.
+
+SIGKILL can prevent the drain and warning and **loses files not yet uploaded**. A crash/interruption before a file commits also loses that file's results. Late-ending children that started before teardown can commit separately; children started after their trace closed are dropped and counted. Children still open when a worker exits are counted as dropped. Neither filesystem survival nor an HTTP request reaching the server proves remote acknowledgment.
+
 ## Troubleshooting and known limits
 
-- **No spans:** check the reporter, runtime, SDK versions, endpoint and earlier warnings, and use Jest 29 or 30.2+ with `jest-circus`.
-- **No fallback results:** set reporter `token` or `BUILDKITE_ANALYTICS_TOKEN` so files that can't export spans can upload JSON instead.
+- **No spans:** check the reporter, runtime, SDK versions, token, endpoint, temporary directory permissions/free space and earlier warnings, and use Jest 29 or 30 with `jest-circus`. Fix and rerun; there is no JSON fallback.
 - **Missing children:** check your plan includes child spans. Check instrumentation warnings and mocked APIs, skip your own provider setup under Jest, and supply fetch yourself in jsdom if needed.
-- **Duplicates:** Projects differing only in `testEnvironmentOptions` can also upload JSON if not all of them export spans. Give them distinct `displayName` values.
+- **Duplicates:** retries after a lost acknowledgment can duplicate executions until the server deduplicates them.
 - **Changed stacks:** package instrumentation adds collector frames to errors created while a module loads. Failing tests show context-manager frames whenever runtime is set. Use explicit labels if test names or snapshots include stacks.
 - **Changed headers or messages:** disable the affected instrumentation using the table above if propagation changes what your tests expect.
 - **Missing HTTP client spans:** call `http.get(...)` on the module object instead of destructuring `get` at file load.
 - **MSW dropping headers:** disable `http` with MSW 2 (fixed in MSW 3, [issue #804](https://github.com/mswjs/interceptors/issues/804)).
 - **Native ESM missing package spans:** packages loaded as ES modules don't get package spans. HTTP, fetch and manual spans work.
 - **Dropped children or interrupted runs:** end spans, close connections and let Jest finish flushing before stopping workers. Work started after file teardown is dropped.
-- **Slow teardown:** each test file waits for one export round trip at teardown. If the endpoint hangs, an in-band run can take about 60 seconds longer. Use [bktec's relay](#bktecs-relay) to acknowledge exports locally.
-- **Slow exports or `TEST RESULTS MISSING`:** check the error and allow the endpoint. If the warning names 413, a batch was over 900 KiB compressed and was lost; lower `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE`.
+- **Slow teardown:** files wait only for local serialization/write/rename. Check local storage performance. The parent, not every file, pays the network tail.
+- **Slow exports or `TEST RESULTS MISSING`:** check the error, token and endpoint access and rerun. A single span exceeding 750 KiB cannot be sent and is reported; reduce its attributes. A 413 below our cap may indicate a smaller intermediary limit.

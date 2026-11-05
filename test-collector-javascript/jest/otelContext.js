@@ -63,7 +63,7 @@ class JestOtelContext {
     this.apis = new Set()
     this.providers = new Map()
     this.cleanups = []
-    this.warnOnce = (key, message) => warnOncePerRun(settings.exportRecords, key, message)
+    this.warnOnce = (key, message) => warnOncePerRun(settings.spool, key, message)
   }
 
   attachRuntime(runtime) {

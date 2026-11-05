@@ -71,7 +71,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
 
     See the [OpenTelemetry guide](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md)
     for required packages, billing and limits before enabling it.
-    On Buildkite Pipelines, we recommend bktec's relay; see the guide.
+    Workers commit results locally; the parent batches and uploads them without a per-file network wait. OTel mode never falls back to JSON. Linux and macOS are supported; Windows is untested. SIGTERM gets a bounded drain; SIGKILL loses files not yet uploaded.
+    bktec's relay is optional, useful if you already use bktec or need an HTTP(S) proxy; see the guide (proxy behavior is code-checked, not tested).
 
     ### Vitest
 

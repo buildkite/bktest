@@ -1,8 +1,14 @@
 # Changelog
 
-## 1.13.0
+## 1.13.0-beta.5
 
-- Add experimental OpenTelemetry export for Jest 29 and 30.2+. Set `otelEnabled: true` on the reporter and add `buildkite-test-collector/jest/runtime`. Keep your usual test environment. JSON uploads remain the default.
+- Add experimental OpenTelemetry export for Jest 29.7.0 and 30.x. Set `otelEnabled: true` on the reporter and add `buildkite-test-collector/jest/runtime`. Keep your usual test environment. JSON uploads remain the default.
+- Workers atomically commit exporter-serialized OTLP protobuf to a per-run local spool at file teardown, without network waits. The parent reporter batches and uploads separate test and child streams, with up to four requests in flight per stream and a 750 KiB uncompressed protobuf cap.
+- With `otelEnabled: true`, never upload JSON, including on unsupported Jest/SDK versions, invalid settings, missing runtime or worker setup failure. Warn with remediation instead. Worker settings no longer contain the OTLP token.
+- Retry network errors, 429 and 5xx through the run, honoring `Retry-After`. Final completion uses one fixed-snapshot drain with a five-second budget; bail does not dispatch extra files while it drains. SIGTERM drains for up to five seconds before exiting with the signal. Report unacknowledged counts as `TEST RESULTS MISSING`. SIGKILL loses files not yet uploaded; there is no replay tool.
+- Reinterpret `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` as a per-file child cap (including open spans), counting drops. The test/child batch-size variables now cap parent uploads; `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` is ignored because test spans no longer enter a bounded SDK queue.
+- Keep unfinished error-free test attempts `unset`, not passed, matching the Ruby collector. Preserve once-per-run instrumentation warnings across workers using the spool directory.
+- Document experimental Linux/macOS support (Windows untested) and the optional bktec relay. Its Go default transport reads HTTP(S) proxy settings; that behavior was inspected in code, not tested end to end.
 - Test spans count as one execution per attempt at no extra charge. Child spans can contain URLs, query strings and database statements. They are billed by data ingested and need a plan that includes them.
 - OpenTelemetry packages are optional. Read the [OpenTelemetry guide](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md) for installation, billing and limits.
 

@@ -1,18 +1,16 @@
 const { randomUUID } = require('crypto')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 const CI = require('../util/ci')
 const uploadTestResults = require('../util/uploadTestResults')
 const Paths = require('../util/paths')
-const { resolveSettings, publishSettings, fallbackOutcome } = require('../util/otel/config')
+const { resolveSettings, publishSettings } = require('../util/otel/config')
 const { warn, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
-const { createRecords, recordKey, exportCount, removeRecords } = require('./exportRecords')
 
 const jestVersion = (rootDir) => {
-  try {
-    return require(require.resolve('jest/package.json', { paths: [rootDir] })).version
-  } catch {
-    return undefined
-  }
+  try { return require(require.resolve('jest/package.json', { paths: [rootDir] })).version } catch { return undefined }
 }
 
 class JestBuildkiteTestEngineReporter {
@@ -23,29 +21,32 @@ class JestBuildkiteTestEngineReporter {
     this._testEnv = new CI().env('jest')
     this._tags = options?.tags
     this._paths = new Paths(globalConfig, this._testEnv.location_prefix)
-    this._fallback = fallbackOutcome({ token: options?.token })
+    this._otelEnabled = options?.otelEnabled === true
     const frameworkVersion = jestVersion(globalConfig.rootDir)
-    this._otel = resolveSettings({
-      otelEnabled: options?.otelEnabled,
-      token: options?.token,
-      testRunner: 'jest',
-      frameworkVersion,
-      runEnv: this._testEnv,
-      tags: this._tags,
+    const settings = resolveSettings({
+      otelEnabled: this._otelEnabled, token: options?.token,
+      testRunner: 'jest', frameworkVersion, runEnv: this._testEnv, tags: this._tags,
       unsupported: Number(frameworkVersion?.split('.')[0]) < 29 ? `OpenTelemetry submission needs Jest 29 or newer, not ${frameworkVersion}` : undefined,
     })
-    if (this._otel) {
+    if (settings) {
       try {
-        this._exportRecords = createRecords()
-        publishSettings({ ...this._otel, rootDir: globalConfig.rootDir, exportRecords: this._exportRecords, fallback: this._fallback })
+        this._spool = fs.mkdtempSync(path.join(os.tmpdir(), 'buildkite-otel-'))
+        this._sender = require('../util/otel/exporter').createSender(settings, this._spool)
+        publishSettings({ ...settings, rootDir: globalConfig.rootDir, spool: this._spool })
+        this._sigterm = () => {
+          this._stopping = true
+          this._terminated = true
+          this._finish().finally(() => {
+            process.removeAllListeners('SIGTERM')
+            process.kill(process.pid, 'SIGTERM')
+          })
+        }
+        process.once('SIGTERM', this._sigterm)
       } catch (error) {
-        warn(`OpenTelemetry span export disabled: could not create a temporary directory (${describeError(error)}); ${this._fallback}.`)
+        warn(`TEST RESULTS MISSING: OpenTelemetry could not create its local spool (${describeError(error)}); check temporary directory permissions/free space and the SDK installation, then rerun. Results were not uploaded (no JSON fallback).`)
         publishSettings(null)
-        this._otel = null
       }
     }
-    this._warned = new Set()
-    this._exported = new Map()
   }
 
   onRunStart() {
@@ -59,92 +60,64 @@ class JestBuildkiteTestEngineReporter {
     }
   }
 
-  async onRunComplete() {
-    try {
-      this._uploadAmbiguousExports()
-      if (this._otel && this._testResults.length === 0) return
-      await uploadTestResults(this._testEnv, this._tags, this._testResults, this._options)
-    } finally {
-      this._removeExportRecords()
+  // The public start hook is awaited before dispatch. Gate new files as soon
+  // as bail is reached; otherwise Jest keeps scheduling while completion awaits
+  // HTTP. Already running files are not stopped. Jest owns the eventual exit.
+  onTestFileStart() {
+    if (this._stopping) return new Promise(() => {})
+  }
+
+  onTestFileResult(test, testResult, results) {
+    if (!this._otelEnabled) return this._addJson(testResult)
+    if (this._globalConfig.bail && results?.numFailedTests >= this._globalConfig.bail &&
+      !this._globalConfig.watch && !this._globalConfig.watchAll) this._stopping = true
+    if (this._completion) return // Late arrivals are counted outside the fixed drain snapshot.
+    if (!this._sender) {
+      warn(`TEST RESULTS MISSING: ${testResult.testResults.length} test.execution span(s), unknown child count for ${test.path} were not uploaded; fix the earlier OpenTelemetry configuration warning and rerun (no JSON fallback).`)
+      return
+    }
+    if (!this._sender.collect(testResult.testFilePath)) {
+      const runner = process.env.JEST_JASMINE === '1' || /jest-jasmine2/.test(test.context.config.testRunner)
+      const fix = runner ? 'use the jest-circus test runner' : "set runtime to 'buildkite-test-collector/jest/runtime' and see earlier worker warnings"
+      warn(`TEST RESULTS MISSING: ${testResult.testResults.length} test.execution span(s), unknown child count for ${test.path} were not uploaded; ${fix}, then rerun (no JSON fallback).`)
     }
   }
 
-  _removeExportRecords() {
-    if (!this._exportRecords) return
-    try {
-      removeRecords(this._exportRecords)
-    } catch (error) {
-      warn(`OpenTelemetry could not remove its temporary directory ${this._exportRecords} (${describeError(error)}).`)
-    }
+  // Kept for consumers invoking the legacy reporter callback directly.
+  onTestResult(...args) { return this.onTestFileResult(...args) }
+
+  onRunComplete() {
+    if (!this._otelEnabled) return uploadTestResults(this._testEnv, this._tags, this._testResults, this._options)
+    return this._finish()
   }
 
-  async onTestResult(test, testResult) {
-    if (this._otel) {
-      if (this._holdIfExported(test, testResult)) return
-      if (!testResult.testExecError || testResult.testResults.length) this._warnNotExported(test)
-    }
-    this._addJson(testResult)
+  _finish() {
+    return this._completion ||= (async () => {
+      try { await this._sender?.drain() } finally {
+        if (this._sigterm) process.off('SIGTERM', this._sigterm)
+        // A terminating run can still have workers committing files. Do not
+        // remove their destination while they are alive.
+        if (this._spool && !this._terminated) {
+          const cleanup = () => {
+            try { fs.rmSync(this._spool, { recursive: true, force: true }) } catch (error) {
+              warn(`OpenTelemetry could not remove its temporary directory (${describeError(error)}).`)
+            }
+          }
+          if (this._stopping) process.once('exit', cleanup)
+          else cleanup()
+        }
+      }
+    })()
   }
 
   _addJson(testResult) {
     const prefixedTestPath = this._paths.prefixTestPath(testResult.testFilePath)
-
     testResult.testResults.forEach((result) => {
       this._testResults.push({
-        id: randomUUID(),
-        ...testEngineRecord(result, prefixedTestPath),
-        history: {
-          section: 'top',
-          start_at: testResult.perfStats.start,
-          end_at: testResult.perfStats.end,
-          duration: result.duration / 1000,
-        }
+        id: randomUUID(), ...testEngineRecord(result, prefixedTestPath),
+        history: { section: 'top', start_at: testResult.perfStats.start, end_at: testResult.perfStats.end, duration: result.duration / 1000 },
       })
     })
-  }
-
-  // Projects differing only in testEnvironmentOptions share an export key.
-  // Keep their results until every project's export is accounted for.
-  _holdIfExported(test, testResult) {
-    let key
-    try {
-      key = recordKey(test.context.config, testResult.testFilePath)
-    } catch {
-      return false
-    }
-    if (exportCount(this._exportRecords, key) === 0) return false
-    this._exported.set(key, [...(this._exported.get(key) || []), testResult])
-    return true
-  }
-
-  // When ownership is ambiguous, prefer duplicate results over missing ones.
-  _uploadAmbiguousExports() {
-    for (const [key, testResults] of this._exported) {
-      if (exportCount(this._exportRecords, key) >= testResults.length) continue
-      warn(
-        `Jest projects with the same configuration apart from testEnvironmentOptions ran ${testResults[0].testFilePath}, ` +
-        `and not all of them exported it to OpenTelemetry; uploading their results as JSON as well, so some may appear twice.`
-      )
-      testResults.forEach((testResult) => this._addJson(testResult))
-    }
-  }
-
-  _warnNotExported(test) {
-    const fallback = this._fallback
-    if (process.env.JEST_JASMINE === '1' || /jest-jasmine2/.test(test.context.config.testRunner)) {
-      this._warnOnce('runner', `otelEnabled is set, but only the jest-circus test runner reports to OpenTelemetry; ${fallback}.`)
-      return
-    }
-    this._warnOnce(
-      'runtime',
-      `OpenTelemetry didn't record ${test.path}; check that runtime is set to 'buildkite-test-collector/jest/runtime' and see any earlier warnings; ${fallback}.`
-    )
-  }
-
-  _warnOnce(key, message) {
-    if (this._warned.has(key)) return
-    this._warned.add(key)
-    warn(message)
   }
 }
 
