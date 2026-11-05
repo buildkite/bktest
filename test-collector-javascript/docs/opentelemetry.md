@@ -1,6 +1,6 @@
 # OpenTelemetry (experimental)
 
-Test Engine can receive your Jest results as OpenTelemetry traces.
+From collector 1.13.0, Test Engine can receive your Jest results as OpenTelemetry traces.
 Each test becomes a span, and the work inside it (HTTP calls, database queries, your own spans) shows up underneath.
 
 ```js
@@ -39,7 +39,7 @@ Install the versions above. The collector checks SDK 2 and exporter 0.200–0.2x
 Reporter `token` and `tags` options work as usual.
 For TypeScript, check your reporter options with `satisfies Options`, importing `Options` from `buildkite-test-collector/jest/reporter`.
 
-Upgrading from a 1.13 beta? Remove `testEnvironment: 'buildkite-test-collector/jest/environment'` and add `runtime`.
+Upgrading from a 1.13.0 beta? Remove `testEnvironment: 'buildkite-test-collector/jest/environment'` and add `runtime`. Batch-size variables now limit parent uploads, the child queue-size variable caps children per file, and the test queue-size variable is ignored; see [Settings](#settings).
 With `otelEnabled: true`, every project needs `runtime`. A project without it warns and uploads nothing. There is **no JSON fallback**, including for unsupported Jest/SDK versions, invalid settings, worker setup failures, or an unwritable temporary directory. Fix the warning and rerun. To use JSON instead, turn `otelEnabled` off for the run.
 A `@jest-environment` docblock doesn't opt a file out.
 For a custom runtime, use `require('buildkite-test-collector/jest/runtime').extend(MyRuntime)`.
@@ -86,7 +86,7 @@ export BUILDKITE_TESTS_OTLP_RELAY=true
 export BUILDKITE_TESTS_OTLP_RELAY_BATCHING=true
 ```
 
-The relay sets the endpoint and token for the collector, acknowledges each export locally, and retries delivery in the background. Beta.5 removes per-file network waits even without the relay.
+The relay sets the endpoint and token for the collector, acknowledges each export locally, and retries delivery in the background. Collector 1.13.0 removes per-file network waits even without the relay.
 The relay uses Go's default HTTP transport, which reads `HTTP_PROXY` and `HTTPS_PROXY`. This proxy behavior was checked in bktec's code, not tested end to end.
 Keep bktec's own upload off (`BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`).
 
