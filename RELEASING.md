@@ -120,8 +120,10 @@ repository that existing consumers already use.
 
 Swift supports stable `test-collector-swift/vX.Y.Z` tags and numbered beta or
 release-candidate tags such as `test-collector-swift/v2.0.0-beta.1` and
-`test-collector-swift/v2.0.0-rc.1`. It has no version file to update. Use the
-automated process above. The pipeline extracts `test-collector-swift/` from the
+`test-collector-swift/v2.0.0-rc.1`. In the release pull request, update
+`version` in `Sources/Core/TestCollector.swift`, the changelog, and the
+README's exact-version installation example. Use the automated process
+above. The pipeline extracts `test-collector-swift/` from the
 tagged bktest history, checks that it extends the existing release mirror, and
 pushes the corresponding plain version tag. It never updates the standalone
 repository's default branch.

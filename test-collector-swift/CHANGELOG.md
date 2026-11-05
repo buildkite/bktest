@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.0.0-beta.4
+
 - Rename the OpenTelemetry instrumentation scope from `test-collector-swift` to `buildkite-test-collector`; keep test root span names as `test.execution`
 
 ## 2.0.0-beta.3
