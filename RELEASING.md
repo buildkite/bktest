@@ -69,7 +69,8 @@ with a publish confirmation step. An authorized Buildkite maintainer then:
 
 Untagged builds are safe rehearsals. If the publish confirmation step is
 absent from a tag build, stop rather than trying to publish around the
-pipeline: the tag does not exactly match `<collector-directory>/vX.Y.Z`.
+pipeline: check that the tag matches the collector's supported release
+format below.
 
 ### Ruby (RubyGems)
 
@@ -88,6 +89,14 @@ In the release pull request, update `pyproject.toml` and run `uv lock` so
 not publish from this monorepo.
 
 Use a `test-collector-python/vX.Y.Z` tag and the automated process above.
+Numbered prereleases use Python's `aN`, `bN` or `rcN` suffixes, for example
+`1.10.0a1`, `1.10.0b1` or `1.10.0rc1`. The tag must match the version exactly:
+`test-collector-python/v1.10.0b1`, not `v1.10.0-beta.1`.
+
+Prereleases use the same PyPI package and manual publish confirmation as
+stable releases. Pin an exact version to try one, for example
+`pip install 'buildkite-test-collector[otel]==1.10.0b1'`. Normal upgrades
+from a stable release do not opt into prereleases.
 
 ### Android (Maven Central)
 
