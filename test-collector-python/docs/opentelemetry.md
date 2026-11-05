@@ -7,11 +7,13 @@
 ## Enable OTel mode
 
 ```sh
-pip install "buildkite-test-collector[otel]"
+pip install "buildkite-test-collector[otel]==1.10.0b1"
 export BUILDKITE_ANALYTICS_TOKEN="your-suite-token"
 export BUILDKITE_ANALYTICS_OTEL_ENABLED=true
 pytest
 ```
+
+Pin the beta version explicitly; normal installs and upgrades select the stable release.
 
 The `otel` extra requires `opentelemetry-sdk` and
 `opentelemetry-exporter-otlp-proto-http` 1.45 or newer. Unset
