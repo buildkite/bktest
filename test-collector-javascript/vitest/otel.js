@@ -42,7 +42,7 @@ const createWorker = (settings) => {
       if (!root) return
       const parent = nodes.get(span.parentSpanContext?.spanId) || nodes.get(root.id)
       const node = { span, parent, forwarder: root.forwarder, root: context.spanId === root.id }
-      if (!node.root && span.instrumentationScope.name !== 'vitest') {
+      if (!node.root && !(span.instrumentationScope.name === 'vitest' && span.name.startsWith('vitest.'))) {
         forward(node)
         if (!node.sent) return
       }

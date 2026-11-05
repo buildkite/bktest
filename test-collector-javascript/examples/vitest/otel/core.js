@@ -1,5 +1,6 @@
 import { test, beforeEach, afterEach, beforeAll, describe, expect } from 'vitest'
 import { request, createServer } from 'node:http'
+import { trace } from '@opentelemetry/api'
 import { tracer } from './app.js'
 
 beforeAll(() => tracer.startSpan('before-all-not-a-child').end())
@@ -11,6 +12,7 @@ afterEach(() => tracer.startSpan('after-hook').end())
 
 test('body and IO', async () => {
   tracer.startSpan('manual').end()
+  trace.getTracer('vitest').startSpan('db.connect').end()
   const server = createServer((req, res) => { tracer.startSpan('handler').end(); res.end('ok') })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   const url = `http://127.0.0.1:${server.address().port}/hello`

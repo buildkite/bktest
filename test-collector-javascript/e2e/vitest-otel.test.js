@@ -41,7 +41,7 @@ const supported = major >= 4
   const children = spans.filter(s => s.traceId === root.traceId && s !== root)
   const byId = new Map(spans.map(s => [s.spanId, s]))
   for (const child of children) expect(byId.has(child.parentSpanId)).toBe(true)
-  expect(byId.get(children.find(s => s.name === 'manual').parentSpanId).name).toBe('vitest.test.runner.test.callback')
+  for (const name of ['manual', 'db.connect']) expect(byId.get(children.find(s => s.name === name).parentSpanId).name).toBe('vitest.test.runner.test.callback')
   for (const name of ['before-hook', 'setup-hook']) expect(byId.get(children.find(s => s.name === name).parentSpanId).name).toBe('vitest.test.runner.test.beforeEach')
   expect(byId.get(children.find(s => s.name === 'after-hook').parentSpanId).name).toBe('vitest.test.runner.test.afterEach')
   expect(children.filter(s => s.kind === 3)).toHaveLength(2)

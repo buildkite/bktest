@@ -101,15 +101,14 @@ Vitest phase names, statuses and exception events pass through unchanged.
 Only phases containing test-code or instrumentation spans are sent. Module
 loading, collection, suites and `beforeAll` work are excluded. Tracers created
 at app-module import work when used in a test. Each test produces **one**
-execution, with all retry attempts' phases and children underneath, including
-concurrent tests. Skipped suites and tests cancelled by bail still get results
-from the reporter, even when Vitest never starts their spans.
+execution in this beta, with every retry attempt's phases and children
+underneath, including concurrent tests. Unlike Vitest, Jest's OpenTelemetry
+mode records one execution **per attempt**. Skipped suites and tests cancelled
+by bail still get results from the reporter, even when Vitest never starts
+their spans.
 
-For manual spans, use your application's tracer name, for example
-`trace.getTracer('my-app')`. The collector reserves the `vitest` tracer name for
-framework spans and prunes its leaf spans. Unlike Vitest's general-purpose
-custom-trace example, using `trace.getTracer('vitest')` for manual spans will
-therefore drop those spans unless they contain a span from another tracer.
+Only spans from the `vitest` tracer whose names start with `vitest.` are treated
+as framework spans; custom spans such as `db.connect` from that tracer are kept.
 
 The reporter owns uploads, credentials, tags, the run key and the shared
 [settings](#settings). Workers commit children locally at test-span end and SDK
