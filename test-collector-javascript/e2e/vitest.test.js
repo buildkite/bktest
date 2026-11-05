@@ -88,6 +88,34 @@ describe('examples/vitest', () => {
 		}
 	}, 10000);
 
+	const runRetriesExample = async () => {
+		const result = await promisify(exec)('npm test -- --config retries.config.js', { cwd, env })
+			.catch(error => error);
+
+		expect(result.code).toBe(1);
+		expect(uploads).toHaveLength(1);
+		return (name) => uploads[0].body.data.filter(test => test.name === name);
+	};
+
+	(vitestMajor >= 3 ? test : test.skip)('it uploads every attempt of a retried test', async () => {
+		const executions = await runRetriesExample();
+
+		expect(executions('passes on retry').map(test => test.result)).toEqual(['failed', 'passed']);
+		expect(executions('fails every attempt').map(test => test.result)).toEqual(['failed', 'failed']);
+		const [failedAttempt, finalAttempt] = executions('passes on retry');
+		expect(failedAttempt.failure_reason).toContain('expected 1 to be 2');
+		expect(failedAttempt.history.duration).toBeNull();
+		expect(finalAttempt.history.duration).toBeGreaterThan(0);
+		expect(new Set(uploads[0].body.data.map(test => test.id)).size).toBe(4);
+	}, 10000);
+
+	(vitestMajor < 3 ? test : test.skip)('it uploads only the final result of a retried test on Vitest 1–2', async () => {
+		const executions = await runRetriesExample();
+
+		expect(executions('passes on retry').map(test => test.result)).toEqual(['passed']);
+		expect(executions('fails every attempt').map(test => test.result)).toEqual(['failed']);
+	}, 10000);
+
 	describe('when token is defined through reporter options', () => {
 		test('it uses the correct token', (done) => {
 			exec('vitest run --config token.config.js', { cwd, env: { ...env, BUILDKITE_ANALYTICS_TOKEN: undefined } }, (error, stdout, stderr) => {
