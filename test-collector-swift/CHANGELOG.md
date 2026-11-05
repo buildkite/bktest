@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Rename the OpenTelemetry instrumentation scope from `test-collector-swift` to `buildkite-test-collector`; keep test root span names as `test.execution`
+
 ## 2.0.0-beta.3
 
 - When sending direct, export root `test.execution` spans in the background at 120 queued spans or within 1 s of the first queued span, instead of making every test wait for its own request; flush remaining results at test bundle finish
