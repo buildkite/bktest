@@ -69,12 +69,25 @@ The run key is the ID that groups results from one test run. It must be 1–255 
 | `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` and `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` | Sets queue and batch sizes. Overflow drops children | 2,048 queued, 512 per batch |
 | `OTEL_RESOURCE_ATTRIBUTES` | Adds resource attributes to every span | None |
 
-OTLP export doesn't use `HTTP_PROXY` or `HTTPS_PROXY`. JSON uploads honour them.
+OTLP export doesn't use `HTTP_PROXY` or `HTTPS_PROXY`. JSON uploads honour them. Use [bktec's relay](#bktecs-relay) for OTLP through a proxy.
 If you route OTLP through your own endpoint, forward `Authorization`, `Buildkite-Tests-Run-Key` and `Buildkite-Tests-Span-Stream`.
 We ignore `OTEL_EXPORTER_OTLP_*`, `OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_TRACES_SAMPLER` for test results. Normal child sampling and limits still apply.
 Sizes must be whole numbers, with batch no larger than queue (at most 200 for test spans). Invalid values print a warning and use the defaults.
 An OpenTelemetry `diag` logger at DEBUG receives selected names once per test file. `OTEL_LOG_LEVEL=DEBUG` alone doesn't install a logger.
-If you use bktec's local relay, it sets the endpoint and token for you. The relay's token can't upload JSON, so also set `BUILDKITE_ANALYTICS_TOKEN` for the fallback.
+
+### bktec's relay
+
+On Buildkite Pipelines, we recommend running Jest through `bktec run` (3.5.0 or later) with its relay:
+
+```sh
+export BUILDKITE_TESTS_OTLP_RELAY=true
+export BUILDKITE_TESTS_OTLP_RELAY_BATCHING=true
+```
+
+The relay sets the endpoint and token for the collector, acknowledges each export locally, and retries delivery in the background with fewer uploads.
+A slow or unreachable endpoint then doesn't stall each test file, and the relay uses `HTTPS_PROXY`.
+Keep bktec's own upload off (`BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`).
+The relay's token can't upload JSON, so also set `BUILDKITE_ANALYTICS_TOKEN` for the fallback.
 
 ## What gets recorded
 
@@ -132,5 +145,5 @@ We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2.
 - **MSW dropping headers:** disable `http` with MSW 2 (fixed in MSW 3, [issue #804](https://github.com/mswjs/interceptors/issues/804)).
 - **Native ESM missing package spans:** packages loaded as ES modules don't get package spans. HTTP, fetch and manual spans work.
 - **Dropped children or interrupted runs:** end spans, close connections and let Jest finish flushing before stopping workers. Work started after file teardown is dropped.
-- **Slow teardown:** each test file waits for one export round trip at teardown. If the endpoint hangs, an in-band run can take about 60 seconds longer.
+- **Slow teardown:** each test file waits for one export round trip at teardown. If the endpoint hangs, an in-band run can take about 60 seconds longer. Use [bktec's relay](#bktecs-relay) to acknowledge exports locally.
 - **Slow exports or `TEST RESULTS MISSING`:** check the error and allow the endpoint. If the warning names 413, a batch was over 900 KiB compressed and was lost; lower `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE`.

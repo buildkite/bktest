@@ -71,6 +71,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
 
     See the [OpenTelemetry guide](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md)
     for required packages, billing and limits before enabling it.
+    On Buildkite Pipelines, we recommend bktec's relay; see the guide.
 
     ### Vitest
 
