@@ -346,11 +346,10 @@ describe('createSession', () => {
     expect(warnings).toEqual([expect.stringMatching(/5 test.execution span.*HTTP 401/)])
   })
 
-  it('validates batch sizes while ignoring the removed test queue size', async () => {
-    const result = await runSession({ env: { BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE: 'lots', BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE: '201' } })
+  it.each(['1000', '1001'])('validates batch size %s while ignoring the removed test queue size', async (size) => {
+    const result = await runSession({ env: { BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE: 'lots', BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE: size } })
     expect(result.spans).toHaveLength(1)
-    expect(result.warnings.every((warning) => /BATCH_SIZE must be a positive integer up to 200, using default 120/.test(warning))).toBe(true)
-    expect(result.warnings.length).toBeGreaterThan(0)
+    expect(result.warnings).toEqual(size === '1000' ? [] : [expect.stringMatching(/BATCH_SIZE must be a positive integer up to 1000, using default 1000/)])
   })
 })
 

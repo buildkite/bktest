@@ -15,7 +15,7 @@ const size = (suffix, fallback, limit = 2147483647, directory) => {
   return fallback
 }
 const batchSize = (stream, directory) => stream === 'test'
-  ? size('TEST_SPAN_BATCH_SIZE', 120, 200, directory) : size('CHILD_SPAN_BATCH_SIZE', 512, undefined, directory)
+  ? size('TEST_SPAN_BATCH_SIZE', 1000, 1000, directory) : size('CHILD_SPAN_BATCH_SIZE', 512, undefined, directory)
 
 const stringify = (value) => JSON.stringify(value, (_key, value) => typeof value === 'number' && !Number.isFinite(value)
   ? { $number: String(value) } : value)

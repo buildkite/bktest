@@ -66,7 +66,7 @@ The run key is the ID that groups results from one test run. It must be 1–255 
 | `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | Prints selected instrumentation and JSON upload debug output | `false` |
 | `OTEL_NODE_ENABLED_INSTRUMENTATIONS` | Selects only these comma-separated short names | Declared packages, with exclusions below |
 | `OTEL_NODE_DISABLED_INSTRUMENTATIONS` | Removes names, even from the enabled list | None |
-| `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | Maximum test spans in a parent upload (at most 200) | 120 |
+| `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | Maximum test spans in a parent upload (at most 1,000), also capped at 750 KiB uncompressed protobuf | 1,000 |
 | `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` | Maximum child spans in a parent upload | 512 |
 | `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` | Child spans accepted per test file, including still-open spans. Further children are dropped and counted | 2,048 |
 | `OTEL_RESOURCE_ATTRIBUTES` | Adds resource attributes to every span | None |
@@ -74,7 +74,7 @@ The run key is the ID that groups results from one test run. It must be 1–255 
 OTLP export doesn't use `HTTP_PROXY` or `HTTPS_PROXY`. JSON uploads honour them. Use [bktec's relay](#bktecs-relay) for OTLP through a proxy.
 If you route OTLP through your own endpoint, forward `Authorization`, `Buildkite-Tests-Run-Key` and `Buildkite-Tests-Span-Stream`.
 We ignore `OTEL_EXPORTER_OTLP_*`, `OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_TRACES_SAMPLER` for test results. Children use the environment's sampler and span limits, not a suite provider's code-configured sampler. `OTEL_BSP_*` does not control either stream.
-Sizes must be positive whole numbers (at most 200 for test batches). Invalid values warn and use defaults. The old `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` is ignored: test results are no longer fed through a bounded SDK queue.
+Sizes must be positive whole numbers (at most 1,000 for test batches). Both streams also have a 750 KiB uncompressed protobuf cap; large spans reduce how many fit in one upload. Invalid values warn and use defaults. The old `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` is ignored: test results are no longer fed through a bounded SDK queue.
 An OpenTelemetry `diag` logger at DEBUG receives selected names once per test file. `OTEL_LOG_LEVEL=DEBUG` alone doesn't install a logger.
 
 ### bktec's relay

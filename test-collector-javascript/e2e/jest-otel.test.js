@@ -577,7 +577,17 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(result.spools).toEqual([{ exists: false, files: [] }])
   }, 20000)
 
-  test('splits protobuf below 750 KiB while retaining span-count caps and every failure', async () => {
+  test('sends 1,000 small test spans in one request', async () => {
+    server = await startOtlpServer()
+    const result = await spoolRun({ args: ['--runInBand'], body: `for (let i = 0; i < 1000; i++) test(String(i), () => {})` })
+    expect(result.code).toBe(0)
+    expect(server.requests).toHaveLength(1)
+    expect(server.spans()).toHaveLength(1000)
+    expect(server.requests[0].bytes).toBeLessThanOrEqual(750 * 1024)
+    expect(result.stderr).not.toContain('TEST RESULTS MISSING')
+  }, 20000)
+
+  test('splits protobuf below 750 KiB before the 1,000-span count cap, preserving every failure', async () => {
     server = await startOtlpServer({ respond: () => ({ delay: 600 }) })
     const body = `for (let i = 0; i < 160; i++) test('failure-' + i, () => { throw new Error(${JSON.stringify('failure\n' + 'x'.repeat(10000))}) })`
     const result = await spoolRun({ body, args: ['--runInBand'] })
@@ -589,7 +599,7 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
       expect(request.decodeError).toBeNull()
       expect(request.bytes).toBeLessThanOrEqual(750 * 1024)
       expect(request.compressedBytes).toBeLessThan(900 * 1024)
-      expect(request.decoded.resourceSpans.flatMap((rs) => rs.scopeSpans.flatMap((ss) => ss.spans)).length).toBeLessThanOrEqual(120)
+      expect(request.decoded.resourceSpans.flatMap((rs) => rs.scopeSpans.flatMap((ss) => ss.spans)).length).toBeLessThan(160)
     }
     expect(server.spans().every((s) => s.attributes['test.case.result.status'] === 'fail')).toBe(true)
   }, 30000)
