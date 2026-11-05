@@ -2,7 +2,8 @@
 # release dispatcher (.buildkite/pipeline.release.yml) running on the
 # separate bktest-release Buildkite pipeline — never by CI: as a rehearsal
 # when this project changes (no tag), and for real on a
-# test-collector-python/vX.Y.Z tag. Injected by `ctg gather` from the ctg
+# test-collector-python/vX.Y.Z tag, optionally suffixed aN, bN or rcN.
+# Injected by `ctg gather` from the ctg
 # repo's overlay/ directory during the dry-run era; post-cutover this file
 # is maintained here, in the monorepo. It replaces the source repo's
 # .buildkite/pipeline.release.yml, and normalises the trigger from a
@@ -18,8 +19,8 @@
 #     oidc-buildkite-bktest-release.tf) and read the PyPI token from SSM;
 #     the role trusts this pipeline on test-collector-python/v* tags only
 #     (see the credential cut-over section of ctg docs/publishing.md).
-#   - The publish step exists only on an exact test-collector-python/vX.Y.Z
-#     tag, behind a block step; it sets RELEASE_PUBLISH=true in its own
+#   - The publish step exists only on an exact stable or prerelease tag,
+#     behind a block step; it sets RELEASE_PUBLISH=true in its own
 #     environment, and the release script independently re-checks the tag
 #     and RELEASE_PUBLISH before twine upload.
 
@@ -41,10 +42,10 @@ steps:
 
   - block: ":rocket: Publish test-collector-python to PyPI?"
     key: python-confirm
-    if: build.tag =~ /^test-collector-python\/v[0-9]+\.[0-9]+\.[0-9]+$/
+    if: build.tag =~ /^test-collector-python\/v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$/
 
   - label: ":pypi: test-collector-python: publish to PyPI"
-    if: build.tag =~ /^test-collector-python\/v[0-9]+\.[0-9]+\.[0-9]+$/
+    if: build.tag =~ /^test-collector-python\/v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$/
     depends_on:
       - python-build
       - python-confirm
