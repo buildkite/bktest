@@ -47,7 +47,7 @@ const emptyProxies = (apis, ours) => {
     const proxy = api.trace.getTracerProvider()
     const delegate = proxy.getDelegate()
     if (delegate === new api.ProxyTracerProvider().getDelegate()) empty.push(proxy)
-    else if (delegate !== ours) return null
+    else if (delegate !== ours?.get(proxy)) return null
   }
   return empty
 }
@@ -61,6 +61,7 @@ class JestOtelContext {
     this.runtime = null
     this.traces = new Set()
     this.apis = new Set()
+    this.providers = new Map()
     this.cleanups = []
     this.warnOnce = (key, message) => warnOncePerRun(settings.exportRecords, key, message)
   }
@@ -81,7 +82,7 @@ class JestOtelContext {
 
   load(file, load) {
     // A suite-owned provider must not activate collector package patches.
-    if (!emptyProxies([...this.apis, this.session.api], this.provider)) return load()
+    if (!emptyProxies([...this.apis, this.session.api], this.providers)) return load()
     return this.packages.load(file, load)
   }
 
@@ -126,14 +127,26 @@ class JestOtelContext {
 
   _fill() {
     try {
-      const empty = emptyProxies(this.apis, this.provider)
+      const empty = emptyProxies(this.apis, this.providers)
       if (!empty) {
         this.worker.close(this)
         this.warnOnce('suite-provider', SUITE_PROVIDER)
         return false
       }
       for (const api of this.apis) fillContextManager(api)
-      for (const proxy of empty) proxy.setDelegate(this.provider)
+      for (const proxy of empty) {
+        const provider = { getTracer: (...args) => {
+          const tracer = this.provider.getTracer(...args)
+          // Cached API tracers must follow a later suite-owned delegate.
+          const current = () => proxy.getDelegate() === provider ? tracer : proxy.getDelegate().getTracer(...args)
+          return {
+            startSpan: (...args) => current().startSpan(...args),
+            startActiveSpan: (...args) => current().startActiveSpan(...args),
+          }
+        } }
+        this.providers.set(proxy, provider)
+        proxy.setDelegate(provider)
+      }
       this.worker.open(this)
       return true
     } catch (error) {
