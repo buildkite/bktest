@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.10.0b1 — 2026-11-05
+
+- Add experimental, opt-in OpenTelemetry submission for pytest, including test
+  results, child spans and populated setup/body/teardown phases. Install
+  `buildkite-test-collector[otel]==1.10.0b1` and set
+  `BUILDKITE_ANALYTICS_OTEL_ENABLED=true`; see the
+  [OpenTelemetry guide](docs/opentelemetry.md) for setup and limitations.
+- Fix result finalization for teardown failures and pytest-rerunfailures, preserve
+  the original failure when teardown also fails, and use 1-based source lines.
+- Support non-empty `BUILDKITE_ANALYTICS_*` run metadata overrides for JSON and
+  OpenTelemetry submission.
+- Include the release script and pipeline in source distributions so the bundled
+  release-gate tests can run, and pin OTel quick-start instructions to this beta.
+
 ## 1.9.1 — 2026-10-20
 
 - Require certifi >= 2026.10.19 as defence in depth against the eMudhra
