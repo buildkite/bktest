@@ -238,7 +238,7 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
         const event = { type: 'dispatch' }; ${log}
       }
       onRunComplete(...args) {
-        const event = { type: 'complete' }; ${log}
+        const event = { type: 'complete', at: Date.now() }; ${log}
         if (process.env.OTEL_SIGNAL_DURING_DRAIN) {
           const pid = process.pid
           if (process.env.OTEL_PID1) Object.defineProperty(process, 'pid', { value: 1 })
@@ -298,6 +298,24 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
   const preload = path.join(dir, 'preload.cjs')
   if (env.OTEL_BREAK) {
     fs.writeFileSync(preload, `
+      if (process.env.OTEL_BREAK === 'connect') {
+        const net = require('net'), connect = net.Socket.prototype.connect
+        const endpoint = new URL(process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT)
+        net.Socket.prototype.connect = function(...args) {
+          const options = Array.isArray(args[0]) ? args[0][0] : args[0]
+          if (options.host !== endpoint.hostname || String(options.port) !== endpoint.port) return connect.apply(this, args)
+          // A connecting socket never emits connect/error, as with silently
+          // dropped SYNs. Only closing it releases the simulated OS wait.
+          this.connecting = true
+          const pending = setTimeout(() => {}, 60000)
+          this.once('close', () => {
+            clearTimeout(pending)
+            const event = { type: 'connect-closed' }; ${log}
+          })
+          const event = { type: 'connecting' }; ${log}
+          return this
+        }
+      }
       const Module = require('module'), original = Module._load
       Module._load = function(name, ...args) {
         if (process.env.OTEL_BREAK === 'missing' && name === '@opentelemetry/sdk-trace-base') throw new Error('missing SDK fixture')
@@ -375,15 +393,36 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(result.spools).toEqual([{ exists: false, files: [] }])
   }, 20000)
 
-  test('a hanging endpoint cannot keep Jest alive for thirty seconds after the drain', async () => {
+  test.each(['accepted', 'http-connect', 'https-connect', 'http-connect-timeout', 'https-connect-timeout'])('bounds hanging exports during the run and at drain completion (%s)', async (state) => {
     server = await startOtlpServer({ respond: () => ({ hang: true }) })
     const start = Date.now()
+    const connectionTimeout = state.endsWith('-timeout')
+    const result = await spoolRun({ args: ['--runInBand'], env: { OTEL_DRAIN_BUDGET: connectionTimeout ? '12000' : '200',
+      ...(state === 'accepted' ? {} : { OTEL_BREAK: 'connect', BUILDKITE_ANALYTICS_OTLP_ENDPOINT:
+        server.url.replace('http:', state.startsWith('https') ? 'https:' : 'http:') }),
+    } })
+    expect(result.code).toBe(0)
+    expect(server.requests).toHaveLength(state === 'accepted' ? 2 : 0)
+    if (state !== 'accepted') {
+      // The first ten-second connect timeout frees both lane slots to retry
+      // before the drain aborts the second pair of connecting sockets.
+      expect(result.events.filter((event) => event.type === 'connecting')).toHaveLength(connectionTimeout ? 4 : 2)
+      expect(result.events.filter((event) => event.type === 'connect-closed')).toHaveLength(connectionTimeout ? 4 : 2)
+    }
+    expect(result.stderr).toContain(`TEST RESULTS MISSING: 1 test.execution span(s), 1 child span(s) were not acknowledged (${connectionTimeout ? 'timeout' : 'drain deadline'})`)
+    expect(Date.now() - start).toBeLessThan(connectionTimeout ? 17000 : 4000)
+  }, 20000)
+
+  test('a refused connection exits within the drain plus one stock retry backoff', async () => {
+    server = await startOtlpServer()
+    await server.close()
     const result = await spoolRun({ args: ['--runInBand'], env: { OTEL_DRAIN_BUDGET: '200' } })
     expect(result.code).toBe(0)
-    expect(server.requests).toHaveLength(2)
-    expect(result.stderr).toContain('TEST RESULTS MISSING: 1 test.execution span(s), 1 child span(s) were not acknowledged (drain deadline)')
-    expect(Date.now() - start).toBeLessThan(15000)
-  }, 20000)
+    expect(result.stderr).toContain('ECONNREFUSED')
+    expect(result.stderr).toContain('TEST RESULTS MISSING: 1 test.execution span(s), 1 child span(s)')
+    const complete = result.events.find((event) => event.type === 'complete')
+    expect(Date.now() - complete.at).toBeLessThan(6200)
+  }, 15000)
 
   test('reuses the worker session across two in-band runCLI runs in one process', async () => {
     server = await startOtlpServer()
