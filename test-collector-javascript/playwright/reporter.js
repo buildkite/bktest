@@ -1,10 +1,13 @@
 const stripAnsi = require('strip-ansi');
 const { randomUUID } = require('crypto')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 const CI = require('../util/ci')
 const uploadTestResults = require('../util/uploadTestResults')
 const Paths = require('../util/paths')
-const { isOtelEnabled, resolveSettings } = require('../util/otel/config')
-const { sessionFor } = require('../util/otel/session')
+const { resolveSettings } = require('../util/otel/config')
+const { createSession } = require('../util/otel/session')
 const { warn, describeError } = require('../util/otel/warn')
 
 /**
@@ -33,26 +36,46 @@ class PlaywrightBuildkiteTestEngineReporter {
     this._paths = new Paths({ cwd: process.cwd() }, this._testEnv.location_prefix);
     this._tagPattern = /^@[^:]+:[^:]+$/;
     this._session = null;
+    const enabled = options?.otelEnabled;
+    this._otelEnabled = enabled === true || (typeof enabled === 'string' && enabled.trim().toLowerCase() === 'true');
+    this._hasCredential = [process.env.BUILDKITE_TESTS_OTLP_TOKEN, options?.token, process.env.BUILDKITE_ANALYTICS_TOKEN].some(value => value?.trim());
+    this._missingTests = 0;
   }
 
   onBegin(config) {
-    if (!isOtelEnabled(this._options?.otelEnabled)) return;
+    if (!this._otelEnabled) return;
 
-    resolveSettings({
+    const settings = resolveSettings({
       otelEnabled: true,
       token: this._options.token,
       testRunner: 'playwright',
       frameworkVersion: config.version,
       runEnv: this._testEnv,
       tags: this._tags,
-      probe: settings => { this._session = sessionFor(settings); },
     });
+    if (!settings) return;
+    try {
+      this._spool = fs.mkdtempSync(path.join(os.tmpdir(), 'buildkite-playwright-otel-'));
+      this._session = createSession({ ...settings, spool: this._spool });
+      this._sender = require('../util/otel/uploads').createUploads(settings, this._spool);
+    } catch (error) {
+      warn(`TEST RESULTS MISSING: OpenTelemetry could not be configured (${describeError(error)}); check temporary directory permissions/free space and the SDK installation, then rerun (no JSON fallback).`);
+    }
   }
 
   async onEnd() {
-    if (this._session) {
-      await this._session.forceFlush();
-      await this._session.shutdown();
+    if (this._otelEnabled) {
+      try {
+        await this._sender?.drain();
+      } finally {
+        await this._session?.shutdown();
+        if (this._missingTests) warn(`TEST RESULTS MISSING: ${this._missingTests} Playwright test execution(s) were not recorded; fix the earlier warnings and rerun (no JSON fallback).`);
+        if (this._spool) {
+          try { fs.rmSync(this._spool, { recursive: true, force: true }); } catch (error) {
+            warn(`OpenTelemetry could not remove its temporary directory (${describeError(error)}).`);
+          }
+        }
+      }
       return;
     }
     return new Promise(resolve => {
@@ -68,8 +91,13 @@ class PlaywrightBuildkiteTestEngineReporter {
    * @param {TestResult} testResult
    */
   onTestEnd(test, testResult) {
-    if (!this._session) {
+    if (!this._otelEnabled) {
       this._testResults.push(this.testEngineRecord(test, testResult));
+      return;
+    }
+    if (!this._hasCredential) return;
+    if (!this._sender) {
+      this._missingTests += 1;
       return;
     }
 
@@ -83,8 +111,12 @@ class PlaywrightBuildkiteTestEngineReporter {
       // Worker timings include hooks and exclude reporter/transport latency.
       const handle = this._session.startTestSpan(record, { line, column, startTime });
       this._session.finishTestSpan(handle, record, { line, column, endTime: startTime + testResult.duration });
+      if (handle) {
+        this._session.forceFlush(test.location.file);
+        this._sender.collect(test.location.file, 1, 'setup failed');
+      }
     } catch (error) {
-      this._session.metrics.recordFailures += 1;
+      this._missingTests += 1;
       warn(`TEST RESULTS MISSING: Could not report the Playwright test execution over OpenTelemetry: ${describeError(error)}`);
     }
   }

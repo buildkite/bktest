@@ -1,17 +1,7 @@
 # OpenTelemetry (experimental)
 
-> **This feature is still under development and may change.**
-> It is intended for suites that do not already configure OpenTelemetry.
-> Existing OpenTelemetry setups may work, but are not yet supported.
-
-When `otelEnabled` is true, spans are the only submission path. Every test
-becomes a `test.execution` span with `buildkite.execution.via=otlp`, which makes
-the span itself the submission: Buildkite synthesizes the execution from it
-server-side, and nothing is sent to `/v1/uploads`. Resources identify the suite,
-CI run, worker and VCS ref that produced the telemetry. Test Engine run metadata
-and any `tags` you configure live on each `test.execution` span.
-
-OpenTelemetry submission is off by default. Jest and Playwright support it.
+Test Engine can receive your Jest and Playwright results as OpenTelemetry traces.
+Each test becomes a span. With Jest, the work inside it (HTTP calls, database queries, your own spans) shows up underneath.
 
 ## Playwright
 
@@ -29,11 +19,15 @@ module.exports = {
 }
 ```
 
-Install the optional OpenTelemetry packages listed below. The reporter decides
-the submission mode in `onBegin`, before tests run. It exports one root span
-per reported attempt, including retries and skips, using Playwright's start
-time and duration (including hooks), then flushes and shuts down in `onEnd`.
-Export failures do not change Playwright's exit code.
+Install the optional OpenTelemetry packages in [Setup](#setup).
+The reporter decides the submission mode in `onBegin`, before tests run.
+It records one root span per reported attempt, including retries and skips,
+using Playwright's start time and duration (including hooks). Each completed
+attempt is committed to a private local spool; the shared uploader sends
+batches during the run and drains in `onEnd` with a 10-second budget.
+Export failures do not change Playwright's exit code. With OTel enabled there
+is no JSON fallback, including when setup fails. Without a credential, the
+collector prints one configuration warning and uploads nothing.
 
 Scope, name, file, line, column and `@key:value` tags use the same record as
 the JSON upload. Scope is `titlePath()` joined with spaces: root suite,
@@ -59,19 +53,20 @@ per-test tags come from Playwright's `@key:value` test tags.
 HTTP mocks inside workers do not affect its exporter; HTTP mocks in the main
 process must allow the OTLP endpoint.
 
-The endpoint, token precedence, run-key validation, setup fallback, batch/queue
-limits and `TEST RESULTS MISSING: OpenTelemetry dropped N…` warning described
-below also apply to Playwright. Jest's worker-environment and end-of-file flush
-behaviour does not: Playwright exports from the reporter process and flushes
-in `onEnd`. Its `buildkite.test.framework.name` is `playwright` and
+The endpoint, token precedence, run-key validation, test batch limits and
+`TEST RESULTS MISSING` warnings described below also apply to Playwright.
+Jest's runtime and worker setup are not needed. Playwright's
+`buildkite.test.framework.name` is `playwright` and
 `buildkite.test.framework.version` is Playwright's version.
+
+Playwright handles SIGINT (Ctrl-C): interrupted attempts are reported as
+skipped in OTel and flushed in `onEnd`. The collector installs no signal
+handlers; SIGTERM can lose queued executions without a missing-results warning.
 
 ## Jest
 
-Jest runs tests in worker processes and reporters in the main process, so the
-collector needs both halves: the reporter decides whether the run uses
-OpenTelemetry, and a test environment in each worker starts and ends a span
-around every test and exports from the worker.
+Jest runs tests in worker processes and reporters in the main process.
+The runtime records spans in the workers; the reporter uploads them.
 
 ```js
 // jest.config.js

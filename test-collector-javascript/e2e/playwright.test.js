@@ -332,26 +332,28 @@ describe('examples/playwright in OTel mode', () => {
     }
   }, 30000);
 
-  test('uses the JSON path without an OTel warning when no credential is available', async () => {
+  test('warns once without uploading when no credential is available', async () => {
     server = await startOtlpServer();
     const result = await run(['--grep', ' fails$'], { BUILDKITE_TESTS_OTLP_TOKEN: undefined });
     expect(result.code).toBe(1);
     expect(specs(result.report)).toHaveLength(1);
-    expect(result.stderr).toMatch(/Missing BUILDKITE_ANALYTICS_TOKEN/);
-    expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]|Error in reporter/);
+    expect(result.stderr.match(/\[buildkite-test-collector\]/g)).toHaveLength(1);
+    expect(result.stderr).toMatch(/results were not uploaded: set BUILDKITE_TESTS_OTLP_TOKEN/);
+    expect(result.stdout).not.toMatch(/Test Engine Sending:/);
     expect(server.requests).toHaveLength(0);
   }, 30000);
 
   test.each([
     { BUILDKITE_ANALYTICS_KEY: 'invalid key' },
     { BUILDKITE_ANALYTICS_OTLP_ENDPOINT: 'not a URL' },
-  ])('falls back to JSON when setup fails: %j', async env => {
+  ])('reports missing results without JSON fallback when setup fails: %j', async env => {
     server = await startOtlpServer();
     const result = await run(['--grep', ' fails$'], { ...env, BUILDKITE_ANALYTICS_TOKEN: 'json-token' });
     expect(result.code).toBe(1);
     expect(result.stderr).toMatch(/OpenTelemetry span export disabled:/);
-    expect(result.stderr).toMatch(/uploading results as JSON instead/);
-    expect(jsonRecords(result.stdout)).toHaveLength(1);
+    expect(result.stderr).toMatch(/no JSON fallback/);
+    expect(result.stderr).toMatch(/TEST RESULTS MISSING: 1 Playwright test execution\(s\) were not recorded/);
+    expect(result.stdout).not.toMatch(/Test Engine Sending:/);
     expect(server.requests).toHaveLength(0);
   }, 30000);
 
@@ -360,7 +362,7 @@ describe('examples/playwright in OTel mode', () => {
     const result = await run(['--grep', grep], { BUILDKITE_ANALYTICS_OTLP_ENDPOINT: 'http://127.0.0.1:1/v1/traces' });
     expect(result.code).toBe(code);
     expect(result.stdout).not.toMatch(/Test Engine Sending:/);
-    expect(result.stderr).toMatch(/TEST RESULTS MISSING: OpenTelemetry dropped 1 test\.execution span\(s\) \(export-failure, last OTLP failure: ECONNREFUSED\)/);
+    expect(result.stderr).toMatch(/TEST RESULTS MISSING: 1 test\.execution span\(s\), 0 child span\(s\) were not acknowledged \(ECONNREFUSED\)/);
   }, 60000);
 
   test('exports an interrupted attempt as skipped and preserves the SIGINT exit code', async () => {
