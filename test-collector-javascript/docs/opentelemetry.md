@@ -62,7 +62,7 @@ The run key is the ID that groups results from one test run. It must be 1–255 
 | `BUILDKITE_TESTS_OTLP_TOKEN` | Overrides the token for OpenTelemetry only | Uses the suite token |
 | `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` | Sets an HTTP or HTTPS destination | `https://tests-otlp.buildkite.com/v1/traces` |
 | `BUILDKITE_ANALYTICS_KEY` | Sets the run key | Derived from CI, or generated locally |
-| `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | Prints debug output, including upload payloads and selected instrumentation | `false` |
+| `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | Prints selected instrumentation and JSON upload debug output | `false` |
 | `OTEL_NODE_ENABLED_INSTRUMENTATIONS` | Selects only these comma-separated short names | Declared packages, with exclusions below |
 | `OTEL_NODE_DISABLED_INSTRUMENTATIONS` | Removes names, even from the enabled list | None |
 | `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` and `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | Sets queue and batch sizes (batch maximum 200). Overflow waits in memory | 8,192 queued, 120 per batch |
@@ -125,7 +125,7 @@ We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2.
 - **No spans:** check the reporter, runtime, SDK versions, endpoint and earlier warnings, and use Jest 29 or 30.2+ with `jest-circus`.
 - **No fallback results:** set reporter `token` or `BUILDKITE_ANALYTICS_TOKEN` so files that can't export spans can upload JSON instead.
 - **Missing children:** check your plan includes child spans. Check instrumentation warnings and mocked APIs, skip your own provider setup under Jest, and supply fetch yourself in jsdom if needed.
-- **Duplicates:** projects whose configs differ only in `testEnvironmentOptions` also upload JSON. Make them differ another way, such as `displayName`.
+- **Duplicates:** Projects differing only in `testEnvironmentOptions` can also upload JSON if not all of them export spans. Give them distinct `displayName` values.
 - **Changed stacks:** package instrumentation adds collector frames to errors created while a module loads. Failing tests show context-manager frames whenever runtime is set. Use explicit labels if test names or snapshots include stacks.
 - **Changed headers or messages:** disable the affected instrumentation using the table above if propagation changes what your tests expect.
 - **Missing HTTP client spans:** call `http.get(...)` on the module object instead of destructuring `get` at file load.

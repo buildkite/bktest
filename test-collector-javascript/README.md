@@ -54,18 +54,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ];
     ```
 
-    To try OpenTelemetry submission (experimental), install the packages and add the runtime:
-
-    ```sh
-    npm install --save-dev buildkite-test-collector \
-      '@opentelemetry/sdk-trace-base@^2' \
-      '@opentelemetry/context-async-hooks@^2' \
-      '@opentelemetry/exporter-trace-otlp-proto@<0.300'
-    ```
-
-    With pnpm or Yarn, also add `@opentelemetry/api@~1.9.0`.
-    Under Yarn Plug'n'Play, declare these packages in the root workspace.
-    Install the versions above. SDK 3 and `@opentelemetry/api` 1.10 aren't supported yet.
+    Experimental OpenTelemetry submission sends test results as spans, with HTTP calls,
+    database queries and manual spans underneath. JSON uploads remain the default.
 
     ```js
     // jest.config.js
@@ -79,22 +69,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     };
     ```
 
-    Each test becomes a span, with work such as HTTP calls and database queries
-    underneath. Test spans count as test executions, like JSON uploads, at no extra charge.
-    Child spans are billed by data ingested and need a plan that includes them;
-    without it, we still record test results and warn that child spans were dropped.
-
-    Use Jest 29 or 30.2+ with `jest-circus`. OpenTelemetry SDK 2 needs Node.js 18.19+ or 20.6+.
-    OpenTelemetry options, environment variables and span shape may change in minor releases.
-    Retries count as one test execution per attempt. Child spans can contain URLs,
-    query strings and database statements. A resolvable `@opentelemetry/auto-instrumentations-node`
-    enables its bundle, with the exclusions in the guide below.
-    OpenTelemetry results don't yet count toward auto-quarantine or tag-to-label mappings, and don't update a test's file location.
-
-    Upgrading from a 1.13 beta? Remove `testEnvironment: 'buildkite-test-collector/jest/environment'` and add `runtime`.
-
-    See [OpenTelemetry (experimental)](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md) for installation,
-    supported versions, settings and known limits.
+    See the [OpenTelemetry guide](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md)
+    for required packages, billing and limits before enabling it.
 
     ### Vitest
 
