@@ -524,7 +524,7 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
       ] }),
     })
     expect(result.code).toBe(1)
-    expect(result.stderr).toContain('7 passed, 7 total')
+    expect(stripAnsi(result.stderr)).toContain('7 passed, 7 total')
     expect(new Set(result.events.filter((event) => event.type === 'result').map((event) => event.projectId)).size).toBe(2)
     expect(result.stderr).toContain('TEST RESULTS MISSING: 1 file(s), 7 test(s) have no readable spool commit (no runtime: 1 file(s), 7 test(s)')
     expect(server.requests).toHaveLength(0)
