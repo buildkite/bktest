@@ -1,8 +1,8 @@
 const fs = require('fs')
 const path = require('path')
 const { createRequire } = require('module')
-const { MAX_BYTES, batchSize, restoreSpans } = require('./spool')
-const { createExporter } = require('./exporter')
+const { MAX_BYTES, MAX_RESIDENT_CHILDREN, batchSize, parseFile, restoreSpans } = require('./spool')
+const { createExporter, EXPORT_TIMEOUT_MILLISECONDS } = require('./exporter')
 const { warn, warnOncePerRun, describeError } = require('./warn')
 const { loadSdk } = require('./sdk')
 
@@ -20,16 +20,18 @@ const createUploads = (settings, directory) => {
     return { stream, limit: batchSize(stream, directory), active: 0, metrics,
       exporter: createExporter({ sdk, ...settings, directory, stream, runKey: settings.runEnv.key, metrics }) }
   })
-  let timer, completion, childWarning
+  let timer, completion, childWarning, snapshot
+  let heldChildren = 0
   let finalizing = false, stopped = false, spoolReadFailed = false, deadline = Infinity
 
-  const record = (testPath) => {
+  const record = (testPath, projectId) => {
     if (!testPath) return
-    const waiting = expected.get(testPath)
+    const key = JSON.stringify([projectId, testPath])
+    const waiting = expected.get(key)
     if (waiting?.length) {
       waiting.shift()
-      if (!waiting.length) expected.delete(testPath)
-    } else recorded.set(testPath, (recorded.get(testPath) || 0) + 1)
+      if (!waiting.length) expected.delete(key)
+    } else recorded.set(key, (recorded.get(key) || 0) + 1)
   }
 
   const forget = (name) => {
@@ -38,20 +40,24 @@ const createUploads = (settings, directory) => {
       warnOncePerRun(directory, 'spool-unlink', `Could not remove acknowledged OpenTelemetry spool file: ${describeError(error)}`)
     }
     files.delete(name)
+    snapshot?.delete(name)
   }
-  const readSpoolFiles = () => {
-    const result = []
-    const failed = (error) => {
-      spoolReadFailed = true
-      warnOncePerRun(directory, 'spool-read', `TEST RESULTS MISSING: could not read the OpenTelemetry spool (${describeError(error)}); test and child counts are unavailable for unreadable files. Check temporary directory permissions/free space and rerun (no JSON fallback).`)
+  const readFailed = (error) => {
+    spoolReadFailed = true
+    warnOncePerRun(directory, 'spool-read', `TEST RESULTS MISSING: could not read the OpenTelemetry spool (${describeError(error)}); test and child counts are unavailable for unreadable files. Check temporary directory permissions/free space and rerun (no JSON fallback).`)
+  }
+  const spoolNames = () => {
+    try { return fs.readdirSync(directory).filter((name) => name.endsWith('.spool')).sort() } catch (error) { readFailed(error); return [] }
+  }
+  const readSpoolFiles = function* (countOnly = false) {
+    let childFull = false
+    for (const name of countOnly ? spoolNames() : snapshot || spoolNames()) {
+      if (files.has(name) || acknowledged.has(name)) continue
+      const children = Number(name.match(/\.c(\d+)\.spool$/)?.[1] || 0)
+      if (children && countOnly) { yield { children }; continue }
+      if (children && (childFull || heldChildren + children > MAX_RESIDENT_CHILDREN)) { childFull = true; continue }
+      try { yield { name, file: parseFile(fs.readFileSync(path.join(directory, name), 'utf8')) } } catch (error) { readFailed(error) }
     }
-    try {
-      for (const name of fs.readdirSync(directory)) {
-        if (!name.endsWith('.spool') || files.has(name) || acknowledged.has(name)) continue
-        try { result.push({ name, file: JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8')) }) } catch (error) { failed(error) }
-      }
-    } catch (error) { failed(error) }
-    return result
   }
   const split = (spans, stream, name) => {
     if (!spans.length) return []
@@ -74,9 +80,10 @@ const createUploads = (settings, directory) => {
           for (let i = 0; i < spans.length; i += limit) result.push(...split(spans.slice(i, i + limit), stream, name))
           return result
         })
+        heldChildren += streams.child?.length || 0
         if (parts.length) files.set(name, { parts })
         else forget(name)
-        record(file.testPath)
+        record(file.testPath, file.projectId)
       } catch (error) {
         warnOncePerRun(directory, 'spool-decode', `TEST RESULTS MISSING: could not restore OpenTelemetry spool spans (${describeError(error)}); check the SDK installation and rerun (no JSON fallback).`)
       }
@@ -101,7 +108,10 @@ const createUploads = (settings, directory) => {
       for (const part of batch) {
         part.sending = false
         part.done = success
-        if (success) part.spans = null
+        if (success) {
+          part.spans = null
+          if (lane.stream === 'child') heldChildren -= part.count
+        }
         part.attempts++
         part.retryAt = status >= 400 && status < 500 && status !== 429 ? Infinity
           : Math.max(metrics.retryAt || 0, Date.now() + Math.min(5000, 1000 * part.attempts))
@@ -113,6 +123,7 @@ const createUploads = (settings, directory) => {
       for (const name of new Set(batch.map((part) => part.file))) {
         if (files.get(name).parts.every((part) => part.done)) forget(name)
       }
+      if (finalizing && success && lane.stream === 'child') scan()
       pump(); arm()
     }
     try {
@@ -141,22 +152,24 @@ const createUploads = (settings, directory) => {
     }
     if (pending().length) arm()
   }
-  const collect = (testPath, tests = 0, reason = 'no runtime') => {
+  const collect = (testPath, tests = 0, reason = 'no runtime', projectId) => {
     if (!finalizing) arm()
-    const count = recorded.get(testPath) || 0
-    if (count > 1) recorded.set(testPath, count - 1)
-    else if (count) recorded.delete(testPath)
+    const key = JSON.stringify([projectId, testPath])
+    const count = recorded.get(key) || 0
+    if (count > 1) recorded.set(key, count - 1)
+    else if (count) recorded.delete(key)
     else {
-      if (!expected.has(testPath)) expected.set(testPath, [])
-      expected.get(testPath).push({ tests, reason })
+      if (!expected.has(key)) expected.set(key, [])
+      expected.get(key).push({ tests, reason })
     }
   }
   // Snapshot once; SIGTERM may shorten a normal drain already in progress.
-  const drain = (budget = 30000) => {
+  const drain = (budget = EXPORT_TIMEOUT_MILLISECONDS) => {
     deadline = Math.min(deadline, Date.now() + budget)
     return completion ||= (async () => {
       finalizing = true
       clearTimeout(timer)
+      snapshot = new Set(spoolNames())
       scan(); pump()
       while (pending().length && Date.now() < deadline) {
         if (pending().every((part) => part.retryAt === Infinity)) break
@@ -167,9 +180,12 @@ const createUploads = (settings, directory) => {
       for (const lane of lanes) lane.exporter.shutdown().catch(() => {})
       const counts = { test: 0, child: 0 }
       for (const part of pending()) counts[part.stream] += part.count
-      for (const { file } of readSpoolFiles()) {
-        record(file.testPath)
-        for (const stream of ['test', 'child']) counts[stream] += file.streams[stream]?.length || 0
+      for (const { file, children } of readSpoolFiles(true)) {
+        if (children) counts.child += children
+        else {
+          record(file.testPath, file.projectId)
+          counts.test += file.streams.test?.length || 0
+        }
       }
       const missing = [...expected.values()].flat().map((file) => spoolReadFailed && file.reason === 'setup failed'
         ? { ...file, reason: 'spool unreadable' } : file)

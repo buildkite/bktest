@@ -247,7 +247,7 @@ class JestOtelEnvironment {
       } catch (error) {
         warn(`Could not shut down OpenTelemetry child instrumentation: ${describeError(error)}`)
       } finally {
-        await session.forceFlush(this._buildkite.sourcePath)
+        await session.forceFlush(this._buildkite.sourcePath, this._buildkite.projectConfig.id)
       }
     }
   }

@@ -37,15 +37,16 @@ class JestBuildkiteTestEngineReporter {
         this._sender = require('../util/otel/uploads').createUploads(settings, this._spool)
         publishSettings({ ...settings, rootDir: globalConfig.rootDir, spool: this._spool })
         this._sigterm = () => {
+          const otherListeners = process.listenerCount('SIGTERM') > 0
           this._stopping = true
           this._terminated = true
           this._finish(5000).finally(() => {
-            if (process.listenerCount('SIGTERM')) return
+            if (otherListeners) return
             if (process.pid === 1) process.exit(143)
             else process.kill(process.pid, 'SIGTERM')
           })
         }
-        process.once('SIGTERM', this._sigterm)
+        process.prependOnceListener('SIGTERM', this._sigterm)
       } catch (error) {
         warn(`TEST RESULTS MISSING: OpenTelemetry could not create its local spool (${describeError(error)}); check temporary directory permissions/free space and the SDK installation, then rerun. Results were not uploaded (no JSON fallback).`)
         publishSettings(null)
@@ -81,7 +82,7 @@ class JestBuildkiteTestEngineReporter {
     }
     const jasmine = process.env.JEST_JASMINE === '1' || /jest-jasmine2/.test(test.context.config.testRunner)
     const reason = jasmine ? 'jasmine' : test.context.config.runtime ? 'setup failed' : 'no runtime'
-    this._sender.collect(testResult.testFilePath, testResult.testResults.length, reason)
+    this._sender.collect(testResult.testFilePath, testResult.testResults.length, reason, test.context.config.id)
   }
 
   // Kept for consumers invoking the legacy reporter callback directly.
@@ -92,7 +93,7 @@ class JestBuildkiteTestEngineReporter {
     return this._finish()
   }
 
-  _finish(budget = 30000) {
+  _finish(budget) {
     this._stopping = true
     const drain = this._sender?.drain(budget)
     return this._completion ||= (async () => {

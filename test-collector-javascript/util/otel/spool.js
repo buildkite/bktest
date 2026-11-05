@@ -4,6 +4,7 @@ const { randomUUID } = require('crypto')
 const { warnOncePerRun } = require('./warn')
 
 const MAX_BYTES = 750 * 1024
+const MAX_RESIDENT_CHILDREN = 16384
 const size = (suffix, fallback, limit = 2147483647, directory) => {
   const name = `BUILDKITE_TESTS_OTEL_${suffix}`
   const raw = process.env[name]
@@ -15,6 +16,11 @@ const size = (suffix, fallback, limit = 2147483647, directory) => {
 }
 const batchSize = (stream, directory) => stream === 'test'
   ? size('TEST_SPAN_BATCH_SIZE', 120, 200, directory) : size('CHILD_SPAN_BATCH_SIZE', 512, undefined, directory)
+
+const stringify = (value) => JSON.stringify(value, (_key, value) => typeof value === 'number' && !Number.isFinite(value)
+  ? { $number: String(value) } : value)
+const parseFile = (text) => JSON.parse(text, (_key, value) => value && typeof value === 'object' &&
+  ['NaN', 'Infinity', '-Infinity'].includes(value.$number) ? Number(value.$number) : value)
 
 const spanData = (span) => {
   const context = (value) => value && { ...value, traceState: value.traceState?.serialize() }
@@ -38,7 +44,7 @@ const restoreSpans = (streams, sdk) => {
   const scopes = new Map()
   const context = ({ traceState, ...value }) => ({ ...value, traceState: traceState === undefined ? undefined : sdk.api.createTraceState(traceState) })
   return Object.fromEntries(Object.entries(streams).map(([stream, spans]) => [stream, spans.map((span) => {
-    const key = JSON.stringify(span.resource)
+    const key = stringify(span.resource)
     if (!resources.has(key)) resources.set(key, sdk.resources.resourceFromAttributes(span.resource.attributes, { schemaUrl: span.resource.schemaUrl }))
     const scopeKey = JSON.stringify(span.instrumentationScope)
     if (!scopes.has(scopeKey)) scopes.set(scopeKey, span.instrumentationScope)
@@ -53,15 +59,24 @@ const restoreSpans = (streams, sdk) => {
 }
 
 // Workers only commit plain span data; the parent owns protobuf and export.
-const commitFile = (directory, testPath, streams) => {
-  const data = Object.fromEntries(Object.entries(streams).map(([stream, spans]) => [stream, spans.map(spanData)]))
-  const file = path.join(directory, randomUUID())
-  try {
-    fs.writeFileSync(`${file}.tmp`, JSON.stringify({ testPath, streams: data }), { mode: 0o600, flag: 'wx' })
-    fs.renameSync(`${file}.tmp`, `${file}.spool`)
-  } finally {
-    fs.rmSync(`${file}.tmp`, { force: true })
+const commitFile = (directory, testPath, streams, projectId) => {
+  const children = streams.child || []
+  const parts = []
+  for (let i = 0; i < children.length; i += MAX_RESIDENT_CHILDREN) {
+    const spans = children.slice(i, i + MAX_RESIDENT_CHILDREN).map(spanData)
+    parts.push({ suffix: `.c${spans.length}`, streams: { child: spans } })
+  }
+  // Publish children before the test commit used for file accounting.
+  if (testPath !== undefined) parts.push({ suffix: '', testPath, projectId, streams: { test: (streams.test || []).map(spanData) } })
+  for (const { suffix, ...data } of parts) {
+    const file = path.join(directory, `${Date.now()}-${randomUUID()}${suffix}`)
+    try {
+      fs.writeFileSync(`${file}.tmp`, stringify(data), { mode: 0o600, flag: 'wx' })
+      fs.renameSync(`${file}.tmp`, `${file}.spool`)
+    } finally {
+      fs.rmSync(`${file}.tmp`, { force: true })
+    }
   }
 }
 
-module.exports = { commitFile, restoreSpans, MAX_BYTES, size, batchSize }
+module.exports = { commitFile, parseFile, restoreSpans, MAX_BYTES, MAX_RESIDENT_CHILDREN, size, batchSize }

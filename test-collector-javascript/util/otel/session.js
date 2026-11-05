@@ -96,12 +96,12 @@ const createSession = (settings) => {
     span.end(endTime !== undefined && endTime >= handle.startTime ? endTime : undefined)
   }
 
-  const forceFlush = async (testPath) => {
+  const forceFlush = async (testPath, projectId) => {
     const tests = spans
     spans = []
     const childSpans = children?.take() || []
     try {
-      commitFile(settings.spool, testPath, { test: tests, child: childSpans })
+      commitFile(settings.spool, testPath, { test: tests, child: childSpans }, projectId)
     } catch (error) {
       warn(`TEST RESULTS MISSING: ${tests.length} test.execution span(s), ${childSpans.length} child span(s) were not uploaded: could not commit the local spool (${describeError(error)}). Check the temporary directory's permissions and free space, then rerun.`)
     }

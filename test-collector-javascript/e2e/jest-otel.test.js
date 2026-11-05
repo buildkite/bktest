@@ -158,12 +158,13 @@ if (otelSupported) {
       const fs = require('node:fs')
       const path = require('node:path')
       const { loadSdk } = require('buildkite-test-collector/util/otel/sdk')
-      const { commitFile, restoreSpans } = require('buildkite-test-collector/util/otel/spool')
+      const { commitFile, parseFile, restoreSpans } = require('buildkite-test-collector/util/otel/spool')
       const sdk = loadSdk()
       const exporterLoad = createRequire(require.resolve('@opentelemetry/exporter-trace-otlp-proto'))
       const { ProtobufTraceSerializer: serializer } = exporterLoad('@opentelemetry/otlp-transformer')
+      const numbers = [NaN, Infinity, -Infinity]
       const spanProvider = new sdk.trace.BasicTracerProvider({
-        resource: sdk.resources.resourceFromAttributes({ service: 'canary', flags: [true, false], count: 7 }, { schemaUrl: 'https://resource.schema' }),
+        resource: sdk.resources.resourceFromAttributes({ service: 'canary', flags: [true, false], count: 7, numbers }, { schemaUrl: 'https://resource.schema' }),
         spanLimits: { attributeCountLimit: 2, eventCountLimit: 1, linkCountLimit: 1 },
       })
       const parent = { traceId: '0123456789abcdef0123456789abcdef', spanId: '0123456789abcdef', traceFlags: 1,
@@ -171,11 +172,11 @@ if (otelSupported) {
       const spans = [0, 1].map((index) => {
         const span = spanProvider.getTracer('roundtrip', '1.2.3', { schemaUrl: 'https://scope.schema' }).startSpan(`span-${index}`, {
           kind: sdk.api.SpanKind.CLIENT, startTime: [123, 456],
-          attributes: { string: 'héllo', number: 1.5, dropped: true },
-          links: [{ context: parent }, { context: parent, attributes: { link: 'value' } }],
+          attributes: { string: 'héllo', numbers, dropped: true },
+          links: [{ context: parent, attributes: { numbers } }, { context: parent, attributes: { link: 'value' } }],
         }, sdk.api.trace.setSpanContext(sdk.api.ROOT_CONTEXT, parent))
         span.addEvent('dropped')
-        span.addEvent('first', { values: ['a', 'b'] }, [123, 789])
+        span.addEvent('first', { values: ['a', 'b'], numbers }, [123, 789])
         span.setStatus({ code: sdk.api.SpanStatusCode.ERROR, message: 'failure' })
         span.end([124, 987])
         return span
@@ -183,7 +184,7 @@ if (otelSupported) {
       const directory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'otel-roundtrip-'))
       try {
         commitFile(directory, 'canary.js', { test: spans, child: [] })
-        const file = JSON.parse(fs.readFileSync(path.join(directory, fs.readdirSync(directory)[0]), 'utf8'))
+        const file = parseFile(fs.readFileSync(path.join(directory, fs.readdirSync(directory)[0]), 'utf8'))
         const restored = restoreSpans(file.streams, sdk).test
         assert.deepEqual(serializer.serializeRequest(restored), serializer.serializeRequest(spans), 'JSON spool must preserve protobuf exactly')
       } finally {
@@ -229,7 +230,7 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     module.exports = class extends Base {
       onTestFileResult(...args) {
         super.onTestFileResult(...args)
-        const event = { type: 'result', at: Date.now(), spool: this._spool }; ${log}
+        const event = { type: 'result', at: Date.now(), spool: this._spool, projectId: args[0].context.config.id, runtime: args[0].context.config.runtime }; ${log}
         if (++this.files === Number(process.env.OTEL_SIGNAL_AFTER)) process.kill(process.pid, 'SIGTERM')
       }
       files = 0
@@ -242,9 +243,12 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
         if (process.env.OTEL_SIGNAL_DURING_DRAIN) {
           const pid = process.pid
           if (process.env.OTEL_PID1) Object.defineProperty(process, 'pid', { value: 1 })
-          if (process.env.OTEL_OTHER_LISTENER) process.on('SIGTERM', () => {
+          if (process.env.OTEL_OTHER_LISTENER || process.env.OTEL_OTHER_ONCE_LISTENER) process[process.env.OTEL_OTHER_ONCE_LISTENER ? 'once' : 'on']('SIGTERM', () => {
             const event = { type: 'other-sigterm' }; ${log}
-            setTimeout(() => process.exit(143), 6200)
+            setTimeout(() => {
+              const event = { type: 'other-cleanup-finished' }; ${log}
+              process.exit(143)
+            }, 6200)
           })
           setTimeout(() => process.kill(pid, 'SIGTERM'), 200)
         }
@@ -290,6 +294,7 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     reporters: ['default', [reporter, { otelEnabled: true, token: 'xyz' }]],
     testEnvironment: 'node', ...overrides,
   }
+  if (typeof overrides === 'function') Object.assign(config, overrides({ dir, runtime }))
   if (env.OTEL_BREAK === 'environment') {
     const environment = path.join(dir, 'environment.cjs')
     fs.writeFileSync(environment, `module.exports = class { constructor() { throw new Error('environment construction fixture') } }`)
@@ -393,6 +398,16 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(result.spools).toEqual([{ exists: false, files: [] }])
   }, 20000)
 
+  test('normal completion stops waiting after ten seconds when the endpoint hangs', async () => {
+    server = await startOtlpServer({ respond: () => ({ hang: true }) })
+    const result = await spoolRun({ args: ['--runInBand'] })
+    expect(result.code).toBe(0)
+    expect(result.stderr).toContain('TEST RESULTS MISSING: 1 test.execution span(s), 1 child span(s)')
+    const complete = result.events.find((event) => event.type === 'complete')
+    expect(Date.now() - complete.at).toBeGreaterThanOrEqual(9500)
+    expect(Date.now() - complete.at).toBeLessThan(12000)
+  }, 20000)
+
   test.each(['accepted', 'http-connect', 'https-connect', 'http-connect-timeout', 'https-connect-timeout'])('bounds hanging exports during the run and at drain completion (%s)', async (state) => {
     server = await startOtlpServer({ respond: () => ({ hang: true }) })
     const start = Date.now()
@@ -422,6 +437,16 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(result.stderr).toContain('TEST RESULTS MISSING: 1 test.execution span(s), 1 child span(s)')
     const complete = result.events.find((event) => event.type === 'complete')
     expect(Date.now() - complete.at).toBeLessThan(6200)
+  }, 15000)
+
+  test('a scheduled Retry-After may outlive the drain but cannot reopen sockets', async () => {
+    server = await startOtlpServer({ respond: () => ({ status: 503, headers: { 'Retry-After': '9' } }) })
+    const result = await spoolRun({ args: ['--runInBand'], env: { OTEL_DRAIN_BUDGET: '200' } })
+    expect(result.code).toBe(0)
+    expect(server.requests).toHaveLength(2)
+    expect(result.stderr).toContain('HTTP 503')
+    const complete = result.events.find((event) => event.type === 'complete')
+    expect(Date.now() - complete.at).toBeLessThan(11200)
   }, 15000)
 
   test('reuses the worker session across two in-band runCLI runs in one process', async () => {
@@ -476,15 +501,54 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(jsonUpload(result.stdout)).toBeNull()
   }, 30000)
 
-  test.each(['OTEL_PID1', 'OTEL_OTHER_LISTENER'])('SIGTERM respects %s while a normal drain is in progress', async (flag) => {
+  test.each(['OTEL_PID1', 'OTEL_OTHER_LISTENER', 'OTEL_OTHER_ONCE_LISTENER'])('SIGTERM respects %s while a normal drain is in progress', async (flag) => {
     server = await startOtlpServer({ respond: () => ({ delay: 10000 }) })
     const start = Date.now()
     const result = await spoolRun({ args: ['--runInBand'], env: { OTEL_SIGNAL_DURING_DRAIN: '1', [flag]: '1' } })
     expect(result.code).toBe(143)
     expect(Date.now() - start).toBeLessThan(12000)
     expect(result.stderr).toContain('TEST RESULTS MISSING: 1 test.execution span(s), 1 child span(s)')
-    if (flag === 'OTEL_OTHER_LISTENER') expect(result.events.filter((e) => e.type === 'other-sigterm')).toHaveLength(1)
+    if (flag !== 'OTEL_PID1') {
+      expect(result.events.filter((e) => e.type === 'other-sigterm')).toHaveLength(1)
+      expect(result.events.filter((e) => e.type === 'other-cleanup-finished')).toHaveLength(1)
+    }
   }, 20000)
+
+  test('an empty commit cannot hide missing results from another project running the same file', async () => {
+    server = await startOtlpServer()
+    const result = await spoolRun({ args: ['--runInBand'],
+      body: `if (broken) throw new Error('project load failed'); test.each([1,2,3,4,5,6,7])('work %s', () => {})`,
+      config: ({ dir, runtime }) => ({ runtime: undefined, projects: [
+        { rootDir: dir, runtime, globals: { broken: true } },
+        { rootDir: dir, globals: { broken: false } },
+      ] }),
+    })
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain('7 passed, 7 total')
+    expect(new Set(result.events.filter((event) => event.type === 'result').map((event) => event.projectId)).size).toBe(2)
+    expect(result.stderr).toContain('TEST RESULTS MISSING: 1 file(s), 7 test(s) have no readable spool commit (no runtime: 1 file(s), 7 test(s)')
+    expect(server.requests).toHaveLength(0)
+    expect(jsonUpload(result.stdout)).toBeNull()
+  }, 20000)
+
+  test.each([false, true])('bounds resident children while retaining excess on disk (outage=%s)', async (outage) => {
+    server = await startOtlpServer({ respond: (_, headers) => outage && headers['buildkite-tests-span-stream'] === 'child' ? 403 : 200 })
+    const result = await spoolRun({ files: 9, args: ['--runInBand'], body: `test('children', () => {
+      const api = require(${JSON.stringify(require.resolve('@opentelemetry/api'))})
+      for (let i = 0; i < 2048; i++) api.trace.getTracer('cap').startSpan('child', { attributes: { body: 'x'.repeat(1000) } }).end()
+    })` })
+    expect(result.code).toBe(0)
+    expect(server.spans().filter((span) => span.name === 'test.execution')).toHaveLength(9)
+    const sentChildren = server.requests.filter((request) => request.headers['buildkite-tests-span-stream'] === 'child')
+      .flatMap((request) => request.decoded.resourceSpans.flatMap((resource) => resource.scopeSpans.flatMap((scope) => scope.spans)))
+    expect(sentChildren).toHaveLength(outage ? 16384 : 18432)
+    if (outage) {
+      expect(result.stderr).toContain('OpenTelemetry dropped 18432 child span(s) in total')
+      expect(result.stderr).toContain('test.execution results are unaffected')
+    } else expect(result.stderr).not.toContain('OpenTelemetry dropped')
+    expect(result.stderr).not.toContain('TEST RESULTS MISSING')
+    expect(result.spools).toEqual([{ exists: false, files: [] }])
+  }, 30000)
 
   test('retries both lanes through an outage, honoring Retry-After, without losing committed files', async () => {
     const attempts = { test: 0, child: 0 }
@@ -1550,7 +1614,8 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     await closed.close()
     const cacheDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'jest-cache-'))
     // Workers finish all files locally; the parent must account for the full
-    // run when its one 30 s drain budget expires.
+    // run when its one 10 s drain budget expires. A scheduled stock retry can
+    // keep Node alive for up to a further 10 s (Retry-After may exceed 5 s).
     const result = await run(`jest --config otel-many-files.config.js --maxWorkers=2 --cacheDirectory ${cacheDirectory}`, {
       ...baseEnv,
       BUILDKITE_TESTS_OTLP_TOKEN: 'relay-token',
