@@ -234,7 +234,6 @@ if (otelSupported) {
         import type { Config } from 'jest'
         import type { Options } from 'buildkite-test-collector/jest/reporter'
         const options = { otelEnabled: true, token: 'token', tags: { count: 2, enabled: false }, url: 'https://example.test' } satisfies Options
-        const stringOption = { otelEnabled: 'true' } satisfies Options
         // @ts-expect-error The collector option is otelEnabled, not otelEnable.
         const misspelled = { otelEnable: true } satisfies Options
         export default { reporters: [['buildkite-test-collector/jest/reporter', options]], runtime: 'buildkite-test-collector/jest/runtime' } satisfies Config

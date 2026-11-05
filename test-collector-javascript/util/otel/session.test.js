@@ -320,7 +320,7 @@ describe('createSession', () => {
     })
 
     expect(spans).toHaveLength(10000)
-    expect(flushed.metrics).toMatchObject({ ended: 10000, exported: 10000, failed: 0 })
+    expect(flushed.metrics).toMatchObject({ exported: 10000, failed: 0 })
     expect(warnings).toEqual([])
   }, 60000)
 
@@ -345,7 +345,7 @@ describe('createSession', () => {
     })
 
     expect(requests).toHaveLength(3)
-    expect(flushed.metrics).toMatchObject({ ended: 5, handed: 5, exported: 0, failed: 5 })
+    expect(flushed.metrics).toMatchObject({ handed: 5, exported: 0, failed: 5 })
     expect(warnings).toEqual([expect.stringMatching(/dropped 5 test\.execution span\(s\) \(export-failure: 5, last OTLP failure: 401\)/)])
   })
 

@@ -2,7 +2,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const vm = require('vm')
-const { SETTINGS_ENV, publishSettings, readSettings } = require('../util/otel/config')
+const { publishSettings, readSettings } = require('../util/otel/config')
 
 jest.mock('../util/otel/session', () => ({
   sessionFor: jest.fn(() => ({ fake: true })),
@@ -32,7 +32,7 @@ const OLD_ENV = process.env
 
 beforeEach(() => {
   process.env = { ...OLD_ENV }
-  delete process.env[SETTINGS_ENV]
+  publishSettings(null)
   consoleWarnSpy.mockClear()
   sessionFor.mockClear()
   uploadTestResults.mockClear()
@@ -118,7 +118,7 @@ describe('JestOtelEnvironment constructor', () => {
   })
 
   it('still constructs, and names the file, when OTel cannot be set up in the worker', async () => {
-    process.env[SETTINGS_ENV] = '{not json'
+    process.env.BUILDKITE_TEST_COLLECTOR_OTEL_SETTINGS = '{not json'
     const environment = new Environment(configFor({ rootDir: '/proj' }), context)
 
     expect(environment._buildkite.session).toBeNull()

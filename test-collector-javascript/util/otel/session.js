@@ -107,9 +107,6 @@ const createSession = (settings) => {
   assertCanExport(sdk, providerConfig)
 
   const metrics = {
-    started: 0,
-    startFailures: 0,
-    ended: 0,
     handed: 0,
     exported: 0,
     failed: 0,
@@ -193,10 +190,8 @@ const createSession = (settings) => {
           ...attributes,
         }),
       }, api.ROOT_CONTEXT)
-      metrics.started += 1
       return { span, startTime: startTime ?? Date.now() }
     } catch (error) {
-      metrics.startFailures += 1
       missingResults(1, `could not start span: ${describeError(error)}`)
       return null
     }
@@ -235,7 +230,6 @@ const createSession = (settings) => {
       } else {
         span.end()
       }
-      metrics.ended += 1
     } catch (error) {
       warn(`Could not finish OpenTelemetry test span: ${describeError(error)}`)
     }

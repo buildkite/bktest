@@ -11,8 +11,6 @@ const SETTINGS_ENV = 'BUILDKITE_TEST_COLLECTOR_OTEL_SETTINGS'
 
 const isValidRunKey = (runKey) => typeof runKey === 'string' && RUN_KEY_FORMAT.test(runKey)
 
-const isOtelEnabled = (value) => value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true')
-
 const otlpEndpoint = () => (process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT ?? DEFAULT_ENDPOINT).trim()
 
 const isValidEndpoint = (endpoint) => {
@@ -51,7 +49,7 @@ const resolveSettings = (options) => {
 }
 
 const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runEnv, tags, unsupported, probe = buildSession }) => {
-  if (!isOtelEnabled(otelEnabled)) return null
+  if (otelEnabled !== true) return null
 
   const jsonToken = jsonTokenFor(token)
   const relayToken = (process.env.BUILDKITE_TESTS_OTLP_TOKEN || '').trim()
@@ -119,10 +117,6 @@ const readSettings = () => {
 }
 
 module.exports = {
-  DEFAULT_ENDPOINT,
-  SETTINGS_ENV,
-  isOtelEnabled,
-  isValidRunKey,
   fallbackOutcome,
   resolveSettings,
   publishSettings,

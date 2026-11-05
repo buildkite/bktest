@@ -1,5 +1,5 @@
 const { createRequire } = require('module')
-const { resolveSettings, publishSettings, readSettings, isOtelEnabled, isValidRunKey, fallbackOutcome, SETTINGS_ENV, DEFAULT_ENDPOINT } = require('./config')
+const { resolveSettings, publishSettings, readSettings, fallbackOutcome } = require('./config')
 
 const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation()
 
@@ -24,44 +24,12 @@ beforeEach(() => {
   delete process.env.BUILDKITE_ANALYTICS_TOKEN
   delete process.env.BUILDKITE_TESTS_OTLP_TOKEN
   delete process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT
-  delete process.env[SETTINGS_ENV]
+  publishSettings(null)
   consoleWarnSpy.mockClear()
 })
 
 afterAll(() => {
   process.env = OLD_ENV
-})
-
-describe('isValidRunKey', () => {
-  it('accepts printable ASCII without spaces, from 1 to 255 characters', () => {
-    expect(isValidRunKey('a')).toBe(true)
-    expect(isValidRunKey('x'.repeat(255))).toBe(true)
-    expect(isValidRunKey('01234-abc_DEF.~!@#$%^&*()+=[]{}|;:\'",<>?/`\\')).toBe(true)
-  })
-
-  it('rejects empty, too long, whitespace, control and non-ASCII keys', () => {
-    expect(isValidRunKey('')).toBe(false)
-    expect(isValidRunKey('x'.repeat(256))).toBe(false)
-    expect(isValidRunKey('has space')).toBe(false)
-    expect(isValidRunKey('tab\there')).toBe(false)
-    expect(isValidRunKey('ünïcode')).toBe(false)
-    expect(isValidRunKey(undefined)).toBe(false)
-  })
-})
-
-describe('isOtelEnabled', () => {
-  it('accepts only true and the string true, in any case', () => {
-    expect(isOtelEnabled(true)).toBe(true)
-    expect(isOtelEnabled('true')).toBe(true)
-    expect(isOtelEnabled('TRUE')).toBe(true)
-    expect(isOtelEnabled(' true ')).toBe(true)
-  })
-
-  it('treats every other value as off, including truthy strings and numbers', () => {
-    for (const value of ['false', 'FALSE', 0, '0', 1, '1', 'yes', 'on', '', false, null, undefined, {}, []]) {
-      expect(isOtelEnabled(value)).toBe(false)
-    }
-  })
 })
 
 describe('fallbackOutcome', () => {
@@ -89,15 +57,14 @@ describe('resolveSettings', () => {
     expect(warnings()).toEqual([])
   })
 
-  it('reads otelEnabled strictly, so a CLI string "false" stays off and "TRUE" turns on', () => {
+  it('enables export only for boolean true', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'json-token'
 
-    expect(resolve({ otelEnabled: 'false' })).toBeNull()
-    expect(resolve({ otelEnabled: 0 })).toBeNull()
-    expect(resolve({ otelEnabled: '0' })).toBeNull()
-    expect(resolve({ otelEnabled: 1 })).toBeNull()
-    expect(resolve({ otelEnabled: 'true' })).not.toBeNull()
-    expect(resolve({ otelEnabled: 'TRUE' })).not.toBeNull()
+    for (const otelEnabled of ['true', 'TRUE', 'false', 0, 1]) {
+      expect(resolve({ otelEnabled })).toBeNull()
+      expect(readSettings()).toBeNull()
+    }
+    expect(resolve({ otelEnabled: true })).not.toBeNull()
     expect(warnings()).toEqual([])
   })
 
@@ -132,8 +99,7 @@ describe('resolveSettings', () => {
   it('uses the default endpoint unless BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
 
-    expect(resolve().endpoint).toBe(DEFAULT_ENDPOINT)
-    expect(DEFAULT_ENDPOINT).toBe('https://tests-otlp.buildkite.com/v1/traces')
+    expect(resolve().endpoint).toBe('https://tests-otlp.buildkite.com/v1/traces')
 
     process.env.BUILDKITE_ANALYTICS_OTLP_ENDPOINT = ' http://127.0.0.1:4318/v1/traces\n'
     expect(resolve().endpoint).toBe('http://127.0.0.1:4318/v1/traces')
@@ -162,7 +128,7 @@ describe('resolveSettings', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
 
     expect(resolve()).toEqual({
-      endpoint: DEFAULT_ENDPOINT,
+      endpoint: 'https://tests-otlp.buildkite.com/v1/traces',
       token: 'env-token',
       runEnv: runEnv(),
       tags: { hello: 'world' },
@@ -187,8 +153,15 @@ describe('resolveSettings', () => {
     expect(readSettings().tags).toEqual({ shard: '3' })
 
     expect(resolve({ otelEnabled: false })).toBeNull()
-    expect(process.env[SETTINGS_ENV]).toBeUndefined()
     expect(readSettings()).toBeNull()
+  })
+
+  it('accepts printable ASCII run keys from 1 to 255 characters without spaces', () => {
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    for (const key of ['a', 'x'.repeat(255), '01234-abc_DEF.~!@#$%^&*()+=[]{}|;:\'",<>?/`\\']) {
+      expect(resolve({ runEnv: runEnv({ key }) }).runEnv.key).toBe(key)
+    }
+    expect(warnings()).toEqual([])
   })
 
   it('warns and falls back to JSON for an invalid run key without probing the SDK', () => {
@@ -201,6 +174,11 @@ describe('resolveSettings', () => {
       expect.stringMatching(/OpenTelemetry span export disabled: run key 'bad key' is invalid/),
       expect.stringMatching(/otelEnabled is set, but OpenTelemetry could not be configured .*uploading results as JSON instead/),
     ])
+    for (const key of ['', 'x'.repeat(256), 'tab\there', 'ünïcode', undefined]) {
+      expect(resolve({ runEnv: runEnv({ key }), probe })).toBeNull()
+      expect(readSettings()).toBeNull()
+    }
+    expect(probe).not.toHaveBeenCalled()
   })
 
   it('warns and falls back to JSON when the probe fails', () => {
@@ -330,7 +308,6 @@ describe('publishSettings / readSettings', () => {
     expect(readSettings()).toEqual(settings)
 
     publishSettings(null)
-    expect(process.env[SETTINGS_ENV]).toBeUndefined()
     expect(readSettings()).toBeNull()
   })
 })
