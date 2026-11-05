@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import CI from '../util/ci.js'
 import uploadTestResults from '../util/uploadTestResults.js'
 import Paths from '../util/paths'
+import { warn } from '../util/otel/warn.js'
 
 /*
  * Vites JsonReporter returns all the test results we need
@@ -18,6 +19,10 @@ class VitestBuildkiteTestEngineReporter extends JsonReporter {
 
   onInit(ctx) {
     super.onInit(ctx)
+    if (this._options?.otelEnabled === true) {
+      warn('otelEnabled is set, but OpenTelemetry submission needs Vitest 3 or newer; results were not uploaded (no JSON fallback).')
+      return
+    }
     this._paths = new Paths({ rootDir: ctx.config.root }, this._testEnv.location_prefix)
   }
 
@@ -27,6 +32,7 @@ class VitestBuildkiteTestEngineReporter extends JsonReporter {
    * https://github.com/vitest-dev/vitest/blob/33b930a12feb9f8932b10ed9e41e078200f62379/packages/vitest/src/node/reporters/json.ts#L208
    */
   async writeReport(reportString) {
+    if (this._options?.otelEnabled === true) return
     const report = JSON.parse(reportString);
     const originStart = report.startTime;
     const testResults = report.testResults.flatMap((testResult) => {

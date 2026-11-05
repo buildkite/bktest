@@ -1,9 +1,9 @@
 const fs = require('fs')
 const path = require('path')
 const { createRequire } = require('module')
-const { describeError } = require('../util/otel/warn')
-const { packageVersion } = require('../util/otel/sdk')
-const { worker } = require('./otelWorker')
+const { describeError } = require('./warn')
+const { packageVersion } = require('./sdk')
+const sets = new Map()
 
 const PREFIX = '@opentelemetry/instrumentation-'
 const SDK_LINES = { http: [200, 300], undici: [11, 34] }
@@ -29,7 +29,7 @@ const enabledByEnv = (name) => (process.env.OTEL_NODE_ENABLED_INSTRUMENTATIONS
 
 // Declarations opt in, not incidental hoisting from another dependency.
 const loadInstrumentations = (rootDir, warnOnce) => {
-  if (worker.sets.has(rootDir)) return worker.sets.get(rootDir)
+  if (sets.has(rootDir)) return sets.get(rootDir)
   const project = createRequire(path.join(rootDir, 'package.json'))
   const loaders = [project]
   const manifests = []
@@ -93,7 +93,7 @@ const loadInstrumentations = (rootDir, warnOnce) => {
   }
   if (skipped.length) warnOnce('instrumentation', `OpenTelemetry instrumentation skipped: ${skipped.join(', ')}. ` +
     'The collector records child spans with instrumentation from the OpenTelemetry JavaScript 2.x SDK line; test.execution export remains enabled.')
-  worker.sets.set(rootDir, entries)
+  sets.set(rootDir, entries)
   return entries
 }
 

@@ -79,6 +79,12 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     Supports Vitest 1–5. Vitest 5 requires Node.js 22.12+; the reporter
     configuration below is unchanged when upgrading from Vitest 4.
 
+    For experimental OpenTelemetry mode on Vitest 4.0.11+, set reporter option
+    `otelEnabled: true` and configure Vitest's native `experimental.openTelemetry`
+    with the collector's `vitest/otel.js` SDK. Tests, hooks, manual spans and
+    HTTP/fetch calls form one trace per test. See the [Vitest OTel guide](docs/opentelemetry.md#vitest)
+    for installation, `sdkPath` resolution, bktec configuration and limitations.
+
     Update your [Vitest configuration](https://vitest.dev/config/):<br>
 
     ```js

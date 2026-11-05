@@ -44,7 +44,7 @@ test.each([
       fs.writeFileSync(path.join(sdk, 'package.json'), JSON.stringify({ name: '@opentelemetry/instrumentation', version: '0.223.0', exports: './index.js' }))
       fs.writeFileSync(path.join(sdk, 'index.js'), '')
       const output = execFileSync(process.execPath, ['-e', `
-        const { loadInstrumentations } = require(${JSON.stringify(require.resolve('./otelInstrumentations'))})
+        const { loadInstrumentations } = require(${JSON.stringify(require.resolve('../util/otel/instrumentations'))})
         console.log(JSON.stringify(loadInstrumentations(process.argv[1], (_, message) => { throw new Error(message) }).map(entry => entry.name).sort()))
       `, project], { env: { ...process.env, OTEL_NODE_ENABLED_INSTRUMENTATIONS: enabled, OTEL_NODE_DISABLED_INSTRUMENTATIONS: disabled } })
       expect(JSON.parse(output)).toEqual(expected)

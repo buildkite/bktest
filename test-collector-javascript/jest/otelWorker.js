@@ -2,7 +2,7 @@ const { isBuiltin } = require('module')
 const Debug = require('../util/debug')
 
 const worker = {
-  enabled: new Map(), httpWrappers: new WeakMap(), sets: new Map(),
+  enabled: new Map(), httpWrappers: new WeakMap(),
   current: null, requesting: false,
   open(file) { this.current = file },
   close(file) { if (this.current === file) this.current = null },

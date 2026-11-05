@@ -22,11 +22,12 @@ const createChildExport = (settings) => {
     return {
       addTrace(traceId) { if (active) traces.add(traceId) },
       onStart(span) {
-        if (!active || !traces.has(span.spanContext().traceId)) return
-        if (accepted >= cap) { dropped += 1; return }
+        if (!active || !traces.has(span.spanContext().traceId)) return false
+        if (accepted >= cap) { dropped += 1; return false }
         accepted += 1
         open += 1
         tracked.add(span)
+        return true
       },
       onEnd(span) {
         if (!tracked.delete(span)) return
@@ -49,6 +50,7 @@ const createChildExport = (settings) => {
   return {
     createForwarder,
     take() { const ended = spans; spans = []; return ended },
+    closeTrace(traceId) { closedTraces.add(traceId) },
     isClosedTrace: (traceId) => closedTraces.has(traceId),
     rejectLate(span) {
       if (!closedTraces.has(span.spanContext().traceId)) return false

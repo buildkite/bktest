@@ -1,7 +1,7 @@
 # OpenTelemetry (experimental)
 
-Test Engine can receive your Jest and Playwright results as OpenTelemetry traces.
-Each test becomes a span. With Jest, the work inside it (HTTP calls, database queries, your own spans) shows up underneath.
+Test Engine can receive your Jest, Playwright and Vitest results as OpenTelemetry traces.
+Each test becomes a span. With Jest and Vitest, work inside it shows up underneath.
 
 ## Playwright
 
@@ -44,6 +44,88 @@ This is reporter-side tracing only. It does not propagate context into workers
 or collect automatic HTTP/database spans, manual worker spans, browser application
 traces or in-test annotations. Ctrl-C allows results to flush; SIGTERM can lose
 pending results.
+
+## Vitest
+
+Use Vitest 4.0.11+ and the optional packages in [Setup](#setup), including
+`@opentelemetry/api@~1.9.0`. Vitest 5 requires Node.js 22.12+.
+Enable the reporter and Vitest's native OpenTelemetry support together:
+
+```js
+// vitest.config.js (ESM; also works with npm, pnpm and Yarn)
+import { defineConfig } from 'vitest/config'
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+
+export default defineConfig({
+  test: {
+    reporters: [
+      'default',
+      ['buildkite-test-collector/vitest/reporter', { otelEnabled: true }],
+    ],
+    includeTaskLocation: true,
+    experimental: {
+      openTelemetry: {
+        enabled: true,
+        sdkPath: require.resolve('buildkite-test-collector/vitest/otel.js'),
+      },
+    },
+  },
+})
+```
+
+`sdkPath` must be a filesystem path, not a package specifier or file URL:
+Vitest resolves it relative to the project root. `require.resolve` supplies an
+absolute path without assuming a `node_modules` layout. In a CommonJS config,
+use `require.resolve` directly without `createRequire`.
+
+Install `@opentelemetry/instrumentation-http` and
+`@opentelemetry/instrumentation-undici` from the SDK 2.x line to capture HTTP
+and fetch, or install `@opentelemetry/auto-instrumentations-node` (which contains
+both). Discovery and the `OTEL_NODE_ENABLED_INSTRUMENTATIONS` /
+`OTEL_NODE_DISABLED_INSTRUMENTATIONS` rules match Jest, but Vitest enables only
+http and undici. Package instrumentation is not supported in Vitest mode.
+
+```text
+test.execution  "checkout charges the card"
+├── vitest.test.runner.test.beforeEach
+│   └── POST /seed
+└── vitest.test.runner.test.callback
+    ├── charge                       (manual span)
+    └── GET                          (HTTP client)
+        └── GET                      (in-process server)
+            └── handler              (manual span)
+```
+
+Vitest phase names, statuses and exception events pass through unchanged.
+Only phases containing test-code or instrumentation spans are sent. Module
+loading, collection, suites and `beforeAll` work are excluded. Tracers created
+at app-module import work when used in a test. Each test produces **one**
+execution, with all retry attempts' phases and children underneath, including
+concurrent tests. Skipped suites and tests cancelled by bail still get results
+from the reporter, even when Vitest never starts their spans.
+
+The reporter owns uploads, credentials, tags, the run key and the shared
+[settings](#settings). Workers commit children locally at test-span end and SDK
+shutdown; they do not send network requests. Children started after their test
+span ends are dropped and counted in a warning; open children and per-file caps
+use the same accounting as Jest. Empty phases do not consume the child cap.
+SIGTERM allows a five-second drain. SIGKILL can lose pending results.
+
+Vitest 3, a user-owned `sdkPath`, missing native tracing configuration, and
+browser mode produce test spans only, with a warning. Browser-mode children
+and watch mode are unsupported. Vitest 1–2 warn and upload nothing when
+`otelEnabled: true`. There is no JSON fallback on configuration or upload
+failure; turn `otelEnabled` off to return to JSON.
+
+**Using bktec:** its default Vitest command passes `--reporter=default
+--reporter=json`. CLI reporters replace config reporters, and cannot pass
+`{ otelEnabled: true }`, so those defaults disable the collector reporter.
+Set bktec's test command to
+`npx vitest run {{testExamples}} --outputFile {{resultPath}}` and list both
+`'json'` and the collector reporter in `vitest.config.js` (alongside `'default'`
+if desired). The JSON file is for bktec; the collector still uploads only OTLP.
+The collector SDK warns if it runs without the collector reporter.
 
 ## Jest
 

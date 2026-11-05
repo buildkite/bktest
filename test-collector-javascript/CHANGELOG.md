@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.14.0-beta.1
+
+- Add experimental Vitest OpenTelemetry mode using Vitest's native tracing (4.0.11+). Enable `otelEnabled: true` on the reporter and point `experimental.openTelemetry.sdkPath` at `buildkite-test-collector/vitest/otel.js`; see the [guide](docs/opentelemetry.md#vitest).
+- Report one execution per test, with retries, hook phases, manual spans and HTTP/fetch children. Empty phases, suite work and `beforeAll` are excluded. Skipped suites and bail-cancelled tests still get executions.
+- Reuse Jest's SDK 2.x gate, instrumentation discovery, spool, uploads and child limits. Vitest supports http/undici instrumentation, not package instrumentation or browser children. Vitest 3 and user-owned SDKs warn and send test spans only; Vitest 1–2 warn and upload nothing. No JSON fallback.
+
 ## 1.13.0
 
 - Send Jest results to Test Engine as OpenTelemetry spans, with HTTP calls, database queries and manual spans underneath. Enable this experimental mode with reporter option `otelEnabled: true` and `runtime: 'buildkite-test-collector/jest/runtime'`. JSON uploads remain the default.
