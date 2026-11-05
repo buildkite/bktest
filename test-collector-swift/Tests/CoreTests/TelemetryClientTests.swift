@@ -1,6 +1,7 @@
 @testable import Core
 import InMemoryExporter
 import OpenTelemetryApi
+import OpenTelemetryProtocolExporterCommon
 import OpenTelemetrySdk
 import XCTest
 
@@ -69,6 +70,10 @@ final class TelemetryClientTests: XCTestCase {
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     let exportedChild = try XCTUnwrap(childExporter.getFinishedSpanItems().only)
+    XCTAssertEqual(
+      SpanAdapter.toProtoResourceSpans(spanDataList: [span]).only?.scopeSpans.only?.scope.name,
+      "buildkite-test-collector"
+    )
     XCTAssertEqual(span.name, "test.execution")
     XCTAssertNil(span.parentSpanId)
     XCTAssertEqual(span.attributes[BuildkiteTelemetryAttribute.executionVia], .string("otlp"))
@@ -104,6 +109,7 @@ final class TelemetryClientTests: XCTestCase {
     XCTAssertNil(span.resource.attributes["buildkite.tag.language"])
     XCTAssertEqual(exportedChild.traceId, span.traceId)
     XCTAssertEqual(exportedChild.parentSpanId, span.spanId)
+    XCTAssertEqual(exportedChild.instrumentationScope.name, "example-app")
     XCTAssertEqual(exportedChild.resource.attributes["service.name"], .string("swift-suite"))
     XCTAssertEqual(exportedChild.resource.attributes["cicd.pipeline.run.id"], .string("build-id"))
     XCTAssertNil(exportedChild.resource.attributes[BuildkiteTelemetryAttribute.runKey])

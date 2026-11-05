@@ -8,7 +8,8 @@ Swift Testing (`@Test`) results are not collected.
 📦 **Supported CI systems:** Buildkite, GitHub Actions, CircleCI, Xcode Cloud, and others via the `BUILDKITE_ANALYTICS_*` environment variables.
 
 Each test execution is exported as a parentless OpenTelemetry `test.execution`
-root span. Sampled OpenTelemetry spans created by the code under test can appear
+root span with instrumentation scope `buildkite-test-collector`. Sampled
+OpenTelemetry spans created by the code under test can appear
 as its children. Test execution data is submitted only through OTLP; the
 collector does not use the legacy proprietary execution upload API.
 

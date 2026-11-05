@@ -475,7 +475,7 @@ private final class LiveTelemetryClient {
       spanLimits: rootSpanLimits
     )
     self.tracer = self.executionProvider.get(
-      instrumentationName: TestCollector.name,
+      instrumentationName: "buildkite-test-collector",
       instrumentationVersion: TestCollector.version
     )
 
