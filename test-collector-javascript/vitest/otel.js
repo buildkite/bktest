@@ -11,7 +11,6 @@ const createWorker = (settings) => {
   const { commitFile } = require('../util/otel/spool')
   const testIds = require('./otelIds')
   const children = createChildExport(settings)
-  const traces = new Set()
   const roots = new Map()
   const nodes = new Map()
   const files = new Map()
@@ -27,11 +26,12 @@ const createWorker = (settings) => {
   // phases never consume the per-file child budget.
   const forward = (node) => {
     if (!node || node.root || node.sent !== undefined) return
+    node.sent = node.forwarder.onStart(node.span)
+    if (!node.sent) return
     forward(node.parent)
     let parent = node.parent
     while (parent && !parent.root && !parent.sent) parent = parent.parent
     node.span.parentSpanContext = parent?.span.spanContext()
-    node.sent = node.forwarder.onStart(node.span)
     if (node.ended) node.forwarder.onEnd(node.span)
   }
   const processor = {
@@ -40,11 +40,14 @@ const createWorker = (settings) => {
       if (children.rejectLate(span)) return
       const root = roots.get(context.traceId)
       if (!root) return
-      const parent = nodes.get(span.parentSpanContext?.spanId) || root
+      const parent = nodes.get(span.parentSpanContext?.spanId) || nodes.get(root.id)
       const node = { span, parent, forwarder: root.forwarder, root: context.spanId === root.id }
+      if (!node.root && span.instrumentationScope.name !== 'vitest') {
+        forward(node)
+        if (!node.sent) return
+      }
       nodes.set(context.spanId, node)
       root.nodes.push(context.spanId)
-      if (!node.root && span.instrumentationScope.name !== 'vitest') forward(node)
     },
     onEnd(span) {
       const context = span.spanContext()
@@ -75,7 +78,7 @@ const createWorker = (settings) => {
       generateTraceId: () => primed?.traceId || idGenerator.generateTraceId(),
       generateSpanId: () => primed?.spanId || idGenerator.generateSpanId(),
     },
-    sampler: { shouldSample: (_context, id) => ({ decision: traces.has(id)
+    sampler: { shouldSample: (_context, id) => ({ decision: roots.has(id) || children.isClosedTrace(id)
       ? trace.SamplingDecision.RECORD_AND_SAMPLED : trace.SamplingDecision.NOT_RECORD }) },
     spanProcessors: [processor],
   })
@@ -90,7 +93,6 @@ const createWorker = (settings) => {
       if (!files.has(file)) files.set(file, children.createForwarder())
       const forwarder = files.get(file)
       primed = testIds(settings.seed, id)
-      traces.add(primed.traceId)
       forwarder.addTrace(primed.traceId)
       roots.set(primed.traceId, { id: primed.spanId, forwarder, nodes: [] })
       try { return tracer.startSpan(name, { ...options, root: true }, api.ROOT_CONTEXT) }
@@ -135,6 +137,8 @@ const createWorker = (settings) => {
   const forceFlush = async () => {
     for (const forwarder of files.values()) await forwarder.shutdown()
     flush()
+    // Vitest SIGTERMs forks after SDK shutdown, without Node's exit event.
+    children.reportDropped()
   }
   return { forceFlush, shutdown: forceFlush }
 }

@@ -69,10 +69,11 @@ class VitestBuildkiteTestEngineReporter {
     const record = { id: randomUUID(), ...testEngineRecord(test, this._paths.prefixTestPath(test.module.moduleId)) }
     const diagnostic = test.diagnostic()
     const startTime = diagnostic?.startTime ?? this._start
-    const timing = { line: test.location?.line, column: test.location?.column, startTime,
+    const timing = { line: test.location?.line, startTime,
       ids: testIds(this._settings.seed, test.id) }
     const handle = this._session.startTestSpan(record, timing)
-    handle?.span.setAttributes({ 'vitest.test.id': test.id, 'vitest.test.name': test.name, 'vitest.test.mode': test.options.mode })
+    handle?.span.setAttributes({ 'vitest.test.id': test.id, 'vitest.test.name': test.name,
+      'vitest.test.mode': test.options.mode, 'code.column.number': test.location?.column })
     this._session.finishTestSpan(handle, record, { ...timing, endTime: startTime + (diagnostic?.duration || 0) })
   }
 

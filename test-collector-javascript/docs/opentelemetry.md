@@ -105,6 +105,12 @@ execution, with all retry attempts' phases and children underneath, including
 concurrent tests. Skipped suites and tests cancelled by bail still get results
 from the reporter, even when Vitest never starts their spans.
 
+For manual spans, use your application's tracer name, for example
+`trace.getTracer('my-app')`. The collector reserves the `vitest` tracer name for
+framework spans and prunes its leaf spans. Unlike Vitest's general-purpose
+custom-trace example, using `trace.getTracer('vitest')` for manual spans will
+therefore drop those spans unless they contain a span from another tracer.
+
 The reporter owns uploads, credentials, tags, the run key and the shared
 [settings](#settings). Workers commit children locally at test-span end and SDK
 shutdown; they do not send network requests. Children started after their test

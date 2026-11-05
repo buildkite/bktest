@@ -3,10 +3,10 @@ import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 
 export default defineConfig({ test: {
-  include: ['otel/core.js', 'otel/second.js'],
-  reporters: [['../../vitest/reporter.js', { otelEnabled: true, tags: { mode: 'vitest-otel' } }]],
+  include: process.env.OTEL_TEST_CASE ? [`otel/${process.env.OTEL_TEST_CASE}.js`] : ['otel/core.js', 'otel/second.js'],
+  reporters: ['default', ['../../vitest/reporter.js', { otelEnabled: true, tags: { mode: 'vitest-otel' } }]],
   setupFiles: ['./otel/setup.js'],
-  pool: process.env.OTEL_TEST_POOL || 'forks', maxWorkers: 1,
+  pool: process.env.OTEL_TEST_POOL || 'forks', minWorkers: 1, maxWorkers: 1,
   isolate: process.env.OTEL_TEST_ISOLATE !== 'false',
   environment: process.env.OTEL_TEST_ENVIRONMENT || 'node',
   includeTaskLocation: true,
