@@ -65,7 +65,7 @@ const createUploads = (settings, directory) => {
     if (bytes <= MAX_BYTES) return [{ spans, stream, file: name, count: spans.length, bytes, retryAt: 0, attempts: 0 }]
     if (spans.length === 1) {
       warnOncePerRun(directory, `oversize-${stream}`, `${stream === 'test' ? 'TEST RESULTS MISSING' : 'OpenTelemetry dropped a child span; test results are unaffected'}: a span exceeds 750 KiB of protobuf and cannot be uploaded; reduce its attributes and rerun (no JSON fallback).`)
-      return [{ spans, stream, file: name, count: 1, bytes, retryAt: Infinity }]
+      return [{ spans: stream === 'child' ? null : spans, stream, file: name, count: 1, bytes, retryAt: Infinity }]
     }
     const middle = Math.floor(spans.length / 2)
     return [...split(spans.slice(0, middle), stream, name), ...split(spans.slice(middle), stream, name)]
@@ -80,7 +80,7 @@ const createUploads = (settings, directory) => {
           for (let i = 0; i < spans.length; i += limit) result.push(...split(spans.slice(i, i + limit), stream, name))
           return result
         })
-        heldChildren += streams.child?.length || 0
+        heldChildren += parts.reduce((n, part) => n + (part.stream === 'child' && part.spans ? part.count : 0), 0)
         if (parts.length) files.set(name, { parts })
         else forget(name)
         record(file.testPath, file.projectId)
@@ -105,25 +105,26 @@ const createUploads = (settings, directory) => {
       const success = result?.code === 0
       if (!success) lane.lastFailure = metrics.lastFailure
       const status = Number(metrics.lastFailure)
+      const terminal = status >= 400 && status < 500 && status !== 429
       for (const part of batch) {
         part.sending = false
         part.done = success
-        if (success) {
+        if (success || (terminal && lane.stream === 'child')) {
           part.spans = null
           if (lane.stream === 'child') heldChildren -= part.count
         }
         part.attempts++
-        part.retryAt = status >= 400 && status < 500 && status !== 429 ? Infinity
+        part.retryAt = terminal ? Infinity
           : Math.max(metrics.retryAt || 0, Date.now() + Math.min(5000, 1000 * part.attempts))
       }
-      if (!success && lane.stream === 'child' && status >= 400 && status < 500 && status !== 429 && !childWarning) {
+      if (!success && lane.stream === 'child' && terminal && !childWarning) {
         childWarning = true
         warn(`OpenTelemetry dropped ${batch.reduce((n, part) => n + part.count, 0)} child span(s) (HTTP ${status}); test.execution results are unaffected. The run total will be reported at completion.`)
       }
       for (const name of new Set(batch.map((part) => part.file))) {
         if (files.get(name).parts.every((part) => part.done)) forget(name)
       }
-      if (finalizing && success && lane.stream === 'child') scan()
+      if (finalizing && (success || terminal) && lane.stream === 'child') scan()
       pump(); arm()
     }
     try {

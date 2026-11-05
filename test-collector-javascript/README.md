@@ -54,7 +54,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ];
     ```
 
-    In 1.13.0, experimental OpenTelemetry submission sends test results as spans, with HTTP calls,
+    Experimental OpenTelemetry submission sends test results as spans, with HTTP calls,
     database queries and manual spans underneath. JSON uploads remain the default.
 
     ```js

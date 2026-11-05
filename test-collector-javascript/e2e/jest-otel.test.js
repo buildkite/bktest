@@ -531,19 +531,36 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(jsonUpload(result.stdout)).toBeNull()
   }, 20000)
 
-  test.each([false, true])('bounds resident children while retaining excess on disk (outage=%s)', async (outage) => {
-    server = await startOtlpServer({ respond: (_, headers) => outage && headers['buildkite-tests-span-stream'] === 'child' ? 403 : 200 })
-    const result = await spoolRun({ files: 9, args: ['--runInBand'], body: `test('children', () => {
+  test.each(['healthy', '403', 'first413', 'oversized', '503'])('bounds resident children while retaining excess on disk (outage=%s)', async (outage) => {
+    let childRequests = 0
+    server = await startOtlpServer({ respond: (_, headers) => {
+      if (headers['buildkite-tests-span-stream'] !== 'child') return 200
+      childRequests++
+      if (outage === 'first413' && childRequests === 1) return 413
+      if (outage === '403') return 403
+      if (outage === '503') return { status: 503, headers: { 'Retry-After': '1' } }
+      return 200
+    } })
+    const files = ['first413', 'oversized', '503'].includes(outage) ? 2 : 9
+    const children = files === 2 ? 16384 : 2048
+    const result = await spoolRun({ files, args: ['--runInBand'], env: {
+      BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE: String(children),
+      ...(outage === '503' ? { OTEL_DRAIN_BUDGET: '2000', BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE: '4096' } : {}),
+    }, body: `test('children', () => {
       const api = require(${JSON.stringify(require.resolve('@opentelemetry/api'))})
-      for (let i = 0; i < 2048; i++) api.trace.getTracer('cap').startSpan('child', { attributes: { body: 'x'.repeat(1000) } }).end()
+      for (let i = 0; i < ${children}; i++) api.trace.getTracer('cap').startSpan('child', {
+        attributes: { body: 'x'.repeat(${outage === 'oversized' ? 'i === 0 ? 800 * 1024 : 10' : '10'}) },
+      }).end()
     })` })
     expect(result.code).toBe(0)
-    expect(server.spans().filter((span) => span.name === 'test.execution')).toHaveLength(9)
+    expect(server.spans().filter((span) => span.name === 'test.execution')).toHaveLength(files)
     const sentChildren = server.requests.filter((request) => request.headers['buildkite-tests-span-stream'] === 'child')
       .flatMap((request) => request.decoded.resourceSpans.flatMap((resource) => resource.scopeSpans.flatMap((scope) => scope.spans)))
-    expect(sentChildren).toHaveLength(outage ? 16384 : 18432)
-    if (outage) {
-      expect(result.stderr).toContain('OpenTelemetry dropped 18432 child span(s) in total')
+    const rejected = outage === 'first413' ? 512 : outage === 'oversized' ? files : outage === 'healthy' ? 0 : files * children
+    expect(server.spans().filter((span) => span.name === 'child')).toHaveLength(files * children - rejected)
+    expect(new Set(sentChildren.map((span) => span.spanId)).size).toBe(outage === '503' ? 16384 : files * children - (outage === 'oversized' ? rejected : 0))
+    if (rejected) {
+      expect(result.stderr).toContain(`OpenTelemetry dropped ${rejected} child span(s) in total`)
       expect(result.stderr).toContain('test.execution results are unaffected')
     } else expect(result.stderr).not.toContain('OpenTelemetry dropped')
     expect(result.stderr).not.toContain('TEST RESULTS MISSING')

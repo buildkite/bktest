@@ -1,6 +1,6 @@
 # OpenTelemetry (experimental)
 
-From collector 1.13.0, Test Engine can receive your Jest results as OpenTelemetry traces.
+Test Engine can receive your Jest results as OpenTelemetry traces.
 Each test becomes a span, and the work inside it (HTTP calls, database queries, your own spans) shows up underneath.
 
 ```js
@@ -39,7 +39,7 @@ Install the versions above. The collector checks SDK 2 and exporter 0.200–0.2x
 Reporter `token` and `tags` options work as usual.
 For TypeScript, check your reporter options with `satisfies Options`, importing `Options` from `buildkite-test-collector/jest/reporter`.
 
-Upgrading from a 1.13.0 beta? Remove `testEnvironment: 'buildkite-test-collector/jest/environment'` and add `runtime`. Batch-size variables now limit parent uploads, the child queue-size variable caps children per file, and the test queue-size variable is ignored; see [Settings](#settings).
+Upgrading from a 1.13 beta? Remove `testEnvironment: 'buildkite-test-collector/jest/environment'` and add `runtime`.
 With `otelEnabled: true`, every project needs `runtime`. A project without it warns and uploads nothing. There is **no JSON fallback**, including for unsupported Jest/SDK versions, invalid settings, worker setup failures, or an unwritable temporary directory. Fix the warning and rerun. To use JSON instead, turn `otelEnabled` off for the run.
 A `@jest-environment` docblock doesn't opt a file out.
 For a custom runtime, use `require('buildkite-test-collector/jest/runtime').extend(MyRuntime)`.
@@ -86,7 +86,7 @@ export BUILDKITE_TESTS_OTLP_RELAY=true
 export BUILDKITE_TESTS_OTLP_RELAY_BATCHING=true
 ```
 
-The relay sets the endpoint and token for the collector, acknowledges each export locally, and retries delivery in the background. Collector 1.13.0 removes per-file network waits even without the relay.
+The relay sets the endpoint and token for the collector, acknowledges each export locally, and retries delivery in the background. Beta.5 removes per-file network waits even without the relay.
 The relay uses Go's default HTTP transport, which reads `HTTP_PROXY` and `HTTPS_PROXY`. This proxy behavior was checked in bktec's code, not tested end to end.
 Keep bktec's own upload off (`BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`).
 
@@ -141,7 +141,7 @@ At file teardown the worker writes plain span data as JSON to private local spoo
 
 The parent scans committed files on its one-second timer, rebuilds readable spans and uploads through one stock OpenTelemetry `OTLPTraceExporter` per lane (test and child), with up to four exports in flight per lane. It batches across files for up to one second, retaining span-count caps and measuring with the stock protobuf serializer to enforce a **750 KiB uncompressed protobuf** cap per request, leaving headroom below the endpoint's 900 KiB limit. The stock exporter owns gzip, the authorization/run-key/stream headers, 10-second request timeouts and its retry policy. Its Agent also has a 10-second inactivity timeout that starts before TCP connects, so a silently dropped connection does not occupy a lane slot until the OS timeout; keep-alive remains enabled. Failed batches remain on disk and are requeued through the run for network errors, 429 and 5xx, honoring `Retry-After`. Other HTTP errors are reported without retries. Lost acknowledgments can cause duplicates; delivery is not exactly once.
 
-The parent holds at most 16,384 unsent child spans in memory. It admits timestamp-ordered child files only when there is capacity; excess files stay unread on disk until acknowledgments free room. This cap never excludes test spans and does not itself drop children. Child counts in filenames allow final accounting without loading deferred payloads. Files with a larger configured per-file child cap are split into admissible chunks by the worker.
+The parent holds at most 16,384 sendable pending child spans in memory. It admits timestamp-ordered child files only when there is capacity; excess files stay unread on disk until acknowledgments or permanent failures free room. Permanent child failures (including HTTP 403 or 413) and oversized single spans release their payloads and capacity, retaining counts for the final dropped-child warning without replaying them. Later child files continue uploading; test results are unaffected. Retryable failures retain capacity until acknowledged or the drain ends. This cap never excludes test spans and does not itself drop children. Child counts in filenames allow final accounting without loading deferred payloads. Files with a larger configured per-file child cap are split into admissible chunks by the worker.
 
 Normal completion and `--bail` share one memoized final drain over a fixed snapshot, with a 10-second budget (the same constant as the stock exporter's timeout) and no batching delay. Healthy runs stop waiting as soon as uploads finish. In an outage, Jest normally exits about ten seconds after the tests finish. The drain stops waiting at its deadline and aborts each lane's connecting and active HTTP/HTTPS sockets through the Agent's signal option, supported even by exporter 0.200.0 on Node 18.19.0. In rare cases, a stock-exporter retry already scheduled can keep Node alive for up to ten additional seconds: `Retry-After` bypasses the usual five-second backoff cap. That retry fails with `ABORT_ERR` without opening another socket. The drain budget is not an exact process-exit deadline. Bail gates new files through the reporter's public start callback, so awaiting uploads does not keep dispatching files. Already running files can finish. SIGTERM gates new files too and shortens any existing drain to at most five more seconds. The collector snapshots other SIGTERM listeners before their once-handlers run, preserving their asynchronous cleanup; it re-raises SIGTERM (or exits with code 143 as PID 1) only if no other listener owned shutdown at signal delivery. Files arriving after the snapshot are not added to the drain. Unacknowledged test results are reported as `TEST RESULTS MISSING`; all unacknowledged children, whether resident or unread on disk, use child-drop wording and test results are unaffected by child losses. No JSON results are sent. Completed runs remove their spool directory; terminated runs may leave it behind. There is no replay tool.
 
