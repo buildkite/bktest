@@ -161,7 +161,7 @@ describe('JestBuildkiteTestEngineReporter without JSON fallback', () => {
     expect(jsonNames()).toEqual([])
     expect(warnings()).toEqual([
       expect.stringMatching(/TEST RESULTS MISSING:.*set runtime/),
-      expect.stringMatching(/TEST RESULTS MISSING: 10 file\(s\), 10 test\(s\) never recorded spans \(no runtime: 10 file\(s\), 10 test\(s\)/),
+      expect.stringMatching(/TEST RESULTS MISSING: 10 file\(s\), 10 test\(s\) have no readable spool commit \(no runtime: 10 file\(s\), 10 test\(s\)/),
     ])
   })
 

@@ -21,7 +21,7 @@ const createUploads = (settings, directory) => {
       exporter: createExporter({ sdk, ...settings, directory, stream, runKey: settings.runEnv.key, metrics }) }
   })
   let timer, completion, childWarning
-  let finalizing = false, stopped = false, deadline = Infinity
+  let finalizing = false, stopped = false, spoolReadFailed = false, deadline = Infinity
 
   const record = (testPath) => {
     if (!testPath) return
@@ -41,7 +41,10 @@ const createUploads = (settings, directory) => {
   }
   const readSpoolFiles = () => {
     const result = []
-    const failed = (error) => warnOncePerRun(directory, 'spool-read', `TEST RESULTS MISSING: could not read the OpenTelemetry spool (${describeError(error)}); test and child counts are unavailable for unreadable files. Check temporary directory permissions/free space and rerun (no JSON fallback).`)
+    const failed = (error) => {
+      spoolReadFailed = true
+      warnOncePerRun(directory, 'spool-read', `TEST RESULTS MISSING: could not read the OpenTelemetry spool (${describeError(error)}); test and child counts are unavailable for unreadable files. Check temporary directory permissions/free space and rerun (no JSON fallback).`)
+    }
     try {
       for (const name of fs.readdirSync(directory)) {
         if (!name.endsWith('.spool') || files.has(name) || acknowledged.has(name)) continue
@@ -168,11 +171,13 @@ const createUploads = (settings, directory) => {
         record(file.testPath)
         for (const stream of ['test', 'child']) counts[stream] += file.streams[stream]?.length || 0
       }
-      const missing = [...expected.values()].flat()
+      const missing = [...expected.values()].flat().map((file) => spoolReadFailed && file.reason === 'setup failed'
+        ? { ...file, reason: 'spool unreadable' } : file)
       for (const reason of new Set(missing.map((file) => file.reason))) {
-        const fix = reason === 'jasmine' ? 'use the jest-circus test runner' : reason === 'setup failed'
+        const fix = reason === 'spool unreadable' ? 'check temporary directory permissions/free space; recording status is unknown'
+          : reason === 'jasmine' ? 'use the jest-circus test runner' : reason === 'setup failed'
           ? 'fix the SDK/runtime configuration described in earlier worker warnings' : "set runtime to 'buildkite-test-collector/jest/runtime'"
-        warn(`TEST RESULTS MISSING: some files did not record OpenTelemetry results (${reason}) and were not uploaded; ${fix}, then rerun (no JSON fallback).`)
+        warn(`TEST RESULTS MISSING: some files have no readable OpenTelemetry commit (${reason}) and were not uploaded; ${fix}, then rerun (no JSON fallback).`)
       }
       const missingTests = missing.reduce((n, file) => n + file.tests, 0)
       const lane = lanes[counts.test ? 0 : 1]
@@ -184,7 +189,7 @@ const createUploads = (settings, directory) => {
           const group = missing.filter((file) => file.reason === reason)
           return `${reason}: ${group.length} file(s), ${group.reduce((n, file) => n + file.tests, 0)} test(s)`
         }).join('; ')
-        warn(`TEST RESULTS MISSING: ${missing.length} file(s), ${missingTests} test(s) never recorded spans (${reasons}; unknown child count); fix the earlier warnings and rerun; no JSON fallback.`)
+        warn(`TEST RESULTS MISSING: ${missing.length} file(s), ${missingTests} test(s) have no readable spool commit (${reasons}; unknown child count); fix the earlier warnings and rerun; no JSON fallback.`)
       }
       counts.test += missingTests
       if (counts.child) warn(`OpenTelemetry dropped ${counts.child} child span(s) in total (${reason}); test.execution results are unaffected by child export failures.`)
