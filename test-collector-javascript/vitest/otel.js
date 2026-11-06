@@ -6,7 +6,7 @@ const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 const createWorker = (settings) => {
   const [rootDir, project] = JSON.parse(process.env.BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT)
   const { api, trace, resources, core } = require('../util/otel/sdk').loadSdk({ exporter: false })
-  const { idGenerator, SPAN_LIMITS } = require('../util/otel/session')
+  const { idGenerator } = require('../util/otel/session')
   const { resourceAttributes } = require('../util/otel/attributes')
   const { createChildExport } = require('../util/otel/children')
   const { commitFile } = require('../util/otel/spool')
@@ -75,7 +75,6 @@ const createWorker = (settings) => {
     resource: resources.defaultResource()
       .merge(resources.detectResources({ detectors: [resources.envDetector] }))
       .merge(resources.resourceFromAttributes(resourceAttributes(settings.runEnv))),
-    spanLimits: SPAN_LIMITS,
     idGenerator: {
       generateTraceId: () => primed?.traceId || idGenerator.generateTraceId(),
       generateSpanId: () => primed?.spanId || idGenerator.generateSpanId(),

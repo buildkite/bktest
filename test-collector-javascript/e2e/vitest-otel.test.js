@@ -195,6 +195,15 @@ const supported = major >= 4
   await run({ OTEL_TEST_CASE: 'second', BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE: '1' })
   // A one-span budget keeps the user's span, not an empty phase ancestor.
   expect(server.spans().map(s => s.name).sort()).toEqual(['setup-hook', 'test.execution'])
+  server.requests.length = 0
+  await run({ OTEL_SPAN_EVENT_COUNT_LIMIT: '0', OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT: '4' })
+  const child = server.spans().find(s => s.name === 'db.connect')
+  expect(child.events).toHaveLength(0)
+  expect(child.attributes['db.system.name']).toBe('post')
+  const roots = server.spans().filter(s => s.name === 'test.execution')
+  expect(roots).toHaveLength(8)
+  const failure = roots.find(s => s.attributes['buildkite.test.name'] === 'hook failure')
+  expect(failure.events.some(e => e.name === 'exception')).toBe(true)
 }, 30000)
 
 ;(supported ? test : test.skip)('user-owned SDK and absent collector reporter have clear warnings', async () => {

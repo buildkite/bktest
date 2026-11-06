@@ -15,7 +15,8 @@ afterEach((context) => {
 
 test('body and IO', async () => {
   tracer.startSpan('manual').end()
-  trace.getTracer('vitest').startSpan('db.connect').end()
+  trace.getTracer('vitest').startSpan('db.connect', { attributes: { 'db.system.name': 'postgres' } })
+    .addEvent('connecting').end()
   const server = createServer((req, res) => { tracer.startSpan('handler').end(); res.end('ok') })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   const url = `http://127.0.0.1:${server.address().port}/hello`
