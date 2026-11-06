@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.14.0
+
+- Add experimental OpenTelemetry mode for Playwright. Each test attempt becomes a span, with `test.step` blocks, hooks, fixtures, assertions and actions as child spans. Enable it with reporter option `otelEnabled: true`; see the [Playwright guide](docs/opentelemetry.md#playwright).
+- Add experimental OpenTelemetry mode for Vitest 4.0.11+. See hooks, manual spans and HTTP/fetch calls in a trace for each test. Retries share that trace. Follow the [setup guide](docs/opentelemetry.md#vitest) to enable it.
+- JSON uploads remain the default. OpenTelemetry mode does not fall back to JSON on failure.
+- When a span is too large to upload, the dropped-span summary now says so instead of blaming the drain deadline.
+
 ## 1.13.0
 
 - Send Jest results to Test Engine as OpenTelemetry spans, with HTTP calls, database queries and manual spans underneath. Enable this experimental mode with reporter option `otelEnabled: true` and `runtime: 'buildkite-test-collector/jest/runtime'`. JSON uploads remain the default.

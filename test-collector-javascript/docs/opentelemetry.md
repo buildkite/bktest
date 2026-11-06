@@ -1,7 +1,8 @@
 # OpenTelemetry (experimental)
 
 Test Engine can receive your Jest, Playwright and Vitest results as OpenTelemetry traces.
-Each test becomes a span. With Jest and Vitest, work inside it shows up underneath.
+Each test becomes a span, with its work underneath: steps for Playwright, and
+HTTP calls and your own spans for Jest and Vitest.
 
 ## Playwright
 
