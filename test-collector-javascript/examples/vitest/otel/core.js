@@ -5,10 +5,13 @@ import { tracer } from './app.js'
 
 beforeAll(() => tracer.startSpan('before-all-not-a-child').end())
 beforeEach((context) => {
-  tracer.startSpan('before-hook').end()
   if (context.task.name === 'hook failure') throw new Error('intentional hook failure')
+  tracer.startSpan('before-hook').end()
 })
-afterEach(() => tracer.startSpan('after-hook').end())
+afterEach((context) => {
+  if (context.task.name === 'concurrent A') trace.getActiveSpan().addEvent('cleanup-note')
+  else tracer.startSpan('after-hook').end()
+})
 
 test('body and IO', async () => {
   tracer.startSpan('manual').end()

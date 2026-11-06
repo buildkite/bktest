@@ -23,8 +23,8 @@ const createWorker = (settings) => {
     catch (error) { warn(`OpenTelemetry dropped ${spans.length} child span(s): ${describeError(error)}; test.execution results are unaffected.`) }
   }
 
-  // Admit ancestors only when a test-owned span needs them. Empty Vitest
-  // phases never consume the per-file child budget.
+  // Admit phases with test-owned children, errors or events. Empty phases
+  // never consume the per-file child budget.
   const forward = (node) => {
     if (!node || node.root || node.sent !== undefined) return
     node.sent = node.forwarder.onStart(node.span)
@@ -54,6 +54,7 @@ const createWorker = (settings) => {
       const context = span.spanContext()
       const node = nodes.get(context.spanId)
       if (!node) return
+      if (!node.root && (span.status.code === api.SpanStatusCode.ERROR || span.events.length)) forward(node)
       node.ended = true
       if (node.sent) node.forwarder.onEnd(span)
       if (node.root) {
@@ -79,12 +80,17 @@ const createWorker = (settings) => {
       generateTraceId: () => primed?.traceId || idGenerator.generateTraceId(),
       generateSpanId: () => primed?.spanId || idGenerator.generateSpanId(),
     },
-    sampler: { shouldSample: (_context, id) => ({ decision: roots.has(id) || children.isClosedTrace(id)
-      ? trace.SamplingDecision.RECORD_AND_SAMPLED : trace.SamplingDecision.NOT_RECORD }) },
     spanProcessors: [processor],
   })
+  const noop = new api.ProxyTracerProvider().getTracer('buildkite-test-collector')
   const wrappedProvider = { getTracer(...args) {
-    const tracer = provider.getTracer(...args)
+    const sdkTracer = provider.getTracer(...args)
+    const tracer = Object.create(sdkTracer)
+    // Gate suite work without overriding the SDK's environment-selected sampler.
+    tracer.startSpan = (name, options, context = api.context.active()) => {
+      const id = api.trace.getSpanContext(context)?.traceId
+      return (primed || roots.has(id) || children.isClosedTrace(id) ? sdkTracer : noop).startSpan(name, options, context)
+    }
     if (args[0] !== 'vitest') return tracer
     const wrapped = Object.create(tracer)
     wrapped.startSpan = (name, options, context) => {
@@ -96,7 +102,11 @@ const createWorker = (settings) => {
       primed = testIds(settings.seed, rootDir, project, file, id)
       forwarder.addTrace(primed.traceId)
       roots.set(primed.traceId, { id: primed.spanId, forwarder, nodes: [] })
-      try { return tracer.startSpan(name, { ...options, root: true }, api.ROOT_CONTEXT) }
+      try {
+        const span = tracer.startSpan(name, { ...options, root: true }, api.ROOT_CONTEXT)
+        if (!span.isRecording()) roots.delete(primed.traceId)
+        return span
+      }
       finally { primed = null }
     }
     return wrapped

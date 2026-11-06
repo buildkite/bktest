@@ -100,6 +100,14 @@ const supported = major >= 4
     expect(children.filter(s => s.kind === 2)).toHaveLength(2)
   }
   expect(result.stderr).not.toMatch(/disabled|dropped|TEST RESULTS MISSING/)
+  server.requests.length = 0
+  const partial = await run({ OTEL_TEST_PROJECT_ROOT: scratch, OTEL_TEST_POOL: pool, OTEL_TEST_DISABLE_PROJECT: 'BB' })
+  expect(partial.code).toBe(0)
+  expect(server.spans().filter(s => s.name === 'test.execution')).toHaveLength(2)
+  expect(server.spans().some(s => s.name === 'project-Aa')).toBe(true)
+  expect(server.spans().some(s => s.name === 'project-BB')).toBe(false)
+  expect(partial.stderr).toContain('children are disabled for projects: BB.')
+  expect(partial.stderr).not.toContain('children are disabled for projects: Aa')
 }, 30000)
 
 ;(supported ? test : test.skip).each(['forks', 'threads'].flatMap(pool =>
@@ -133,6 +141,11 @@ const supported = major >= 4
   const hook = spans.find(s => s.traceId === failure.traceId && s.name === 'vitest.test.runner.test.beforeEach')
   expect(hook.status.code).toBe(2)
   expect(hook.events.some(e => e.name === 'exception')).toBe(true)
+  expect(spans.some(s => s.traceId === failure.traceId && ['before-hook', 'setup-hook'].includes(s.name))).toBe(false)
+  const annotated = roots.find(s => s.attributes['buildkite.test.name'] === 'concurrent A')
+  const phase = spans.find(s => s.traceId === annotated.traceId && s.name === 'vitest.test.runner.test.afterEach')
+  expect(phase.events.some(e => e.name === 'cleanup-note')).toBe(true)
+  expect(spans.some(s => s.parentSpanId === phase.spanId)).toBe(false)
   const retry = roots.find(s => s.attributes['buildkite.test.name'] === 'retry')
   expect(spans.filter(s => s.traceId === retry.traceId && s.name === 'attempt')).toHaveLength(2)
   for (const name of ['concurrent A', 'concurrent B', 'second file']) {
@@ -196,9 +209,15 @@ const supported = major >= 4
 }, 30000)
 
 ;(supported ? test : test.skip).each([
-  ['http', '', 1], ['http,undici', 'http', 1], ['http,undici', 'http,undici', 0],
-])('instrumentation selection enabled=%s disabled=%s', async (enabled, disabled, clients) => {
+  ['http', '', 1, 'forks', 'always_off'],
+  ['http,undici', 'http', 1, 'threads', 'always_off'],
+  ['http,undici', 'http,undici', 0, 'forks', 'traceidratio'],
+])('instrumentation selection enabled=%s disabled=%s clients=%s (%s, sampler=%s)', async (enabled, disabled, clients, pool, sampler) => {
   await run({ OTEL_NODE_ENABLED_INSTRUMENTATIONS: enabled, OTEL_NODE_DISABLED_INSTRUMENTATIONS: disabled })
   expect(server.spans().filter(s => s.kind === 3)).toHaveLength(clients)
   expect(server.spans().filter(s => s.name === 'test.execution')).toHaveLength(8)
+  server.requests.length = 0
+  await run({ OTEL_TEST_POOL: pool, OTEL_TRACES_SAMPLER: sampler, OTEL_TRACES_SAMPLER_ARG: '0' })
+  expect(server.spans()).toHaveLength(8)
+  expect(server.spans().every(s => s.name === 'test.execution')).toBe(true)
 }, 30000)

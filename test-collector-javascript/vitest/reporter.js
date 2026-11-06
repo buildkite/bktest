@@ -38,8 +38,9 @@ class VitestBuildkiteTestEngineReporter {
       const expected = fileURLToPath(new URL('./otel.js', import.meta.url))
       const native = (config) => {
         const otel = config.experimental?.openTelemetry
-        const sdk = otel?.sdkPath
-        return !config.browser?.enabled && otel?.enabled && sdk &&
+        const globalOtel = ctx.config.experimental?.openTelemetry
+        const sdk = otel?.sdkPath ?? globalOtel?.sdkPath
+        return !config.browser?.enabled && (otel?.enabled ?? globalOtel?.enabled) === true && sdk &&
           (sdk.startsWith('file:') ? fileURLToPath(sdk) : path.resolve(config.root, sdk)) === expected
       }
       this._native = semver.gte(version, '4.0.11') && !!native(ctx.config)
@@ -67,7 +68,11 @@ class VitestBuildkiteTestEngineReporter {
       for (const { config } of projects) {
         config.env = { ...config.env, BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT: JSON.stringify([config.root, config.name || '']) }
       }
-      if (!this._native || projects.some(({ config }) => !native(config))) warn('Vitest OpenTelemetry children are disabled without the collector sdkPath in both the root config and each project, including Vitest 3, browser mode and user-owned SDKs; sending test.execution spans only. Use Vitest 4.0.11+ with experimental.openTelemetry enabled and sdkPath pointing to buildkite-test-collector/vitest/otel.js for children.')
+      if (!this._native) warn('Vitest OpenTelemetry children require Vitest 4.0.11+ with experimental.openTelemetry enabled and the collector sdkPath in the root config; sending test.execution spans only.')
+      else {
+        const disabled = projects.filter(({ config }) => !native(config)).map(({ config }) => config.name || config.root)
+        if (disabled.length) warn(`Vitest OpenTelemetry children are disabled for projects: ${disabled.join(', ')}. Enable tracing with the collector sdkPath to collect children; sending test.execution spans only for these projects.`)
+      }
     } catch (error) {
       warn(`TEST RESULTS MISSING: OpenTelemetry could not be configured (${describeError(error)}); check temporary directory permissions/free space and the SDK installation, then rerun (no JSON fallback).`)
       publishSettings(null)

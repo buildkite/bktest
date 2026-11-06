@@ -95,8 +95,8 @@ See [Settings](#settings) for other authentication options, tags and upload sett
 `require.resolve` gives Vitest the filesystem path it needs, including with pnpm
 and Yarn. In CommonJS, omit `createRequire` and use `require.resolve` directly.
 With Yarn Plug'n'Play, declare the packages in the root workspace.
-For multiple projects, enable the SDK in the root config and every project.
-Projects can inherit it with `extends: true`.
+For multiple projects, set tracing in the root config.
+Projects inherit it unless they override `enabled` or `sdkPath`.
 
 To capture HTTP and fetch calls, install the packages in
 [Choosing instrumentation](#choosing-instrumentation).
@@ -120,7 +120,8 @@ test.execution  "checkout charges the card"
 
 Each test gets a trace, including skipped tests and tests cancelled by bail.
 Hook phases keep Vitest's names, statuses and exceptions.
-Empty phases, collection, suite work and `beforeAll` are excluded.
+Phases are sent if they contain child spans, end with an error or have events.
+Other phases, collection, suite work and `beforeAll` are excluded.
 Custom spans from the `vitest` tracer are kept unless their names start with `vitest.`.
 
 ### Using bktec

@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.14.0-beta.1
+## 1.14.0
 
 - Add experimental OpenTelemetry mode for Vitest 4.0.11+. See hooks, manual spans and HTTP/fetch calls in a trace for each test. Retries share that trace. Follow the [setup guide](docs/opentelemetry.md#vitest) to enable it.
 - JSON uploads remain the default. OpenTelemetry mode does not fall back to JSON on failure.
