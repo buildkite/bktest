@@ -38,8 +38,13 @@ const createSession = (settings) => {
   const sdk = loadSdk()
   const { api, trace, resources } = sdk
   const runKey = settings.runEnv.key
+  let primed
   const providerConfig = {
-    sampler: new trace.AlwaysOnSampler(), idGenerator,
+    sampler: new trace.AlwaysOnSampler(),
+    idGenerator: {
+      generateTraceId: () => primed?.traceId || idGenerator.generateTraceId(),
+      generateSpanId: () => primed?.spanId || idGenerator.generateSpanId(),
+    },
     resource: resources.defaultResource()
       .merge(resources.detectResources({ detectors: [resources.envDetector] }))
       .merge(resources.resourceFromAttributes(resourceAttributes(settings.runEnv))),
@@ -62,9 +67,10 @@ const createSession = (settings) => {
     propagators: [new sdk.core.W3CTraceContextPropagator(), new sdk.core.W3CBaggagePropagator()],
   })
 
-  const startTestSpan = (record, { line, column, startTime } = {}) => {
+  const startTestSpan = (record, { line, column, startTime, ids } = {}) => {
     try {
       const { attributes } = describeTest(record, { line, column })
+      primed = ids
       const span = tracer.startSpan('test.execution', {
         root: true, kind: api.SpanKind.INTERNAL, startTime, links: jobSpanLinks(sdk),
         attributes: limitAttributes({
@@ -76,6 +82,8 @@ const createSession = (settings) => {
     } catch (error) {
       warn(`TEST RESULTS MISSING: could not start 1 test.execution span (${describeError(error)}); results were not uploaded.`)
       return null
+    } finally {
+      primed = null
     }
   }
 
@@ -133,4 +141,4 @@ const sessionFor = (settings) => {
   return session
 }
 
-module.exports = { createSession, sessionFor }
+module.exports = { createSession, sessionFor, idGenerator, SPAN_LIMITS }

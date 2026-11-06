@@ -9,10 +9,14 @@ const createChildExport = (settings) => {
   let spans = []
   let open = 0
   let startedLate = 0
-  process.once('exit', () => {
+  let reported = false
+  const reportDropped = () => {
+    if (reported || !(open || startedLate)) return
+    reported = true
     const reasons = [startedLate && `started after file teardown: ${startedLate}`, open && `still open when the worker exited: ${open}`].filter(Boolean)
-    if (open || startedLate) warn(`OpenTelemetry dropped ${open + startedLate} child span(s) (${reasons.join(', ')}); test.execution results are unaffected.`)
-  })
+    warn(`OpenTelemetry dropped ${open + startedLate} child span(s) (${reasons.join(', ')}); test.execution results are unaffected.`)
+  }
+  process.once('exit', reportDropped)
   const createForwarder = () => {
     const traces = new Set()
     const tracked = new Set()
@@ -22,11 +26,12 @@ const createChildExport = (settings) => {
     return {
       addTrace(traceId) { if (active) traces.add(traceId) },
       onStart(span) {
-        if (!active || !traces.has(span.spanContext().traceId)) return
-        if (accepted >= cap) { dropped += 1; return }
+        if (!active || !traces.has(span.spanContext().traceId)) return false
+        if (accepted >= cap) { dropped += 1; return false }
         accepted += 1
         open += 1
         tracked.add(span)
+        return true
       },
       onEnd(span) {
         if (!tracked.delete(span)) return
@@ -39,6 +44,7 @@ const createChildExport = (settings) => {
         }
       },
       shutdown: async () => {
+        if (!active) return
         active = false
         for (const traceId of traces) closedTraces.add(traceId)
         traces.clear()
@@ -47,8 +53,9 @@ const createChildExport = (settings) => {
     }
   }
   return {
-    createForwarder,
+    createForwarder, reportDropped,
     take() { const ended = spans; spans = []; return ended },
+    closeTrace(traceId) { closedTraces.add(traceId) },
     isClosedTrace: (traceId) => closedTraces.has(traceId),
     rejectLate(span) {
       if (!closedTraces.has(span.spanContext().traceId)) return false

@@ -12,12 +12,13 @@ test.each([
   ['partial opt-in', 'fs,http', '', ['fs', 'http']],
   ['disabled wins', 'fs,host-metrics,http', ' fs , host-metrics ', ['http']],
   ['disabled only', '', 'http', []],
+  ['Vitest subset', 'fs,http', '', ['http'], ['http', 'undici']],
   ['all exclusions opt-in', excluded.join(','), '', [...excluded].sort()],
   ...['pino', 'winston', 'bunyan'].flatMap((name) => [
     [`${name} opt-in alone`, name, '', [name]],
     [`${name} disabled wins`, name, name, []],
   ]),
-])('declared instrumentation discovery respects %s', (_, enabled, disabled, expected) => {
+])('declared instrumentation discovery respects %s', (_, enabled, disabled, expected, only = undefined) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-selection-'))
   try {
     // The same declared set is selected from a project, its workspace
@@ -37,15 +38,17 @@ test.each([
       for (const name of [...excluded, 'http', 'undici']) {
         const directory = path.join(base, 'node_modules/@opentelemetry', `instrumentation-${name}`)
         fs.mkdirSync(directory, { recursive: true })
-        fs.writeFileSync(path.join(directory, 'index.js'), `exports.TestInstrumentation = class { constructor() { this.instrumentationVersion = '${name === 'undici' ? '0.33.0' : '0.223.0'}' } }`)
+        fs.writeFileSync(path.join(directory, 'index.js'), only && !only.includes(name)
+          ? `throw new Error('Unselected instrumentation must not be loaded')`
+          : `exports.TestInstrumentation = class { constructor() { this.instrumentationVersion = '${name === 'undici' ? '0.33.0' : '0.223.0'}' } }`)
       }
       const sdk = path.join(base, 'node_modules/@opentelemetry/instrumentation')
       fs.mkdirSync(sdk)
       fs.writeFileSync(path.join(sdk, 'package.json'), JSON.stringify({ name: '@opentelemetry/instrumentation', version: '0.223.0', exports: './index.js' }))
       fs.writeFileSync(path.join(sdk, 'index.js'), '')
       const output = execFileSync(process.execPath, ['-e', `
-        const { loadInstrumentations } = require(${JSON.stringify(require.resolve('./otelInstrumentations'))})
-        console.log(JSON.stringify(loadInstrumentations(process.argv[1], (_, message) => { throw new Error(message) }).map(entry => entry.name).sort()))
+        const { loadInstrumentations } = require(${JSON.stringify(require.resolve('../util/otel/instrumentations'))})
+        console.log(JSON.stringify(loadInstrumentations(process.argv[1], (_, message) => { throw new Error(message) }, ${JSON.stringify(only)}).map(entry => entry.name).sort()))
       `, project], { env: { ...process.env, OTEL_NODE_ENABLED_INSTRUMENTATIONS: enabled, OTEL_NODE_DISABLED_INSTRUMENTATIONS: disabled } })
       expect(JSON.parse(output)).toEqual(expected)
     }

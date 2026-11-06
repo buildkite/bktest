@@ -1,9 +1,9 @@
 const fs = require('fs')
 const path = require('path')
 const { createRequire } = require('module')
-const { describeError } = require('../util/otel/warn')
-const { packageVersion } = require('../util/otel/sdk')
-const { worker } = require('./otelWorker')
+const { describeError } = require('./warn')
+const { packageVersion } = require('./sdk')
+const sets = new Map()
 
 const PREFIX = '@opentelemetry/instrumentation-'
 const SDK_LINES = { http: [200, 300], undici: [11, 34] }
@@ -28,8 +28,9 @@ const enabledByEnv = (name) => (process.env.OTEL_NODE_ENABLED_INSTRUMENTATIONS
   !listedIn('OTEL_NODE_DISABLED_INSTRUMENTATIONS', name)
 
 // Declarations opt in, not incidental hoisting from another dependency.
-const loadInstrumentations = (rootDir, warnOnce) => {
-  if (worker.sets.has(rootDir)) return worker.sets.get(rootDir)
+const loadInstrumentations = (rootDir, warnOnce, only) => {
+  const key = JSON.stringify([rootDir, only])
+  if (sets.has(key)) return sets.get(key)
   const project = createRequire(path.join(rootDir, 'package.json'))
   const loaders = [project]
   const manifests = []
@@ -61,7 +62,7 @@ const loadInstrumentations = (rootDir, warnOnce) => {
   for (const packageName of names) {
     if (!packageName.startsWith(PREFIX)) continue
     const name = packageName.slice(PREFIX.length)
-    if (!enabledByEnv(name)) continue
+    if ((only && !only.includes(name)) || !enabledByEnv(name)) continue
     const rejected = []
     for (const load of loaders) {
       let resolved
@@ -93,7 +94,7 @@ const loadInstrumentations = (rootDir, warnOnce) => {
   }
   if (skipped.length) warnOnce('instrumentation', `OpenTelemetry instrumentation skipped: ${skipped.join(', ')}. ` +
     'The collector records child spans with instrumentation from the OpenTelemetry JavaScript 2.x SDK line; test.execution export remains enabled.')
-  worker.sets.set(rootDir, entries)
+  sets.set(key, entries)
   return entries
 }
 

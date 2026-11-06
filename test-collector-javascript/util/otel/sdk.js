@@ -27,14 +27,14 @@ const packageVersion = (name, load = require) => {
 }
 
 // Optional packages must not load until OpenTelemetry is requested.
-const loadSdk = () => {
+const loadSdk = ({ exporter = true } = {}) => {
   const sdk = {}
   try {
     for (const [key, name] of Object.entries(PACKAGES)) {
       const range = SUPPORTED_VERSIONS[name]
       const version = packageVersion(name)
       if (version && !semver.satisfies(version, range)) throw new Error(`unsupported ${name}@${version} (requires ${range})`)
-      sdk[key] = require(name)
+      if (key !== 'exporter' || exporter) sdk[key] = require(name)
     }
     const fromTrace = createRequire(require.resolve(PACKAGES.trace))
     for (const key of ['api', 'resources', 'core']) sdk[key] = fromTrace(`@opentelemetry/${key}`)

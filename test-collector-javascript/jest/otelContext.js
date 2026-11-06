@@ -1,7 +1,7 @@
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 const { worker, workerFor } = require('./otelWorker')
 const JestOtelPackages = require('./otelPackages')
-const { loadInstrumentations } = require('./otelInstrumentations')
+const { loadInstrumentations } = require('../util/otel/instrumentations')
 
 const disabledMessage = (error) => `OpenTelemetry child span export disabled: ${describeError(error).split('\n')[0]}; test.execution export remains enabled`
 const SUITE_PROVIDER = 'OpenTelemetry child spans are not exported because the suite registers its own tracer provider; ' +

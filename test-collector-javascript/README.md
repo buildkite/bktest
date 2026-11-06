@@ -79,6 +79,10 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     Supports Vitest 1–5. Vitest 5 requires Node.js 22.12+; the reporter
     configuration below is unchanged when upgrading from Vitest 4.
 
+    To see hooks, manual spans and HTTP/fetch calls under each test, use
+    experimental [OpenTelemetry mode](docs/opentelemetry.md#vitest).
+    It requires Vitest 4.0.11+ and extra setup. JSON uploads remain the default.
+
     Update your [Vitest configuration](https://vitest.dev/config/):<br>
 
     ```js
