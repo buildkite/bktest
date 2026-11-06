@@ -47,12 +47,27 @@ pending results.
 
 ## Vitest
 
-Use Vitest 4.0.11+ and the optional packages in [Setup](#setup), including
-`@opentelemetry/api@~1.9.0`. Vitest 5 requires Node.js 22.12+.
-Enable the reporter and Vitest's native OpenTelemetry support together:
+### Requirements
+
+Use Vitest 4.0.11+ for test traces with child spans.
+Vitest 5 requires Node.js 22.12+.
+
+### Setup
+
+Install the collector and OpenTelemetry packages:
+
+```bash
+npm install --save-dev buildkite-test-collector \
+  '@opentelemetry/api@~1.9.0' \
+  '@opentelemetry/sdk-trace-base@^2' \
+  '@opentelemetry/context-async-hooks@^2' \
+  '@opentelemetry/exporter-trace-otlp-proto@<0.300'
+```
+
+Enable the reporter and native tracing in your config:
 
 ```js
-// vitest.config.js (ESM; also works with npm, pnpm and Yarn)
+// vitest.config.js
 import { defineConfig } from 'vitest/config'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
@@ -74,21 +89,23 @@ export default defineConfig({
 })
 ```
 
-`sdkPath` must be a filesystem path, not a package specifier or file URL:
-Vitest resolves it relative to the project root. `require.resolve` supplies an
-absolute path without assuming a `node_modules` layout. In a CommonJS config,
-use `require.resolve` directly without `createRequire`.
+Set `BUILDKITE_ANALYTICS_TOKEN` to your suite token, then run `npx vitest run`.
+See [Settings](#settings) for other authentication options, tags and upload settings.
 
-Install `@opentelemetry/instrumentation-http` and
-`@opentelemetry/instrumentation-undici` from the SDK 2.x line to capture HTTP
-and fetch, or install `@opentelemetry/auto-instrumentations-node` (which contains
-both). Discovery and the `OTEL_NODE_ENABLED_INSTRUMENTATIONS` /
-`OTEL_NODE_DISABLED_INSTRUMENTATIONS` rules match Jest, but Vitest enables only
-http and undici. Package instrumentation is not supported in Vitest mode.
-Discovery starts at each Vitest project's root and includes parent manifests.
-For multi-project runs, enable the collector `sdkPath` in the root config as
-well as each project (for example with `extends: true`); without the root SDK,
-the collector warns and sends test executions only.
+`require.resolve` gives Vitest the filesystem path it needs, including with pnpm
+and Yarn. In CommonJS, omit `createRequire` and use `require.resolve` directly.
+With Yarn Plug'n'Play, declare the packages in the root workspace.
+For multiple projects, enable the SDK in the root config and every project.
+Projects can inherit it with `extends: true`.
+
+To capture HTTP and fetch calls, install the packages in
+[Choosing instrumentation](#choosing-instrumentation).
+Vitest supports only `http` and `undici`.
+It checks each project's package.json and its parents for declared instrumentation.
+Use `OTEL_NODE_ENABLED_INSTRUMENTATIONS` and `OTEL_NODE_DISABLED_INSTRUMENTATIONS`
+to select them.
+
+### What you get
 
 ```text
 test.execution  "checkout charges the card"
@@ -101,56 +118,34 @@ test.execution  "checkout charges the card"
             └── handler              (manual span)
 ```
 
-Vitest phase names, statuses and exception events pass through unchanged.
-Only phases containing test-code or instrumentation spans are sent. Module
-loading, collection, suites and `beforeAll` work are excluded. Tracers created
-at app-module import work when used in a test. Each test produces **one**
-execution in this beta, with every retry attempt's phases and children
-underneath, including concurrent tests. Unlike Vitest, Jest's OpenTelemetry
-mode records one execution **per attempt**. Skipped suites and tests cancelled
-by bail still get results from the reporter, even when Vitest never starts
-their spans.
+Each test gets a trace, including skipped tests and tests cancelled by bail.
+Hook phases keep Vitest's names, statuses and exceptions.
+Empty phases, collection, suite work and `beforeAll` are excluded.
+Custom spans from the `vitest` tracer are kept unless their names start with `vitest.`.
 
-Only spans from the `vitest` tracer whose names start with `vitest.` are treated
-as framework spans; custom spans such as `db.connect` from that tracer are kept.
-Known limit: Vitest's 32-bit ID hash can collide (for example `Aa.test.js` and
-`BB.test.js`), mixing up parallel results upstream; the collector warns once
-and keeps traces separate, but uploads what Vitest reports. Rename either file.
+### Using bktec
 
-The reporter owns uploads, credentials, tags, the run key and the shared
-[settings](#settings). Workers commit children locally at test-span end and SDK
-shutdown; final upload draining waits for worker SDK shutdown, including
-children completing during environment teardown. A one-shot natural-exit
-fallback drains results if a worker crash prevents Vitest from reaching main
-SDK shutdown. Workers do not send network
-requests. Children started after their test span ends are dropped and counted
-in a warning; open children and per-file caps
-use the same accounting as Jest. Empty phases do not consume the child cap.
+Set bktec's test command to:
 
-Known limit: Vitest exits about 1 ms after SIGTERM (including Buildkite
-cancellation), so unlike Jest there is no five-second drain and no warning.
-Files already uploaded by the sender's one-second timer are kept, but results
-from files completed within roughly the last second and tests completed in a
-still-running file can be lost; SIGKILL can also lose pending results.
+```sh
+npx vitest run {{testExamples}} --outputFile {{resultPath}}
+```
 
-Vitest initializes the SDK once per worker. With isolation, fresh workers can
-make SDK startup cost scale with the number of test files; disabling isolation
-changes test isolation semantics, not just telemetry performance.
+Add `'json'` to the reporters in the config above.
+Remove bktec's default `--reporter` flags, which override config reporters.
+The JSON file is for bktec. The collector uploads OpenTelemetry only.
+Keep bktec's own upload off with `BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`.
 
-Vitest 3, a user-owned `sdkPath`, missing native tracing configuration, and
-browser mode produce test spans only, with a warning. Browser-mode children
-and watch mode are unsupported. Vitest 1–2 warn and upload nothing when
-`otelEnabled: true`. There is no JSON fallback on configuration or upload
-failure; turn `otelEnabled` off to return to JSON.
+### Limitations
 
-**Using bktec:** its default Vitest command passes `--reporter=default
---reporter=json`. CLI reporters replace config reporters, and cannot pass
-`{ otelEnabled: true }`, so those defaults disable the collector reporter.
-Set bktec's test command to
-`npx vitest run {{testExamples}} --outputFile {{resultPath}}` and list both
-`'json'` and the collector reporter in `vitest.config.js` (alongside `'default'`
-if desired). The JSON file is for bktec; the collector still uploads only OTLP.
-The collector SDK warns if it runs without the collector reporter.
+- Retries share one execution per test, with every attempt's phases and children underneath. Jest's OpenTelemetry mode records one execution per attempt.
+- SIGTERM, including Buildkite cancellation, gives no five-second drain or warning. Already uploaded results survive, but roughly the last second of completed files and completed tests in running files can be lost. SIGKILL can also lose pending results.
+- Vitest ID collisions can mix up parallel results. The collector warns and keeps traces separate, but uploads what Vitest reports. Rename either file named in the warning.
+- Browser mode sends test spans only. Watch mode is unsupported.
+- Vitest 3 sends test spans only and warns. So do runs with a custom SDK or missing native config. Vitest 1–2 warn and upload nothing in OpenTelemetry mode.
+- Isolation adds SDK startup cost per test file. Turning it off changes how your tests run, not just telemetry performance.
+- Configuration or upload failures do not fall back to JSON. Turn off `otelEnabled` to use JSON again.
+- End child spans before workers exit. Children started after their test ends are dropped and counted in a warning.
 
 ## Jest
 
