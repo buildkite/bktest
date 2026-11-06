@@ -112,12 +112,17 @@ steps:
               mount-buildkite-agent: false
       - label: ":vitest: Vitest {{matrix}} compatibility"
         matrix:
-          - "1.6.1"
-          - "2.1.9"
-          - "3.0.0"
-          - "4.0.11"
-          - "4.1.12"
-          - "5.1.0"
+          setup:
+            - "1.6.1"
+            - "2.1.9"
+            - "3.0.0"
+            - "4.0.11"
+            - "4.1.12"
+            - "5.1.0"
+            - "latest"
+          adjustments:
+            - with: ["latest"]
+              soft_fail: true
         command:
           - "cd test-collector-javascript"
           - "npm pkg set 'devDependencies.vitest={{matrix}}' --include-workspace-root --workspace examples/vitest"

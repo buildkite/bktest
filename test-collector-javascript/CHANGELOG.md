@@ -1,10 +1,5 @@
 # Changelog
 
-## 1.14.0
-
-- Add experimental OpenTelemetry mode for Vitest 4.0.11+. See hooks, manual spans and HTTP/fetch calls in a trace for each test. Retries share that trace. Follow the [setup guide](docs/opentelemetry.md#vitest) to enable it.
-- JSON uploads remain the default. OpenTelemetry mode does not fall back to JSON on failure.
-
 ## 1.13.0
 
 - Send Jest results to Test Engine as OpenTelemetry spans, with HTTP calls, database queries and manual spans underneath. Enable this experimental mode with reporter option `otelEnabled: true` and `runtime: 'buildkite-test-collector/jest/runtime'`. JSON uploads remain the default.

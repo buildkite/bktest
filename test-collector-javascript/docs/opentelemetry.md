@@ -5,7 +5,7 @@ Each test becomes a span. With Jest and Vitest, work inside it shows up undernea
 
 ## Playwright
 
-Install the dependencies in [Setup](#setup), then enable `otelEnabled` on the
+Install the dependencies in [Setup](#setup-1), then enable `otelEnabled` on the
 reporter. No fixture or test changes are needed, and Jest's runtime is not required.
 
 ```js
