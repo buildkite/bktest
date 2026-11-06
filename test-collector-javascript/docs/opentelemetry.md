@@ -120,11 +120,18 @@ and keeps traces separate, but uploads what Vitest reports. Rename either file.
 The reporter owns uploads, credentials, tags, the run key and the shared
 [settings](#settings). Workers commit children locally at test-span end and SDK
 shutdown; final upload draining waits for worker SDK shutdown, including
-children completing during environment teardown. Workers do not send network
+children completing during environment teardown. A one-shot natural-exit
+fallback drains results if a worker crash prevents Vitest from reaching main
+SDK shutdown. Workers do not send network
 requests. Children started after their test span ends are dropped and counted
 in a warning; open children and per-file caps
 use the same accounting as Jest. Empty phases do not consume the child cap.
-SIGTERM allows a five-second drain. SIGKILL can lose pending results.
+
+Known limit: Vitest exits about 1 ms after SIGTERM (including Buildkite
+cancellation), so unlike Jest there is no five-second drain and no warning.
+Files already uploaded by the sender's one-second timer are kept, but results
+from files completed within roughly the last second and tests completed in a
+still-running file can be lost; SIGKILL can also lose pending results.
 
 Vitest initializes the SDK once per worker. With isolation, fresh workers can
 make SDK startup cost scale with the number of test files; disabling isolation

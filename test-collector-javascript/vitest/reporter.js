@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import semver from 'semver'
 import CI from '../util/ci.js'
 import uploadTestResults from '../util/uploadTestResults.js'
 import Paths from '../util/paths'
@@ -41,13 +42,17 @@ class VitestBuildkiteTestEngineReporter {
         return !config.browser?.enabled && otel?.enabled && sdk &&
           (sdk.startsWith('file:') ? fileURLToPath(sdk) : path.resolve(config.root, sdk)) === expected
       }
-      this._native = !!native(ctx.config)
+      this._native = semver.gte(version, '4.0.11') && !!native(ctx.config)
       this._spool = fs.mkdtempSync(path.join(os.tmpdir(), 'buildkite-vitest-otel-'))
       this._settings = { ...settings, spool: this._spool, native: this._native,
         seed: randomBytes(16).toString('hex'), ownerPid: process.pid }
       this._session = createSession(this._settings)
       this._sender = createUploads(settings, this._spool)
       publishSettings(this._settings)
+      // A hard worker crash can leave Vitest 4.0.11's pool closure unresolved,
+      // reaching natural exit without calling the main SDK's shutdown.
+      this._beforeExit = () => this._finish()
+      process.once('beforeExit', this._beforeExit)
       this._sigterm = () => {
         const otherListeners = process.listenerCount('SIGTERM') > 0
         this._terminated = true
@@ -110,6 +115,7 @@ class VitestBuildkiteTestEngineReporter {
         await this._sender?.drain(budget)
       } finally {
         await this._session?.shutdown()
+        if (this._beforeExit) process.off('beforeExit', this._beforeExit)
         if (this._sigterm) process.off('SIGTERM', this._sigterm)
         if (this._spool && !this._terminated) fs.rmSync(this._spool, { recursive: true, force: true })
       }

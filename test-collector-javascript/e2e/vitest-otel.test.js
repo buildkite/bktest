@@ -144,20 +144,25 @@ const supported = major >= 4
 }, 30000)
 
 ;(major < 4 ? test : test.skip)('older Vitest degrades explicitly without JSON fallback', async () => {
-  const result = await run({ OTEL_TEST_NO_SDK: 'true' })
+  const result = await run()
   expect(result.stderr).toContain(major < 3 ? 'needs Vitest 3 or newer' : 'test.execution spans only')
   expect(server.spans()).toHaveLength(major < 3 ? 0 : 8)
   if (major < 3) expect(server.requests).toHaveLength(0)
 }, 30000)
 
-;(supported ? test : test.skip)('bail and a crashed worker still have reporter-owned executions', async () => {
-  const bail = await run({ OTEL_TEST_CASE: 'bail' }, ['--bail', '1'])
+;(supported ? test : test.skip).each(['forks', 'threads'])('bail and a crashed worker still have reporter-owned executions (%s)', async pool => {
+  const bail = await run({ OTEL_TEST_CASE: 'bail', OTEL_TEST_POOL: pool }, ['--bail', '1'])
   expect(bail.code).toBe(1)
   expect(server.spans().filter(s => s.name === 'test.execution').map(s => s.attributes['test.case.result.status'])).toEqual(['fail', 'skipped', 'skipped'])
   server.requests.length = 0
-  const crash = await run({ OTEL_TEST_CASE: 'crash' })
+  const crash = await run({ OTEL_TEST_CASE: 'crash', OTEL_TEST_POOL: pool })
   expect(crash.code).toBe(1)
-  expect(server.spans().filter(s => s.name === 'test.execution')).toHaveLength(2)
+  const roots = server.spans().filter(s => s.name === 'test.execution')
+  expect(roots.map(s => [s.attributes['buildkite.test.name'], s.attributes['test.case.result.status']])).toEqual([
+    ['passes before worker crashes', 'pass'], ['worker crashes', 'skipped'], ['never reached', 'skipped'],
+  ])
+  expect(roots.every(s => !s.parentSpanId)).toBe(true)
+  expect(crash.stderr).not.toContain('TEST RESULTS MISSING')
 }, 30000)
 
 ;(supported ? test : test.skip)('late children and the child cap warn without losing test results', async () => {
