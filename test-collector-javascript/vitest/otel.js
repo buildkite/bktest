@@ -4,7 +4,7 @@ const { readSettings } = require('../util/otel/config')
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 
 const createWorker = (settings) => {
-  const { api, trace, resources, core } = require('../util/otel/sdk').loadSdk()
+  const { api, trace, resources, core } = require('../util/otel/sdk').loadSdk({ exporter: false })
   const { idGenerator, SPAN_LIMITS } = require('../util/otel/session')
   const { resourceAttributes } = require('../util/otel/attributes')
   const { createChildExport } = require('../util/otel/children')
@@ -113,9 +113,8 @@ const createWorker = (settings) => {
   ] }))
   try {
     const { loadInstrumentations } = require('../util/otel/instrumentations')
-    for (const { name, instance } of loadInstrumentations(settings.rootDir,
-      (key, message) => warnOncePerRun(settings.spool, key, message))) {
-      if (!['http', 'undici'].includes(name)) continue
+    for (const { instance } of loadInstrumentations(settings.rootDir,
+      (key, message) => warnOncePerRun(settings.spool, key, message), ['http', 'undici'])) {
       instance.setTracerProvider(wrappedProvider)
       instance.setConfig({ ...instance.getConfig(), enabled: true })
       instance.enable()

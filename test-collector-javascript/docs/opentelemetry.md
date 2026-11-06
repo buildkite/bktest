@@ -117,6 +117,10 @@ span ends are dropped and counted in a warning; open children and per-file caps
 use the same accounting as Jest. Empty phases do not consume the child cap.
 SIGTERM allows a five-second drain. SIGKILL can lose pending results.
 
+Vitest initializes the SDK once per worker. With isolation, fresh workers can
+make SDK startup cost scale with the number of test files; disabling isolation
+changes test isolation semantics, not just telemetry performance.
+
 Vitest 3, a user-owned `sdkPath`, missing native tracing configuration, and
 browser mode produce test spans only, with a warning. Browser-mode children
 and watch mode are unsupported. Vitest 1–2 warn and upload nothing when
