@@ -93,7 +93,7 @@ class PlaywrightBuildkiteTestEngineReporter {
       record.id = randomUUID();
       const { line, column } = test.location;
       const handle = this._session.startTestSpan(record, { line, column, startTime: result.startTime.getTime() });
-      this._attempts.set(result, { handle, id: record.id, steps: new Map() });
+      this._attempts.set(result, { handle, id: record.id, steps: new Map(), endTime: result.startTime.getTime() });
     } catch (error) {
       warn(`Could not start the Playwright test span: ${describeError(error)}`);
     }
@@ -103,6 +103,7 @@ class PlaywrightBuildkiteTestEngineReporter {
   onStepBegin(test, result, step) {
     const attempt = this._attempts.get(result);
     if (!attempt?.handle) return;
+    attempt.endTime = Math.max(attempt.endTime, step.startTime.getTime());
     try {
       let file = this._stepFiles.get(test.location.file);
       if (!file) {
@@ -140,14 +141,18 @@ class PlaywrightBuildkiteTestEngineReporter {
   }
 
   onStepEnd(test, result, step) {
-    const steps = this._attempts.get(result)?.steps;
+    const attempt = this._attempts.get(result);
+    if (!attempt) return;
+    const endTime = step.startTime.getTime() + step.duration;
+    attempt.endTime = Math.max(attempt.endTime, endTime);
+    const steps = attempt.steps;
     const span = steps?.get(step);
     if (!span) return;
     if (step.error) {
       span.setStatus({ code: this._session.api.SpanStatusCode.ERROR, message: stripAnsi(step.error.message || '') });
-      span.addEvent('exception', { 'exception.message': stripAnsi(step.error.stack || step.error.message || '') }, step.startTime.getTime() + step.duration);
+      span.addEvent('exception', { 'exception.message': stripAnsi(step.error.stack || step.error.message || '') }, endTime);
     }
-    span.end(step.startTime.getTime() + step.duration);
+    span.end(endTime);
     steps.delete(step);
   }
 
@@ -175,13 +180,13 @@ class PlaywrightBuildkiteTestEngineReporter {
       if (testResult.status === 'interrupted') record.result = 'skipped';
       const { line, column } = test.location;
       const startTime = testResult.startTime.getTime();
-      // Worker timings include hooks and exclude reporter/transport latency.
       const handle = attempt?.handle || this._session.startTestSpan(record, { line, column, startTime });
-      const endTime = startTime + testResult.duration;
+      // Playwright's duration excludes time outside selected timeout slots.
+      const endTime = Math.max(startTime + testResult.duration, attempt?.endTime ?? startTime);
       // A worker can stop without sending onStepEnd for its open steps.
-      for (const [step, span] of attempt?.steps || []) {
+      for (const span of attempt?.steps.values() || []) {
         span.setAttribute('test.step.incomplete', true);
-        span.end(Math.max(endTime, step.startTime.getTime()));
+        span.end(endTime);
       }
       this._session.finishTestSpan(handle, record, { line, column, endTime });
       if (handle) {

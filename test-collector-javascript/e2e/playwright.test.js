@@ -220,6 +220,20 @@ describe('examples/playwright in OTel mode', () => {
   const specs = suite => [...(suite.specs || []), ...(suite.suites || []).flatMap(specs)];
   const testSpans = () => server.spans().filter(span => span.name === 'test.execution');
   const childSpans = () => server.spans().filter(span => span.name !== 'test.execution');
+  const expectRootTimings = result => {
+    const stepTimes = steps => steps.flatMap(step => [step.start + Math.max(0, step.duration), ...stepTimes(step.steps)]);
+    for (const spec of specs(result.report)) {
+      const attempts = spec.tests.flatMap(test => test.results);
+      const actual = testSpans().filter(span => span.attributes['buildkite.test.name'] === spec.title);
+      const expected = attempts.map(attempt => {
+        const start = Date.parse(attempt.startTime);
+        const native = result.steps.find(entry => entry.name === spec.title && entry.start === start);
+        return [start, Math.max(start + attempt.duration, ...stepTimes(native.steps))];
+      });
+      expect(actual.map(span => [Number(span.startTimeUnixNano / 1000000n), Number(span.endTimeUnixNano / 1000000n)]).sort())
+        .toEqual(expected.sort());
+    }
+  };
 
   afterEach(async () => {
     if (server) await server.close();
@@ -244,6 +258,8 @@ describe('examples/playwright in OTel mode', () => {
       visited.add(span.spanId);
       expect(span.traceId).toBe(parent.traceId);
       expect(span.endTimeUnixNano >= span.startTimeUnixNano).toBe(true);
+      expect(span.startTimeUnixNano >= parent.startTimeUnixNano).toBe(true);
+      expect(span.endTimeUnixNano <= parent.endTimeUnixNano).toBe(true);
       if (span.attributes['code.file.path']) expect(span.attributes['code.file.path']).toMatch(/^packages\/web\//);
       return {
         title: span.name,
@@ -261,6 +277,7 @@ describe('examples/playwright in OTel mode', () => {
       expect(exportedTree(root)).toEqual(nativeTree(attempt.steps));
     }
     expect(visited.size).toBe(children.length); // No orphan or unrelated worker spans.
+    expectRootTimings(result);
     expect(children.map(span => span.attributes['test.step.category']))
       .toEqual(expect.arrayContaining(['hook', 'fixture', 'test.step', 'pw:api', 'expect']));
     for (const name of ['nested parallel 1', 'nested parallel 2']) {
@@ -284,6 +301,7 @@ describe('examples/playwright in OTel mode', () => {
     expect(children).toHaveLength(6); // Two files, not a new allowance for each worker or attempt.
     const other = testSpans().find(span => span.attributes['buildkite.test.name'] === 'another file');
     expect(children.filter(span => span.traceId === other.traceId)).toHaveLength(3);
+    expectRootTimings(result); // Bounds must include steps even when child export is capped.
     expect(result.stderr.match(/OpenTelemetry dropped \d+ child span\(s\) \(per-file cap 3\)/g)).toHaveLength(2);
     expect(result.stderr).not.toMatch(/TEST RESULTS MISSING|Error in reporter/);
   }, 30000);
@@ -365,13 +383,8 @@ describe('examples/playwright in OTel mode', () => {
     expect(failure.status).toEqual({ code: 2, message: 'Error: intentional failure' });
     expect(failure.events).toEqual([expect.objectContaining({ name: 'exception', attributes: { 'exception.message': expect.stringContaining('intentional failure') } })]);
 
-    // Compare with the framework's own timings from this same run, not a second execution.
-    for (const spec of specs(result.report)) {
-      const attempts = spec.tests.flatMap(test => test.results);
-      const actual = spans.filter(span => span.attributes['buildkite.test.name'] === spec.title);
-      expect(actual.map(span => [Number(span.startTimeUnixNano / 1000000n), Number((span.endTimeUnixNano - span.startTimeUnixNano) / 1000000n)]).sort())
-        .toEqual(attempts.map(attempt => [Date.parse(attempt.startTime), attempt.duration]).sort());
-    }
+    // Keep the framework start, extending its reported duration to enclose native steps.
+    expectRootTimings(result);
 
     const json = await run(['--config', 'otel-off.config.js'], { ...env, BUILDKITE_ANALYTICS_TOKEN: 'json-token' });
     const records = jsonRecords(json.stdout);
@@ -392,6 +405,7 @@ describe('examples/playwright in OTel mode', () => {
     expect(result.code).toBe(1);
     expect(testSpans()).toHaveLength(13);
     expect(childSpans()).toHaveLength(0); // Children honour the environment's always_off sampler.
+    expectRootTimings(result);
     for (const request of server.requests) {
       expect(request.headers.authorization).toBe('Token token="relay-token"');
       expect(request.headers).not.toHaveProperty('x-env-only');
@@ -486,9 +500,11 @@ describe('examples/playwright in OTel mode', () => {
     expect(inner.traceId).toBe(root.traceId);
     for (const span of [outer, inner]) {
       expect(span.attributes['test.step.incomplete']).toBe(true);
-      expect(span.endTimeUnixNano).toBe(root.endTimeUnixNano > span.startTimeUnixNano ? root.endTimeUnixNano : span.startTimeUnixNano);
+      expect(span.startTimeUnixNano <= root.endTimeUnixNano).toBe(true);
+      expect(span.endTimeUnixNano).toBe(root.endTimeUnixNano);
       expect(span.status.code).toBe(0);
     }
+    expectRootTimings(result);
     const completed = childSpans().find(span => span.name === 'completed before cancellation');
     expect(completed.attributes).not.toHaveProperty('test.step.incomplete');
     expect(result.stdout).not.toMatch(/Test Engine Sending:/);

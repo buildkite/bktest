@@ -19,7 +19,10 @@ module.exports = {
 ```
 
 Each test attempt becomes a `test.execution` span, including retries and skips,
-using Playwright's timings. Test identity and failure details match JSON reporting.
+starting at Playwright's reported start and extending to enclose all observed
+steps. Test Engine's execution duration can therefore exceed Playwright's JSON
+duration, including suite hooks and setup outside Playwright's test timer.
+Reporter and upload latency are not added. Test identity and failure details match JSON reporting.
 Interrupted attempts are reported as skipped; expected failures remain failures,
 as in JSON mode.
 
@@ -27,8 +30,8 @@ Playwright steps become nested child spans: `test.step` blocks, hooks, fixtures,
 assertions and Playwright actions. Repeated titles remain separate spans, with
 Playwright's parent relationships and start/duration timings. Step errors mark
 the child as failed without changing the test result. Steps left open when an
-attempt ends are marked `test.step.incomplete` and closed at the attempt's end
-(or their start if later); cancellation does not make them failures.
+attempt ends are marked `test.step.incomplete` and closed at the root span's end;
+cancellation does not make them failures.
 
 Reporter `token` and `tags` options and the shared [settings](#settings) apply.
 Per-test `@key:value` tags override reporter tags. Child export limits apply per
