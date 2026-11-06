@@ -631,7 +631,8 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(server.spans().map((span) => span.name)).toEqual(['test.execution'])
     expect(server.requests).toHaveLength(1)
     expect(result.stderr).toContain('a span exceeds 750 KiB')
-    expect(result.stderr).toContain('OpenTelemetry dropped 1 child span(s) in total')
+    expect(result.stderr).toContain('OpenTelemetry dropped 1 child span(s) in total (span over 750 KiB)')
+    expect(result.stderr).not.toContain('drain deadline')
     expect(result.stderr).not.toContain('TEST RESULTS MISSING')
   }, 20000)
 

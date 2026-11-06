@@ -65,7 +65,7 @@ const createUploads = (settings, directory) => {
     if (bytes <= MAX_BYTES) return [{ spans, stream, file: name, count: spans.length, bytes, retryAt: 0, attempts: 0 }]
     if (spans.length === 1) {
       warnOncePerRun(directory, `oversize-${stream}`, `${stream === 'test' ? 'TEST RESULTS MISSING' : 'OpenTelemetry dropped a child span; test results are unaffected'}: a span exceeds 750 KiB of protobuf and cannot be uploaded; reduce its attributes and rerun (no JSON fallback).`)
-      return [{ spans: stream === 'child' ? null : spans, stream, file: name, count: 1, bytes, retryAt: Infinity }]
+      return [{ spans: stream === 'child' ? null : spans, stream, file: name, count: 1, bytes, retryAt: Infinity, oversized: true }]
     }
     const middle = Math.floor(spans.length / 2)
     return [...split(spans.slice(0, middle), stream, name), ...split(spans.slice(middle), stream, name)]
@@ -180,7 +180,11 @@ const createUploads = (settings, directory) => {
       stopped = true
       for (const lane of lanes) lane.exporter.shutdown().catch(() => {})
       const counts = { test: 0, child: 0 }
-      for (const part of pending()) counts[part.stream] += part.count
+      const oversized = { test: 0, child: 0 }
+      for (const part of pending()) {
+        counts[part.stream] += part.count
+        if (part.oversized) oversized[part.stream] += part.count
+      }
       for (const { file, children } of readSpoolFiles(true)) {
         if (children) counts.child += children
         else {
@@ -199,8 +203,10 @@ const createUploads = (settings, directory) => {
       const missingTests = missing.reduce((n, file) => n + file.tests, 0)
       const lane = lanes[counts.test ? 0 : 1]
       const failure = lane.lastFailure || lane.metrics.lastFailure
-      const reason = /^\d+$/.test(failure) ? `HTTP ${failure}` : failure || 'drain deadline'
-      if (counts.test) warn(`TEST RESULTS MISSING: ${counts.test} test.execution span(s), ${counts.child} child span(s) were not acknowledged (${reason}); results may not have reached Buildkite Test Engine. Check the endpoint/token/runtime and rerun; no JSON fallback.`)
+      const laneReason = /^\d+$/.test(failure) ? `HTTP ${failure}` : failure || 'drain deadline'
+      // Oversized spans are never sent, so no upload failure explains them.
+      const reason = (stream) => counts[stream] === oversized[stream] ? 'span over 750 KiB' : laneReason
+      if (counts.test) warn(`TEST RESULTS MISSING: ${counts.test} test.execution span(s), ${counts.child} child span(s) were not acknowledged (${reason('test')}); results may not have reached Buildkite Test Engine. Check the endpoint/token/runtime and rerun; no JSON fallback.`)
       if (missing.length) {
         const reasons = [...new Set(missing.map((file) => file.reason))].map((reason) => {
           const group = missing.filter((file) => file.reason === reason)
@@ -209,7 +215,7 @@ const createUploads = (settings, directory) => {
         warn(`TEST RESULTS MISSING: ${missing.length} file(s), ${missingTests} test(s) have no readable spool commit (${reasons}; unknown child count); fix the earlier warnings and rerun; no JSON fallback.`)
       }
       counts.test += missingTests
-      if (counts.child) warn(`OpenTelemetry dropped ${counts.child} child span(s) in total (${reason}); test.execution results are unaffected by child export failures.`)
+      if (counts.child) warn(`OpenTelemetry dropped ${counts.child} child span(s) in total (${reason('child')}); test.execution results are unaffected by child export failures.`)
       return counts
     })()
   }
