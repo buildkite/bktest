@@ -121,7 +121,7 @@ steps:
             - "5.1.0"
             - "latest"
           adjustments:
-            - with: ["latest"]
+            - with: "latest"
               soft_fail: true
         command:
           - "cd test-collector-javascript"
