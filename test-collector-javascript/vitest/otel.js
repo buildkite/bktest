@@ -4,6 +4,7 @@ const { readSettings } = require('../util/otel/config')
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 
 const createWorker = (settings) => {
+  const [rootDir, project] = JSON.parse(process.env.BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT)
   const { api, trace, resources, core } = require('../util/otel/sdk').loadSdk({ exporter: false })
   const { idGenerator, SPAN_LIMITS } = require('../util/otel/session')
   const { resourceAttributes } = require('../util/otel/attributes')
@@ -92,7 +93,7 @@ const createWorker = (settings) => {
       const file = options.attributes['code.file.path']
       if (!files.has(file)) files.set(file, children.createForwarder())
       const forwarder = files.get(file)
-      primed = testIds(settings.seed, id)
+      primed = testIds(settings.seed, rootDir, project, file, id)
       forwarder.addTrace(primed.traceId)
       roots.set(primed.traceId, { id: primed.spanId, forwarder, nodes: [] })
       try { return tracer.startSpan(name, { ...options, root: true }, api.ROOT_CONTEXT) }
@@ -113,7 +114,7 @@ const createWorker = (settings) => {
   ] }))
   try {
     const { loadInstrumentations } = require('../util/otel/instrumentations')
-    for (const { instance } of loadInstrumentations(settings.rootDir,
+    for (const { instance } of loadInstrumentations(rootDir,
       (key, message) => warnOncePerRun(settings.spool, key, message), ['http', 'undici'])) {
       instance.setTracerProvider(wrappedProvider)
       instance.setConfig({ ...instance.getConfig(), enabled: true })
@@ -146,9 +147,12 @@ const createWorker = (settings) => {
 // Worker threads share its PID; forks do not. Neither needs Vitest internals.
 const settings = readSettings()
 module.exports = { async shutdown() {
-  if (isMainThread && !process.env.VITEST_WORKER_ID && !globalThis[Symbol.for('buildkite.vitest.reporter')]) warn('Vitest collector sdkPath is enabled but the collector reporter is not running. Configure buildkite-test-collector/vitest/reporter with { otelEnabled: true }; CLI --reporter flags replace config reporters (including bktec defaults). Results were not uploaded.')
+  if (!isMainThread || process.env.VITEST_WORKER_ID) return
+  const reporter = globalThis[Symbol.for('buildkite.vitest.reporter')]
+  if (reporter) await reporter.shutdown()
+  else warn('Vitest collector sdkPath is enabled but the collector reporter is not running. Configure buildkite-test-collector/vitest/reporter with { otelEnabled: true }; CLI --reporter flags replace config reporters (including bktec defaults). Results were not uploaded.')
 } }
-if (settings?.testRunner === 'vitest' && !(isMainThread && settings.ownerPid === process.pid)) {
+if (settings?.testRunner === 'vitest' && settings.native && !(isMainThread && settings.ownerPid === process.pid)) {
   try { module.exports = createWorker(settings) }
   catch (error) { warnOncePerRun(settings.spool, 'vitest-sdk', `Vitest child spans disabled (${describeError(error)}); test.execution export remains enabled.`) }
 }

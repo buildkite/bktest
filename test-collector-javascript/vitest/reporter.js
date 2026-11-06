@@ -21,20 +21,29 @@ class VitestBuildkiteTestEngineReporter {
     this._tags = options?.tags;
     this._otelEnabled = options?.otelEnabled === true;
     this._recorded = new Set();
+    this._modules = new Map();
   }
 
   onInit(ctx) {
     this._start = Date.now()
     this._paths = new Paths({ rootDir: ctx.config.root }, this._testEnv.location_prefix)
-    globalThis[Symbol.for('buildkite.vitest.reporter')] = true
+    globalThis[Symbol.for('buildkite.vitest.reporter')] = { shutdown: () => this._finish() }
     const settings = resolveSettings({
       otelEnabled: this._otelEnabled, token: this._options?.token,
       testRunner: 'vitest', frameworkVersion: version, runEnv: this._testEnv, tags: this._tags,
     })
     if (!settings) return
     try {
+      const expected = fileURLToPath(new URL('./otel.js', import.meta.url))
+      const native = (config) => {
+        const otel = config.experimental?.openTelemetry
+        const sdk = otel?.sdkPath
+        return !config.browser?.enabled && otel?.enabled && sdk &&
+          (sdk.startsWith('file:') ? fileURLToPath(sdk) : path.resolve(config.root, sdk)) === expected
+      }
+      this._native = !!native(ctx.config)
       this._spool = fs.mkdtempSync(path.join(os.tmpdir(), 'buildkite-vitest-otel-'))
-      this._settings = { ...settings, spool: this._spool, rootDir: ctx.config.root,
+      this._settings = { ...settings, spool: this._spool, native: this._native,
         seed: randomBytes(16).toString('hex'), ownerPid: process.pid }
       this._session = createSession(this._settings)
       this._sender = createUploads(settings, this._spool)
@@ -49,28 +58,36 @@ class VitestBuildkiteTestEngineReporter {
         })
       }
       process.prependOnceListener('SIGTERM', this._sigterm)
-      const expected = fileURLToPath(new URL('./otel.js', import.meta.url))
       const projects = ctx.projects?.length ? ctx.projects : [{ config: ctx.config }]
-      if (projects.some(({ config }) => {
-        const otel = config.experimental?.openTelemetry
-        const sdk = otel?.sdkPath
-        return config.browser?.enabled || !otel?.enabled || !sdk ||
-          (sdk.startsWith('file:') ? fileURLToPath(sdk) : path.resolve(config.root, sdk)) !== expected
-      })) warn('Vitest OpenTelemetry children are disabled for projects without the collector sdkPath, including Vitest 3, browser mode and user-owned SDKs; sending test.execution spans only. Use Vitest 4.0.11+ with experimental.openTelemetry enabled and sdkPath pointing to buildkite-test-collector/vitest/otel.js for children.')
+      for (const { config } of projects) {
+        config.env = { ...config.env, BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT: JSON.stringify([config.root, config.name || '']) }
+      }
+      if (!this._native || projects.some(({ config }) => !native(config))) warn('Vitest OpenTelemetry children are disabled without the collector sdkPath in both the root config and each project, including Vitest 3, browser mode and user-owned SDKs; sending test.execution spans only. Use Vitest 4.0.11+ with experimental.openTelemetry enabled and sdkPath pointing to buildkite-test-collector/vitest/otel.js for children.')
     } catch (error) {
       warn(`TEST RESULTS MISSING: OpenTelemetry could not be configured (${describeError(error)}); check temporary directory permissions/free space and the SDK installation, then rerun (no JSON fallback).`)
       publishSettings(null)
     }
   }
 
+  onTestModuleCollected(module) {
+    if (!this._otelEnabled) return
+    const previous = this._modules.get(module.id)
+    if (!this._collision && previous && (previous.moduleId !== module.moduleId || previous.project !== module.project)) {
+      this._collision = true
+      warn(`Vitest mixes up results for [${previous.project.name || 'default'}] ${previous.moduleId} and [${module.project.name || 'default'}] ${module.moduleId} because of an upstream ID hash collision. Renaming either file fixes it. The collector keeps traces separate but uploads the results Vitest reports.`)
+    }
+    this._modules.set(module.id, module)
+  }
+
   onTestCaseResult(test) {
-    if (!this._session || this._recorded.has(test.id)) return
-    this._recorded.add(test.id)
+    if (!this._session) return
+    const ids = testIds(this._settings.seed, test.project.config.root, test.project.name, test.module.moduleId, test.id)
+    if (this._recorded.has(ids.traceId)) return
+    this._recorded.add(ids.traceId)
     const record = { id: randomUUID(), ...testEngineRecord(test, this._paths.prefixTestPath(test.module.moduleId)) }
     const diagnostic = test.diagnostic()
     const startTime = diagnostic?.startTime ?? this._start
-    const timing = { line: test.location?.line, startTime,
-      ids: testIds(this._settings.seed, test.id) }
+    const timing = { line: test.location?.line, startTime, ids }
     const handle = this._session.startTestSpan(record, timing)
     handle?.span.setAttributes({ 'vitest.test.id': test.id, 'vitest.test.name': test.name,
       'vitest.test.mode': test.options.mode, 'code.column.number': test.location?.column })
@@ -104,7 +121,11 @@ class VitestBuildkiteTestEngineReporter {
   async onTestRunEnd(testModules) {
     if (this._otelEnabled) {
       for (const module of testModules) await this.onTestModuleEnd(module)
-      return this._finish()
+      // Native SDK shutdown runs after pool.close(), unlike onClose callbacks
+      // (which race pool closure in Vitest 4). Reporter-only runs have no workers
+      // committing children, so they can drain immediately.
+      if (!this._native) return this._finish()
+      return
     }
     const originStart = this._start;
     const testResults = testModules.flatMap((testModule) => {

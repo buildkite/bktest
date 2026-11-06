@@ -85,6 +85,10 @@ and fetch, or install `@opentelemetry/auto-instrumentations-node` (which contain
 both). Discovery and the `OTEL_NODE_ENABLED_INSTRUMENTATIONS` /
 `OTEL_NODE_DISABLED_INSTRUMENTATIONS` rules match Jest, but Vitest enables only
 http and undici. Package instrumentation is not supported in Vitest mode.
+Discovery starts at each Vitest project's root and includes parent manifests.
+For multi-project runs, enable the collector `sdkPath` in the root config as
+well as each project (for example with `extends: true`); without the root SDK,
+the collector warns and sends test executions only.
 
 ```text
 test.execution  "checkout charges the card"
@@ -109,11 +113,16 @@ their spans.
 
 Only spans from the `vitest` tracer whose names start with `vitest.` are treated
 as framework spans; custom spans such as `db.connect` from that tracer are kept.
+Known limit: Vitest's 32-bit ID hash can collide (for example `Aa.test.js` and
+`BB.test.js`), mixing up parallel results upstream; the collector warns once
+and keeps traces separate, but uploads what Vitest reports. Rename either file.
 
 The reporter owns uploads, credentials, tags, the run key and the shared
 [settings](#settings). Workers commit children locally at test-span end and SDK
-shutdown; they do not send network requests. Children started after their test
-span ends are dropped and counted in a warning; open children and per-file caps
+shutdown; final upload draining waits for worker SDK shutdown, including
+children completing during environment teardown. Workers do not send network
+requests. Children started after their test span ends are dropped and counted
+in a warning; open children and per-file caps
 use the same accounting as Jest. Empty phases do not consume the child cap.
 SIGTERM allows a five-second drain. SIGKILL can lose pending results.
 

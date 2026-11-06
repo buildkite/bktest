@@ -1,7 +1,7 @@
 const { createHash } = require('crypto')
 
-// TestCase.id is also Vitest's vitest.test.id; no worker/main IPC is needed.
-module.exports = (seed, id) => {
-  const hash = createHash('sha256').update(`${seed}:${id}`).digest('hex')
+// Vitest IDs contain a 32-bit file hash: retain the full identity on both sides.
+module.exports = (seed, root, project, file, id) => {
+  const hash = createHash('sha256').update(JSON.stringify([seed, root, project || '', file, id])).digest('hex')
   return { traceId: hash.slice(0, 32), spanId: hash.slice(32, 48) }
 }

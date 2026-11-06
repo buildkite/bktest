@@ -26,6 +26,82 @@ const run = (env = {}, args = []) => new Promise(resolve => {
 })
 const supported = major >= 4
 
+;(supported ? test : test.skip).each(['forks', 'threads'].flatMap(pool => [true, false].map(isolate => [pool, isolate])))('colliding Vitest IDs keep separate executions and children (%s, isolate=%s)', async (pool, isolate) => {
+  const result = await run({ OTEL_TEST_CASE: 'collisions', OTEL_TEST_POOL: pool, OTEL_TEST_ISOLATE: String(isolate) })
+  expect(result.code).toBe(0)
+  const spans = server.spans()
+  const roots = spans.filter(s => s.name === 'test.execution')
+  expect(roots).toHaveLength(2)
+  expect(roots[0].attributes['vitest.test.id']).toBe(roots[1].attributes['vitest.test.id'])
+  expect(new Set(roots.map(s => s.traceId)).size).toBe(2)
+  for (const [name, file, child] of [['first collision', 'Aa.test.js', 'first child'], ['second collision', 'BB.test.js', 'second child']]) {
+    const root = roots.find(s => s.attributes['buildkite.test.name'] === name)
+    expect(root.attributes['code.file.path']).toContain(file)
+    expect(root.attributes['test.case.result.status']).toBe('pass')
+    const trace = spans.filter(s => s.traceId === root.traceId)
+    expect(trace.filter(s => ['first child', 'second child'].includes(s.name)).map(s => s.name)).toEqual([child])
+    for (const span of trace.filter(s => s !== root)) expect(trace.some(parent => parent.spanId === span.parentSpanId)).toBe(true)
+  }
+  expect(result.stderr).not.toContain('dropped')
+  expect(result.stderr.match(/upstream ID hash collision/g)).toHaveLength(1)
+  expect(result.stderr).toContain('Aa.test.js')
+  expect(result.stderr).toContain('BB.test.js')
+  expect(result.stderr).toContain('Renaming either file fixes it')
+}, 30000)
+
+;(supported ? test : test.skip).each(['forks', 'threads'])('accepted children completing during teardown are uploaded (%s)', async pool => {
+  const result = await run({ OTEL_TEST_CASE: 'tail', OTEL_TEST_POOL: pool })
+  expect(result.code).toBe(0)
+  expect(result.stdout).toContain('CHILD ENDED')
+  const spans = server.spans()
+  const root = spans.find(s => s.name === 'test.execution')
+  expect(root.attributes['test.case.result.status']).toBe('pass')
+  const child = spans.find(s => s.name === 'accepted-child')
+  expect(child).toBeDefined()
+  expect(child.traceId).toBe(root.traceId)
+  expect(spans.find(s => s.spanId === child.parentSpanId).name).toBe('vitest.test.runner.test.callback')
+  expect(result.stderr).not.toMatch(/ENOENT|dropped|TEST RESULTS MISSING/)
+}, 30000)
+
+;(supported ? test : test.skip).each(['forks', 'threads'])('projects namespace IDs and discover project-only HTTP instrumentation (%s)', async pool => {
+  // Outside the workspace: only this project's manifest declares instrumentation.
+  fs.symlinkSync(path.join(__dirname, '../node_modules'), path.join(scratch, 'node_modules'), 'dir')
+  fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module', devDependencies: {
+    '@opentelemetry/instrumentation-http': '*', '@opentelemetry/instrumentation-undici': '*',
+  } }))
+  fs.writeFileSync(path.join(scratch, 'project.test.js'), `
+    import { test } from 'vitest'
+    import { trace } from '@opentelemetry/api'
+    import { createServer, get } from 'node:http'
+    test('project IO', async () => {
+      trace.getTracer('app').startSpan('project-' + process.env.PROJECT_LABEL).end()
+      const server = createServer((req, res) => res.end('ok'))
+      await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+      const url = 'http://127.0.0.1:' + server.address().port
+      try {
+        await new Promise((resolve, reject) => get(url, res => { res.resume(); res.on('end', resolve) }).on('error', reject))
+        await (await fetch(url)).text()
+      } finally { await new Promise(resolve => server.close(resolve)) }
+    })
+  `)
+  const result = await run({ OTEL_TEST_PROJECT_ROOT: scratch, OTEL_TEST_POOL: pool })
+  expect(result).toEqual(expect.objectContaining({ code: 0 }))
+  const spans = server.spans()
+  const roots = spans.filter(s => s.name === 'test.execution')
+  expect(roots).toHaveLength(2)
+  expect(roots[0].attributes['vitest.test.id']).toBe(roots[1].attributes['vitest.test.id'])
+  expect(new Set(roots.map(s => s.traceId)).size).toBe(2)
+  for (const name of ['project-Aa', 'project-BB']) {
+    const child = spans.find(s => s.name === name)
+    expect(child).toBeDefined()
+    expect(roots.some(root => root.traceId === child.traceId)).toBe(true)
+    const children = spans.filter(s => s.traceId === child.traceId)
+    expect(children.filter(s => s.kind === 3)).toHaveLength(2)
+    expect(children.filter(s => s.kind === 2)).toHaveLength(2)
+  }
+  expect(result.stderr).not.toMatch(/disabled|dropped|TEST RESULTS MISSING/)
+}, 30000)
+
 ;(supported ? test : test.skip).each(['forks', 'threads'].flatMap(pool =>
   ['node', 'jsdom', 'happy-dom'].flatMap(environment => [true, false].map(isolate => [pool, environment, isolate]))
 ))('native children and reporter roots agree (%s, %s, isolate=%s)', async (pool, environment, isolate) => {
