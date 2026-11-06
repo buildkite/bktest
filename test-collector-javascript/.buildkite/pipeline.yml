@@ -110,22 +110,24 @@ steps:
           - docker#v3.7.0:
               image: node:22.15.0
               mount-buildkite-agent: false
-      - label: ":vitest: Vitest {{matrix}} compatibility"
+      - label: ":vitest: Vitest {{matrix.version}} compatibility"
         matrix:
           setup:
-            - "1.6.1"
-            - "2.1.9"
-            - "3.0.0"
-            - "4.0.11"
-            - "4.1.12"
-            - "5.1.0"
-            - "latest"
+            version:
+              - "1.6.1"
+              - "2.1.9"
+              - "3.0.0"
+              - "4.0.11"
+              - "4.1.12"
+              - "5.1.0"
+              - "latest"
           adjustments:
-            - with: "latest"
+            - with:
+                version: "latest"
               soft_fail: true
         command:
           - "cd test-collector-javascript"
-          - "npm pkg set 'devDependencies.vitest={{matrix}}' --include-workspace-root --workspace examples/vitest"
+          - "npm pkg set 'devDependencies.vitest={{matrix.version}}' --include-workspace-root --workspace examples/vitest"
           - "npm install --ignore-scripts --legacy-peer-deps"
           - "npm test -- --runInBand e2e/vitest.test.js e2e/vitest-otel.test.js"
         plugins:
