@@ -23,15 +23,24 @@ using Playwright's timings. Test identity and failure details match JSON reporti
 Interrupted attempts are reported as skipped; expected failures remain failures,
 as in JSON mode.
 
+Playwright steps become nested child spans: `test.step` blocks, hooks, fixtures,
+assertions and Playwright actions. Repeated titles remain separate spans, with
+Playwright's parent relationships and start/duration timings. Step errors mark
+the child as failed without changing the test result. Steps left open when an
+attempt ends are marked `test.step.incomplete` and closed at the attempt's end
+(or their start if later); cancellation does not make them failures.
+
 Reporter `token` and `tags` options and the shared [settings](#settings) apply.
-Per-test `@key:value` tags override reporter tags.
+Per-test `@key:value` tags override reporter tags. Child export limits apply per
+file across workers and retries; dropped children do not displace test results.
 
 With OTel enabled, configuration or upload failures warn without falling back to
 JSON or changing Playwright's exit code. Turn `otelEnabled` off to use JSON again.
 
-This reports test results only: no step child spans, worker or browser
-instrumentation, or in-test annotations. Ctrl-C allows results to flush;
-SIGTERM can lose pending results.
+This is reporter-side tracing only. It does not propagate context into workers
+or collect automatic HTTP/database spans, manual worker spans, browser application
+traces or in-test annotations. Ctrl-C allows results to flush; SIGTERM can lose
+pending results.
 
 ## Jest
 
