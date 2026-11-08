@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.10.0
+
+- Promote `1.10.0b1` to a stable package release with no collector runtime
+  changes. OpenTelemetry submission remains experimental, opt-in and disabled
+  by default.
+
 ## 1.10.0b1 — 2026-11-05
 
 - Add experimental, opt-in OpenTelemetry submission for pytest, including test
