@@ -91,11 +91,15 @@ class VitestBuildkiteTestEngineReporter {
     this._modules.set(module.id, module)
   }
 
-  // Vitest reports a runnable test ready from inside its run.test span, even if
-  // the test later skips itself. Skipped suites report their tests ready too,
-  // and typecheck results never reach a worker.
+  // Vitest reports a test ready from inside its run.test span, even if the test
+  // later skips itself. When a suite or module is skipped, including by bail,
+  // Vitest reports its tests ready afterwards without running them. Typecheck
+  // results never reach a worker.
   onTestCaseReady(test) {
-    if (!this._nativeProjects?.has(test.project.name) || ['skip', 'todo'].includes(test.options.mode) || test.meta().typecheck) return
+    if (!this._nativeProjects?.has(test.project.name) || test.meta().typecheck) return
+    let parent = test.parent
+    while (parent.type !== 'module' && parent.state() !== 'skipped') parent = parent.parent
+    if (parent.state() === 'skipped') return
     const { traceId } = testIds(this._settings.seed, test.project.config.root, test.project.name, test.module.moduleId, test.id)
     this._started.set(traceId, test.project.name)
   }
