@@ -1,3 +1,4 @@
+const fs = require('fs')
 const { isMainThread } = require('worker_threads')
 const { isBuiltin, syncBuiltinESMExports } = require('module')
 const { readSettings } = require('../util/otel/config')
@@ -11,6 +12,10 @@ const createWorker = (settings) => {
   const { createChildExport } = require('../util/otel/children')
   const { commitFile } = require('../util/otel/spool')
   const testIds = require('./otelIds')
+  const recordRoot = (traceId) => {
+    try { fs.appendFileSync(testIds.rootsFile(settings.spool, project), traceId ? `${traceId}\n` : '') }
+    catch { /* The check is advisory; failed child commits warn on their own. */ }
+  }
   const children = createChildExport(settings)
   const roots = new Map()
   const nodes = new Map()
@@ -99,6 +104,7 @@ const createWorker = (settings) => {
       if (!files.has(file)) files.set(file, children.createForwarder())
       const forwarder = files.get(file)
       primed = testIds(settings.seed, rootDir, project, file, id)
+      recordRoot(primed.traceId)
       forwarder.addTrace(primed.traceId)
       roots.set(primed.traceId, { id: primed.spanId, forwarder, nodes: [] })
       try {
@@ -118,6 +124,8 @@ const createWorker = (settings) => {
     return { async shutdown() {} }
   }
   api.context.setGlobalContextManager(manager)
+  // An empty record tells the reporter this project's workers can recognise tests.
+  recordRoot()
   api.propagation.setGlobalPropagator(new core.CompositePropagator({ propagators: [
     new core.W3CTraceContextPropagator(), new core.W3CBaggagePropagator(),
   ] }))

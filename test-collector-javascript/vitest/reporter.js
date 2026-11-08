@@ -22,6 +22,7 @@ class VitestBuildkiteTestEngineReporter {
     this._tags = options?.tags;
     this._otelEnabled = options?.otelEnabled === true;
     this._recorded = new Set();
+    this._started = new Map();
     this._modules = new Map();
   }
 
@@ -70,6 +71,7 @@ class VitestBuildkiteTestEngineReporter {
       }
       if (!this._native) warn('Vitest OpenTelemetry children require Vitest 4.0.11+ with experimental.openTelemetry enabled and the collector sdkPath in the root config; sending test.execution spans only.')
       else {
+        this._nativeProjects = new Set(projects.filter(({ config }) => native(config)).map(({ config }) => config.name || ''))
         const disabled = projects.filter(({ config }) => !native(config)).map(({ config }) => config.name || config.root)
         if (disabled.length) warn(`Vitest OpenTelemetry children are disabled for projects: ${disabled.join(', ')}. Enable tracing with the collector sdkPath to collect children; sending test.execution spans only for these projects.`)
       }
@@ -87,6 +89,19 @@ class VitestBuildkiteTestEngineReporter {
       warn(`Vitest mixes up results for [${previous.project.name || 'default'}] ${previous.moduleId} and [${module.project.name || 'default'}] ${module.moduleId} because of an upstream ID hash collision. Renaming either file fixes it. The collector keeps traces separate but uploads the results Vitest reports.`)
     }
     this._modules.set(module.id, module)
+  }
+
+  // Vitest reports a test ready from inside its run.test span, even if the test
+  // later skips itself. When a suite or module is skipped, including by bail,
+  // Vitest reports its tests ready afterwards without running them. Typecheck
+  // results never reach a worker.
+  onTestCaseReady(test) {
+    if (!this._nativeProjects?.has(test.project.name) || test.module.meta().typecheck) return
+    let parent = test.parent
+    while (parent.type !== 'module' && parent.state() !== 'skipped') parent = parent.parent
+    if (parent.state() === 'skipped') return
+    const { traceId } = testIds(this._settings.seed, test.project.config.root, test.project.name, test.module.moduleId, test.id)
+    this._started.set(traceId, test.project.name)
   }
 
   onTestCaseResult(test) {
@@ -118,6 +133,7 @@ class VitestBuildkiteTestEngineReporter {
       try {
         await this._session?.forceFlush('vitest')
         await this._sender?.drain(budget)
+        if (this._native && this._runEnded && !this._terminated) this._checkWorkerRoots()
       } finally {
         await this._session?.shutdown()
         if (this._beforeExit) process.off('beforeExit', this._beforeExit)
@@ -127,11 +143,31 @@ class VitestBuildkiteTestEngineReporter {
     })()
   }
 
+  // Children depend on Vitest's experimental span attributes, which any Vitest
+  // release can change. Compare what workers recognised with Vitest's results.
+  _checkWorkerRoots() {
+    const roots = new Set()
+    const ready = new Set()
+    for (const project of this._nativeProjects) {
+      let text
+      // A project without a record has no worker that set up the SDK; each that failed has warned.
+      try { text = fs.readFileSync(testIds.rootsFile(this._spool, project), 'utf8') } catch { continue }
+      ready.add(project)
+      for (const id of text.split('\n')) if (id) roots.add(id)
+    }
+    const unlinked = [...roots].filter((id) => !this._recorded.has(id)).length
+    const unrecognised = [...this._started].filter(([id, project]) => ready.has(project) && !roots.has(id)).length
+    const changed = `Vitest ${version}'s experimental OpenTelemetry spans may have changed. Check for a collector update or report this Vitest version; test.execution spans were sent.`
+    if (unlinked) warn(`Vitest OpenTelemetry children could not be linked to their tests for ${unlinked} test span(s). ${changed}`)
+    else if (unrecognised) warn(`Vitest OpenTelemetry children were not recorded for ${unrecognised} test(s) because their test spans were not recognised. ${changed}`)
+  }
+
   // Vitest 3+ exposes test results through the public reporter API. In Vitest 5,
   // JsonReporter no longer calls writeReport, so subclassing it loses uploads.
   async onTestRunEnd(testModules) {
     if (this._otelEnabled) {
       for (const module of testModules) await this.onTestModuleEnd(module)
+      this._runEnded = true
       // Native SDK shutdown runs after pool.close(), unlike onClose callbacks
       // (which race pool closure in Vitest 4). Reporter-only runs have no workers
       // committing children, so they can drain immediately.
