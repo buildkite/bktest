@@ -1,6 +1,6 @@
 const fs = require('fs')
 const { isMainThread } = require('worker_threads')
-const { isBuiltin, syncBuiltinESMExports } = require('module')
+const { activateBuiltins } = require('../util/otel/builtins')
 const { readSettings } = require('../util/otel/config')
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 
@@ -123,23 +123,9 @@ const createWorker = (settings) => {
   api.propagation.setGlobalPropagator(createPropagator(sdk))
   try {
     const { loadInstrumentations } = require('../util/otel/instrumentations')
-    for (const { instance } of loadInstrumentations(rootDir,
-      (key, message) => warnOncePerRun(settings.spool, key, message), ['http', 'undici'])) {
-      instance.setTracerProvider(wrappedProvider)
-      instance.setConfig({ ...instance.getConfig(), enabled: true })
-      instance.enable()
-      // Vitest has already imported the builtins. Patch their live exports,
-      // then refresh named ESM bindings as well as default imports.
-      for (const definition of instance._modules || []) {
-        if (!isBuiltin(definition.name) || typeof definition.patch !== 'function') continue
-        const exports = require(definition.name)
-        if (definition.moduleExports !== exports) {
-          definition.moduleExports = exports
-          definition.patch(exports)
-        }
-      }
-    }
-    syncBuiltinESMExports()
+    const instances = loadInstrumentations(rootDir,
+      (key, message) => warnOncePerRun(settings.spool, key, message), ['http', 'undici']).map(entry => entry.instance)
+    activateBuiltins(instances, wrappedProvider, () => roots.has(api.trace.getSpanContext(api.context.active())?.traceId))
   } catch (error) {
     warnOncePerRun(settings.spool, 'vitest-instrumentation', `Vitest HTTP instrumentation disabled (${describeError(error)}); manual children and test.execution export remain enabled.`)
   }

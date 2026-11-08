@@ -123,6 +123,9 @@ Each test gets a trace, including skipped tests and tests cancelled by bail.
 Hook phases keep Vitest's names, statuses and exceptions.
 Phases are sent if they contain child spans, end with an error or have events.
 Other phases, collection, suite work and `beforeAll` are excluded.
+Outgoing HTTP and fetch calls made outside tests bypass instrumentation: they create
+no spans and send no trace headers, even when a parent context is active.
+Servers started outside tests, for example in `beforeAll`, still trace requests from tests.
 Custom spans from the `vitest` tracer are kept unless their names start with `vitest.`.
 
 ### Using bktec

@@ -66,6 +66,22 @@ const preload = (file) => ({ NODE_OPTIONS: [process.env.NODE_OPTIONS, '--require
   expect(result.stderr).not.toMatch(/ENOENT|dropped|TEST RESULTS MISSING/)
 }, 30000)
 
+;(supported ? test : test.skip).each(['forks', 'threads'])('a server started in beforeAll traces requests from a test (%s)', async pool => {
+  const result = await run({ OTEL_TEST_CASE: 'setup-server', OTEL_TEST_POOL: pool })
+  expect(result.code).toBe(0)
+  const spans = server.spans()
+  const root = spans.find(s => s.name === 'test.execution')
+  const byId = new Map(spans.map(s => [s.spanId, s]))
+  const handlers = spans.filter(s => s.name === 'setup-server-handler')
+  expect(handlers).toHaveLength(2)
+  for (const handler of handlers) {
+    expect(handler.traceId).toBe(root.traceId)
+    const incoming = byId.get(handler.parentSpanId)
+    expect(incoming.kind).toBe(2)
+    expect(byId.get(incoming.parentSpanId).kind).toBe(3)
+  }
+}, 30000)
+
 ;(supported ? test : test.skip).each(['forks', 'threads'])('projects namespace IDs and discover project-only HTTP instrumentation (%s)', async pool => {
   // Outside the workspace: only this project's manifest declares instrumentation.
   fs.symlinkSync(path.join(__dirname, '../node_modules'), path.join(scratch, 'node_modules'), 'dir')
@@ -120,6 +136,7 @@ const preload = (file) => ({ NODE_OPTIONS: [process.env.NODE_OPTIONS, '--require
 ))('native children and reporter roots agree (%s, %s, isolate=%s)', async (pool, environment, isolate) => {
   const result = await run({ OTEL_TEST_POOL: pool, OTEL_TEST_ENVIRONMENT: environment, OTEL_TEST_ISOLATE: String(isolate) })
   expect(result.code).toBe(1) // The fixture deliberately fails a hook.
+  expect(result.stdout).toContain('BEFORE ALL TRACEPARENTS [null,null,null]')
   expect(result.stderr).not.toContain('TEST RESULTS MISSING')
   expect(result.stderr).not.toContain(drifted)
   const spans = server.spans()
