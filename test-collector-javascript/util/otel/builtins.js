@@ -17,6 +17,9 @@ const activateBuiltins = (instances, tracerProvider, recording) => {
         const wrap = instance._wrap.bind(instance)
         let requesting = false
         instance._wrap = (exports, name, wrapper) => {
+          // Only gate outgoing calls. A server started outside a test still
+          // receives requests carrying that test's traceparent.
+          if (name !== 'request' && name !== 'get') return wrap(exports, name, wrapper)
           const patched = wrap(exports, name, (original, ...args) => new Proxy(wrapper(original, ...args), {
             apply(patched, receiver, args) {
               if (!recording(instance.instrumentationName) || (name === 'request' && requesting)) return Reflect.apply(original, receiver, args)
@@ -27,10 +30,8 @@ const activateBuiltins = (instances, tracerProvider, recording) => {
               try { return Reflect.apply(patched, receiver, args) } finally { requesting = false }
             },
           }))
-          if (name === 'request' || name === 'get') {
-            if (!httpWrappers.has(exports)) httpWrappers.set(exports, {})
-            httpWrappers.get(exports)[name] = patched
-          }
+          if (!httpWrappers.has(exports)) httpWrappers.set(exports, {})
+          httpWrappers.get(exports)[name] = patched
           return patched
         }
       }
