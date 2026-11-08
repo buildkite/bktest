@@ -96,7 +96,7 @@ class VitestBuildkiteTestEngineReporter {
   // Vitest reports its tests ready afterwards without running them. Typecheck
   // results never reach a worker.
   onTestCaseReady(test) {
-    if (!this._nativeProjects?.has(test.project.name) || test.meta().typecheck) return
+    if (!this._nativeProjects?.has(test.project.name) || test.module.meta().typecheck) return
     let parent = test.parent
     while (parent.type !== 'module' && parent.state() !== 'skipped') parent = parent.parent
     if (parent.state() === 'skipped') return
