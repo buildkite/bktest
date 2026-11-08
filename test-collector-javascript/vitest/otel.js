@@ -6,9 +6,9 @@ const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 
 const createWorker = (settings) => {
   const [rootDir, project] = JSON.parse(process.env.BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT)
-  const { api, trace, resources, core } = require('../util/otel/sdk').loadSdk({ exporter: false })
-  const { idGenerator } = require('../util/otel/session')
-  const { resourceAttributes } = require('../util/otel/attributes')
+  const { loadSdk, createProvider, createResource, createContextManager, createPropagator } = require('../util/otel/sdk')
+  const sdk = loadSdk({ exporter: false, context: true })
+  const { api } = sdk
   const { createChildExport } = require('../util/otel/children')
   const { commitFile } = require('../util/otel/spool')
   const testIds = require('./otelIds')
@@ -76,14 +76,9 @@ const createWorker = (settings) => {
     },
     async forceFlush() {}, async shutdown() {},
   }
-  const provider = new trace.BasicTracerProvider({
-    resource: resources.defaultResource()
-      .merge(resources.detectResources({ detectors: [resources.envDetector] }))
-      .merge(resources.resourceFromAttributes(resourceAttributes(settings.runEnv))),
-    idGenerator: {
-      generateTraceId: () => primed?.traceId || idGenerator.generateTraceId(),
-      generateSpanId: () => primed?.spanId || idGenerator.generateSpanId(),
-    },
+  const provider = createProvider(sdk, {
+    resource: createResource(sdk, settings.runEnv),
+    getIds: () => primed,
     spanProcessors: [processor],
   })
   const noop = new api.ProxyTracerProvider().getTracer('buildkite-test-collector')
@@ -119,8 +114,7 @@ const createWorker = (settings) => {
     }
     return wrapped
   } }
-  const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks')
-  const manager = new AsyncLocalStorageContextManager().enable()
+  const manager = createContextManager(sdk)
   if (!api.trace.setGlobalTracerProvider(wrappedProvider)) {
     manager.disable()
     warnOncePerRun(settings.spool, 'vitest-provider', 'Vitest child spans are disabled because a tracer provider is already registered; let the collector own sdkPath. test.execution export remains enabled.')
@@ -129,9 +123,7 @@ const createWorker = (settings) => {
   api.context.setGlobalContextManager(manager)
   // An empty record tells the reporter that this worker can recognise tests.
   recordRoot()
-  api.propagation.setGlobalPropagator(new core.CompositePropagator({ propagators: [
-    new core.W3CTraceContextPropagator(), new core.W3CBaggagePropagator(),
-  ] }))
+  api.propagation.setGlobalPropagator(createPropagator(sdk))
   try {
     const { loadInstrumentations } = require('../util/otel/instrumentations')
     for (const { instance } of loadInstrumentations(rootDir,

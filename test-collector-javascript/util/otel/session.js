@@ -1,29 +1,14 @@
-const { randomBytes } = require('crypto')
 const { version } = require('../../package.json')
-const { loadSdk, assertCanExport } = require('./sdk')
-const { resourceAttributes, runAttributes } = require('./attributes')
+const { loadSdk, createProvider, createResource, createPropagator, assertCanExport } = require('./sdk')
+const { runAttributes } = require('./attributes')
 const { describeTest, truncate } = require('./describeTest')
 const { warn, describeError } = require('./warn')
 const { createChildExport } = require('./children')
 const { commitFile } = require('./spool')
 
-const SPAN_LIMITS = {
-  attributeCountLimit: 128, attributeValueLengthLimit: 2 * 16384,
-  eventCountLimit: 100, attributePerEventCountLimit: 128,
-  linkCountLimit: 128, attributePerLinkCountLimit: 128,
-}
 const limitAttributes = (attributes) => Object.fromEntries(Object.entries(attributes).map(([key, value]) => [
   key, typeof value === 'string' ? truncate(value, 10243) : value,
 ]))
-
-// Suites can stub Math.random. Never let that produce invalid all-zero IDs.
-const randomHex = (bytes) => {
-  for (;;) {
-    const hex = randomBytes(bytes).toString('hex')
-    if (/[^0]/.test(hex)) return hex
-  }
-}
-const idGenerator = { generateTraceId: () => randomHex(16), generateSpanId: () => randomHex(8) }
 
 const jobSpanLinks = ({ api, core }) => {
   const context = core.parseTraceParent((process.env.TRACEPARENT || '').trim())
@@ -36,19 +21,12 @@ const jobSpanLinks = ({ api, core }) => {
 // Workers retain only this file's spans. No timers, exporters or network I/O.
 const createSession = (settings) => {
   const sdk = loadSdk()
-  const { api, trace, resources } = sdk
+  const { api } = sdk
   const runKey = settings.runEnv.key
   let primed
+  const resource = createResource(sdk, settings.runEnv)
   const providerConfig = {
-    sampler: new trace.AlwaysOnSampler(),
-    idGenerator: {
-      generateTraceId: () => primed?.traceId || idGenerator.generateTraceId(),
-      generateSpanId: () => primed?.spanId || idGenerator.generateSpanId(),
-    },
-    resource: resources.defaultResource()
-      .merge(resources.detectResources({ detectors: [resources.envDetector] }))
-      .merge(resources.resourceFromAttributes(resourceAttributes(settings.runEnv))),
-    spanLimits: SPAN_LIMITS,
+    testSpans: true, resource, getIds: () => primed,
   }
   assertCanExport(sdk, providerConfig)
   let spans = []
@@ -56,16 +34,14 @@ const createSession = (settings) => {
     onStart() {}, onEnd(span) { spans.push(span) },
     forceFlush: async () => {}, shutdown: async () => {},
   }
-  const provider = new trace.BasicTracerProvider({ ...providerConfig, spanProcessors: [processor] })
+  const provider = createProvider(sdk, { ...providerConfig, spanProcessors: [processor] })
   const tracer = provider.getTracer('buildkite-test-collector', version)
   const run = runAttributes(settings)
   let children
   const childExport = () => children ||= createChildExport(settings)
-  const childProviderConfig = { resource: providerConfig.resource, idGenerator }
+  const createChildProvider = (spanProcessors) => createProvider(sdk, { resource, spanProcessors })
   let propagator
-  const childPropagator = () => propagator ||= new sdk.core.CompositePropagator({
-    propagators: [new sdk.core.W3CTraceContextPropagator(), new sdk.core.W3CBaggagePropagator()],
-  })
+  const childPropagator = () => propagator ||= createPropagator(sdk)
 
   const startTestSpan = (record, { line, column, startTime, ids } = {}) => {
     try {
@@ -120,7 +96,7 @@ const createSession = (settings) => {
 
   return {
     api, runKey, startTestSpan, finishTestSpan, forceFlush,
-    shutdown: () => provider.shutdown(), childExport, childProviderConfig, childPropagator,
+    shutdown: () => provider.shutdown(), childExport, createChildProvider, childPropagator,
   }
 }
 
@@ -141,4 +117,4 @@ const sessionFor = (settings) => {
   return session
 }
 
-module.exports = { createSession, sessionFor, idGenerator, SPAN_LIMITS }
+module.exports = { createSession, sessionFor }

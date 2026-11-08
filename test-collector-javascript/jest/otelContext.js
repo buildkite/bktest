@@ -2,6 +2,7 @@ const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 const { worker, workerFor } = require('./otelWorker')
 const JestOtelPackages = require('./otelPackages')
 const { loadInstrumentations } = require('../util/otel/instrumentations')
+const { createContextManager } = require('../util/otel/sdk')
 
 const disabledMessage = (error) => `OpenTelemetry child span export disabled: ${describeError(error).split('\n')[0]}; test.execution export remains enabled`
 const SUITE_PROVIDER = 'OpenTelemetry child spans are not exported because the suite registers its own tracer provider; ' +
@@ -9,11 +10,7 @@ const SUITE_PROVIDER = 'OpenTelemetry child spans are not exported because the s
 
 // Tests and instrumentation in different realms must share async context.
 const contextManager = () => {
-  if (!worker.contextManager) {
-    const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks')
-    worker.contextManager = new AsyncLocalStorageContextManager().enable()
-  }
-  return worker.contextManager
+  return worker.contextManager ||= createContextManager()
 }
 
 const PROBE = Symbol.for('buildkite.test.execution.probe')
