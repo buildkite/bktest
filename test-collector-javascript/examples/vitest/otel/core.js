@@ -1,9 +1,37 @@
 import { test, beforeEach, afterEach, beforeAll, describe, expect } from 'vitest'
-import { request, createServer } from 'node:http'
-import { trace } from '@opentelemetry/api'
+import { request, get, createServer } from 'node:http'
+import { context, trace } from '@opentelemetry/api'
 import { tracer } from './app.js'
 
-beforeAll(() => tracer.startSpan('before-all-not-a-child').end())
+beforeAll(async () => {
+  tracer.startSpan('before-all-not-a-child').end()
+  const headers = []
+  const server = createServer((req, res) => {
+    // happy-dom's fetch preflights cross-origin requests.
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    if (req.method !== 'OPTIONS') headers.push(req.headers.traceparent || null)
+    res.end('ok')
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const url = `http://127.0.0.1:${server.address().port}/before-all`
+  try {
+    // A noop tracer can still propagate an active parent outside tests.
+    const parent = trace.setSpanContext(context.active(), {
+      traceId: '12345678901234567890123456789012', spanId: '1234567890123456', traceFlags: 1,
+    })
+    await context.with(parent, async () => {
+      for (const send of [request, get]) await new Promise((resolve, reject) => {
+        const req = send(url, res => { res.resume(); res.on('end', resolve) })
+        req.on('error', reject); req.end()
+      })
+      await (await fetch(url)).text()
+    })
+    console.log('BEFORE ALL TRACEPARENTS', JSON.stringify(headers))
+  } finally {
+    server.closeAllConnections()
+    await new Promise(resolve => server.close(resolve))
+  }
+})
 beforeEach((context) => {
   if (context.task.name === 'hook failure') throw new Error('intentional hook failure')
   tracer.startSpan('before-hook').end()

@@ -119,6 +119,7 @@ const drifted = 'experimental OpenTelemetry spans may have changed'
 ))('native children and reporter roots agree (%s, %s, isolate=%s)', async (pool, environment, isolate) => {
   const result = await run({ OTEL_TEST_POOL: pool, OTEL_TEST_ENVIRONMENT: environment, OTEL_TEST_ISOLATE: String(isolate) })
   expect(result.code).toBe(1) // The fixture deliberately fails a hook.
+  expect(result.stdout).toContain('BEFORE ALL TRACEPARENTS [null,null,null]')
   expect(result.stderr).not.toContain('TEST RESULTS MISSING')
   expect(result.stderr).not.toContain(drifted)
   const spans = server.spans()
