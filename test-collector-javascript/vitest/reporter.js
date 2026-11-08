@@ -70,6 +70,7 @@ class VitestBuildkiteTestEngineReporter {
       }
       if (!this._native) warn('Vitest OpenTelemetry children require Vitest 4.0.11+ with experimental.openTelemetry enabled and the collector sdkPath in the root config; sending test.execution spans only.')
       else {
+        this._nativeProjects = new Set(projects.filter(({ config }) => native(config)).map(({ config }) => config.name || ''))
         const disabled = projects.filter(({ config }) => !native(config)).map(({ config }) => config.name || config.root)
         if (disabled.length) warn(`Vitest OpenTelemetry children are disabled for projects: ${disabled.join(', ')}. Enable tracing with the collector sdkPath to collect children; sending test.execution spans only for these projects.`)
       }
@@ -94,6 +95,7 @@ class VitestBuildkiteTestEngineReporter {
     const ids = testIds(this._settings.seed, test.project.config.root, test.project.name, test.module.moduleId, test.id)
     if (this._recorded.has(ids.traceId)) return
     this._recorded.add(ids.traceId)
+    this._ranNative ||= !!this._nativeProjects?.has(test.project.name) && ['passed', 'failed'].includes(test.result().state)
     const record = { id: randomUUID(), ...testEngineRecord(test, this._paths.prefixTestPath(test.module.moduleId)) }
     const diagnostic = test.diagnostic()
     const startTime = diagnostic?.startTime ?? this._start
@@ -118,6 +120,7 @@ class VitestBuildkiteTestEngineReporter {
       try {
         await this._session?.forceFlush('vitest')
         await this._sender?.drain(budget)
+        if (this._native && this._runEnded && !this._terminated) this._checkWorkerRoots()
       } finally {
         await this._session?.shutdown()
         if (this._beforeExit) process.off('beforeExit', this._beforeExit)
@@ -127,11 +130,23 @@ class VitestBuildkiteTestEngineReporter {
     })()
   }
 
+  // Children depend on Vitest's experimental span attributes, which any Vitest
+  // release can change. Compare what workers recognised with Vitest's results.
+  _checkWorkerRoots() {
+    let roots
+    try { roots = fs.readFileSync(testIds.rootsFile(this._spool), 'utf8').split('\n').filter(Boolean) }
+    catch { return } // No worker set up the SDK, and each that failed has warned.
+    const changed = `Vitest ${version}'s experimental OpenTelemetry spans may have changed. Check for a collector update or report this Vitest version; test.execution spans were sent.`
+    if (roots.some((id) => !this._recorded.has(id))) warn(`Vitest OpenTelemetry children could not be linked to their tests. ${changed}`)
+    else if (!roots.length && this._ranNative) warn(`Vitest OpenTelemetry children were not recorded because no test span was recognised. ${changed}`)
+  }
+
   // Vitest 3+ exposes test results through the public reporter API. In Vitest 5,
   // JsonReporter no longer calls writeReport, so subclassing it loses uploads.
   async onTestRunEnd(testModules) {
     if (this._otelEnabled) {
       for (const module of testModules) await this.onTestModuleEnd(module)
+      this._runEnded = true
       // Native SDK shutdown runs after pool.close(), unlike onClose callbacks
       // (which race pool closure in Vitest 4). Reporter-only runs have no workers
       // committing children, so they can drain immediately.

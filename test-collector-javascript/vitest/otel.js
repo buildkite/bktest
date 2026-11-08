@@ -1,3 +1,4 @@
+const fs = require('fs')
 const { isMainThread } = require('worker_threads')
 const { isBuiltin, syncBuiltinESMExports } = require('module')
 const { readSettings } = require('../util/otel/config')
@@ -11,6 +12,10 @@ const createWorker = (settings) => {
   const { createChildExport } = require('../util/otel/children')
   const { commitFile } = require('../util/otel/spool')
   const testIds = require('./otelIds')
+  const recordRoot = (traceId) => {
+    try { fs.appendFileSync(testIds.rootsFile(settings.spool), traceId ? `${traceId}\n` : '') }
+    catch { /* The check is advisory; failed child commits warn on their own. */ }
+  }
   const children = createChildExport(settings)
   const roots = new Map()
   const nodes = new Map()
@@ -96,9 +101,13 @@ const createWorker = (settings) => {
       const id = options?.attributes?.['vitest.test.id']
       if (id === undefined) return tracer.startSpan(name, options, context)
       const file = options.attributes['code.file.path']
-      if (!files.has(file)) files.set(file, children.createForwarder())
+      const ids = testIds(settings.seed, rootDir, project, file, id)
+      if (!files.has(file)) {
+        files.set(file, children.createForwarder())
+        recordRoot(ids.traceId)
+      }
       const forwarder = files.get(file)
-      primed = testIds(settings.seed, rootDir, project, file, id)
+      primed = ids
       forwarder.addTrace(primed.traceId)
       roots.set(primed.traceId, { id: primed.spanId, forwarder, nodes: [] })
       try {
@@ -118,6 +127,8 @@ const createWorker = (settings) => {
     return { async shutdown() {} }
   }
   api.context.setGlobalContextManager(manager)
+  // An empty record tells the reporter that this worker can recognise tests.
+  recordRoot()
   api.propagation.setGlobalPropagator(new core.CompositePropagator({ propagators: [
     new core.W3CTraceContextPropagator(), new core.W3CBaggagePropagator(),
   ] }))

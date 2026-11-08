@@ -25,6 +25,7 @@ const run = (env = {}, args = []) => new Promise(resolve => {
   }, (error, stdout, stderr) => resolve({ code: error?.code || 0, stdout, stderr }))
 })
 const supported = major >= 4
+const drifted = 'experimental OpenTelemetry spans may have changed'
 
 ;(supported ? test : test.skip).each(['forks', 'threads'].flatMap(pool => [true, false].map(isolate => [pool, isolate])))('colliding Vitest IDs keep separate executions and children (%s, isolate=%s)', async (pool, isolate) => {
   const result = await run({ OTEL_TEST_CASE: 'collisions', OTEL_TEST_POOL: pool, OTEL_TEST_ISOLATE: String(isolate) })
@@ -43,6 +44,7 @@ const supported = major >= 4
     for (const span of trace.filter(s => s !== root)) expect(trace.some(parent => parent.spanId === span.parentSpanId)).toBe(true)
   }
   expect(result.stderr).not.toContain('dropped')
+  expect(result.stderr).not.toContain(drifted)
   expect(result.stderr.match(/upstream ID hash collision/g)).toHaveLength(1)
   expect(result.stderr).toContain('Aa.test.js')
   expect(result.stderr).toContain('BB.test.js')
@@ -100,6 +102,7 @@ const supported = major >= 4
     expect(children.filter(s => s.kind === 2)).toHaveLength(2)
   }
   expect(result.stderr).not.toMatch(/disabled|dropped|TEST RESULTS MISSING/)
+  expect(result.stderr).not.toContain(drifted)
   server.requests.length = 0
   const partial = await run({ OTEL_TEST_PROJECT_ROOT: scratch, OTEL_TEST_POOL: pool, OTEL_TEST_DISABLE_PROJECT: 'BB' })
   expect(partial.code).toBe(0)
@@ -108,6 +111,7 @@ const supported = major >= 4
   expect(server.spans().some(s => s.name === 'project-BB')).toBe(false)
   expect(partial.stderr).toContain('children are disabled for projects: BB.')
   expect(partial.stderr).not.toContain('children are disabled for projects: Aa')
+  expect(partial.stderr).not.toContain(drifted)
 }, 30000)
 
 ;(supported ? test : test.skip).each(['forks', 'threads'].flatMap(pool =>
@@ -116,6 +120,7 @@ const supported = major >= 4
   const result = await run({ OTEL_TEST_POOL: pool, OTEL_TEST_ENVIRONMENT: environment, OTEL_TEST_ISOLATE: String(isolate) })
   expect(result.code).toBe(1) // The fixture deliberately fails a hook.
   expect(result.stderr).not.toContain('TEST RESULTS MISSING')
+  expect(result.stderr).not.toContain(drifted)
   const spans = server.spans()
   const roots = spans.filter(s => s.name === 'test.execution')
   expect(roots).toHaveLength(8)
@@ -176,6 +181,23 @@ const supported = major >= 4
   ])
   expect(roots.every(s => !s.parentSpanId)).toBe(true)
   expect(crash.stderr).not.toContain('TEST RESULTS MISSING')
+  for (const { stderr } of [bail, crash]) expect(stderr).not.toContain(drifted)
+}, 30000)
+
+;(supported ? test : test.skip).each(['forks', 'threads'])('changes to Vitest test spans warn instead of silently losing children (%s)', async pool => {
+  const preload = { NODE_OPTIONS: [process.env.NODE_OPTIONS, '--require', path.join(cwd, 'otel/drift.cjs')].filter(Boolean).join(' ') }
+  const renamed = await run({ ...preload, OTEL_TEST_DRIFT: 'tracer', OTEL_TEST_POOL: pool })
+  expect(renamed.stderr).toContain(`children were not recorded because no test span was recognised. Vitest ${version}'s ${drifted}`)
+  expect(server.spans()).toHaveLength(8)
+  expect(server.spans().every(s => s.name === 'test.execution')).toBe(true)
+  server.requests.length = 0
+  const relative = await run({ ...preload, OTEL_TEST_DRIFT: 'path', OTEL_TEST_POOL: pool })
+  expect(relative.stderr).toContain(`children could not be linked to their tests. Vitest ${version}'s ${drifted}`)
+  const spans = server.spans()
+  const roots = spans.filter(s => s.name === 'test.execution')
+  expect(roots).toHaveLength(8)
+  expect(spans.length).toBeGreaterThan(8)
+  expect(spans.filter(s => s.name !== 'test.execution').some(s => roots.some(root => root.traceId === s.traceId))).toBe(false)
 }, 30000)
 
 ;(supported ? test : test.skip)('late children and the child cap warn without losing test results', async () => {
@@ -226,7 +248,8 @@ const supported = major >= 4
   expect(server.spans().filter(s => s.kind === 3)).toHaveLength(clients)
   expect(server.spans().filter(s => s.name === 'test.execution')).toHaveLength(8)
   server.requests.length = 0
-  await run({ OTEL_TEST_POOL: pool, OTEL_TRACES_SAMPLER: sampler, OTEL_TRACES_SAMPLER_ARG: '0' })
+  const sampled = await run({ OTEL_TEST_POOL: pool, OTEL_TRACES_SAMPLER: sampler, OTEL_TRACES_SAMPLER_ARG: '0' })
+  expect(sampled.stderr).not.toContain(drifted)
   expect(server.spans()).toHaveLength(8)
   expect(server.spans().every(s => s.name === 'test.execution')).toBe(true)
 }, 30000)

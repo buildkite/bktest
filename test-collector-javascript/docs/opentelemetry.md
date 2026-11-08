@@ -148,6 +148,7 @@ Keep bktec's own upload off with `BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`.
 - Isolation adds SDK startup cost per test file. Turning it off changes how your tests run, not just telemetry performance.
 - Configuration or upload failures do not fall back to JSON. Turn off `otelEnabled` to use JSON again.
 - End child spans before workers exit. Children started after their test ends are dropped and counted in a warning.
+- Child spans rely on Vitest's experimental OpenTelemetry spans. If a Vitest release changes them, the collector warns that children were not recorded or could not be linked, and still sends test spans.
 
 ## Jest
 
