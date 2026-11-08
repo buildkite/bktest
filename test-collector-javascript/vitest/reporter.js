@@ -22,6 +22,7 @@ class VitestBuildkiteTestEngineReporter {
     this._tags = options?.tags;
     this._otelEnabled = options?.otelEnabled === true;
     this._recorded = new Set();
+    this._started = new Map();
     this._modules = new Map();
   }
 
@@ -90,12 +91,20 @@ class VitestBuildkiteTestEngineReporter {
     this._modules.set(module.id, module)
   }
 
+  // Vitest reports a runnable test ready from inside its run.test span, even if
+  // the test later skips itself. Skipped suites report their tests ready too,
+  // and typecheck results never reach a worker.
+  onTestCaseReady(test) {
+    if (!this._nativeProjects?.has(test.project.name) || ['skip', 'todo'].includes(test.options.mode) || test.meta().typecheck) return
+    const { traceId } = testIds(this._settings.seed, test.project.config.root, test.project.name, test.module.moduleId, test.id)
+    this._started.set(traceId, test.project.name)
+  }
+
   onTestCaseResult(test) {
     if (!this._session) return
     const ids = testIds(this._settings.seed, test.project.config.root, test.project.name, test.module.moduleId, test.id)
     if (this._recorded.has(ids.traceId)) return
     this._recorded.add(ids.traceId)
-    this._ranNative ||= !!this._nativeProjects?.has(test.project.name) && ['passed', 'failed'].includes(test.result().state)
     const record = { id: randomUUID(), ...testEngineRecord(test, this._paths.prefixTestPath(test.module.moduleId)) }
     const diagnostic = test.diagnostic()
     const startTime = diagnostic?.startTime ?? this._start
@@ -133,12 +142,20 @@ class VitestBuildkiteTestEngineReporter {
   // Children depend on Vitest's experimental span attributes, which any Vitest
   // release can change. Compare what workers recognised with Vitest's results.
   _checkWorkerRoots() {
-    let roots
-    try { roots = fs.readFileSync(testIds.rootsFile(this._spool), 'utf8').split('\n').filter(Boolean) }
-    catch { return } // No worker set up the SDK, and each that failed has warned.
+    const roots = new Set()
+    const ready = new Set()
+    for (const project of this._nativeProjects) {
+      let text
+      // A project without a record has no worker that set up the SDK; each that failed has warned.
+      try { text = fs.readFileSync(testIds.rootsFile(this._spool, project), 'utf8') } catch { continue }
+      ready.add(project)
+      for (const id of text.split('\n')) if (id) roots.add(id)
+    }
+    const unlinked = [...roots].filter((id) => !this._recorded.has(id)).length
+    const unrecognised = [...this._started].filter(([id, project]) => ready.has(project) && !roots.has(id)).length
     const changed = `Vitest ${version}'s experimental OpenTelemetry spans may have changed. Check for a collector update or report this Vitest version; test.execution spans were sent.`
-    if (roots.some((id) => !this._recorded.has(id))) warn(`Vitest OpenTelemetry children could not be linked to their tests. ${changed}`)
-    else if (!roots.length && this._ranNative) warn(`Vitest OpenTelemetry children were not recorded because no test span was recognised. ${changed}`)
+    if (unlinked) warn(`Vitest OpenTelemetry children could not be linked to their tests for ${unlinked} test span(s). ${changed}`)
+    else if (unrecognised) warn(`Vitest OpenTelemetry children were not recorded for ${unrecognised} test(s) because their test spans were not recognised. ${changed}`)
   }
 
   // Vitest 3+ exposes test results through the public reporter API. In Vitest 5,

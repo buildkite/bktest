@@ -13,7 +13,7 @@ const createWorker = (settings) => {
   const { commitFile } = require('../util/otel/spool')
   const testIds = require('./otelIds')
   const recordRoot = (traceId) => {
-    try { fs.appendFileSync(testIds.rootsFile(settings.spool), traceId ? `${traceId}\n` : '') }
+    try { fs.appendFileSync(testIds.rootsFile(settings.spool, project), traceId ? `${traceId}\n` : '') }
     catch { /* The check is advisory; failed child commits warn on their own. */ }
   }
   const children = createChildExport(settings)
@@ -101,13 +101,10 @@ const createWorker = (settings) => {
       const id = options?.attributes?.['vitest.test.id']
       if (id === undefined) return tracer.startSpan(name, options, context)
       const file = options.attributes['code.file.path']
-      const ids = testIds(settings.seed, rootDir, project, file, id)
-      if (!files.has(file)) {
-        files.set(file, children.createForwarder())
-        recordRoot(ids.traceId)
-      }
+      if (!files.has(file)) files.set(file, children.createForwarder())
       const forwarder = files.get(file)
-      primed = ids
+      primed = testIds(settings.seed, rootDir, project, file, id)
+      recordRoot(primed.traceId)
       forwarder.addTrace(primed.traceId)
       roots.set(primed.traceId, { id: primed.spanId, forwarder, nodes: [] })
       try {
@@ -127,7 +124,7 @@ const createWorker = (settings) => {
     return { async shutdown() {} }
   }
   api.context.setGlobalContextManager(manager)
-  // An empty record tells the reporter that this worker can recognise tests.
+  // An empty record tells the reporter this project's workers can recognise tests.
   recordRoot()
   api.propagation.setGlobalPropagator(new core.CompositePropagator({ propagators: [
     new core.W3CTraceContextPropagator(), new core.W3CBaggagePropagator(),

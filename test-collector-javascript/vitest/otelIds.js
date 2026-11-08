@@ -8,8 +8,9 @@ const testIds = (seed, root, project, file, id) => {
 }
 
 // Workers derive IDs from Vitest's experimental span attributes, the reporter
-// from its results. Workers record a sample here so the reporter can tell when
-// a Vitest release changes those spans.
-testIds.rootsFile = (spool) => path.join(spool, 'vitest-roots')
+// from its results. Workers record every ID they derive, per project, so the
+// reporter can tell when a Vitest release changes those spans.
+testIds.rootsFile = (spool, project) =>
+  path.join(spool, `vitest-roots-${createHash('sha1').update(project || '').digest('hex')}`)
 
 module.exports = testIds
