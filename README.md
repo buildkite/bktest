@@ -23,6 +23,42 @@ READMEs back to their directories here.
 To get started, [create a test suite](https://buildkite.com/docs/test-engine)
 and follow the README for your language's collector.
 
+## Supported runners and features
+
+Choose your runner below for setup instructions. JSON uploads are the default
+unless noted. OpenTelemetry (OTel) submission sends test results as
+`test.execution` spans over OTLP instead of JSON uploads; child spans show
+the work performed within a test.
+
+Some collectors support tracing through the older JSON format. The OTel
+columns below describe OpenTelemetry support only.
+
+| Collector | Runner / setup | JSON uploads | OTel submission | OTel child tracing |
+|---|---|:---:|---|---|
+| Ruby | [RSpec](test-collector-ruby/README.md#rspec) | Yes | [Experimental, opt-in](test-collector-ruby/docs/opentelemetry.md) | Instrumented and manual spans, grouped by setup/body/teardown |
+| Ruby | [Minitest](test-collector-ruby/README.md#minitest) | Yes | Not supported | Not supported |
+| Ruby | [Cucumber](test-collector-ruby/README.md#cucumber) | Yes | Not supported | Not supported |
+| Python | [pytest](test-collector-python/README.md) | Yes | [Experimental, opt-in](test-collector-python/docs/opentelemetry.md) | Instrumented and manual spans, grouped by setup/body/teardown |
+| JavaScript | [Jest](test-collector-javascript/README.md#jest) | Yes | [Experimental, opt-in](test-collector-javascript/docs/opentelemetry.md#jest) | Instrumented and manual spans |
+| JavaScript | [Vitest](test-collector-javascript/README.md#vitest) | Yes | [Experimental, opt-in](test-collector-javascript/docs/opentelemetry.md#vitest) | Instrumented and manual spans with native tracing; browser mode sends test spans only |
+| JavaScript | [Playwright](test-collector-javascript/README.md#playwright) | Yes | [Experimental, opt-in](test-collector-javascript/docs/opentelemetry.md#playwright) | Reporter-observed steps, hooks, fixtures, assertions and actions; no worker or browser application spans |
+| JavaScript | [Jasmine](test-collector-javascript/README.md#jasmine) | Yes | Not supported | Not supported |
+| JavaScript | [Mocha](test-collector-javascript/README.md#mocha) | Yes | Not supported | Not supported |
+| JavaScript | [Cypress](test-collector-javascript/README.md#cypress) | Yes | Not supported | Not supported |
+| Swift | [XCTest (including Quick/Nimble)](test-collector-swift/README.md) | No in 2.0 beta | [Default, OTLP-only (2.0 beta)](test-collector-swift/README.md#opentelemetry-behavior-and-delivery) | Sampled instrumented and manual spans created under the test |
+| Elixir | [ExUnit](test_collector_elixir/README.md) | Yes | Not supported | Not supported |
+| .NET | [xUnit](test-collector-dotnet/README.md) | Yes | Not supported | Not supported |
+| Android | [Gradle unit tests](test-collector-android/README.md#step-3---unit-test-collector) | Yes | Not supported | Not supported |
+| Android | [Instrumented tests](test-collector-android/README.md#step-4---instrumented-test-collector) | Yes | Not supported | Not supported |
+| Rust | [libtest / cargo test](test-collector-rust/README.md) | Yes | Not supported | Not supported |
+
+For test splitting, automatic retries, muting and skipping, see
+[bktec's runner support table](https://github.com/buildkite/test-engine-client#supported-runners-and-features).
+Those are execution features, separate from collector support here.
+
+When changing runner support or submission behavior, update this table and
+the affected collector's guide together.
+
 ## About this repository
 
 Each collector arrived with its full git history —
