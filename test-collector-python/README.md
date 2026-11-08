@@ -151,11 +151,9 @@ Run metadata overrides are listed [above](#-run-metadata-overrides) and apply to
 The collector can send each test to Test Engine as an OpenTelemetry `test.execution` span over OTLP instead of the JSON upload, with your tests' own OpenTelemetry spans nested under it. Install the optional dependencies and switch it on:
 
 ```sh
-pip install "buildkite-test-collector[otel]==1.10.0b1"
+pip install "buildkite-test-collector[otel]==1.10.0"
 BUILDKITE_ANALYTICS_OTEL_ENABLED=true pytest
 ```
-
-Pin the beta version explicitly; normal installs and upgrades select the stable release.
 
 See [docs/opentelemetry.md](docs/opentelemetry.md) for what is sent, how child spans and the span filter work, and what the warnings mean.
 
