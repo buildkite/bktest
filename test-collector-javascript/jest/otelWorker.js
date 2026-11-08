@@ -31,8 +31,7 @@ const createProvider = (session) => {
     forceFlush: async () => {},
     shutdown: async () => {},
   }
-  const { BasicTracerProvider } = require('@opentelemetry/sdk-trace-base')
-  const provider = new BasicTracerProvider({ ...session.childProviderConfig, spanProcessors: [dispatcher] })
+  const provider = session.createChildProvider([dispatcher])
   worker.tracerProvider = {
     getTracer(...args) {
       const tracer = provider.getTracer(...args)

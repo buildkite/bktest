@@ -108,13 +108,12 @@ class PlaywrightBuildkiteTestEngineReporter {
       let file = this._stepFiles.get(test.location.file);
       if (!file) {
         const forwarder = this._session.childExport().createForwarder();
-        const { BasicTracerProvider } = require('@opentelemetry/sdk-trace-base');
-        const provider = new BasicTracerProvider({ ...this._session.childProviderConfig, spanProcessors: [{
+        const provider = this._session.createChildProvider([{
           onStart: span => forwarder.onStart(span),
           onEnd: span => forwarder.onEnd(span),
           forceFlush: async () => {},
           shutdown: () => forwarder.shutdown(),
-        }] });
+        }]);
         file = { provider, forwarder, tracer: provider.getTracer('buildkite-test-collector/playwright', require('../package.json').version) };
         this._stepFiles.set(test.location.file, file);
       }
