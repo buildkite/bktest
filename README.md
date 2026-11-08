@@ -30,9 +30,6 @@ unless noted. OpenTelemetry (OTel) submission sends test results as
 `test.execution` spans over OTLP instead of JSON uploads; child spans show
 the work performed within a test.
 
-Some collectors support tracing through the older JSON format. The OTel
-columns below describe OpenTelemetry support only.
-
 Custom tags are key-value metadata: run-wide tags apply to every test, while
 per-test tags apply to individual executions; **Both** means both scopes are
 supported. Annotations are custom messages recorded through a collector API,
