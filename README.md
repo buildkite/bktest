@@ -23,6 +23,48 @@ READMEs back to their directories here.
 To get started, [create a test suite](https://buildkite.com/docs/test-engine)
 and follow the README for your language's collector.
 
+## Supported runners and features
+
+Choose your runner below for setup instructions. JSON uploads are the default
+unless noted. OpenTelemetry (OTel) submission sends test results as
+`test.execution` spans over OTLP instead of JSON uploads; child spans show
+the work performed within a test.
+
+Custom tags are key-value metadata: run-wide tags apply to every test, while
+per-test tags apply to individual executions; **Both** means both scopes are
+supported. Annotations are custom messages recorded through a collector API,
+not Buildkite pipeline annotations or arbitrary events added to your own OTel
+spans.
+
+**OTel child spans require a plan that includes them and are billed by data
+ingested.** Test-result spans count as normal test executions.
+
+| Collector / runner | JSON uploads | OTel submission | Child tracing (OTel) | Tags | Annotations |
+|---|:---:|---|---|---|---|
+| Ruby / [RSpec](test-collector-ruby/README.md#rspec) | Yes | [Experimental, opt-in](test-collector-ruby/docs/opentelemetry.md) | [Instrumented + manual](test-collector-ruby/docs/opentelemetry.md#choosing-instrumentation) | Both | JSON and OTel |
+| Ruby / [Minitest](test-collector-ruby/README.md#minitest) | Yes | Not supported | Not supported | Both | JSON |
+| Ruby / [Cucumber](test-collector-ruby/README.md#cucumber) | Yes | Not supported | Not supported | Both | JSON |
+| Python / [pytest](test-collector-python/README.md) | Yes | [Experimental, opt-in](test-collector-python/docs/opentelemetry.md) | [Instrumented + manual](test-collector-python/docs/opentelemetry.md#child-spans-and-instrumentation) | Per-test | JSON and OTel (`spans` fixture) |
+| JavaScript / [Jest](test-collector-javascript/README.md#jest) | Yes | [Experimental, opt-in](test-collector-javascript/docs/opentelemetry.md#jest) | [Instrumented + manual](test-collector-javascript/docs/opentelemetry.md#what-gets-recorded) | Run-wide | No collector API |
+| JavaScript / [Vitest](test-collector-javascript/README.md#vitest) | Yes | [Experimental, opt-in](test-collector-javascript/docs/opentelemetry.md#vitest) | [HTTP/fetch + manual (native tracing required)](test-collector-javascript/docs/opentelemetry.md#vitest) | Run-wide | No collector API |
+| JavaScript / [Playwright](test-collector-javascript/README.md#playwright) | Yes | [Experimental, opt-in](test-collector-javascript/docs/opentelemetry.md#playwright) | [Playwright steps](test-collector-javascript/docs/opentelemetry.md#playwright) | Both | No collector API |
+| JavaScript / [Jasmine](test-collector-javascript/README.md#jasmine) | Yes | Not supported | Not supported | Run-wide | No collector API |
+| JavaScript / [Mocha](test-collector-javascript/README.md#mocha) | Yes | Not supported | Not supported | Run-wide | No collector API |
+| JavaScript / [Cypress](test-collector-javascript/README.md#cypress) | Yes | Not supported | Not supported | Run-wide | No collector API |
+| Swift / [XCTest (including Quick/Nimble)](test-collector-swift/README.md) | No in 2.0 beta | [Default, OTLP-only (2.0 beta)](test-collector-swift/README.md#opentelemetry-behavior-and-delivery) | [Sampled instrumented + manual](test-collector-swift/README.md#opentelemetry-behavior-and-delivery) | [Both](test-collector-swift/README.md#execution-level-tags) | Deprecated API (OTel) |
+| Elixir / [ExUnit](test_collector_elixir/README.md) | Yes | Not supported | Not supported | Not supported | JSON (`Tracing.measure`) |
+| .NET / [xUnit](test-collector-dotnet/README.md) | Yes | Not supported | Not supported | Not supported | No collector API |
+| Android / [Gradle unit tests](test-collector-android/README.md#step-3---unit-test-collector) | Yes | Not supported | Not supported | [Run-wide](test-collector-android/README.md#upload-level-tags) | No collector API |
+| Android / [Instrumented tests](test-collector-android/README.md#step-4---instrumented-test-collector) | Yes | Not supported | Not supported | [Both](test-collector-android/README.md#execution-level-tags-instrumented-tests) | No collector API |
+| Rust / [libtest / cargo test](test-collector-rust/README.md) | Yes | Not supported | Not supported | Not supported | No collector API |
+
+For test splitting, automatic retries, muting and skipping, see
+[bktec's runner support table](https://github.com/buildkite/test-engine-client#supported-runners-and-features).
+Those are execution features, separate from collector support here.
+
+When changing runner support or submission behavior, update this table and
+the affected collector's guide together.
+
 ## About this repository
 
 Each collector arrived with its full git history —
