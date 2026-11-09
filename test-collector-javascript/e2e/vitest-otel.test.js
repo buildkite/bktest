@@ -75,7 +75,10 @@ const runFixture = (files, config = {}, env = {}) => {
   expect(result.stderr).not.toMatch(/dropped|TEST RESULTS MISSING/)
 }, 30000)
 
-;(supported ? test : test.skip).each(['vmThreads', 'vmForks'].flatMap(pool => [false, true].map(projects => [pool, projects])))('VM pools explicitly send executions only (%s, projects=%s)', async (pool, projects) => {
+;(supported ? test : test.skip).each(['vmThreads', 'vmForks'].flatMap(pool =>
+  ['root', 'projects', 'vm-root-projects'].map(mode => [pool, mode])
+))('VM pools explicitly send executions only (%s, %s)', async (pool, mode) => {
+  const projects = mode !== 'root'
   const result = await runFixture({
     'child.test.js': `
       import { test } from 'vitest'
@@ -85,9 +88,12 @@ const runFixture = (files, config = {}, env = {}) => {
         trace.getTracer('app').startSpan('manual').end()
       })
     `,
-  }, projects ? { projects: ['native', 'vm'].map(name => ({ test: {
-    name, root: scratch, include: ['*.test.js'], pool: name === 'vm' ? pool : 'forks',
-  } })) } : { pool })
+  }, projects ? {
+    pool: mode === 'vm-root-projects' ? pool : 'forks',
+    projects: ['native', 'vm'].map(name => ({ test: {
+      name, root: scratch, include: ['*.test.js'], pool: name === 'vm' ? pool : pool === 'vmThreads' ? 'threads' : 'forks',
+    } })),
+  } : { pool })
   expect(result.code).toBe(0)
   const spans = server.spans()
   const roots = spans.filter(s => s.name === 'test.execution')

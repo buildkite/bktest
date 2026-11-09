@@ -43,14 +43,15 @@ class VitestBuildkiteTestEngineReporter {
         if (vmPool(config)) return 'Vitest VM pools (vmThreads/vmForks) send test.execution spans only: Vitest ends test spans early because its instanceof Promise check does not recognise a cross-realm Promise.'
         return 'Vitest OpenTelemetry children require Vitest 4.0.11+ with experimental.openTelemetry enabled and the collector sdkPath in the root config; sending test.execution spans only.'
       }
-      const native = (config) => {
+      const sdkEnabled = (config) => {
         const otel = config.experimental?.openTelemetry
         const globalOtel = ctx.config.experimental?.openTelemetry
         const sdk = otel?.sdkPath ?? globalOtel?.sdkPath
-        return !config.browser?.enabled && !vmPool(config) && (otel?.enabled ?? globalOtel?.enabled) === true && sdk &&
+        return !config.browser?.enabled && (otel?.enabled ?? globalOtel?.enabled) === true && sdk &&
           (sdk.startsWith('file:') ? fileURLToPath(sdk) : path.resolve(config.root, sdk)) === expected
       }
-      this._native = semver.gte(version, '4.0.11') && !!native(ctx.config)
+      const native = (config) => sdkEnabled(config) && !vmPool(config)
+      this._native = semver.gte(version, '4.0.11') && !!sdkEnabled(ctx.config)
       this._spool = fs.mkdtempSync(path.join(os.tmpdir(), 'buildkite-vitest-otel-'))
       this._settings = { ...settings, spool: this._spool, native: this._native,
         seed: randomBytes(16).toString('hex'), ownerPid: process.pid }
