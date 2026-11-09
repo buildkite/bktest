@@ -4,8 +4,6 @@ const { warnOncePerRun, describeError } = require('./warn')
 // Keep the stock timeout; shutdown also aborts sockets, including connects.
 const EXPORT_TIMEOUT_MILLISECONDS = 10000
 const RESPONSE_CHANNEL = 'http.client.response.finish'
-const REQUEST_CHANNEL = 'http.client.request.created'
-const START_CHANNEL = 'http.client.request.start'
 
 // Do not merge another OTLP destination's credentials into our headers.
 const withoutExporterEnv = (build) => {
@@ -28,6 +26,14 @@ const failureCause = (error, lastErrorStatus) => {
 
 const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, directory }) => {
   const controller = new AbortController()
+  const { Agent } = require(new URL(endpoint).protocol === 'https:' ? 'https' : 'http')
+  const agent = new Agent({ keepAlive: true, timeout: EXPORT_TIMEOUT_MILLISECONDS, signal: controller.signal })
+  let lastErrorStatus
+  const addRequest = agent.addRequest.bind(agent)
+  agent.addRequest = (request, ...args) => {
+    request.once('error', (error) => { metrics.lastFailure = failureCause(error, lastErrorStatus) })
+    return addRequest(request, ...args)
+  }
   const exporter = withoutExporterEnv(() => new sdk.exporter.OTLPTraceExporter({
     url: endpoint,
     headers: {
@@ -36,21 +42,12 @@ const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, directo
       'Buildkite-Tests-Span-Stream': stream,
     },
     compression: 'gzip', timeoutMillis: EXPORT_TIMEOUT_MILLISECONDS, concurrencyLimit: Infinity,
-    // Agent options forward to net/tls sockets even on exporter 0.200.
-    httpAgentOptions: { keepAlive: true, timeout: EXPORT_TIMEOUT_MILLISECONDS, signal: controller.signal },
+    // Keep the agent even if a refused connection fails before Node 18's
+    // request.start diagnostic. Both supported exporter lines accept a factory.
+    httpAgentOptions: () => agent,
   }))
-  let lastErrorStatus
-  const agents = new Set()
   const matches = (request) => request.getHeader('buildkite-tests-run-key') === runKey &&
     request.getHeader('buildkite-tests-span-stream') === stream
-  const recordRequest = ({ request }) => {
-    try {
-      if (matches(request)) {
-        agents.add(request.agent)
-        request.once('error', (error) => { metrics.lastFailure = failureCause(error, lastErrorStatus) })
-      }
-    } catch { /* Diagnostics must not affect HTTP callers. */ }
-  }
   const recordStatus = ({ request, response }) => {
     try {
       if (response.statusCode >= 300 && matches(request)) {
@@ -63,8 +60,6 @@ const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, directo
       }
     } catch { /* HTTP diagnostics must never break the test run. */ }
   }
-  diagnosticsChannel.subscribe(REQUEST_CHANNEL, recordRequest)
-  diagnosticsChannel.subscribe(START_CHANNEL, recordRequest)
   diagnosticsChannel.subscribe(RESPONSE_CHANNEL, recordStatus)
 
   return {
@@ -94,12 +89,10 @@ const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, directo
     shutdown() {
       // A queued stock retry must fail without constructing a Socket with an
       // already-aborted signal (which can emit an unhandled Socket error).
-      for (const agent of agents) agent.createConnection = (_options, callback) => {
+      agent.createConnection = (_options, callback) => {
         process.nextTick(callback, Object.assign(new Error('Export drain ended'), { code: 'ABORT_ERR' }))
       }
       controller.abort()
-      diagnosticsChannel.unsubscribe(REQUEST_CHANNEL, recordRequest)
-      diagnosticsChannel.unsubscribe(START_CHANNEL, recordRequest)
       diagnosticsChannel.unsubscribe(RESPONSE_CHANNEL, recordStatus)
       return exporter.shutdown()
     },

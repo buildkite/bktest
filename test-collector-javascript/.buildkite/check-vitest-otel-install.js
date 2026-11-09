@@ -5,11 +5,13 @@ const assert = require('assert/strict')
 const { execFile, execFileSync } = require('child_process')
 const { promisify } = require('util')
 const { startOtlpServer } = require('../e2e/support/otlpServer')
+const { dependencies } = require('./otel-lines')
 
 // Test the published layout, with only the auto-instrumentations bundle
 // declaring http/undici. Workspace hoisting must not make this pass by accident.
 const main = async () => {
   const manager = process.argv[2] || 'npm'
+  const line = process.argv[3] || '2'
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'vitest-otel-install-'))
   let server
   try {
@@ -17,13 +19,10 @@ const main = async () => {
     fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ private: true, type: 'module', devDependencies: {
       'buildkite-test-collector': `file:${path.join(scratch, packed.filename)}`,
       vitest: '5.1.0', vite: '^8',
-      '@opentelemetry/api': '~1.9.0',
-      '@opentelemetry/sdk-trace-base': '^2',
-      '@opentelemetry/context-async-hooks': '^2',
-      '@opentelemetry/exporter-trace-otlp-proto': '>=0.200.0 <0.300.0',
-      '@opentelemetry/auto-instrumentations-node': '0.81.0',
+      ...Object.fromEntries(Object.entries(dependencies(line)).filter(([name]) => !name.includes('/instrumentation-'))),
+      '@opentelemetry/auto-instrumentations-node': line === '2' ? '0.81.0' : '0.83.0',
     } }))
-    execFileSync(manager, ['install', '--ignore-scripts'], { cwd: scratch, stdio: 'inherit' })
+    execFileSync(manager, ['install', '--ignore-scripts', manager === 'pnpm' ? '--strict-peer-dependencies' : '--strict-peer-deps'], { cwd: scratch, stdio: 'inherit' })
     fs.cpSync(path.join(__dirname, '../examples/vitest/otel'), path.join(scratch, 'otel'), { recursive: true })
     fs.writeFileSync(path.join(scratch, 'vitest.config.js'), `
       import { defineConfig } from 'vitest/config'

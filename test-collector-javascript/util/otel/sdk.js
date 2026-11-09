@@ -4,23 +4,32 @@ const path = require('path')
 const semver = require('semver')
 const { randomBytes } = require('crypto')
 const { resourceAttributes } = require('./attributes')
-const { describeError } = require('./warn')
+const { describeError, warnOncePerRun } = require('./warn')
 
 const PACKAGES = {
-  trace: '@opentelemetry/sdk-trace-base',
+  trace: '@opentelemetry/sdk-trace',
   context: '@opentelemetry/context-async-hooks',
   exporter: '@opentelemetry/exporter-trace-otlp-proto',
 }
 
-// The newest-SDK CI leg also uses these ranges.
+// Floors, not caps. sdk-trace exists from 2.9.0 and exporter 0.220.0 is the
+// first built on it. CI installs explicit, matching SDK lines.
 const SUPPORTED_VERSIONS = {
-  '@opentelemetry/sdk-trace-base': '^2',
-  '@opentelemetry/context-async-hooks': '^2',
-  '@opentelemetry/exporter-trace-otlp-proto': '>=0.200.0 <0.300.0',
+  '@opentelemetry/sdk-trace': '>=2.9.0',
+  '@opentelemetry/context-async-hooks': '>=2.0.0',
+  '@opentelemetry/exporter-trace-otlp-proto': '>=0.220.0',
 }
+// SDK 3 packages (and 0.300+ instrumentation) need api 1.10 and Node 22.15.
+const SDK3_NODE = '>=22.15.0'
 
-const installCommand = () => 'npm install --save-dev "@opentelemetry/sdk-trace-base@^2" ' +
-  '"@opentelemetry/context-async-hooks@^2" "@opentelemetry/exporter-trace-otlp-proto@<0.300"'
+const installCommand = () => {
+  let apiVersion
+  try { apiVersion = packageVersion('@opentelemetry/api') } catch { /* API not installed yet. */ }
+  const sdk3 = semver.satisfies(process.version, SDK3_NODE) && apiVersion && semver.gte(apiVersion, '1.10.0')
+  return sdk3
+    ? 'npm install --save-dev "@opentelemetry/api@^1.10" "@opentelemetry/sdk-trace@^3" "@opentelemetry/context-async-hooks@^3" "@opentelemetry/exporter-trace-otlp-proto@~0.301.0"'
+    : 'npm install --save-dev "@opentelemetry/api@~1.9.0" "@opentelemetry/sdk-trace@^2.9" "@opentelemetry/context-async-hooks@^2" "@opentelemetry/exporter-trace-otlp-proto@~0.223.0"'
+}
 
 const packageVersion = (name, load = require) => {
   for (let directory = path.dirname(load.resolve(name)); directory !== path.dirname(directory); directory = path.dirname(directory)) {
@@ -38,10 +47,14 @@ const loadSdk = ({ exporter = true, context = false } = {}) => {
       const range = SUPPORTED_VERSIONS[name]
       const version = packageVersion(name)
       if (version && !semver.satisfies(version, range)) throw new Error(`unsupported ${name}@${version} (requires ${range})`)
+      if (version && semver.major(version) >= 3 && !semver.satisfies(process.version, SDK3_NODE)) {
+        warnOncePerRun(undefined, 'sdk3-node', `OpenTelemetry SDK 3 requires Node.js ${SDK3_NODE}; running on ${process.version} is unsupported. Export will still be attempted; upgrade Node.js if it fails.`)
+      }
       if (key !== 'exporter' || exporter) sdk[key] = require(name)
     }
     const fromTrace = createRequire(require.resolve(PACKAGES.trace))
     for (const key of ['api', 'resources', 'core']) sdk[key] = fromTrace(`@opentelemetry/${key}`)
+    sdk.apiVersion = packageVersion('@opentelemetry/api', fromTrace)
   } catch (error) {
     // The first line names the module; the rest is the require stack.
     throw new Error(`${String(error.message).split('\n')[0]}. Install the OpenTelemetry packages with: ${installCommand()}`)
@@ -67,14 +80,49 @@ const createResource = ({ resources }, runEnv) => resources.defaultResource()
   .merge(resources.detectResources({ detectors: [resources.envDetector] }))
   .merge(resources.resourceFromAttributes(resourceAttributes(runEnv)))
 
+// sdk-trace reads no environment on either line. Children follow the
+// OTEL_TRACES_SAMPLER and span limit variables, as sdk-trace-base's
+// BasicTracerProvider (loadDefaultConfig/reconfigureLimits) did.
+const SAMPLERS = {
+  always_on: (trace) => new trace.AlwaysOnSampler(),
+  always_off: (trace) => new trace.AlwaysOffSampler(),
+  traceidratio: (trace, ratio) => new trace.TraceIdRatioBasedSampler(ratio),
+  parentbased_always_on: (trace) => new trace.ParentBasedSampler({ root: new trace.AlwaysOnSampler() }),
+  parentbased_always_off: (trace) => new trace.ParentBasedSampler({ root: new trace.AlwaysOffSampler() }),
+  parentbased_traceidratio: (trace, ratio) => new trace.ParentBasedSampler({ root: new trace.TraceIdRatioBasedSampler(ratio) }),
+}
+const environmentConfig = ({ trace, core, api }) => {
+  const number = (name) => core.getNumberFromEnv(name)
+  let name = core.getStringFromEnv('OTEL_TRACES_SAMPLER') ?? 'parentbased_always_on'
+  if (!SAMPLERS[name]) {
+    api.diag.error(`OTEL_TRACES_SAMPLER value "${name}" invalid, defaulting to "parentbased_always_on".`)
+    name = 'parentbased_always_on'
+  }
+  let ratio = number('OTEL_TRACES_SAMPLER_ARG')
+  if (name.endsWith('traceidratio') && !(ratio >= 0 && ratio <= 1)) {
+    api.diag.error(`OTEL_TRACES_SAMPLER_ARG=${ratio} is blank or out of range [0..1], defaulting to 1.`)
+    ratio = 1
+  }
+  return {
+    sampler: SAMPLERS[name](trace, ratio),
+    spanLimits: {
+      attributeValueLengthLimit: number('OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT') ?? number('OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT') ?? Infinity,
+      attributeCountLimit: number('OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT') ?? number('OTEL_ATTRIBUTE_COUNT_LIMIT') ?? 128,
+      linkCountLimit: number('OTEL_SPAN_LINK_COUNT_LIMIT') ?? 128,
+      eventCountLimit: number('OTEL_SPAN_EVENT_COUNT_LIMIT') ?? 128,
+      attributePerEventCountLimit: number('OTEL_SPAN_ATTRIBUTE_PER_EVENT_COUNT_LIMIT') ?? 128,
+      attributePerLinkCountLimit: number('OTEL_SPAN_ATTRIBUTE_PER_LINK_COUNT_LIMIT') ?? 128,
+    },
+  }
+}
+
 // Only test.execution ignores environment-selected sampling and span limits.
-// Child providers deliberately retain BasicTracerProvider's environment config.
-const createProvider = (sdk, { testSpans = false, getIds = () => null, ...config } = {}) => new sdk.trace.BasicTracerProvider({
+const createProvider = (sdk, { testSpans = false, getIds = () => null, ...config } = {}) => new sdk.trace.TracerProvider({
   idGenerator: {
     generateTraceId: () => getIds()?.traceId || randomHex(16),
     generateSpanId: () => getIds()?.spanId || randomHex(8),
   },
-  ...(testSpans ? { sampler: new sdk.trace.AlwaysOnSampler(), spanLimits: SPAN_LIMITS } : {}),
+  ...(testSpans ? { sampler: new sdk.trace.AlwaysOnSampler(), spanLimits: SPAN_LIMITS } : environmentConfig(sdk)),
   ...config,
 })
 

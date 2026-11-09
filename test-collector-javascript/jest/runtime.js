@@ -25,6 +25,30 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
     this._buildkiteChildren = environment?._buildkite?.children
     if (!this._buildkiteChildren) return
     this._buildkiteChildren.attachRuntime(this)
+    // Jest 30.5 moved ESM loading off the runtime too. API 1.10's native ESM
+    // singleton is distinct from CommonJS, including its early proxy tracers.
+    const esm = this.esmLoader || this
+    if (typeof esm.loadEsmModule === 'function' && typeof esm.linkAndEvaluateModule === 'function') {
+      const apis = new Set()
+      const load = esm.loadEsmModule.bind(esm), evaluate = esm.linkAndEvaluateModule.bind(esm)
+      esm.loadEsmModule = async (modulePath, ...args) => {
+        const module = await load(modulePath, ...args)
+        if (/[\\/]@opentelemetry[\\/]api[\\/]/.test(modulePath)) apis.add(module)
+        return module
+      }
+      esm.linkAndEvaluateModule = async (...args) => {
+        const module = await evaluate(...args)
+        // Jest 30's synchronous graph loads static dependencies without
+        // calling loadEsmModule for each one. They are already in its registry.
+        for (const [modulePath, api] of esm.registries?.getActiveEsmRegistry() || []) {
+          if (/[\\/]@opentelemetry[\\/]api[\\/]/.test(modulePath)) apis.add(api)
+        }
+        for (const api of apis) {
+          if (api.status === 'evaluated' && typeof api.namespace.ProxyTracerProvider === 'function') this._buildkiteChildren.loadedApi(api.namespace)
+        }
+        return module
+      }
+    }
     if (!this._buildkiteChildren.packages.names.size) return
     // Newer Jest 30 releases moved the CJS loader off the runtime.
     const loader = this.cjsLoader || this

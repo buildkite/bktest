@@ -163,7 +163,7 @@ if (otelSupported) {
       const exporterLoad = createRequire(require.resolve('@opentelemetry/exporter-trace-otlp-proto'))
       const { ProtobufTraceSerializer: serializer } = exporterLoad('@opentelemetry/otlp-transformer')
       const numbers = [NaN, Infinity, -Infinity]
-      const spanProvider = new sdk.trace.BasicTracerProvider({
+      const spanProvider = new sdk.trace.TracerProvider({
         resource: sdk.resources.resourceFromAttributes({ service: 'canary', flags: [true, false], count: 7, numbers }, { schemaUrl: 'https://resource.schema' }),
         spanLimits: { attributeCountLimit: 2, eventCountLimit: 1, linkCountLimit: 1 },
       })
@@ -184,9 +184,9 @@ if (otelSupported) {
       const directory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'otel-roundtrip-'))
       try {
         commitFile(directory, 'canary.js', { test: spans, child: [] })
-        const file = parseFile(fs.readFileSync(path.join(directory, fs.readdirSync(directory)[0]), 'utf8'))
+        const file = parseFile(fs.readFileSync(path.join(directory, fs.readdirSync(directory)[0])))
         const restored = restoreSpans(file.streams, sdk).test
-        assert.deepEqual(serializer.serializeRequest(restored), serializer.serializeRequest(spans), 'JSON spool must preserve protobuf exactly')
+        assert.deepEqual(serializer.serializeRequest(restored), serializer.serializeRequest(spans), 'spool must preserve protobuf exactly')
       } finally {
         fs.rmSync(directory, { recursive: true, force: true })
         await spanProvider.shutdown()
@@ -323,8 +323,8 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
       }
       const Module = require('module'), original = Module._load
       Module._load = function(name, ...args) {
-        if (process.env.OTEL_BREAK === 'missing' && name === '@opentelemetry/sdk-trace-base') throw new Error('missing SDK fixture')
-        if (process.env.OTEL_BREAK === 'sdk3' && /sdk-trace-base[/\\\\]package.json$/.test(name)) return { name: '@opentelemetry/sdk-trace-base', version: '3.0.0' }
+        if (process.env.OTEL_BREAK === 'missing' && name === '@opentelemetry/sdk-trace') throw new Error('missing SDK fixture')
+        if (process.env.OTEL_BREAK === 'old-sdk' && /sdk-trace[/\\\\]package.json$/.test(name)) return { name: '@opentelemetry/sdk-trace', version: '2.8.0' }
         const result = original.call(this, name, ...args)
         if (process.env.OTEL_BREAK === 'worker' && name.endsWith('/util/otel/session')) return { ...result, sessionFor() { throw new Error('worker setup fixture') } }
         if (process.env.OTEL_BREAK === 'temp' && name === 'fs') result.mkdtempSync = () => { throw new Error('unwritable temporary directory fixture') }
@@ -370,6 +370,32 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
 }
 
 ;(otelSupported ? describe : describe.skip)('file-backed parent export', () => {
+  ;(semver.gte(require('../util/otel/sdk').packageVersion('@opentelemetry/api'), '1.10.0') ? test : test.skip)('preserves SDK 3 structured attributes through worker spool and OTLP upload', async () => {
+    server = await startOtlpServer()
+    const result = await spoolRun({ args: ['--runInBand'], body: `
+      test('structured attributes', () => {
+        const { trace } = require('@opentelemetry/api')
+        // SDK 3 rejects plain objects from a foreign VM realm. Null-prototype
+        // maps are accepted by the SDK before reaching the collector's spool.
+        const attributes = { bytes: new Uint8Array([1, 127, 255]), nested: Object.assign(Object.create(null), { answer: 42, missing: null }), mixed: ['two', 3, false, null] }
+        const span = trace.getTracer('structured').startSpan('structured child', { attributes })
+        span.addEvent('event', { simple: 'saved' })
+        span.end()
+      })
+    ` })
+    expect([result.code, jsonUpload(result.stdout)]).toEqual([0, null])
+    const [root] = server.spans().filter(span => span.name === 'test.execution')
+    expect(root.attributes['test.case.result.status']).toBe('pass')
+    const [child] = server.spans().filter(span => span.name === 'structured child')
+    expect(child).toMatchObject({ traceId: root.traceId, parentSpanId: root.spanId,
+      attributeTypes: { bytes: 'bytes', nested: 'kvlist', mixed: 'array' },
+      attributes: { bytes: Buffer.from([1, 127, 255]), nested: { answer: { type: 'int', value: 42n }, missing: { type: 'empty', value: undefined } },
+        mixed: [{ type: 'string', value: 'two' }, { type: 'int', value: 3n }, { type: 'bool', value: false }, { type: 'empty', value: undefined }] },
+    })
+    expect(child.events).toEqual([{ name: 'event', attributes: { simple: 'saved' } }])
+    expect(result.stderr).not.toContain('[buildkite-test-collector]')
+  }, 30000)
+
   test('file teardown never waits for a network round trip', async () => {
     server = await startOtlpServer({ respond: () => ({ delay: 1200 }) })
     const result = await spoolRun({ files: 8 })
@@ -638,7 +664,7 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(result.stderr).not.toContain('TEST RESULTS MISSING')
   }, 20000)
 
-  test.each(['missing', 'sdk3', 'temp', 'worker'])('never uploads JSON after a %s setup failure', async (failure) => {
+  test.each(['missing', 'old-sdk', 'temp', 'worker'])('never uploads JSON after a %s setup failure', async (failure) => {
     server = await startOtlpServer()
     const result = await spoolRun({ files: 10, env: { OTEL_BREAK: failure } })
     expect(result.stderr).toMatch(/results.*(were not uploaded|not uploaded)|TEST RESULTS MISSING/)
@@ -864,6 +890,28 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
 
   const named = (name) => (span) => span.name === name
   const clientGet = (span) => span.name === 'GET' && span.kind === CLIENT
+
+  ;(tools ? test : test.skip).each(['jest-environment-jsdom', '@happy-dom/jest-environment'])('keeps results and warns about unavailable contrib children under %s', async (environment) => {
+    const config = { ...require('../examples/jest/otel-children.config'),
+      rootDir: path.join(__dirname, '../examples/jest'), testEnvironment: tools.resolve(environment),
+    }
+    const outcome = await runChildren('managed', { args: 'packages.js --runInBand', config: JSON.stringify(config) })
+    expect([outcome.result.code, outcome.roots.length]).toEqual([0, 2])
+    const limited = jestMajor === 29 &&
+      semver.gte(require('../util/otel/sdk').packageVersion('@opentelemetry/instrumentation-http'), '0.300.0')
+    if (limited) {
+      expect(outcome.warnings).toHaveLength(2)
+      for (const name of ['express', 'graphql']) expect(outcome.warnings).toEqual(expect.arrayContaining([
+        expect.stringMatching(new RegExp(`instrumentation ${name} could not patch .*Jest 29 \\+ jsdom/happy-dom; use Jest 30`)),
+      ]))
+    } else expect(outcome.warnings).toEqual([])
+    const root = outcome.rootsNamed('express route I/O')[0]
+    expect(outcome.childrenOf(root, clientGet)).toHaveLength(1)
+    expect(outcome.childrenOf(root, span => span.attributes['express.type'] === 'request_handler')).toHaveLength(limited ? 0 : 1)
+    const graphql = outcome.rootsNamed('graphql resolver I/O')[0]
+    expect(outcome.childrenOf(graphql, named('graphql.resolve message'))).toHaveLength(limited ? 0 : 1)
+    expect(outcome.result.stderr).not.toContain('TEST RESULTS MISSING')
+  }, 60000)
 
   test('exports each test once when the collector runtime is extended again', async () => {
     const dir = fs.mkdtempSync(path.join(__dirname, '../examples/jest/otel-extended-'))
@@ -1146,8 +1194,8 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(roots.map((root) => root.attributes['test.case.result.status'])).toEqual(['pass', 'pass', 'pass', 'pass'])
   }, 60000)
 
-  // Under native ESM, Jest loads the API's CommonJS build for an import by its
-  // resolved file, with no CommonJS require of it to share that copy.
+  // API 1.9 imports share CommonJS; 1.10 has a separate native ESM proxy.
+  // Run this on both Jest 30 loader paths: async (Node 22.15) and sync (24.9+).
   test('exports children from a tracer an ES module obtained before a reset in beforeAll', async () => {
     const outcome = await runChildren('esm', { env: { NODE_OPTIONS: '--experimental-vm-modules' } })
     expect([outcome.result.code, outcome.warnings, outcome.roots.length]).toEqual([0, [], 1])
@@ -1231,7 +1279,12 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     }
     return root
   }
-  const installed = (name) => path.dirname(require.resolve(`${name}/package.json`, { paths: [path.join(__dirname, '../examples/jest')] }))
+  // SDK 3-line packages export only their entry point, not package.json.
+  const installed = (name) => {
+    let directory = path.dirname(require.resolve(name, { paths: [path.join(__dirname, '../examples/jest')] }))
+    while (!fs.existsSync(path.join(directory, 'package.json')) || JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8')).name !== name) directory = path.dirname(directory)
+    return directory
+  }
 
   test('enables later projects instrumentation once on the shared worker', async () => {
     const packages = {
@@ -1303,15 +1356,15 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
   }, 60000)
 
   test.each([
-    ['records http and fetch with the 2.x SDK line', {
+    ['records http and fetch with the installed SDK line', {
       '@opentelemetry/instrumentation-http': installed('@opentelemetry/instrumentation-http'),
       '@opentelemetry/instrumentation-undici': installed('@opentelemetry/instrumentation-undici'),
     }],
     ['skips another SDK line with one warning', {
-      '@opentelemetry/instrumentation-http': { version: '0.300.0', className: 'HttpInstrumentation' },
-      '@opentelemetry/instrumentation-undici': { version: '0.34.0', className: 'UndiciInstrumentation' },
-      '@opentelemetry/instrumentation-express': { version: '0.82.0', className: 'ExpressInstrumentation' },
-      '@opentelemetry/instrumentation': { version: '0.300.0' },
+      '@opentelemetry/instrumentation-http': { version: '0.57.0', className: 'HttpInstrumentation' },
+      '@opentelemetry/instrumentation-undici': { version: '0.10.0', className: 'UndiciInstrumentation' },
+      '@opentelemetry/instrumentation-express': { version: '0.47.0', className: 'ExpressInstrumentation' },
+      '@opentelemetry/instrumentation': { version: '0.57.0' },
     }],
   ])('with only @opentelemetry/auto-instrumentations-node installed, %s', async (_, packages) => {
     const root = projectWithAutoInstrumentations(packages)
@@ -1324,13 +1377,28 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
         for (const test of ['http I/O', 'undici I/O']) expectRequest(outcome, test)
       } else {
         expect(outcome.warnings).toEqual([expect.stringMatching(
-          /OpenTelemetry instrumentation skipped: @opentelemetry\/instrumentation-http .*0\.300\.0.*@opentelemetry\/instrumentation-undici .*0\.34\.0.*@opentelemetry\/instrumentation-express \(Error: unsupported SDK line \(0\.300\.0\)\).*2\.x SDK line.*test\.execution export remains enabled\./,
+          /OpenTelemetry instrumentation skipped: @opentelemetry\/instrumentation-http .*0\.57\.0.*@opentelemetry\/instrumentation-undici .*0\.10\.0.*@opentelemetry\/instrumentation-express \(Error: unsupported SDK line \(0\.57\.0\)\).*SDK 2\.x or 3\.x line.*test\.execution export remains enabled\./,
         )])
         expect(outcome.children.filter((s) => s.name === 'GET')).toEqual([])
       }
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
+  }, 60000)
+
+  test('warns before constructing SDK 3 instrumentation against API 1.9, retaining test and manual spans', async () => {
+    const root = projectWithAutoInstrumentations({
+      '@opentelemetry/instrumentation-http': { version: '0.301.0', className: 'HttpInstrumentation' },
+      '@opentelemetry/instrumentation': { version: '0.301.0' },
+      '@opentelemetry/api': { version: '1.9.0' },
+    })
+    try {
+      const outcome = await runChildren('managed', { args: 'io.js --runInBand', env: { OTEL_PROJECT_ROOT: root } })
+      expectAllResults(outcome, IO_ROOTS)
+      expect(outcome.warnings).toEqual([expect.stringMatching(/SDK 3 line.*needs @opentelemetry\/api 1\.10\+, not 1\.9\.0.*test.execution export remains enabled/)])
+      expect(outcome.childrenOf(outcome.rootsNamed('callback body')[0], named('callback-child'))).toHaveLength(1)
+      expect(outcome.children.filter(clientGet)).toHaveLength(0)
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
   }, 60000)
 
   test('overflows the bounded child queue without displacing test results or tracing its own exports', async () => {

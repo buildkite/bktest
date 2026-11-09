@@ -14,7 +14,7 @@ agents:
 steps:
   - group: ":javascript: test-collector-javascript"
     steps:
-      - label: ":npm: npm {{matrix}} SDK 2 install compatibility"
+      - label: ":npm: npm {{matrix}} SDK 2 + 3 install compatibility"
         matrix:
           - "10"
           - "11"
@@ -23,15 +23,17 @@ steps:
           - "npm install --global npm@{{matrix}}"
           - "node .buildkite/check-otel-installs.js"
           - "node .buildkite/check-vitest-otel-install.js npm"
+          - "node .buildkite/check-vitest-otel-install.js npm 3"
         plugins:
           - docker#v3.7.0:
               image: node:22.15.0
               mount-buildkite-agent: false
-      - label: ":npm: pnpm Vitest OTel packed install"
+      - label: ":npm: pnpm SDK 2 + 3 Vitest OTel packed install"
         command:
           - "cd test-collector-javascript"
           - "npm install --global pnpm@10"
           - "node .buildkite/check-vitest-otel-install.js pnpm"
+          - "node .buildkite/check-vitest-otel-install.js pnpm 3"
         plugins:
           - docker#v3.7.0:
               image: node:22.15.0
@@ -47,6 +49,7 @@ steps:
         command:
           - "cd test-collector-javascript"
           - "npm ci"
+          - "node .buildkite/otel-lines.js 2"
           - "npx playwright install --with-deps chromium"
           - "node .buildkite/install-jest-otel-tools.js"
           - "EXPECTED_JEST_VERSION=29.7.0 npm test"
@@ -57,17 +60,13 @@ steps:
               # BUILDKITE_BUILD_ID are passed through to the container and
               # mess up the CI detection — we want a clean process.env.
               mount-buildkite-agent: false
-      - label: ":opentelemetry: OTel tests against the newest published OpenTelemetry SDK (soft fail: early warning that an SDK release broke the collector)"
-        # The lockfile pins the SDK the collector was built against. This
-        # step installs the newest versions of the SDK line the collector
-        # supports, so a new SDK release that breaks span export shows up
-        # here before a customer finds it. It never fails the build.
+      - label: ":opentelemetry: OTel @latest canary (soft fail)"
+        # Stable SDK 2 and 3 are hard failures below; this detects new lines.
         soft_fail: true
         command:
           - "cd test-collector-javascript"
           - "npm ci"
-          - "node -e 'const specs = Object.entries(require(\"./util/otel/sdk\").SUPPORTED_VERSIONS).map(([name, range]) => name + \"@\" + range); require(\"child_process\").execFileSync(\"npm\", [\"install\", \"--no-save\", ...specs], { stdio: \"inherit\" })'"
-          - "npm ls @opentelemetry/api @opentelemetry/sdk-trace-base @opentelemetry/resources @opentelemetry/exporter-trace-otlp-proto"
+          - "node .buildkite/otel-lines.js latest"
           - "node .buildkite/install-jest-otel-tools.js"
           - "npx playwright install --with-deps chromium"
           - "EXPECTED_JEST_VERSION=29.7.0 npm test -- --runInBand otel e2e/playwright.test.js"
@@ -80,15 +79,61 @@ steps:
         command:
           - "cd test-collector-javascript"
           - "npm ci"
-          # npm ls would call these invalid against the root's devDependencies,
-          # so the installed versions are checked directly.
-          - "node -e 'const floors = { \"@opentelemetry/api\": \"1.9.0\", \"@opentelemetry/sdk-trace-base\": \"2.0.0\", \"@opentelemetry/resources\": \"2.0.0\", \"@opentelemetry/context-async-hooks\": \"2.0.0\", \"@opentelemetry/exporter-trace-otlp-proto\": \"0.200.0\", \"@opentelemetry/instrumentation-http\": \"0.200.0\", \"@opentelemetry/instrumentation-undici\": \"0.11.0\" }; require(\"child_process\").execFileSync(\"npm\", [\"install\", \"--no-save\", ...Object.entries(floors).map(([name, version]) => name + \"@\" + version)], { stdio: \"inherit\" }); for (const [name, version] of Object.entries(floors)) { const installed = JSON.parse(require(\"fs\").readFileSync(\"node_modules/\" + name + \"/package.json\")).version; console.log(name, installed); if (installed !== version) process.exit(1) }'"
+          - "node .buildkite/otel-lines.js floor"
           - "node .buildkite/install-jest-otel-tools.js"
           - "npx playwright install --with-deps chromium"
-          - "EXPECTED_JEST_VERSION=29.7.0 npm test -- --runInBand e2e/jest-otel.test.js e2e/playwright.test.js"
+          - "EXPECTED_JEST_VERSION=29.7.0 npm test -- --runInBand util/otel e2e/jest-otel.test.js e2e/playwright.test.js"
         plugins:
           - docker#v3.7.0:
               image: node:18.19.0
+              mount-buildkite-agent: false
+      - label: ":opentelemetry: SDK 3 full suite + Jest 30"
+        command:
+          - "cd test-collector-javascript"
+          - "npm ci"
+          - "node .buildkite/otel-lines.js 3"
+          - "node .buildkite/install-jest-otel-tools.js"
+          - "npx playwright install --with-deps chromium"
+          - "EXPECTED_JEST_VERSION=29.7.0 npm test -- --runInBand"
+          - "npm pkg set 'devDependencies.jest=30.5.2' 'devDependencies.jest-environment-node=30.5.2' --include-workspace-root --workspace examples/jest"
+          - "npm install --ignore-scripts --legacy-peer-deps"
+          - "node .buildkite/otel-lines.js 3"
+          - "node .buildkite/install-jest-otel-tools.js"
+          - "EXPECTED_JEST_VERSION=30.5.2 npm test -- --runInBand e2e/jest-otel.test.js"
+        plugins:
+          - docker#v3.7.0:
+              image: cypress/base:22.15.0
+              mount-buildkite-agent: false
+      - label: ":opentelemetry: SDK 3 Jest 30 synchronous native ESM"
+        # Node 22.15 above uses the async loader; 24.9 enables Jest's sync graph.
+        command:
+          - "cd test-collector-javascript"
+          - "npm ci"
+          - "npm pkg set 'devDependencies.jest=30.5.2' 'devDependencies.jest-environment-node=30.5.2' --include-workspace-root --workspace examples/jest"
+          - "npm install --ignore-scripts --legacy-peer-deps"
+          - "node .buildkite/otel-lines.js 3"
+          - "node .buildkite/install-jest-otel-tools.js"
+          - "EXPECTED_JEST_VERSION=30.5.2 npm test -- --runInBand e2e/jest-otel.test.js --testNamePattern='runs the selected Jest version|ES module obtained'"
+        plugins:
+          - docker#v3.7.0:
+              image: node:24.9.0
+              mount-buildkite-agent: false
+      - label: ":vitest: SDK 3 Vitest {{matrix}} OTel compatibility"
+        matrix:
+          - "4.0.11"
+          - "^4"
+          - "^5"
+        command:
+          - "cd test-collector-javascript"
+          # Vite 7 satisfies all three versions; 4.0.11 does not accept Vite 8.
+          - "npm pkg set 'devDependencies.vite=^7' --include-workspace-root --workspace examples/vitest"
+          # An explicit install resolves ^4/^5 afresh instead of retaining the lockfile's version.
+          - "npm install --ignore-scripts --legacy-peer-deps --save-dev 'vitest@{{matrix}}' --include-workspace-root --workspace examples/vitest"
+          - "node .buildkite/otel-lines.js 3"
+          - "npm test -- --runInBand e2e/vitest.test.js e2e/vitest-otel.test.js"
+        plugins:
+          - docker#v3.7.0:
+              image: node:22.15.0
               mount-buildkite-agent: false
       - label: ":jest: Jest {{matrix}} OTel compatibility"
         # 28.1.3 checks that unsupported Jest warns and uploads nothing.
