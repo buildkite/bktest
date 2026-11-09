@@ -26,7 +26,7 @@ const run = (env = {}, args = []) => new Promise(resolve => {
 })
 const supported = major >= 4
 const drifted = 'experimental OpenTelemetry spans may have changed'
-const preload = (file) => ({ NODE_OPTIONS: [process.env.NODE_OPTIONS, '--require', path.join(cwd, 'otel', file)].filter(Boolean).join(' ') })
+const preload = (file) => ({ NODE_OPTIONS: [process.env.NODE_OPTIONS, file.endsWith('.mjs') ? '--import' : '--require', path.join(cwd, 'otel', file)].filter(Boolean).join(' ') })
 
 // Standalone suites have no example setup hooks or declared instrumentation.
 const runFixture = (files, config = {}, env = {}) => {
@@ -409,12 +409,12 @@ const runFixture = (files, config = {}, env = {}) => {
 
 ;(supported ? test : test.skip).each(['forks', 'threads'])('changes to Vitest test spans warn instead of silently losing children (%s)', async pool => {
   // Six tests start; the two in a skipped describe never do.
-  const renamed = await run({ ...preload('drift.cjs'), OTEL_TEST_DRIFT: 'tracer', OTEL_TEST_POOL: pool })
+  const renamed = await run({ ...preload('drift.mjs'), OTEL_TEST_DRIFT: 'tracer', OTEL_TEST_POOL: pool })
   expect(renamed.stderr).toContain(`children were not recorded for 6 test(s) because their test spans were not recognised. Vitest ${version}'s ${drifted}`)
   expect(server.spans()).toHaveLength(8)
   expect(server.spans().every(s => s.name === 'test.execution')).toBe(true)
   server.requests.length = 0
-  const relative = await run({ ...preload('drift.cjs'), OTEL_TEST_DRIFT: 'path', OTEL_TEST_POOL: pool })
+  const relative = await run({ ...preload('drift.mjs'), OTEL_TEST_DRIFT: 'path', OTEL_TEST_POOL: pool })
   expect(relative.stderr).toContain(`children could not be linked to their tests for 6 test span(s). Vitest ${version}'s ${drifted}`)
   const spans = server.spans()
   const roots = spans.filter(s => s.name === 'test.execution')
@@ -423,7 +423,7 @@ const runFixture = (files, config = {}, env = {}) => {
   expect(spans.filter(s => s.name !== 'test.execution').some(s => roots.some(root => root.traceId === s.traceId))).toBe(false)
   server.requests.length = 0
   // A test that skips itself still started, so losing its children warns.
-  const skipped = await run({ ...preload('drift.cjs'), OTEL_TEST_DRIFT: 'tracer', OTEL_TEST_CASE: 'self-skip', OTEL_TEST_POOL: pool })
+  const skipped = await run({ ...preload('drift.mjs'), OTEL_TEST_DRIFT: 'tracer', OTEL_TEST_CASE: 'self-skip', OTEL_TEST_POOL: pool })
   expect(server.spans().map(s => s.attributes['test.case.result.status'])).toEqual(['skipped'])
   expect(skipped.stderr).toContain(`children were not recorded for 1 test(s)`)
 }, 30000)

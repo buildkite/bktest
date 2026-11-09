@@ -30,7 +30,7 @@ const scenario = async ({ status, testStatus = 200, reason, cap, late }) => {
     return { status: status === 413 && requests > 1 ? 200 : status || 200, body }
   } })
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-uploads-'))
-  const provider = new (loadSdk().trace.BasicTracerProvider)()
+  const provider = new (loadSdk().trace.TracerProvider)()
   const span = (name = 'child') => {
     const value = provider.getTracer('uploads').startSpan(name)
     value.end()

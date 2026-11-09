@@ -3,10 +3,10 @@
 // no instrumentation for this file, while files around it keep theirs.
 const http = require('http')
 const api = require('@opentelemetry/api')
-const { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base')
+const { TracerProvider, InMemorySpanExporter, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace')
 
 const exporter = new InMemorySpanExporter()
-const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] })
+const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] })
 api.trace.setGlobalTracerProvider(provider)
 
 test('own provider', async () => {

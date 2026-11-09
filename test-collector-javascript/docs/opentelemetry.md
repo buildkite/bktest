@@ -8,8 +8,7 @@ HTTP calls and your own spans for Jest and Vitest.
 
 Use Playwright 1.41.2 or newer (the oldest version verified), with the Node.js and
 OpenTelemetry SDK requirements in [Setup](#setup-1). Install the collector,
-`@opentelemetry/api@~1.9.0`, `@opentelemetry/sdk-trace-base@^2` and
-`@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0`, then enable
+one of the matching [SDK package sets](#setup-1), then enable
 `otelEnabled` on the reporter. No fixture or test changes are needed;
 `@opentelemetry/context-async-hooks` and Jest's runtime are **not needed**.
 
@@ -101,15 +100,8 @@ Vitest 5 requires Node.js 22.12+.
 
 ### Setup
 
-Install the collector and OpenTelemetry packages:
-
-```bash
-npm install --save-dev buildkite-test-collector \
-  '@opentelemetry/api@~1.9.0' \
-  '@opentelemetry/sdk-trace-base@^2' \
-  '@opentelemetry/context-async-hooks@^2' \
-  '@opentelemetry/exporter-trace-otlp-proto@<0.300'
-```
+Install the collector and one of the matching [SDK package sets](#setup-1).
+SDK 3 requires Node.js 22.15+, including when used with Vitest 4.
 
 Enable the reporter and native tracing in your config:
 
@@ -222,24 +214,69 @@ module.exports = {
 
 ## Setup
 
+All three runners use `@opentelemetry/sdk-trace` 2.9+ or 3.x. Choose a matching
+package set; mixing SDK lines can cause npm peer-resolution errors or missing
+child instrumentation. These are install recommendations, not upper bounds on
+the collector's supported packages.
+
+For SDK 3, use Node.js 22.15+ and API 1.10+:
+
 ```bash
 npm install --save-dev buildkite-test-collector \
-  '@opentelemetry/sdk-trace-base@^2' \
-  '@opentelemetry/context-async-hooks@^2' \
-  '@opentelemetry/exporter-trace-otlp-proto@<0.300'
+  '@opentelemetry/api@^1.10' \
+  '@opentelemetry/sdk-trace@^3' \
+  '@opentelemetry/context-async-hooks@^3' \
+  '@opentelemetry/exporter-trace-otlp-proto@~0.301.0'
 ```
 
-With pnpm or Yarn, also add `@opentelemetry/api@~1.9.0`.
-Under Yarn Plug'n'Play, declare these packages in the root workspace.
+For SDK 2.9+, use Node.js 18.19+ or 20.6+, subject to your runner's own Node requirements:
 
-Use Jest 29 or 30 with `jest-circus` (tested with 29.7.0 and 30.5.2). OpenTelemetry SDK 2 needs Node.js 18.19+ or 20.6+.
+```bash
+npm install --save-dev buildkite-test-collector \
+  '@opentelemetry/api@~1.9.0' \
+  '@opentelemetry/sdk-trace@^2.9' \
+  '@opentelemetry/context-async-hooks@^2' \
+  '@opentelemetry/exporter-trace-otlp-proto@~0.223.0'
+```
+
+Playwright does not need `context-async-hooks`. With pnpm, Yarn or npm, declare
+the API explicitly. Under Yarn Plug'n'Play, declare these packages in the root workspace.
+
+**Migration:** replace your direct `@opentelemetry/sdk-trace-base` dependency with
+`@opentelemetry/sdk-trace` 2.9+ (or 3.x with its Node/API requirements). SDK 2.0–2.8
+is no longer supported in OTel mode. If your own setup creates providers or
+processors, replace `BasicTracerProvider` with `TracerProvider` and use
+`new SimpleSpanProcessor({ exporter })` / `new BatchSpanProcessor({ exporter })`.
+The collector configuration is unchanged. Child spans retain the environment's
+sampler (including `parentbased_*`) and span limits, with `OTEL_SPAN_ATTRIBUTE_*`
+taking precedence over `OTEL_ATTRIBUTE_*`; test spans keep fixed limits and AlwaysOn sampling.
+
+Use Jest 29 or 30 with `jest-circus` (tested with 29.7.0 and 30.5.2).
 Jest 30.0 and 30.1 can drop `afterEach` children in files mixing concurrent and sequential tests.
 It's experimental and off by default.
 Supported platforms are Linux and macOS; Windows is untested.
 OpenTelemetry options, environment variables and span shape may change in minor releases.
 Test spans count as test executions, like JSON uploads, at no extra charge. Child spans are billed by data ingested and need a plan that includes them; without it, we still record test results and warn that child spans were dropped.
 
-Install the versions above. The collector checks SDK 2 and exporter 0.200–0.2xx compatibility, including a serialization probe. SDK 3 is unsupported; API package versions are not independently gated.
+The collector requires `sdk-trace >=2.9.0`, exporter `>=0.220.0`, and (for children)
+`context-async-hooks >=2.0.0`, without version caps. It probes serialization before
+recording results. On older Node versions with SDK 3 it warns and still attempts
+export; that combination is unsupported. Instrumentation built on 0.300+ requires
+API 1.10+; incompatible instrumentation is skipped with a warning, without
+disabling test results.
+
+Jest native ESM supports API 1.10's separate ESM and CommonJS API objects, including
+tracers obtained before `resetModules`. With **Jest 29 + jsdom/happy-dom + SDK 3**, Express
+and GraphQL instrumentation resolve their platform dependency to the browser
+build and are skipped with a warning; HTTP/fetch children and test results still
+record. Use Jest 30, the Node environment, or SDK 2 for those contrib spans.
+
+The spool preserves SDK 3's structured span/link attribute values, including byte
+arrays, nested maps, heterogeneous arrays and null. The SDK still accepts only
+simple event/resource attributes. Its plain-object validation also rejects nested
+objects from Jest's foreign VM realm; use null-prototype maps (`Object.create(null)`)
+for those nested values. Values rejected by the SDK never reach the collector;
+enable an OpenTelemetry `diag` logger to see SDK attribute-validation warnings.
 
 Reporter `token` and `tags` options work as usual.
 For TypeScript, check your reporter options with `satisfies Options`, importing `Options` from `buildkite-test-collector/jest/reporter`.
@@ -323,16 +360,26 @@ OpenTelemetry results don't yet count toward auto-quarantine or tag-to-label map
 
 ## Choosing instrumentation
 
+For SDK 3 / API 1.10+:
+
 ```bash
-npm install --save-dev '@opentelemetry/instrumentation-http@>=0.200.0 <0.300.0' \
-  '@opentelemetry/instrumentation-undici@>=0.11.0 <0.34.0'
+npm install --save-dev '@opentelemetry/instrumentation-http@^0.301.0' \
+  '@opentelemetry/instrumentation-undici@^0.35.0'
+OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici npx jest
+```
+
+For SDK 2 / API 1.9:
+
+```bash
+npm install --save-dev '@opentelemetry/instrumentation-http@^0.223.0' \
+  '@opentelemetry/instrumentation-undici@^0.33.0'
 OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici npx jest
 ```
 
 We select instrumentation declared in your Jest `rootDir`'s package.json or its parents, including workspace roots (under Yarn Plug'n'Play, the workspace that runs Jest).
 If `@opentelemetry/auto-instrumentations-node` is resolvable, we select its whole bundle, with the exclusions below.
 Individual packages installed incidentally by another dependency don't opt you in; a resolvable auto-instrumentations bundle does.
-Use the SDK 2.x line: HTTP 0.200–0.2xx and undici 0.11–0.33. Other instrumentations are checked against their base instrumentation dependency (0.200–0.2xx), not a fixed auto-instrumentations bundle version range.
+Choose instrumentation matching your SDK/API line. The collector accepts HTTP 0.200+ and undici 0.11+, with no caps. Other instrumentations are checked against their base instrumentation dependency (0.200+), not a fixed auto-instrumentations bundle version range. A base of 0.300+ needs API 1.10+.
 Incompatible instrumentation warns and is skipped without affecting results or manual spans.
 
 We leave logs and messages (`pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`), low-level I/O (`net`, `dns`, `fs`) and metrics (`host-metrics`, `runtime-node`) off by default.
@@ -342,7 +389,7 @@ We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2.
 
 ## Delivery and interruptions
 
-At file teardown the worker writes plain span data as JSON to private local spool files and atomically renames each before returning. Children are committed separately before the test commit, which carries the file path and Jest project ID for accounting. A child serialization or write failure drops those children and warns once per run, but still attempts the test commit; it does not mean test results are missing. This waits for local I/O only, not the network; it is not fsync/power-loss durability. The reporter creates the per-run temporary directory. Its worker settings contain no OTLP token. This JSON is only a local transport envelope, never a JSON results upload. Non-finite numeric attributes (NaN and positive/negative Infinity) are encoded and revived losslessly, including inside arrays.
+At file teardown the worker writes plain span data with Node's V8 binary serializer to private local spool files and atomically renames each before returning. Children are committed separately before the test commit, which carries the file path and Jest project ID for accounting. A child serialization or write failure drops those children and warns once per run, but still attempts the test commit; it does not mean test results are missing. This waits for local I/O only, not the network; it is not fsync/power-loss durability. The reporter creates the per-run temporary directory. Its worker settings contain no OTLP token. The binary spool is only a local transport envelope within the Node process tree, never a JSON results upload or a cross-version interchange format. Structured SDK 3 span/link attributes and non-finite numeric attributes (NaN and positive/negative Infinity) round-trip losslessly.
 
 The parent scans committed files on its one-second timer, rebuilds readable spans and uploads through one stock OpenTelemetry `OTLPTraceExporter` per lane (test and child), with up to four exports in flight per lane. It batches across files for up to one second, retaining span-count caps and measuring with the stock protobuf serializer to enforce a **750 KiB uncompressed protobuf** cap per request, leaving headroom below the endpoint's 900 KiB limit. The stock exporter owns gzip, the authorization/run-key/stream headers, 10-second request timeouts and its retry policy. Its Agent also has a 10-second inactivity timeout that starts before TCP connects, so a silently dropped connection does not occupy a lane slot until the OS timeout; keep-alive remains enabled. Failed batches remain on disk and are requeued through the run for network errors, 429 and 5xx, honoring `Retry-After`. Other HTTP errors are reported without retries. Lost acknowledgments can cause duplicates; delivery is not exactly once.
 

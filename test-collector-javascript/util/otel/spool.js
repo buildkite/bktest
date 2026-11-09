@@ -1,6 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const { randomUUID } = require('crypto')
+const { serialize, deserialize } = require('v8')
 const { warnOncePerRun, describeError } = require('./warn')
 
 const MAX_BYTES = 750 * 1024
@@ -17,23 +18,9 @@ const size = (suffix, fallback, limit = 2147483647, directory) => {
 const batchSize = (stream, directory) => stream === 'test'
   ? size('TEST_SPAN_BATCH_SIZE', 1000, 1000, directory) : size('CHILD_SPAN_BATCH_SIZE', 512, undefined, directory)
 
-const stringify = (value) => JSON.stringify(value, (_key, value) => typeof value === 'number' && !Number.isFinite(value)
-  ? { $number: String(value) } : value)
-const parseFile = (text) => {
-  const file = JSON.parse(text)
-  const number = (value) => value && typeof value === 'object' &&
-    ['NaN', 'Infinity', '-Infinity'].includes(value.$number) ? Number(value.$number) : value
-  // Attribute containers can themselves contain a legitimate "$number" key.
-  // Only values (including array entries), never containers, are markers.
-  for (const spans of Object.values(file.streams)) for (const span of spans) {
-    for (const attributes of [span.attributes, span.resource.attributes, span.instrumentationScope?.attributes,
-      ...span.events.map((event) => event.attributes), ...span.links.map((link) => link.attributes)]) {
-      for (const key of Object.keys(attributes || {})) attributes[key] = Array.isArray(attributes[key])
-        ? attributes[key].map(number) : number(attributes[key])
-    }
-  }
-  return file
-}
+// Spools never leave this Node process tree. V8 preserves SDK 3's structured
+// attributes (including Uint8Array and null) as well as non-finite numbers.
+const parseFile = (buffer) => deserialize(buffer)
 
 const spanData = (span) => {
   const context = (value) => value && { ...value, traceState: value.traceState?.serialize() }
@@ -57,9 +44,9 @@ const restoreSpans = (streams, sdk) => {
   const scopes = new Map()
   const context = ({ traceState, ...value }) => ({ ...value, traceState: traceState === undefined ? undefined : sdk.api.createTraceState(traceState) })
   return Object.fromEntries(Object.entries(streams).map(([stream, spans]) => [stream, spans.map((span) => {
-    const key = stringify(span.resource)
+    const key = serialize(span.resource).toString('base64')
     if (!resources.has(key)) resources.set(key, sdk.resources.resourceFromAttributes(span.resource.attributes, { schemaUrl: span.resource.schemaUrl }))
-    const scopeKey = JSON.stringify(span.instrumentationScope)
+    const scopeKey = serialize(span.instrumentationScope).toString('base64')
     if (!scopes.has(scopeKey)) scopes.set(scopeKey, span.instrumentationScope)
     const spanContext = context(span.context)
     return {
@@ -87,7 +74,7 @@ const commitFile = (directory, testPath, streams, projectId) => {
   const write = (suffix, data) => {
     const file = path.join(directory, `${Date.now()}-${randomUUID()}${suffix}`)
     try {
-      fs.writeFileSync(`${file}.tmp`, stringify(data), { mode: 0o600, flag: 'wx' })
+      fs.writeFileSync(`${file}.tmp`, serialize(data), { mode: 0o600, flag: 'wx' })
       fs.renameSync(`${file}.tmp`, `${file}.spool`)
     } finally {
       fs.rmSync(`${file}.tmp`, { force: true })
