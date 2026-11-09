@@ -1,6 +1,6 @@
 module.exports = {
   testDir: './otel',
-  testMatch: 'outcomes.js',
+  testMatch: process.env.PLAYWRIGHT_OTEL_TEST_MATCH || 'outcomes.js',
   globalSetup: process.env.PLAYWRIGHT_OTEL_SETUP_TOKEN ? require.resolve('./otel-global-setup') : undefined,
   workers: 2,
   reporter: [

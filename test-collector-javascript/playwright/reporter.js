@@ -9,6 +9,7 @@ const Paths = require('../util/paths')
 const { resolveSettings } = require('../util/otel/config')
 const { createSession } = require('../util/otel/session')
 const { warn, describeError } = require('../util/otel/warn')
+const { truncate } = require('../util/otel/describeTest')
 
 /**
  * JSDoc Imports
@@ -39,7 +40,8 @@ class PlaywrightBuildkiteTestEngineReporter {
     const enabled = options?.otelEnabled;
     this._otelEnabled = enabled === true || (typeof enabled === 'string' && enabled.trim().toLowerCase() === 'true');
     this._missingTests = 0;
-    this._attempts = new WeakMap();
+    this._attempts = new Map();
+    this._endedAttempts = new WeakSet();
     this._stepFiles = new Map();
   }
 
@@ -60,6 +62,16 @@ class PlaywrightBuildkiteTestEngineReporter {
       this._spool = fs.mkdtempSync(path.join(os.tmpdir(), 'buildkite-playwright-otel-'));
       this._session = createSession({ ...settings, spool: this._spool });
       this._sender = require('../util/otel/uploads').createUploads(settings, this._spool);
+      this._sigterm = () => {
+        const otherListeners = process.listenerCount('SIGTERM') > 0;
+        this._terminated = true;
+        this._finish(5000).finally(() => {
+          if (otherListeners) return;
+          if (process.pid === 1) process.exit(143);
+          else process.kill(process.pid, 'SIGTERM');
+        });
+      };
+      process.prependOnceListener('SIGTERM', this._sigterm);
     } catch (error) {
       warn(`TEST RESULTS MISSING: OpenTelemetry could not be configured (${describeError(error)}); check temporary directory permissions/free space and the SDK installation, then rerun (no JSON fallback).`);
     }
@@ -67,23 +79,48 @@ class PlaywrightBuildkiteTestEngineReporter {
 
   async onEnd() {
     if (this._otelEnabled) {
+      return this._finish();
+    }
+    return new Promise(resolve => {
+      uploadTestResults(this._testEnv, this._tags, this._testResults, this._options, resolve);
+    })
+  }
+
+  _finish(budget = 10000) {
+    this._deadline = Math.min(this._deadline ?? Infinity, Date.now() + budget);
+    // drain() also shortens an already-running drain after SIGTERM.
+    if (this._draining) this._sender?.drain(budget);
+    return this._completion ||= (async () => {
+      const interruptedAt = Date.now();
       try {
+        // globalTimeout can deliver onEnd before onTestEnd(interrupted).
+        // Give worker teardown a bounded chance to deliver the real result.
+        if (this._attempts.size) {
+          let timer;
+          await new Promise(resolve => {
+            this._attemptsFinished = resolve;
+            timer = setTimeout(resolve, 1000);
+          });
+          clearTimeout(timer);
+          this._attemptsFinished = null;
+          for (const [result, attempt] of this._attempts) {
+            this._recordTestEnd(attempt.test, result, interruptedAt);
+          }
+        }
         for (const { provider } of this._stepFiles.values()) await provider.shutdown();
-        await this._sender?.drain();
+        this._draining = true;
+        await this._sender?.drain(Math.max(0, this._deadline - Date.now()));
       } finally {
         await this._session?.shutdown();
+        if (this._sigterm) process.off('SIGTERM', this._sigterm);
         if (this._missingTests) warn(`TEST RESULTS MISSING: ${this._missingTests} Playwright test execution(s) were not recorded; fix the earlier warnings and rerun (no JSON fallback).`);
-        if (this._spool) {
+        if (this._spool && !this._terminated) {
           try { fs.rmSync(this._spool, { recursive: true, force: true }); } catch (error) {
             warn(`OpenTelemetry could not remove its temporary directory (${describeError(error)}).`);
           }
         }
       }
-      return;
-    }
-    return new Promise(resolve => {
-      uploadTestResults(this._testEnv, this._tags, this._testResults, this._options, resolve);
-    })
+    })();
   }
 
   onTestBegin(test, result) {
@@ -93,7 +130,7 @@ class PlaywrightBuildkiteTestEngineReporter {
       record.id = randomUUID();
       const { line, column } = test.location;
       const handle = this._session.startTestSpan(record, { line, column, startTime: result.startTime.getTime() });
-      this._attempts.set(result, { handle, id: record.id, steps: new Map(), endTime: result.startTime.getTime() });
+      this._attempts.set(result, { test, handle, id: record.id, steps: new Map(), endTime: result.startTime.getTime() });
     } catch (error) {
       warn(`Could not start the Playwright test span: ${describeError(error)}`);
     }
@@ -121,10 +158,16 @@ class PlaywrightBuildkiteTestEngineReporter {
       const { api } = this._session;
       const parent = step.parent ? attempt.steps.get(step.parent) : attempt.handle.span;
       const context = api.trace.setSpan(api.ROOT_CONTEXT, parent);
-      const span = file.tracer.startSpan(step.title, {
+      // Playwright interpolates values without escaping embedded quotes. Redact
+      // the whole quoted region, including locator literals, to avoid fragments.
+      // Older versions also render unquoted API arguments in parentheses.
+      const title = step.category === 'pw:api'
+        ? step.title.replace(/["'`][\s\S]*["'`]/g, '"[REDACTED]"').replace(/\([\s\S]*\)/g, '([REDACTED])')
+        : step.title;
+      const span = file.tracer.startSpan(title, {
         startTime: step.startTime,
         attributes: {
-          'test.step.name': step.title,
+          'test.step.name': title,
           'test.step.category': step.category,
           ...(step.location && {
             'code.file.path': this._paths.prefixTestPath(step.location.file),
@@ -148,8 +191,8 @@ class PlaywrightBuildkiteTestEngineReporter {
     const span = steps?.get(step);
     if (!span) return;
     if (step.error) {
-      span.setStatus({ code: this._session.api.SpanStatusCode.ERROR, message: stripAnsi(step.error.message || '') });
-      span.addEvent('exception', { 'exception.message': stripAnsi(step.error.stack || step.error.message || '') }, endTime);
+      span.setStatus({ code: this._session.api.SpanStatusCode.ERROR, message: truncate(stripAnsi(step.error.message || ''), 10243) });
+      span.addEvent('exception', { 'exception.message': truncate(stripAnsi(step.error.stack || step.error.message || ''), 10243) }, endTime);
     }
     span.end(endTime);
     steps.delete(step);
@@ -171,17 +214,27 @@ class PlaywrightBuildkiteTestEngineReporter {
       return;
     }
 
+    this._recordTestEnd(test, testResult);
+  }
+
+  _recordTestEnd(test, testResult, interruptedAt) {
+    // Late worker callbacks must not duplicate attempts closed at the deadline.
+    if (this._endedAttempts.has(testResult)) return;
+    this._endedAttempts.add(testResult);
     try {
-      const record = this.testEngineRecord(test, testResult);
+      const result = interruptedAt === undefined ? testResult : {
+        ...testResult, status: 'interrupted', duration: Math.max(0, interruptedAt - testResult.startTime.getTime()),
+      };
+      const record = this.testEngineRecord(test, result);
       const attempt = this._attempts.get(testResult);
       record.id = attempt?.id || randomUUID();
       // Cancellation is not a test failure; JSON retains its historical 'unknown'.
-      if (testResult.status === 'interrupted') record.result = 'skipped';
+      if (result.status === 'interrupted') record.result = 'skipped';
       const { line, column } = test.location;
       const startTime = testResult.startTime.getTime();
       const handle = attempt?.handle || this._session.startTestSpan(record, { line, column, startTime });
       // Playwright's duration excludes time outside selected timeout slots.
-      const endTime = Math.max(startTime + testResult.duration, attempt?.endTime ?? startTime);
+      const endTime = Math.max(startTime + result.duration, attempt?.endTime ?? startTime);
       // A worker can stop without sending onStepEnd for its open steps.
       for (const span of attempt?.steps.values() || []) {
         span.setAttribute('test.step.incomplete', true);
@@ -197,6 +250,7 @@ class PlaywrightBuildkiteTestEngineReporter {
       warn(`TEST RESULTS MISSING: Could not report the Playwright test execution over OpenTelemetry: ${describeError(error)}`);
     } finally {
       this._attempts.delete(testResult);
+      if (!this._attempts.size) this._attemptsFinished?.();
     }
   }
 
@@ -205,7 +259,7 @@ class PlaywrightBuildkiteTestEngineReporter {
     const fileName = this._paths.prefixTestPath(test.location.file);
     const location = [fileName, test.location.line, test.location.column].join(':');
 
-    const filteredTags = test.tags.filter(tag => this._tagPattern.test(tag));
+    const filteredTags = (test.tags || []).filter(tag => this._tagPattern.test(tag));
     const tags = filteredTags.reduce((acc, test) => {
       const [key, value] = test.slice(1).split(':');
       acc[key] = value;

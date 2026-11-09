@@ -6,8 +6,12 @@ HTTP calls and your own spans for Jest and Vitest.
 
 ## Playwright
 
-Install the dependencies in [Setup](#setup-1), then enable `otelEnabled` on the
-reporter. No fixture or test changes are needed, and Jest's runtime is not required.
+Use Playwright 1.41.2 or newer (the oldest version verified), with the Node.js and
+OpenTelemetry SDK requirements in [Setup](#setup-1). Install the collector,
+`@opentelemetry/api@~1.9.0`, `@opentelemetry/sdk-trace-base@^2` and
+`@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0`, then enable
+`otelEnabled` on the reporter. No fixture or test changes are needed;
+`@opentelemetry/context-async-hooks` and Jest's runtime are **not needed**.
 
 ```js
 // playwright.config.js
@@ -34,17 +38,59 @@ the child as failed without changing the test result. Steps left open when an
 attempt ends are marked `test.step.incomplete` and closed at the root span's end;
 cancellation does not make them failures.
 
+All reporter step categories are retained, not just explicit `test.step` blocks.
+A small test with a `beforeEach`, two `test.step` blocks, a fill, a click and an
+expect produced one free test span and 19 child spans. Realistic end-to-end tests
+can produce 50–200 children per attempt. Children are billed by decoded GB
+ingested, not by span count, so check your volume before enabling this on a large suite.
+
+Quoted values in `pw:api` titles are redacted in both the child span name and
+`test.step.name`, including typed text, pressed keys, option values and locator
+literals. Playwright does not escape embedded quotes, so the whole quoted region
+is replaced with `[REDACTED]`; parenthesized API arguments from older versions
+are redacted too. User-written `test.step` titles and assertion/error
+text are not redacted; do not put secrets there. Step error text is truncated to
+10,243 code points, like test exception messages.
+
 Reporter `token` and `tags` options and the shared [settings](#settings) apply.
-Per-test `@key:value` tags override reporter tags. Child export limits apply per
+Per-test `@key:value` tags (Playwright 1.42+) override reporter tags. Child export limits apply per
 file across workers and retries; dropped children do not displace test results.
+
+For sharded blob reports, configure this reporter in the `merge-reports` step,
+**not in the shards**. Enabling it in both uploads the executions twice.
+UI mode uploads on **every run** when a token is set; use a separate suite or
+disable the reporter if those local runs should not be recorded.
 
 With OTel enabled, configuration or upload failures warn without falling back to
 JSON or changing Playwright's exit code. Turn `otelEnabled` off to use JSON again.
 
 This is reporter-side tracing only. It does not propagate context into workers
 or collect automatic HTTP/database spans, manual worker spans, browser application
-traces or in-test annotations. Ctrl-C allows results to flush; SIGTERM can lose
-pending results.
+traces or in-test annotations.
+
+### Playwright delivery and interruptions
+
+The reporter commits each completed attempt and its children to a local spool;
+the parent uploads in the background. Normal completion drains for up to ten
+seconds. `globalTimeout` can notify reporters before interrupted attempts finish:
+the collector waits up to one second for those callbacks, then records any still
+open attempts as interrupted/skipped before taking the final upload snapshot.
+Late callbacks do not duplicate those attempts. This wait is within the drain budget.
+
+Ctrl-C lets Playwright interrupt workers and flush results. A second Ctrl-C can
+kill the runner before uploads or warnings finish. Playwright itself does not
+handle SIGTERM as a graceful interruption. The collector handles SIGTERM with a
+five-second budget, including the bounded attempt wait, and shortens an existing
+drain. It preserves other SIGTERM listeners and their cleanup; without another
+listener it re-raises SIGTERM (or exits 143 as PID 1). Open attempts are recorded
+as skipped, with unfinished children marked incomplete, not as failures.
+
+Unacknowledged results warn `TEST RESULTS MISSING`; lost children warn separately
+and do not displace test results. SIGKILL, a second interrupt or a crash can
+prevent both flushing and warnings. Completed runs remove the spool; terminated
+runs can leave it behind, with no replay tool. See the shared
+[delivery details](#delivery-and-interruptions) for batching, limits and retries;
+its worker/runtime lifecycle description is Jest-specific.
 
 ## Vitest
 

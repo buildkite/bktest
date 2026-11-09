@@ -187,6 +187,10 @@ describe('examples/playwright in OTel mode', () => {
     JEST_WORKER_ID: undefined,
     PLAYWRIGHT_OTEL_ENABLED: undefined,
     PLAYWRIGHT_OTEL_SETUP_TOKEN: undefined,
+    PLAYWRIGHT_OTEL_TEST_MATCH: undefined,
+    PLAYWRIGHT_OTEL_SIGNAL: undefined,
+    PLAYWRIGHT_OTEL_OTHER_SIGTERM: undefined,
+    PLAYWRIGHT_OTEL_TERM_ON_END: undefined,
   };
 
   const run = async (args = [], env = {}) => {
@@ -196,13 +200,16 @@ describe('examples/playwright in OTel mode', () => {
       const result = await new Promise(resolve => {
         execFile(process.execPath, [require.resolve('@playwright/test/cli'), 'test', '--config', 'otel.config.js', ...args], {
           cwd,
+          timeout: 25000,
+          maxBuffer: 16 * 1024 * 1024,
           env: { ...process.env, ...baseEnv, BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url, ...env, PLAYWRIGHT_JSON_OUTPUT_NAME: output },
-        }, (error, stdout, stderr) => resolve({ code: error ? error.code : 0, stdout, stderr }));
+        }, (error, stdout, stderr) => resolve({ code: error?.signal === 'SIGTERM' ? 143 : error ? error.code : 0, stdout, stderr }));
       });
       return {
         ...result,
-        report: JSON.parse(fs.readFileSync(output, 'utf8')),
+        report: fs.existsSync(output) ? JSON.parse(fs.readFileSync(output, 'utf8')) : null,
         steps: fs.existsSync(output + '.steps') ? JSON.parse(fs.readFileSync(output + '.steps', 'utf8')) : [],
+        signaledAt: fs.existsSync(output + '.signal') ? Number(fs.readFileSync(output + '.signal', 'utf8')) : null,
       };
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -240,6 +247,123 @@ describe('examples/playwright in OTel mode', () => {
     server = null;
   });
 
+  test('redacts quoted API values without filtering step categories or user titles', async () => {
+    server = await startOtlpServer();
+    const result = await run(['--grep', 'API values'], { PLAYWRIGHT_OTEL_TEST_MATCH: 'values.js' });
+    expect(result.code).toBe(0);
+    expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]|Error in reporter/);
+    expect(testSpans()).toHaveLength(1);
+    const children = childSpans();
+    const nativeSteps = steps => steps.flatMap(step => [step, ...nativeSteps(step.steps)]);
+    const native = result.steps.flatMap(attempt => nativeSteps(attempt.steps));
+    expect(children).toHaveLength(native.length);
+    const apiSteps = children.filter(span => span.attributes['test.step.category'] === 'pw:api');
+    expect(apiSteps).toHaveLength(native.filter(step => step.category === 'pw:api').length);
+    expect(apiSteps.some(span => span.name.includes('[REDACTED]'))).toBe(true);
+    for (const span of apiSteps) {
+      expect(span.name).toBe(span.attributes['test.step.name']);
+      expect(span.name).not.toMatch(/hunter2|SECRET|escaped|quote|secret|parenthesized|path|next-line|Shift\+S|private-option|Password/);
+    }
+    expect(children.map(span => span.attributes['test.step.category'])).toEqual(expect.arrayContaining(['hook', 'fixture', 'test.step', 'pw:api', 'expect']));
+    expect(children.some(span => span.name === 'user step "kept verbatim"')).toBe(true);
+  }, 30000);
+
+  test('truncates both step error fields so large diffs reach the receiver', async () => {
+    server = await startOtlpServer();
+    const result = await run(['--grep', 'large step errors'], { PLAYWRIGHT_OTEL_TEST_MATCH: 'values.js' });
+    expect(result.code).toBe(1);
+    expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]|Error in reporter/);
+    expect(testSpans()).toHaveLength(1);
+    const failures = childSpans().filter(span => span.status.code === 2);
+    expect(failures.map(span => span.attributes['test.step.category']).sort()).toEqual(['expect', 'test.step']);
+    for (const span of failures) {
+      expect(span.status.message).toContain('toEqual');
+      expect(Array.from(span.status.message)).toHaveLength(10243);
+      expect(Array.from(span.events[0].attributes['exception.message'])).toHaveLength(10243);
+      expect(span.events[0].attributes['exception.message']).toMatch(/\.\.\.$/);
+    }
+    expect(server.requests.every(request => request.bytes <= 750 * 1024)).toBe(true);
+  }, 30000);
+
+  test('records open attempts before the globalTimeout drain without duplicates', async () => {
+    server = await startOtlpServer();
+    const result = await run(['--config', 'otel-shutdown.config.js']);
+    expect(result.code).toBe(1);
+    expect(testSpans()).toHaveLength(7);
+    expect(testSpans().filter(span => span.attributes['test.case.result.status'] === 'pass')).toHaveLength(6);
+    const interrupted = testSpans().find(span => span.attributes['buildkite.test.name'] === 'open during shutdown');
+    expect(interrupted.attributes['test.case.result.status']).toBe('skipped');
+    expect(interrupted.status.code).toBe(0);
+    expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]|Error in reporter/);
+    expect(new Set(testSpans().map(span => span.spanId)).size).toBe(7);
+  }, 30000);
+
+  test('bounds the wait for a tagless open attempt and ignores its late end', async () => {
+    server = await startOtlpServer();
+    const script = `
+      const Reporter = require('buildkite-test-collector/playwright/reporter');
+      const reporter = new Reporter({ otelEnabled: true });
+      const test = { id: 'test', title: 'unfinished', titlePath: () => ['suite'], location: { file: __filename, line: 1, column: 1 } };
+      const result = { startTime: new Date(), duration: -1, status: 'skipped' };
+      (async () => {
+        reporter.onBegin({ version: '1.41.2' });
+        reporter.onTestBegin(test, result);
+        await reporter.onEnd({ status: 'timedout' });
+        result.status = 'failed';
+        reporter.onTestEnd(test, result);
+        await reporter.onEnd({ status: 'timedout' });
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `;
+    const start = Date.now();
+    const result = await new Promise(resolve => {
+      execFile(process.execPath, ['-e', script], {
+        cwd, timeout: 10000,
+        env: { ...process.env, ...baseEnv, BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url },
+      }, (error, stdout, stderr) => resolve({ error, stderr }));
+    });
+    expect(result).toEqual({ error: null, stderr: '' });
+    expect(Date.now() - start).toBeLessThan(4000);
+    expect(testSpans()).toHaveLength(1);
+    expect(testSpans()[0].attributes['test.case.result.status']).toBe('skipped');
+    expect(testSpans()[0].status.code).toBe(0);
+  }, 15000);
+
+  test.each([false, true])('drains completed results on SIGTERM (receiver hangs: %s)', async hangs => {
+    server = await startOtlpServer({ respond: () => hangs ? { hang: true } : 200 });
+    const result = await run(['--config', 'otel-shutdown.config.js'], { PLAYWRIGHT_OTEL_SIGNAL: 'SIGTERM' });
+    expect(result.code).toBe(143);
+    expect(result.signaledAt).not.toBeNull();
+    expect(Date.now() - result.signaledAt).toBeLessThan(6500);
+    // A hung receiver still saw the data, but never acknowledged it.
+    const received = server.requests.flatMap(request => request.decoded.resourceSpans.flatMap(resource => resource.scopeSpans.flatMap(scope => scope.spans)));
+    expect(received.filter(span => span.name === 'test.execution' && span.attributes['test.case.result.status'] === 'pass')).toHaveLength(6);
+    if (hangs) expect(result.stderr).toMatch(/TEST RESULTS MISSING: 7 test.execution span\(s\)/);
+    else {
+      expect(testSpans()).toHaveLength(7);
+      expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]|Error in reporter/);
+    }
+  }, 30000);
+
+  test('shortens an existing final drain to five seconds on SIGTERM', async () => {
+    server = await startOtlpServer({ respond: () => ({ hang: true }) });
+    const result = await run(['--grep', ' fails$'], { PLAYWRIGHT_OTEL_TERM_ON_END: '1' });
+    expect(result.code).toBe(143);
+    expect(result.signaledAt).not.toBeNull();
+    expect(Date.now() - result.signaledAt).toBeLessThan(6500);
+    expect(result.stderr).toMatch(/TEST RESULTS MISSING: 1 test.execution span\(s\)/);
+  }, 30000);
+
+  test('preserves asynchronous cleanup owned by another SIGTERM listener', async () => {
+    server = await startOtlpServer();
+    const result = await run(['--config', 'otel-shutdown.config.js'], {
+      PLAYWRIGHT_OTEL_SIGNAL: 'SIGTERM', PLAYWRIGHT_OTEL_OTHER_SIGTERM: '1',
+    });
+    expect(result.code).toBe(42);
+    expect(result.stdout).toContain('other SIGTERM cleanup finished');
+    expect(testSpans()).toHaveLength(7);
+    expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]|Error in reporter/);
+  }, 30000);
+
   test('exports the native step tree with distinct nested, repeated and parallel children', async () => {
     server = await startOtlpServer();
     const result = await run(['--config', 'otel-steps.config.js'], { BUILDKITE_ANALYTICS_LOCATION_PREFIX: 'packages/web' });
@@ -252,7 +376,7 @@ describe('examples/playwright in OTel mode', () => {
     expect(new Set(server.spans().map(span => span.spanId)).size).toBe(server.spans().length);
     expect(new Set(roots.map(span => span.traceId)).size).toBe(7);
     const sort = values => values.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    const nativeTree = steps => sort(steps.map(step => ({ ...step, steps: nativeTree(step.steps) })));
+    const nativeTree = steps => sort(steps.map(step => ({ ...step, title: step.category === 'pw:api' ? '<API>' : step.title, steps: nativeTree(step.steps) })));
     const visited = new Set();
     const exportedTree = parent => sort(children.filter(span => span.parentSpanId === parent.spanId).map(span => {
       visited.add(span.spanId);
@@ -262,7 +386,7 @@ describe('examples/playwright in OTel mode', () => {
       expect(span.endTimeUnixNano <= parent.endTimeUnixNano).toBe(true);
       if (span.attributes['code.file.path']) expect(span.attributes['code.file.path']).toMatch(/^packages\/web\//);
       return {
-        title: span.name,
+        title: span.attributes['test.step.category'] === 'pw:api' ? '<API>' : span.name,
         category: span.attributes['test.step.category'],
         start: Number(span.startTimeUnixNano / 1000000n),
         duration: Number((span.endTimeUnixNano - span.startTimeUnixNano) / 1000000n),
@@ -375,8 +499,9 @@ describe('examples/playwright in OTel mode', () => {
     expect(statuses('parameter 7')).toEqual(['pass']);
 
     const tagged = spans.find(span => span.attributes['buildkite.test.name'] === 'passes with tags');
-    expect(tagged.attributes['buildkite.tag.priority']).toBe('test');
-    expect(tagged.attributes['buildkite.tag.ci.worker.id']).toBe('test-worker');
+    const supportsTags = require('semver').gte(require('@playwright/test/package.json').version, '1.42.0');
+    expect(tagged.attributes['buildkite.tag.priority']).toBe(supportsTags ? 'test' : 'run');
+    expect(tagged.attributes['buildkite.tag.ci.worker.id']).toBe(supportsTags ? 'test-worker' : 'configured-worker');
     expect(tagged.attributes).not.toHaveProperty('buildkite.tag.ignored');
     const failure = spans.find(span => span.attributes['buildkite.test.name'] === 'fails');
     expect(failure.attributes['buildkite.tag.ci.worker.id']).toBe('configured-worker');

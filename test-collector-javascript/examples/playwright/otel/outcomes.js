@@ -1,6 +1,9 @@
 const { test, expect } = require('@playwright/test')
 
-test('passes with tags', { tag: ['@priority:test', '@ci.worker.id:test-worker', '@ignored'] }, async () => {
+// The tag details argument and TestCase.tags were introduced in Playwright 1.42.
+const tags = require('semver').gte(require('@playwright/test/package.json').version, '1.42.0')
+  ? [{ tag: ['@priority:test', '@ci.worker.id:test-worker', '@ignored'] }] : []
+test('passes with tags', ...tags, async () => {
   await new Promise(resolve => setTimeout(resolve, 25))
   expect(1 + 2).toBe(3)
 })
