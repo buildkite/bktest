@@ -112,3 +112,29 @@ test('warns once for repeated late child commit failures and includes them in th
     expect.stringContaining('OpenTelemetry dropped 15 child span(s) in total'),
   ])
 })
+
+test('reports unfinished child counts from every worker, once per worker', () => {
+  const fs = require('fs')
+  const os = require('os')
+  const { createChildExport } = require('./children')
+  const spool = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-unfinished-'))
+  const warnings = jest.spyOn(console, 'warn').mockImplementation()
+  const workers = [createChildExport({ spool }), createChildExport({ spool })]
+  try {
+    for (const worker of workers) {
+      const forwarder = worker.createForwarder()
+      forwarder.addTrace('trace')
+      forwarder.onStart({ spanContext: () => ({ traceId: 'trace' }) })
+      worker.reportDropped()
+      worker.reportDropped()
+    }
+    expect(warnings.mock.calls).toEqual([
+      [expect.stringContaining('dropped 1 child span(s) (still open when the worker exited: 1)')],
+      [expect.stringContaining('dropped 1 child span(s) (still open when the worker exited: 1)')],
+    ])
+  } finally {
+    workers.forEach((worker) => process.off('exit', worker.reportDropped))
+    warnings.mockRestore()
+    fs.rmSync(spool, { recursive: true, force: true })
+  }
+})

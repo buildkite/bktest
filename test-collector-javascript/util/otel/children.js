@@ -1,4 +1,4 @@
-const { warnOncePerRun } = require('./warn')
+const { warn } = require('./warn')
 const { size, commitFile, recordChildDrops } = require('./spool')
 
 // Child floods never displace test results. The cap includes open children and
@@ -14,7 +14,8 @@ const createChildExport = (settings) => {
     if (reported || !(open || startedLate)) return
     reported = true
     const reasons = [startedLate && `started after file teardown: ${startedLate}`, open && `still open when the worker exited: ${open}`].filter(Boolean)
-    warnOncePerRun(settings.spool, 'unfinished-children', `OpenTelemetry dropped ${open + startedLate} child span(s) (${reasons.join(', ')}); test.execution results are unaffected.`)
+    // These exit-time counts are worker-local, not in the parent's drop total.
+    warn(`OpenTelemetry dropped ${open + startedLate} child span(s) (${reasons.join(', ')}); test.execution results are unaffected.`)
   }
   process.once('exit', reportDropped)
   const createForwarder = () => {
