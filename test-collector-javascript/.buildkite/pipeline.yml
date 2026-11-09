@@ -112,8 +112,9 @@ steps:
         command:
           - "cd test-collector-javascript"
           # Vite 7 satisfies all three versions; 4.0.11 does not accept Vite 8.
-          - "npm pkg set 'devDependencies.vitest={{matrix}}' 'devDependencies.vite=^7' --include-workspace-root --workspace examples/vitest"
-          - "npm install --ignore-scripts --legacy-peer-deps"
+          - "npm pkg set 'devDependencies.vite=^7' --include-workspace-root --workspace examples/vitest"
+          # An explicit install resolves ^4/^5 afresh instead of retaining the lockfile's version.
+          - "npm install --ignore-scripts --legacy-peer-deps --save-dev 'vitest@{{matrix}}' --include-workspace-root --workspace examples/vitest"
           - "node .buildkite/otel-lines.js 3"
           - "npm test -- --runInBand e2e/vitest.test.js e2e/vitest-otel.test.js"
         plugins:
