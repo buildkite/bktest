@@ -22,7 +22,8 @@ const isValidEndpoint = (endpoint) => {
   }
 }
 
-const jsonTokenFor = (token) => (token || process.env.BUILDKITE_ANALYTICS_TOKEN || '').trim()
+const credentialFor = (token) => (process.env.BUILDKITE_TESTS_OTLP_TOKEN || '').trim() ||
+  (token || '').trim() || (process.env.BUILDKITE_ANALYTICS_TOKEN || '').trim()
 
 const NOT_UPLOADED = 'results were not uploaded; fix the OpenTelemetry configuration and rerun (no JSON fallback)'
 
@@ -50,9 +51,7 @@ const resolveSettings = (options) => {
 const decideSettings = ({ otelEnabled, token, testRunner, frameworkVersion, runEnv, tags, unsupported, probe = buildSession }) => {
   if (otelEnabled !== true) return null
 
-  const jsonToken = jsonTokenFor(token)
-  const relayToken = (process.env.BUILDKITE_TESTS_OTLP_TOKEN || '').trim()
-  const credential = relayToken || jsonToken
+  const credential = credentialFor(token)
   if (!credential) {
     warn('otelEnabled is set, but results were not uploaded: set BUILDKITE_TESTS_OTLP_TOKEN, reporter token, or BUILDKITE_ANALYTICS_TOKEN and rerun (no JSON fallback).')
     return null
@@ -115,6 +114,7 @@ const readSettings = () => {
 }
 
 module.exports = {
+  credentialFor,
   resolveSettings,
   publishSettings,
   readSettings,

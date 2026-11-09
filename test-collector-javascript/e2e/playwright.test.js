@@ -302,7 +302,7 @@ describe('examples/playwright in OTel mode', () => {
     const other = testSpans().find(span => span.attributes['buildkite.test.name'] === 'another file');
     expect(children.filter(span => span.traceId === other.traceId)).toHaveLength(3);
     expectRootTimings(result); // Bounds must include steps even when child export is capped.
-    expect(result.stderr.match(/OpenTelemetry dropped \d+ child span\(s\) \(per-file cap 3\)/g)).toHaveLength(2);
+    expect(result.stderr.match(/OpenTelemetry dropped \d+ child span\(s\) in total \(per-file cap 3\)/g)).toHaveLength(1);
     expect(result.stderr).not.toMatch(/TEST RESULTS MISSING|Error in reporter/);
   }, 30000);
 

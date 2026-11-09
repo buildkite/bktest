@@ -5,7 +5,7 @@ const path = require('path')
 const CI = require('../util/ci')
 const uploadTestResults = require('../util/uploadTestResults')
 const Paths = require('../util/paths')
-const { resolveSettings, publishSettings } = require('../util/otel/config')
+const { resolveSettings, publishSettings, credentialFor } = require('../util/otel/config')
 const { warn, describeError } = require('../util/otel/warn')
 const testEngineRecord = require('./testEngineRecord')
 
@@ -22,7 +22,7 @@ class JestBuildkiteTestEngineReporter {
     this._tags = options?.tags
     this._paths = new Paths(globalConfig, this._testEnv.location_prefix)
     this._otelEnabled = options?.otelEnabled === true
-    this._hasCredential = [process.env.BUILDKITE_TESTS_OTLP_TOKEN, options?.token, process.env.BUILDKITE_ANALYTICS_TOKEN].some((value) => value?.trim())
+    this._hasCredential = Boolean(credentialFor(options?.token))
     this._missingFiles = 0
     this._missingTests = 0
     const frameworkVersion = jestVersion(globalConfig.rootDir)

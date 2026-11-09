@@ -6,7 +6,7 @@ const path = require('path')
 const CI = require('../util/ci')
 const uploadTestResults = require('../util/uploadTestResults')
 const Paths = require('../util/paths')
-const { resolveSettings } = require('../util/otel/config')
+const { resolveSettings, credentialFor } = require('../util/otel/config')
 const { createSession } = require('../util/otel/session')
 const { warn, describeError } = require('../util/otel/warn')
 
@@ -46,7 +46,7 @@ class PlaywrightBuildkiteTestEngineReporter {
   onBegin(config) {
     if (!this._otelEnabled) return;
 
-    this._hasCredential = [process.env.BUILDKITE_TESTS_OTLP_TOKEN, this._options.token, process.env.BUILDKITE_ANALYTICS_TOKEN].some(value => value?.trim());
+    this._hasCredential = Boolean(credentialFor(this._options.token));
     const settings = resolveSettings({
       otelEnabled: true,
       token: this._options.token,

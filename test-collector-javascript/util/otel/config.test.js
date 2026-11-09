@@ -80,6 +80,8 @@ describe('resolveSettings', () => {
 
     expect(resolve({ token: 'option-token' }).token).toBe('option-token')
     expect(resolve().token).toBe('env-token')
+    expect(resolve({ token: '  \n' }).token).toBe('env-token')
+    expect(warnings()).toEqual([])
   })
 
   it('uses the default endpoint unless BUILDKITE_ANALYTICS_OTLP_ENDPOINT is set', () => {

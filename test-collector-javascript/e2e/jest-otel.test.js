@@ -558,7 +558,9 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
       .flatMap((request) => request.decoded.resourceSpans.flatMap((resource) => resource.scopeSpans.flatMap((scope) => scope.spans)))
     const rejected = outage === 'first413' ? 512 : outage === 'oversized' ? files : outage === 'healthy' ? 0 : files * children
     expect(server.spans().filter((span) => span.name === 'child')).toHaveLength(files * children - rejected)
-    expect(new Set(sentChildren.map((span) => span.spanId)).size).toBe(outage === '503' ? 16384 : files * children - (outage === 'oversized' ? rejected : 0))
+    const uniqueSent = new Set(sentChildren.map((span) => span.spanId)).size
+    if (outage === '403') expect(uniqueSent).toBeLessThanOrEqual(4 * 512)
+    else expect(uniqueSent).toBe(outage === '503' ? 16384 : files * children - (outage === 'oversized' ? rejected : 0))
     if (rejected) {
       expect(result.stderr).toContain(`OpenTelemetry dropped ${rejected} child span(s) in total`)
       expect(result.stderr).toContain('test.execution results are unaffected')
@@ -1346,22 +1348,19 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(result.stdout).not.toMatch(/Test Engine Sending:/)
     const spans = server.spans()
     expect(spans.filter((s) => s.name === 'test.execution')).toHaveLength(16) // io.js and again.js
-    // The first file's drops warn as the file ends; the total, with the
-    // second file's drops and again.js's late child, warns as the process
-    // exits. Drops are never reported again as pending.
+    // Cap drops across files are folded into one parent run total.
     const warnings = result.stderr.split('\n').filter((line) => line.includes('[buildkite-test-collector]'))
     const capped = warnings.filter((warning) => warning.includes('per-file cap 2'))
-    expect(capped).toHaveLength(2)
-    const drops = capped.reduce((total, warning) => total + Number(warning.match(/dropped (\d+)/)[1]), 0)
+    expect(capped).toHaveLength(1)
+    expect(capped[0]).toContain('in total')
+    const drops = Number(capped[0].match(/dropped (\d+)/)[1])
     expect(drops).toBeGreaterThanOrEqual(196)
     expect(spans.filter((s) => s.name !== 'test.execution').length).toBeLessThanOrEqual(4)
     const own = spans.filter((s) => s.name.startsWith('POST') || Object.values(s.attributes).some((value) => String(value) === port))
     expect(own).toEqual([])
   }, 60000)
 
-  // As in Ruby: a refused batch counts as dropped, the first drop warns, the
-  // process warns its total when it finishes, and the stream keeps sending.
-  test('counts child batches Buildkite refuses with HTTP 403 as dropped and keeps sending', async () => {
+  test('stops child uploads after HTTP 403 while test results keep flowing', async () => {
     const outcome = await runChildren('managed', {
       env: { BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE: '1' },
       respond: (index, headers) => (headers['buildkite-tests-span-stream'] === 'child' ? 403 : 200),
@@ -1370,12 +1369,12 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(outcome.roots).toHaveLength(CHILD_FIXTURE_ROOTS)
     expect(jsonUpload(outcome.result.stdout)).toBeNull()
     const childRequests = server.requests.filter((r) => r.headers['buildkite-tests-span-stream'] === 'child')
-    const refused = childRequests.flatMap((r) => r.decoded.resourceSpans.flatMap((rs) => rs.scopeSpans.flatMap((ss) => ss.spans)))
-    // Requests continue through every file that has children.
-    expect(refused.map((s) => s.name)).toEqual(expect.arrayContaining(['manual-parent', 'reset-modules-child']))
+    expect(childRequests.length).toBeGreaterThan(0)
+    expect(childRequests.length).toBeLessThanOrEqual(4)
     expect(childRequests.every((r) => r.status === 403)).toBe(true)
-    expect(outcome.warnings.filter((warning) => warning.includes('HTTP 403'))).toHaveLength(2)
-    expect(outcome.warnings).toContainEqual(expect.stringContaining(`OpenTelemetry dropped ${refused.length} child span(s) in total (HTTP 403)`))
+    expect(outcome.warnings.filter((warning) => warning.includes('HTTP 403'))).toEqual([
+      expect.stringMatching(/OpenTelemetry dropped \d+ child span\(s\) in total \(HTTP 403; child uploads stopped for this run\)/),
+    ])
     expect(outcome.warnings.some((warning) => warning.includes('TEST RESULTS MISSING'))).toBe(false)
   }, 60000)
 
