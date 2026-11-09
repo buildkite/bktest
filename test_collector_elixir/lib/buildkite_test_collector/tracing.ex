@@ -28,7 +28,23 @@ defmodule BuildkiteTestCollector.Tracing do
   @doc """
   Measure the execution time of a function and add a trace to the test analytics.
 
-  ## Example
+  The function's return value is returned unchanged. The `detail` argument is
+  also passed through unchanged. For `:annotation` spans, pass a map with a
+  `:content` key; a plain string does not populate the annotation's
+  `detail.content` field.
+
+  ## Examples
+
+  ```elixir
+  alias BuildkiteTestCollector.Tracing
+
+  test "it records an annotation", tags do
+    assert :ok =
+             Tracing.measure(tags, :annotation, %{content: "checkpoint"}, fn ->
+               :ok
+             end)
+  end
+  ```
 
   ```elixir
   alias BuildkiteTestCollector.Tracing
@@ -58,7 +74,9 @@ defmodule BuildkiteTestCollector.Tracing do
   end
   ```
   """
-  @spec measure(tags, section, nil | String.t(), (-> result)) :: result when result: any
+  @spec measure(tags, section, BuildkiteTestCollector.TestResult.span_detail(), (-> result)) ::
+          result
+        when result: any
   def measure(%{module: module, test: name} = _tags, section, detail \\ nil, callable)
       when is_function(callable, 0) do
     start_at = Instant.now()

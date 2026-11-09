@@ -53,13 +53,21 @@ defmodule BuildkiteTestCollector.TestResult do
           optional(:detail) => map
         }
 
+  @typedoc """
+  A tracing span's detail, passed through unchanged to JSON.
+
+  For `:annotation` spans, use `%{content: "message"}`. A plain string does not
+  populate the annotation's `detail.content` field.
+  """
+  @type span_detail :: nil | String.t() | %{content: String.t()}
+
   @typedoc "A tracing span"
   @type span :: %{
           required(:section) => :http | :sql | :sleep | :annotation,
           required(:duration) => Duration.t(),
           optional(:start_at) => Instant.t(),
           optional(:end_at) => Instant.t(),
-          optional(:detail) => String.t()
+          optional(:detail) => span_detail()
         }
 
   @doc """
