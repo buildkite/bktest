@@ -104,6 +104,20 @@ steps:
           - docker#v3.7.0:
               image: cypress/base:22.15.0
               mount-buildkite-agent: false
+      - label: ":opentelemetry: SDK 3 Jest 30 synchronous native ESM"
+        # Node 22.15 above uses the async loader; 24.9 enables Jest's sync graph.
+        command:
+          - "cd test-collector-javascript"
+          - "npm ci"
+          - "npm pkg set 'devDependencies.jest=30.5.2' 'devDependencies.jest-environment-node=30.5.2' --include-workspace-root --workspace examples/jest"
+          - "npm install --ignore-scripts --legacy-peer-deps"
+          - "node .buildkite/otel-lines.js 3"
+          - "node .buildkite/install-jest-otel-tools.js"
+          - "EXPECTED_JEST_VERSION=30.5.2 npm test -- --runInBand e2e/jest-otel.test.js --testNamePattern='runs the selected Jest version|ES module obtained'"
+        plugins:
+          - docker#v3.7.0:
+              image: node:24.9.0
+              mount-buildkite-agent: false
       - label: ":vitest: SDK 3 Vitest {{matrix}} OTel compatibility"
         matrix:
           - "4.0.11"

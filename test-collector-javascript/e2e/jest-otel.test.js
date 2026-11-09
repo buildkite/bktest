@@ -1194,8 +1194,8 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(roots.map((root) => root.attributes['test.case.result.status'])).toEqual(['pass', 'pass', 'pass', 'pass'])
   }, 60000)
 
-  // Under native ESM, Jest loads the API's CommonJS build for an import by its
-  // resolved file, with no CommonJS require of it to share that copy.
+  // API 1.9 imports share CommonJS; 1.10 has a separate native ESM proxy.
+  // Run this on both Jest 30 loader paths: async (Node 22.15) and sync (24.9+).
   test('exports children from a tracer an ES module obtained before a reset in beforeAll', async () => {
     const outcome = await runChildren('esm', { env: { NODE_OPTIONS: '--experimental-vm-modules' } })
     expect([outcome.result.code, outcome.warnings, outcome.roots.length]).toEqual([0, [], 1])

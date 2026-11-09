@@ -38,6 +38,11 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
       }
       esm.linkAndEvaluateModule = async (...args) => {
         const module = await evaluate(...args)
+        // Jest 30's synchronous graph loads static dependencies without
+        // calling loadEsmModule for each one. They are already in its registry.
+        for (const [modulePath, api] of esm.registries?.getActiveEsmRegistry() || []) {
+          if (/[\\/]@opentelemetry[\\/]api[\\/]/.test(modulePath)) apis.add(api)
+        }
         for (const api of apis) {
           if (api.status === 'evaluated' && typeof api.namespace.ProxyTracerProvider === 'function') this._buildkiteChildren.loadedApi(api.namespace)
         }
