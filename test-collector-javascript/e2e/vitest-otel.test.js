@@ -154,7 +154,7 @@ const runFixture = (files, config = {}, env = {}) => {
   expect(result.stderr).toContain('SIGTERM: Vitest exits before uploads can drain; results not yet uploaded are lost. Rerun the suite to recover missing results.')
 }, 30000)
 
-;(supported ? test : test.skip)('SIGTERM during final uploads still terminates after Vitest removes its listener', async () => {
+;(supported ? test : test.skip).each(['no handlers', 'PID 1', 'PID 1 with cleanup'])('SIGTERM during final uploads still terminates after Vitest removes its listener (%s)', async mode => {
   const pidFile = path.join(scratch, 'closed.pid')
   let signalled = false
   let listenerCount
@@ -174,21 +174,46 @@ const runFixture = (files, config = {}, env = {}) => {
     'plain.test.js': `import { test } from 'vitest'; test('passes', () => {})`,
     'closed-reporter.mjs': `
       import fs from 'node:fs'
+      import { createRequire } from 'node:module'
+      const require = createRequire(import.meta.url)
       export default class { onInit(ctx) {
-        // Run before the collector. Remove optional bundler signal-exit
-        // handlers to exercise a CLI without other shutdown owners.
+        // Run before the collector so its signal handler runs first.
         const existing = process.listeners('SIGTERM')
         ctx.onClose(() => {
-          for (const listener of existing) process.off('SIGTERM', listener)
+          ${mode === 'no handlers' ? `
+            for (const listener of existing) process.off('SIGTERM', listener)
+          ` : `
+            // Keep Rolldown's signal-exit v4 and also exercise v3 coexistence.
+            require(${JSON.stringify(require.resolve('signal-exit'))})(() => {})
+            ${mode === 'PID 1 with cleanup' ? `
+              process.once('SIGTERM', () => setTimeout(() => {
+                console.log('ASYNC CLEANUP FINISHED')
+                process.exit(77)
+              }, 50))
+            ` : ''}
+          `}
           fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ pid: process.pid, listeners: process.listenerCount('SIGTERM') }))
+          ${mode !== 'no handlers' ? `
+            // Model Linux PID 1 ignoring a re-raised signal after signal-exit
+            // removes its listeners, without requiring privileged namespaces.
+            Object.defineProperty(process, 'pid', { value: 1 })
+            const kill = process.kill
+            process.kill = (pid, ...args) => pid === 1 ? true : kill(pid, ...args)
+          ` : ''}
         })
       } }
     `,
   }, { reporters: ['default', path.join(scratch, 'closed-reporter.mjs'), [path.join(cwd, '../../vitest/reporter.js'), { otelEnabled: true }]] })
   expect(signalled).toBe(true)
-  expect(listenerCount).toBe(1)
   expect(result.stderr).toContain('SIGTERM: Vitest exits before uploads can drain')
-  expect(result.signal).toBe('SIGTERM')
+  if (mode === 'no handlers') {
+    expect(listenerCount).toBe(1)
+    expect(result.signal).toBe('SIGTERM')
+  } else {
+    expect(listenerCount).toBeGreaterThan(1)
+    expect(result.code).toBe(mode === 'PID 1' ? 143 : 77)
+    if (mode === 'PID 1 with cleanup') expect(result.stdout).toContain('ASYNC CLEANUP FINISHED')
+  }
 }, 30000)
 
 ;(supported ? test : test.skip)('worker child commit failures warn once across tests and workers', async () => {

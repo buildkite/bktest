@@ -67,7 +67,13 @@ class VitestBuildkiteTestEngineReporter {
         // Vitest's logger exits 1 ms after SIGTERM; an async drain cannot finish.
         warn('SIGTERM: Vitest exits before uploads can drain; results not yet uploaded are lost. Rerun the suite to recover missing results.')
         // The logger removes its listener before SDK shutdown and final uploads.
-        if (!process.listenerCount('SIGTERM')) {
+        // signal-exit only re-raises the signal, whose default action Linux
+        // ignores for PID 1. Use the same shared listener counts as signal-exit
+        // v4/v3, without pre-empting an application's own shutdown handler.
+        const signalExitListeners = process.pid === 1
+          ? (globalThis[Symbol.for('signal-exit emitter')]?.count || 0) + (process.__signal_exit_emitter__?.count || 0)
+          : 0
+        if (process.listenerCount('SIGTERM') <= signalExitListeners) {
           if (process.pid === 1) process.exit(143)
           else process.kill(process.pid, 'SIGTERM')
         }
