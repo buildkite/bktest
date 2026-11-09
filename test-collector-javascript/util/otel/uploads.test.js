@@ -6,7 +6,7 @@ const limitReason = 'OTel trace ingest limit reached for this billing period'
 
 // Like session.test.js, use plain Node for the stock exporter's dynamic HTTP
 // imports, which Jest's VM cannot execute without experimental flags.
-const scenario = async ({ status, reason, cap, late }) => {
+const scenario = async ({ status, testStatus = 200, reason, cap, late }) => {
   const fs = require('fs')
   const os = require('os')
   const path = require('path')
@@ -25,7 +25,7 @@ const scenario = async ({ status, reason, cap, late }) => {
   const body = Buffer.concat([Buffer.from([8, 7, 18, ...length]), bytes])
   let requests = 0
   const server = await startOtlpServer({ respond: (_, headers) => {
-    if (headers['buildkite-tests-span-stream'] !== 'child') return 200
+    if (headers['buildkite-tests-span-stream'] !== 'child') return testStatus
     requests++
     return { status: status === 413 && requests > 1 ? 200 : status || 200, body }
   } })
@@ -93,6 +93,17 @@ test('keeps other child 4xx per batch and sends later children', async () => {
   expect(result.requests).toBe(7)
   expect(result.names.filter((name) => name === 'child')).toHaveLength(6)
   expect(result.warnings).toEqual([expect.stringContaining('dropped 1 child span(s) in total (HTTP 413)')])
+})
+
+test('reports each lane\'s own failure and keeps sending children after a test-stream 403', async () => {
+  const result = await run({ status: 413, testStatus: 403 })
+  expect(result.counts).toEqual({ test: 1, child: 1 })
+  expect(result.requests).toBe(7)
+  expect(result.names).toEqual(Array(6).fill('child'))
+  expect(result.warnings).toEqual([
+    expect.stringContaining('TEST RESULTS MISSING: 1 test.execution span(s), 1 child span(s) were not acknowledged (HTTP 403)'),
+    expect.stringContaining('dropped 1 child span(s) in total (HTTP 413)'),
+  ])
 })
 
 test('folds per-file cap drops into one run total across files', async () => {

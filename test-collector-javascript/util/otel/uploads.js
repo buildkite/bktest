@@ -230,11 +230,13 @@ const createUploads = (settings, directory) => {
         warn(`TEST RESULTS MISSING: some files have no readable OpenTelemetry commit (${reason}) and were not uploaded; ${fix}, then rerun (no JSON fallback).`)
       }
       const missingTests = missing.reduce((n, file) => n + file.tests, 0)
-      const lane = lanes[counts.test ? 0 : 1]
-      const failure = lane.lastFailure || lane.metrics.lastFailure
-      const laneReason = /^\d+$/.test(failure) ? `HTTP ${failure}` : failure || 'drain deadline'
-      // Oversized spans are never sent, so no upload failure explains them.
-      const reason = (stream) => (stream === 'child' ? unacknowledgedChildren : counts.test) === oversized[stream] ? 'span over 750 KiB' : laneReason
+      const reason = (stream) => {
+        // Oversized spans are never sent, so no upload failure explains them.
+        if ((stream === 'child' ? unacknowledgedChildren : counts.test) === oversized[stream]) return 'span over 750 KiB'
+        const lane = lanes.find((lane) => lane.stream === stream)
+        const failure = lane.lastFailure || lane.metrics.lastFailure
+        return /^\d+$/.test(failure) ? `HTTP ${failure}` : failure || 'drain deadline'
+      }
       if (counts.test) warn(`TEST RESULTS MISSING: ${counts.test} test.execution span(s), ${counts.child} child span(s) were not acknowledged (${reason('test')}); results may not have reached Buildkite Test Engine. Check the endpoint/token/runtime and rerun; no JSON fallback.`)
       if (missing.length) {
         const reasons = [...new Set(missing.map((file) => file.reason))].map((reason) => {
