@@ -6,6 +6,15 @@ const { createExporter, EXPORT_TIMEOUT_MILLISECONDS } = require('./exporter')
 const { warn, warnOncePerRun, describeError } = require('./warn')
 const { loadSdk } = require('./sdk')
 
+// The stock exporter exposes response data as UTF-8 text, even for binary
+// google.rpc.Status. Its varint length may contain replacement characters;
+// skip that framing and retain the message, not the protobuf control bytes.
+const childRejectionReason = (error) => {
+  const data = error?.data
+  if (!data) return ''
+  return String(data).match(/^(?:\x08[\x80-\uffff]*[\x00-\x7f])?\x12[\x80-\uffff]*[\x00-\x7f]([^\x00-\x1f]*)/)?.[1] || ''
+}
+
 // Only pending files are retained. Each stream has its own concurrency budget.
 const createUploads = (settings, directory) => {
   const sdk = loadSdk()
@@ -20,7 +29,7 @@ const createUploads = (settings, directory) => {
     return { stream, limit: batchSize(stream, directory), active: 0, metrics,
       exporter: createExporter({ sdk, ...settings, directory, stream, runKey: settings.runEnv.key, metrics }) }
   })
-  let timer, completion, childWarning, snapshot
+  let timer, completion, snapshot, childForbidden
   let heldChildren = 0
   let finalizing = false, stopped = false, spoolReadFailed = false, deadline = Infinity
 
@@ -55,6 +64,7 @@ const createUploads = (settings, directory) => {
       if (files.has(name) || acknowledged.has(name)) continue
       const children = Number(name.match(/\.c(\d+)\.spool$/)?.[1] || 0)
       if (children && countOnly) { yield { children }; continue }
+      if (children && childForbidden) continue
       if (children && (childFull || heldChildren + children > MAX_RESIDENT_CHILDREN)) { childFull = true; continue }
       try { yield { name, file: parseFile(fs.readFileSync(path.join(directory, name), 'utf8')) } } catch (error) { readFailed(error) }
     }
@@ -106,6 +116,10 @@ const createUploads = (settings, directory) => {
       if (!success) lane.lastFailure = metrics.lastFailure
       const status = Number(metrics.lastFailure)
       const terminal = status >= 400 && status < 500 && status !== 429
+      if (!success && lane.stream === 'child' && status === 403 && !childForbidden) {
+        const message = childRejectionReason(result?.error)
+        childForbidden = `HTTP 403${message ? `: ${message}` : ''}; child uploads stopped for this run`
+      }
       for (const part of batch) {
         part.sending = false
         part.done = success
@@ -117,9 +131,13 @@ const createUploads = (settings, directory) => {
         part.retryAt = terminal ? Infinity
           : Math.max(metrics.retryAt || 0, Date.now() + Math.min(5000, 1000 * part.attempts))
       }
-      if (!success && lane.stream === 'child' && terminal && !childWarning) {
-        childWarning = true
-        warn(`OpenTelemetry dropped ${batch.reduce((n, part) => n + part.count, 0)} child span(s) (HTTP ${status}); test.execution results are unaffected. The run total will be reported at completion.`)
+      if (childForbidden) {
+        for (const part of pending()) {
+          if (part.stream !== 'child' || part.sending || !part.spans) continue
+          part.spans = null
+          heldChildren -= part.count
+          part.retryAt = Infinity
+        }
       }
       for (const name of new Set(batch.map((part) => part.file))) {
         if (files.get(name).parts.every((part) => part.done)) forget(name)
@@ -137,7 +155,7 @@ const createUploads = (settings, directory) => {
   const pump = () => {
     if (stopped || Date.now() >= deadline) return
     for (const lane of lanes) {
-      while (lane.active < 4) {
+      while (lane.active < 4 && !(lane.stream === 'child' && childForbidden)) {
         const batch = []
         let bytes = 0, count = 0
         for (const part of pending()) {
@@ -192,6 +210,17 @@ const createUploads = (settings, directory) => {
           counts.test += file.streams.test?.length || 0
         }
       }
+      const unacknowledgedChildren = counts.child
+      const childReasons = new Set()
+      try {
+        for (const name of fs.readdirSync(directory).filter((name) => name.endsWith('.dropped'))) {
+          const { count, reason } = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'))
+          counts.child += count
+          childReasons.add(reason)
+        }
+      } catch (error) {
+        warnOncePerRun(directory, 'child-drop-read', `OpenTelemetry child-drop total is incomplete: ${describeError(error)}; test.execution results are unaffected.`)
+      }
       const missing = [...expected.values()].flat().map((file) => spoolReadFailed && file.reason === 'setup failed'
         ? { ...file, reason: 'spool unreadable' } : file)
       for (const reason of new Set(missing.map((file) => file.reason))) {
@@ -205,7 +234,7 @@ const createUploads = (settings, directory) => {
       const failure = lane.lastFailure || lane.metrics.lastFailure
       const laneReason = /^\d+$/.test(failure) ? `HTTP ${failure}` : failure || 'drain deadline'
       // Oversized spans are never sent, so no upload failure explains them.
-      const reason = (stream) => counts[stream] === oversized[stream] ? 'span over 750 KiB' : laneReason
+      const reason = (stream) => (stream === 'child' ? unacknowledgedChildren : counts.test) === oversized[stream] ? 'span over 750 KiB' : laneReason
       if (counts.test) warn(`TEST RESULTS MISSING: ${counts.test} test.execution span(s), ${counts.child} child span(s) were not acknowledged (${reason('test')}); results may not have reached Buildkite Test Engine. Check the endpoint/token/runtime and rerun; no JSON fallback.`)
       if (missing.length) {
         const reasons = [...new Set(missing.map((file) => file.reason))].map((reason) => {
@@ -215,7 +244,11 @@ const createUploads = (settings, directory) => {
         warn(`TEST RESULTS MISSING: ${missing.length} file(s), ${missingTests} test(s) have no readable spool commit (${reasons}; unknown child count); fix the earlier warnings and rerun; no JSON fallback.`)
       }
       counts.test += missingTests
-      if (counts.child) warn(`OpenTelemetry dropped ${counts.child} child span(s) in total (${reason('child')}); test.execution results are unaffected by child export failures.`)
+      if (counts.child) {
+        if (childForbidden) childReasons.add(childForbidden)
+        else if (unacknowledgedChildren) childReasons.add(reason('child'))
+        warn(`OpenTelemetry dropped ${counts.child} child span(s) in total (${[...childReasons].join('; ')}); test.execution results are unaffected by child export failures.`)
+      }
       return counts
     })()
   }

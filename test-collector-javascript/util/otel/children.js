@@ -1,5 +1,5 @@
-const { warn } = require('./warn')
-const { size, commitFile } = require('./spool')
+const { warnOncePerRun } = require('./warn')
+const { size, commitFile, recordChildDrops } = require('./spool')
 
 // Child floods never displace test results. The cap includes open children and
 // is per file, not per export batch. Late completions get their own commit.
@@ -14,7 +14,7 @@ const createChildExport = (settings) => {
     if (reported || !(open || startedLate)) return
     reported = true
     const reasons = [startedLate && `started after file teardown: ${startedLate}`, open && `still open when the worker exited: ${open}`].filter(Boolean)
-    warn(`OpenTelemetry dropped ${open + startedLate} child span(s) (${reasons.join(', ')}); test.execution results are unaffected.`)
+    warnOncePerRun(settings.spool, 'unfinished-children', `OpenTelemetry dropped ${open + startedLate} child span(s) (${reasons.join(', ')}); test.execution results are unaffected.`)
   }
   process.once('exit', reportDropped)
   const createForwarder = () => {
@@ -38,9 +38,7 @@ const createChildExport = (settings) => {
         open -= 1
         if (active) spans.push(span)
         else {
-          try { commitFile(settings.spool, undefined, { child: [span] }) } catch (error) {
-            warn(`OpenTelemetry dropped 1 late child span: ${error.message}; test.execution results are unaffected. Check temporary directory permissions/free space and rerun.`)
-          }
+          commitFile(settings.spool, undefined, { child: [span] })
         }
       },
       shutdown: async () => {
@@ -48,7 +46,7 @@ const createChildExport = (settings) => {
         active = false
         for (const traceId of traces) closedTraces.add(traceId)
         traces.clear()
-        if (dropped) warn(`OpenTelemetry dropped ${dropped} child span(s) (per-file cap ${cap}); test.execution results are unaffected.`)
+        if (dropped) recordChildDrops(settings.spool, dropped, `per-file cap ${cap}`)
       },
     }
   }

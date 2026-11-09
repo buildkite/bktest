@@ -1,7 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const { randomUUID } = require('crypto')
-const { warnOncePerRun } = require('./warn')
+const { warnOncePerRun, describeError } = require('./warn')
 
 const MAX_BYTES = 750 * 1024
 const MAX_RESIDENT_CHILDREN = 16384
@@ -71,17 +71,20 @@ const restoreSpans = (streams, sdk) => {
   })]))
 }
 
+// Small count-only records let the parent include worker drops in its total.
+const recordChildDrops = (directory, count, reason) => {
+  try {
+    fs.writeFileSync(path.join(directory, `${randomUUID()}.dropped`), JSON.stringify({ count, reason }), { mode: 0o600, flag: 'wx' })
+    return true
+  } catch (error) {
+    warnOncePerRun(directory, 'child-drop-accounting', `OpenTelemetry dropped child spans (${reason}); the run total is unavailable because drop counts could not be written (${describeError(error)}); test.execution results are unaffected.`)
+    return false
+  }
+}
+
 // Workers only commit plain span data; the parent owns protobuf and export.
 const commitFile = (directory, testPath, streams, projectId) => {
-  const children = streams.child || []
-  const parts = []
-  for (let i = 0; i < children.length; i += MAX_RESIDENT_CHILDREN) {
-    const spans = children.slice(i, i + MAX_RESIDENT_CHILDREN).map(spanData)
-    parts.push({ suffix: `.c${spans.length}`, streams: { child: spans } })
-  }
-  // Publish children before the test commit used for file accounting.
-  if (testPath !== undefined) parts.push({ suffix: '', testPath, projectId, streams: { test: (streams.test || []).map(spanData) } })
-  for (const { suffix, ...data } of parts) {
+  const write = (suffix, data) => {
     const file = path.join(directory, `${Date.now()}-${randomUUID()}${suffix}`)
     try {
       fs.writeFileSync(`${file}.tmp`, stringify(data), { mode: 0o600, flag: 'wx' })
@@ -90,6 +93,21 @@ const commitFile = (directory, testPath, streams, projectId) => {
       fs.rmSync(`${file}.tmp`, { force: true })
     }
   }
+  // Publish children before the test commit used for file accounting. Child
+  // serialization and I/O must never prevent that test commit.
+  const children = streams.child || []
+  for (let i = 0; i < children.length; i += MAX_RESIDENT_CHILDREN) {
+    const count = Math.min(MAX_RESIDENT_CHILDREN, children.length - i)
+    try {
+      write(`.c${count}`, { streams: { child: children.slice(i, i + count).map(spanData) } })
+    } catch (error) {
+      const reason = `could not commit child spool: ${describeError(error)}`
+      if (recordChildDrops(directory, count, reason)) {
+        warnOncePerRun(directory, 'child-spool-write', `OpenTelemetry dropped child spans (${reason}); test.execution results are unaffected.`)
+      }
+    }
+  }
+  if (testPath !== undefined) write('', { testPath, projectId, streams: { test: (streams.test || []).map(spanData) } })
 }
 
-module.exports = { commitFile, parseFile, restoreSpans, MAX_BYTES, MAX_RESIDENT_CHILDREN, size, batchSize }
+module.exports = { commitFile, recordChildDrops, parseFile, restoreSpans, MAX_BYTES, MAX_RESIDENT_CHILDREN, size, batchSize }

@@ -126,7 +126,7 @@ const decodeExportTraceServiceRequest = (buf) => {
 }
 
 // Starts the receiver. `respond(requestIndex, requestHeaders)` may return a
-// status code to force (e.g. 503 once), or `{ status, delay, headers }` to
+// status code to force (e.g. 503 once), or `{ status, delay, headers, body }` to
 // also hold the response for `delay` ms or add response headers; it defaults
 // to an immediate 200.
 const startOtlpServer = ({ respond } = {}) => new Promise((resolve) => {
@@ -148,12 +148,12 @@ const startOtlpServer = ({ respond } = {}) => new Promise((resolve) => {
       }
       const index = requests.length
       const response = (respond && respond(index, req.headers)) || 200
-      const { status = 200, delay = 0, headers = {}, hang = false } = typeof response === 'number' ? { status: response } : response
+      const { status = 200, delay = 0, headers = {}, hang = false, body: responseBody = Buffer.alloc(0) } = typeof response === 'number' ? { status: response } : response
       requests.push({ headers: req.headers, decoded, decodeError, status, bytes: body.length, compressedBytes: raw.length, receivedAt: Date.now() })
       if (hang) return
       setTimeout(() => {
         res.writeHead(status, { 'Content-Type': 'application/x-protobuf', ...headers })
-        res.end(Buffer.alloc(0))
+        res.end(responseBody)
       }, delay)
     })
   })

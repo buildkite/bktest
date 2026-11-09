@@ -5,6 +5,39 @@ const { createRequire } = require('module')
 const { commitFile, parseFile, restoreSpans } = require('./spool')
 const { loadSdk } = require('./sdk')
 
+test.each(['serialize', 'write', 'rename'])('keeps test commits when child %s fails, warning only once per run', async (failure) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-spool-failure-'))
+  const sdk = loadSdk()
+  const provider = new sdk.trace.BasicTracerProvider()
+  const span = provider.getTracer('spool').startSpan('test.execution')
+  span.end()
+  const warn = jest.spyOn(console, 'warn').mockImplementation()
+  const method = failure === 'rename' ? 'renameSync' : 'writeFileSync'
+  const original = fs[method]
+  const io = jest.spyOn(fs, method).mockImplementation((file, ...args) => {
+    if (failure !== 'serialize' && /\.c\d+\.tmp$/.test(file)) throw new Error('child I/O failed')
+    return original(file, ...args)
+  })
+  const child = failure === 'serialize' ? {
+    ...span, spanContext: () => span.spanContext(),
+    attributes: { toJSON() { throw new RangeError('Invalid string length') } },
+  } : span
+  try {
+    for (let i = 0; i < 3; i++) commitFile(directory, `test-${i}.js`, { test: [span], child: [child] })
+    const commits = fs.readdirSync(directory).filter((name) => name.endsWith('.spool'))
+      .map((name) => parseFile(fs.readFileSync(path.join(directory, name), 'utf8')))
+    expect(commits.map((file) => file.testPath).sort()).toEqual(['test-0.js', 'test-1.js', 'test-2.js'])
+    expect(commits.every((file) => file.streams.test[0].name === 'test.execution')).toBe(true)
+    expect(warn.mock.calls).toEqual([[expect.stringMatching(/OpenTelemetry dropped.*child.*test.execution results are unaffected/)]])
+    expect(fs.readdirSync(directory).some((name) => name.endsWith('.tmp'))).toBe(false)
+  } finally {
+    io.mockRestore()
+    warn.mockRestore()
+    fs.rmSync(directory, { recursive: true, force: true })
+    await provider.shutdown()
+  }
+})
+
 test('preserves non-finite numbers in span, event, link and distinct resource attributes on disk and on the wire', async () => {
   const sdk = loadSdk()
   const load = createRequire(require.resolve('@opentelemetry/exporter-trace-otlp-proto'))
