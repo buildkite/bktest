@@ -17,7 +17,7 @@ afterEach(async () => {
   fs.rmSync(scratch, { recursive: true, force: true })
 })
 const run = (env = {}, args = []) => new Promise(resolve => {
-  execFile(process.execPath, [bin, 'run', '--config', 'otel.config.js', ...args], {
+  execFile(process.execPath, [bin, 'run', ...(args.includes('--config') ? [] : ['--config', 'otel.config.js']), ...args], {
     cwd, env: { ...process.env,
       BUILDKITE_ANALYTICS_TOKEN: 'test-token', BUILDKITE_ANALYTICS_KEY: 'vitest-otel-e2e',
       BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url, BUILDKITE_ANALYTICS_BASE_URL: server.url, ...env,
@@ -27,6 +27,129 @@ const run = (env = {}, args = []) => new Promise(resolve => {
 const supported = major >= 4
 const drifted = 'experimental OpenTelemetry spans may have changed'
 const preload = (file) => ({ NODE_OPTIONS: [process.env.NODE_OPTIONS, '--require', path.join(cwd, 'otel', file)].filter(Boolean).join(' ') })
+
+// Standalone suites have no example setup hooks or declared instrumentation.
+const runFixture = (files, config = {}, env = {}) => {
+  fs.symlinkSync(path.join(__dirname, '../node_modules'), path.join(scratch, 'node_modules'), 'dir')
+  fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' }))
+  for (const [name, source] of Object.entries(files)) fs.writeFileSync(path.join(scratch, name), source)
+  const file = path.join(scratch, 'vitest.config.mjs')
+  fs.writeFileSync(file, `export default ${JSON.stringify({ test: {
+    root: scratch, include: ['*.test.js'], pool: 'forks', maxWorkers: 1, minWorkers: 1,
+    reporters: ['default', [path.join(cwd, '../../vitest/reporter.js'), { otelEnabled: true }]],
+    experimental: { openTelemetry: { enabled: true, sdkPath: path.join(cwd, '../../vitest/otel.js') } },
+    ...config,
+  } })}`)
+  return run(env, ['--config', file])
+}
+
+;(supported ? test : test.skip).each(['passing', 'failing'])('uninstrumented %s suites never send the billed child stream', async outcome => {
+  const result = await runFixture({
+    'plain.test.js': `
+      import { test, expect, describe, beforeEach, afterEach } from 'vitest'
+      test('passes', () => expect(1).toBe(1))
+      test('runtime skip', ctx => ctx.skip())
+      test.fails('expected failure', () => expect(1).toBe(2))
+      let attempts = 0
+      test('retry', { retry: 1 }, () => expect(++attempts).toBe(2))
+      test('imports CommonJS', async () => expect((await import('./source.cjs')).default.answer).toBe(42))
+      ${outcome === 'failing' ? `
+        test('assertion failure', () => expect(1).toBe(2))
+        describe('before hook', () => {
+          beforeEach(() => { throw new Error('before failure') })
+          test('fails before', () => {})
+        })
+        describe('after hook', () => {
+          afterEach(() => { throw new Error('after failure') })
+          test('fails after', () => {})
+        })
+      ` : ''}
+    `,
+    'source.cjs': 'module.exports = { answer: 42 }',
+  })
+  expect(result.code).toBe(outcome === 'failing' ? 1 : 0)
+  expect(server.requests.filter(r => r.headers['buildkite-tests-span-stream'] === 'child')).toHaveLength(0)
+  expect(server.spans()).toHaveLength(outcome === 'failing' ? 8 : 5)
+  expect(server.spans().every(s => s.name === 'test.execution')).toBe(true)
+  expect(server.spans().filter(s => s.attributes['test.case.result.status'] === 'fail')).toHaveLength(outcome === 'failing' ? 3 : 0)
+  expect(result.stderr).not.toMatch(/dropped|TEST RESULTS MISSING/)
+}, 30000)
+
+;(supported ? test : test.skip).each(['vmThreads', 'vmForks'].flatMap(pool => [false, true].map(projects => [pool, projects])))('VM pools explicitly send executions only (%s, projects=%s)', async (pool, projects) => {
+  const result = await runFixture({
+    'child.test.js': `
+      import { test } from 'vitest'
+      import { trace } from '@opentelemetry/api'
+      test('manual child', async () => {
+        await Promise.resolve()
+        trace.getTracer('app').startSpan('manual').end()
+      })
+    `,
+  }, projects ? { projects: ['native', 'vm'].map(name => ({ test: {
+    name, root: scratch, include: ['*.test.js'], pool: name === 'vm' ? pool : 'forks',
+  } })) } : { pool })
+  expect(result.code).toBe(0)
+  const spans = server.spans()
+  const roots = spans.filter(s => s.name === 'test.execution')
+  expect(roots).toHaveLength(projects ? 2 : 1)
+  expect(spans.filter(s => s.name === 'manual')).toHaveLength(projects ? 1 : 0)
+  expect((result.stderr.match(/cross-realm Promise/g) || [])).toHaveLength(1)
+  expect(result.stderr).toContain('test.execution spans only')
+  expect(result.stderr).not.toMatch(/dropped|experimental OpenTelemetry spans may have changed/)
+}, 30000)
+
+;(supported ? test : test.skip).each([false, true])('browser config warns about browser mode, not SDK setup (project=%s)', async project => {
+  // Exercise the reporter's browser config without installing a browser provider.
+  const reporter = path.join(scratch, 'browser-reporter.mjs')
+  const result = await runFixture({
+    'plain.test.js': `import { test } from 'vitest'; test('passes', () => {})`,
+    'browser-reporter.mjs': `
+      import Collector from ${JSON.stringify(path.join(cwd, '../../vitest/reporter.js'))}
+      export default class extends Collector {
+        onInit(ctx) {
+          const browser = config => ({ ...config, browser: { enabled: true } })
+          const projects = ctx.projects.map(p => ({ ...p, config: browser(p.config) }))
+          super.onInit({ ...ctx,
+            config: ${project ? 'ctx.config' : 'browser(ctx.config)'},
+            projects,
+          })
+          projects.forEach((p, i) => { ctx.projects[i].config.env = p.config.env })
+        }
+      }
+    `,
+  }, { reporters: ['default', [reporter, { otelEnabled: true }]] })
+  expect(result.code).toBe(0)
+  expect(server.spans().map(s => s.name)).toEqual(['test.execution'])
+  expect(result.stderr).toContain('browser mode sends test.execution spans only')
+  expect(result.stderr).not.toMatch(/root config|Enable tracing with the collector sdkPath|child spans disabled|TEST RESULTS MISSING/)
+}, 30000)
+
+;(supported ? test : test.skip)('SIGTERM warns synchronously about results not yet uploaded', async () => {
+  const result = await runFixture({
+    'plain.test.js': `import { test } from 'vitest'; test.each(Array.from({ length: 20 }, (_, i) => i))('passes %i', () => {})`,
+    'terminate-reporter.mjs': `export default class { onTestRunEnd() { process.kill(process.pid, 'SIGTERM') } }`,
+  }, { reporters: ['default', [path.join(cwd, '../../vitest/reporter.js'), { otelEnabled: true }], path.join(scratch, 'terminate-reporter.mjs')] })
+  expect(result.stdout).toMatch(/20 passed/)
+  expect(result.stderr).toContain('SIGTERM: Vitest exits before uploads can drain; results not yet uploaded are lost. Rerun the suite to recover missing results.')
+}, 30000)
+
+;(supported ? test : test.skip)('worker child commit failures warn once across tests and workers', async () => {
+  const file = path.join(scratch, 'fail-commit.cjs')
+  fs.writeFileSync(file, `
+    const spool = require(${JSON.stringify(path.join(cwd, '../../util/otel/spool'))})
+    const commit = spool.commitFile
+    spool.commitFile = (directory, testPath, streams, ...rest) => {
+      if (streams.child?.length) throw new Error('injected child commit failure')
+      return commit(directory, testPath, streams, ...rest)
+    }
+  `)
+  const result = await run({ NODE_OPTIONS: [process.env.NODE_OPTIONS, '--require', file].filter(Boolean).join(' ') })
+  expect(result.code).toBe(1) // The core fixture deliberately fails a hook.
+  expect(server.spans().filter(s => s.name === 'test.execution')).toHaveLength(8)
+  expect(server.spans().every(s => s.name === 'test.execution')).toBe(true)
+  expect((result.stderr.match(/injected child commit failure/g) || [])).toHaveLength(1)
+  expect(result.stderr).toContain('test.execution results are unaffected')
+}, 30000)
 
 ;(supported ? test : test.skip).each(['forks', 'threads'].flatMap(pool => [true, false].map(isolate => [pool, isolate])))('colliding Vitest IDs keep separate executions and children (%s, isolate=%s)', async (pool, isolate) => {
   const result = await run({ OTEL_TEST_CASE: 'collisions', OTEL_TEST_POOL: pool, OTEL_TEST_ISOLATE: String(isolate) })
@@ -162,13 +285,12 @@ const preload = (file) => ({ NODE_OPTIONS: [process.env.NODE_OPTIONS, '--require
   expect(spans.some(s => s.name === 'vitest.test.runner.test.cleanup')).toBe(false)
   const failure = roots.find(s => s.attributes['buildkite.test.name'] === 'hook failure')
   const hook = spans.find(s => s.traceId === failure.traceId && s.name === 'vitest.test.runner.test.beforeEach')
-  expect(hook.status.code).toBe(2)
-  expect(hook.events.some(e => e.name === 'exception')).toBe(true)
+  expect(hook).toBeUndefined() // The failure is free on the test, not a billed empty phase.
+  expect(failure.events.some(e => e.name === 'exception')).toBe(true)
   expect(spans.some(s => s.traceId === failure.traceId && ['before-hook', 'setup-hook'].includes(s.name))).toBe(false)
   const annotated = roots.find(s => s.attributes['buildkite.test.name'] === 'concurrent A')
   const phase = spans.find(s => s.traceId === annotated.traceId && s.name === 'vitest.test.runner.test.afterEach')
-  expect(phase.events.some(e => e.name === 'cleanup-note')).toBe(true)
-  expect(spans.some(s => s.parentSpanId === phase.spanId)).toBe(false)
+  expect(phase).toBeUndefined() // Events alone do not opt a phase into child billing.
   const retry = roots.find(s => s.attributes['buildkite.test.name'] === 'retry')
   expect(spans.filter(s => s.traceId === retry.traceId && s.name === 'attempt')).toHaveLength(2)
   for (const name of ['concurrent A', 'concurrent B', 'second file']) {

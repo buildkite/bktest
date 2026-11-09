@@ -121,7 +121,9 @@ test.execution  "checkout charges the card"
 
 Each test gets a trace, including skipped tests and tests cancelled by bail.
 Hook phases keep Vitest's names, statuses and exceptions.
-Phases are sent if they contain child spans, end with an error or have events.
+Phases are sent only if they group an exported child span, not for errors or events alone.
+Without instrumentation or manual spans, passing and failing suites send no child-stream requests.
+Failures are still recorded on the free `test.execution` spans.
 Other phases, collection, suite work and `beforeAll` are excluded.
 Outgoing HTTP and fetch calls made outside tests bypass instrumentation: they create
 no spans and send no trace headers, even when a parent context is active.
@@ -144,9 +146,10 @@ Keep bktec's own upload off with `BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`.
 ### Limitations
 
 - Retries share one execution per test, with every attempt's phases and children underneath. Jest's OpenTelemetry mode records one execution per attempt.
-- SIGTERM, including Buildkite cancellation, gives no five-second drain or warning. Already uploaded results survive, but roughly the last second of completed files and completed tests in running files can be lost. SIGKILL can also lose pending results.
+- SIGTERM, including Buildkite cancellation, warns synchronously that results not yet uploaded are lost. Vitest exits before an asynchronous drain can finish; already uploaded results survive. Rerun the suite to recover missing results. SIGKILL can lose pending results without a warning.
 - Vitest ID collisions can mix up parallel results. The collector warns and keeps traces separate, but uploads what Vitest reports. Rename either file named in the warning.
-- Browser mode sends test spans only. Watch mode is unsupported.
+- Browser mode sends `test.execution` spans only and warns. Watch mode is unsupported.
+- VM pools (`vmThreads` and `vmForks`), including per-project pools, send `test.execution` spans only and warn once per run. Vitest's `instanceof Promise` check does not recognise a cross-realm Promise returned by `run.test`, ending its test span before the work finishes. Use `threads` or `forks` for child spans until Vitest fixes this upstream bug.
 - Vitest 3 sends test spans only and warns. So do runs with a custom SDK or missing native config. Vitest 1–2 warn and upload nothing in OpenTelemetry mode.
 - Isolation adds SDK startup cost per test file. Turning it off changes how your tests run, not just telemetry performance.
 - Configuration or upload failures do not fall back to JSON. Turn off `otelEnabled` to use JSON again.

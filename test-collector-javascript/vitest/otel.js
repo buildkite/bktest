@@ -5,7 +5,8 @@ const { readSettings } = require('../util/otel/config')
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 
 const createWorker = (settings) => {
-  const [rootDir, project] = JSON.parse(process.env.BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT)
+  const [rootDir, project, native] = JSON.parse(process.env.BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT)
+  if (!native) return { async shutdown() {} }
   const { loadSdk, createProvider, createResource, createContextManager, createPropagator } = require('../util/otel/sdk')
   const sdk = loadSdk({ exporter: false, context: true })
   const { api } = sdk
@@ -25,11 +26,11 @@ const createWorker = (settings) => {
   const flush = () => {
     const spans = children.take()
     try { commitFile(settings.spool, undefined, { child: spans }) }
-    catch (error) { warn(`OpenTelemetry dropped ${spans.length} child span(s): ${describeError(error)}; test.execution results are unaffected.`) }
+    catch (error) { warnOncePerRun(settings.spool, 'vitest-flush', `OpenTelemetry dropped child spans (${spans.length} in this batch): ${describeError(error)}; test.execution results are unaffected.`) }
   }
 
-  // Admit phases with test-owned children, errors or events. Empty phases
-  // never consume the per-file child budget.
+  // Admit phases only to group exported test-owned children. Errors and
+  // events alone must not opt an uninstrumented suite into child billing.
   const forward = (node) => {
     if (!node || node.root || node.sent !== undefined) return
     node.sent = node.forwarder.onStart(node.span)
@@ -59,7 +60,6 @@ const createWorker = (settings) => {
       const context = span.spanContext()
       const node = nodes.get(context.spanId)
       if (!node) return
-      if (!node.root && (span.status.code === api.SpanStatusCode.ERROR || span.events.length)) forward(node)
       node.ended = true
       if (node.sent) node.forwarder.onEnd(span)
       if (node.root) {

@@ -37,11 +37,17 @@ class VitestBuildkiteTestEngineReporter {
     if (!settings) return
     try {
       const expected = fileURLToPath(new URL('./otel.js', import.meta.url))
+      const vmPool = (config) => ['vmThreads', 'vmForks'].includes(config.pool ?? ctx.config.pool)
+      const disabledReason = (config) => {
+        if (config.browser?.enabled) return 'Vitest browser mode sends test.execution spans only.'
+        if (vmPool(config)) return 'Vitest VM pools (vmThreads/vmForks) send test.execution spans only: Vitest ends test spans early because its instanceof Promise check does not recognise a cross-realm Promise.'
+        return 'Vitest OpenTelemetry children require Vitest 4.0.11+ with experimental.openTelemetry enabled and the collector sdkPath in the root config; sending test.execution spans only.'
+      }
       const native = (config) => {
         const otel = config.experimental?.openTelemetry
         const globalOtel = ctx.config.experimental?.openTelemetry
         const sdk = otel?.sdkPath ?? globalOtel?.sdkPath
-        return !config.browser?.enabled && (otel?.enabled ?? globalOtel?.enabled) === true && sdk &&
+        return !config.browser?.enabled && !vmPool(config) && (otel?.enabled ?? globalOtel?.enabled) === true && sdk &&
           (sdk.startsWith('file:') ? fileURLToPath(sdk) : path.resolve(config.root, sdk)) === expected
       }
       this._native = semver.gte(version, '4.0.11') && !!native(ctx.config)
@@ -56,24 +62,25 @@ class VitestBuildkiteTestEngineReporter {
       this._beforeExit = () => this._finish()
       process.once('beforeExit', this._beforeExit)
       this._sigterm = () => {
-        const otherListeners = process.listenerCount('SIGTERM') > 0
         this._terminated = true
-        this._finish(5000).finally(() => {
-          if (otherListeners) return
-          if (process.pid === 1) process.exit(143)
-          else process.kill(process.pid, 'SIGTERM')
-        })
+        // Vitest's logger exits 1 ms after SIGTERM; an async drain cannot finish.
+        warn('SIGTERM: Vitest exits before uploads can drain; results not yet uploaded are lost. Rerun the suite to recover missing results.')
       }
       process.prependOnceListener('SIGTERM', this._sigterm)
       const projects = ctx.projects?.length ? ctx.projects : [{ config: ctx.config }]
       for (const { config } of projects) {
-        config.env = { ...config.env, BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT: JSON.stringify([config.root, config.name || '']) }
+        config.env = { ...config.env, BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT: JSON.stringify([config.root, config.name || '', !!native(config)]) }
       }
-      if (!this._native) warn('Vitest OpenTelemetry children require Vitest 4.0.11+ with experimental.openTelemetry enabled and the collector sdkPath in the root config; sending test.execution spans only.')
+      if (!this._native) warn(disabledReason(ctx.config))
       else {
         this._nativeProjects = new Set(projects.filter(({ config }) => native(config)).map(({ config }) => config.name || ''))
-        const disabled = projects.filter(({ config }) => !native(config)).map(({ config }) => config.name || config.root)
-        if (disabled.length) warn(`Vitest OpenTelemetry children are disabled for projects: ${disabled.join(', ')}. Enable tracing with the collector sdkPath to collect children; sending test.execution spans only for these projects.`)
+        const disabled = new Map()
+        for (const { config } of projects.filter(({ config }) => !native(config))) {
+          const reason = disabledReason(config)
+          if (!disabled.has(reason)) disabled.set(reason, [])
+          disabled.get(reason).push(config.name || config.root)
+        }
+        for (const [reason, names] of disabled) warn(`Vitest OpenTelemetry children are disabled for projects: ${names.join(', ')}. ${reason}`)
       }
     } catch (error) {
       warn(`TEST RESULTS MISSING: OpenTelemetry could not be configured (${describeError(error)}); check temporary directory permissions/free space and the SDK installation, then rerun (no JSON fallback).`)
@@ -126,13 +133,12 @@ class VitestBuildkiteTestEngineReporter {
     this._sender.collect(testModule.moduleId)
   }
 
-  _finish(budget) {
-    // A SIGTERM can shorten a drain already in progress.
-    if (this._completion) { this._sender?.drain(budget); return this._completion }
+  _finish() {
+    if (this._completion) return this._completion
     return this._completion = (async () => {
       try {
         await this._session?.forceFlush('vitest')
-        await this._sender?.drain(budget)
+        await this._sender?.drain()
         if (this._native && this._runEnded && !this._terminated) this._checkWorkerRoots()
       } finally {
         await this._session?.shutdown()
