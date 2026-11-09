@@ -122,6 +122,7 @@ test.execution  "checkout charges the card"
 Each test gets a trace, including skipped tests and tests cancelled by bail.
 Hook phases keep Vitest's names, statuses and exceptions.
 Phases are sent only if they group an exported child span, not for errors or events alone.
+Starting a child without ending it does not export its otherwise-empty phases.
 Without instrumentation or manual spans, passing and failing suites send no child-stream requests.
 Failures are still recorded on the free `test.execution` spans.
 Other phases, collection, suite work and `beforeAll` are excluded.

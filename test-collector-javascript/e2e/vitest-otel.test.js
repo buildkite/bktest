@@ -75,6 +75,21 @@ const runFixture = (files, config = {}, env = {}) => {
   expect(result.stderr).not.toMatch(/dropped|TEST RESULTS MISSING/)
 }, 30000)
 
+;(supported ? test : test.skip)('unfinished children do not export otherwise empty phases', async () => {
+  const result = await runFixture({
+    'open.test.js': `
+      import { test, beforeEach } from 'vitest'
+      import { trace } from '@opentelemetry/api'
+      beforeEach(() => { trace.getTracer('app').startSpan('unfinished hook') })
+      test('unfinished child', () => { trace.getTracer('app').startSpan('unfinished body') })
+    `,
+  })
+  expect(result.code).toBe(0)
+  expect(server.spans().map(s => s.name)).toEqual(['test.execution'])
+  expect(server.requests.filter(r => r.headers['buildkite-tests-span-stream'] === 'child')).toHaveLength(0)
+  expect(result.stderr).toContain('still open when the worker exited: 2')
+}, 30000)
+
 ;(supported ? test : test.skip).each(['vmThreads', 'vmForks'].flatMap(pool =>
   ['root', 'projects', 'vm-root-projects'].map(mode => [pool, mode])
 ))('VM pools explicitly send executions only (%s, %s)', async (pool, mode) => {
