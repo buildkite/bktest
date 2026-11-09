@@ -69,7 +69,8 @@ steps:
           - "node -e 'const specs = Object.entries(require(\"./util/otel/sdk\").SUPPORTED_VERSIONS).map(([name, range]) => name + \"@\" + range); require(\"child_process\").execFileSync(\"npm\", [\"install\", \"--no-save\", ...specs], { stdio: \"inherit\" })'"
           - "npm ls @opentelemetry/api @opentelemetry/sdk-trace-base @opentelemetry/resources @opentelemetry/exporter-trace-otlp-proto"
           - "node .buildkite/install-jest-otel-tools.js"
-          - "EXPECTED_JEST_VERSION=29.7.0 npm test -- otel"
+          - "npx playwright install --with-deps chromium"
+          - "EXPECTED_JEST_VERSION=29.7.0 npm test -- --runInBand otel e2e/playwright.test.js"
         plugins:
           - docker#v3.7.0:
               image: node:22.15.0
@@ -83,7 +84,8 @@ steps:
           # so the installed versions are checked directly.
           - "node -e 'const floors = { \"@opentelemetry/api\": \"1.9.0\", \"@opentelemetry/sdk-trace-base\": \"2.0.0\", \"@opentelemetry/resources\": \"2.0.0\", \"@opentelemetry/context-async-hooks\": \"2.0.0\", \"@opentelemetry/exporter-trace-otlp-proto\": \"0.200.0\", \"@opentelemetry/instrumentation-http\": \"0.200.0\", \"@opentelemetry/instrumentation-undici\": \"0.11.0\" }; require(\"child_process\").execFileSync(\"npm\", [\"install\", \"--no-save\", ...Object.entries(floors).map(([name, version]) => name + \"@\" + version)], { stdio: \"inherit\" }); for (const [name, version] of Object.entries(floors)) { const installed = JSON.parse(require(\"fs\").readFileSync(\"node_modules/\" + name + \"/package.json\")).version; console.log(name, installed); if (installed !== version) process.exit(1) }'"
           - "node .buildkite/install-jest-otel-tools.js"
-          - "EXPECTED_JEST_VERSION=29.7.0 npm test -- --runInBand e2e/jest-otel.test.js"
+          - "npx playwright install --with-deps chromium"
+          - "EXPECTED_JEST_VERSION=29.7.0 npm test -- --runInBand e2e/jest-otel.test.js e2e/playwright.test.js"
         plugins:
           - docker#v3.7.0:
               image: node:18.19.0
@@ -106,6 +108,27 @@ steps:
           - "npm install --ignore-scripts --legacy-peer-deps"
           - "node .buildkite/install-jest-otel-tools.js"
           - "EXPECTED_JEST_VERSION={{matrix}} npm test -- --runInBand e2e/jest-otel.test.js"
+        plugins:
+          - docker#v3.7.0:
+              image: node:22.15.0
+              mount-buildkite-agent: false
+      - label: ":playwright: Playwright {{matrix.version}} OTel compatibility"
+        matrix:
+          setup:
+            version:
+              - "1.41.2"
+              - "latest"
+          adjustments:
+            - with:
+                version: "latest"
+              soft_fail: true
+        command:
+          - "cd test-collector-javascript"
+          - "npm pkg set 'devDependencies.@playwright/test={{matrix.version}}' --include-workspace-root --workspace examples/playwright"
+          - "npm install --ignore-scripts --legacy-peer-deps"
+          - "npx playwright install --with-deps chromium"
+          # The legacy JSON fixtures use Playwright's 1.42+ tag details argument.
+          - "npm test -- --runInBand e2e/playwright.test.js --testNamePattern='OTel mode'"
         plugins:
           - docker#v3.7.0:
               image: node:22.15.0
