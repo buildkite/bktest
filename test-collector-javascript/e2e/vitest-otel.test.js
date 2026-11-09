@@ -22,7 +22,7 @@ const run = (env = {}, args = []) => new Promise(resolve => {
       BUILDKITE_ANALYTICS_TOKEN: 'test-token', BUILDKITE_ANALYTICS_KEY: 'vitest-otel-e2e',
       BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url, BUILDKITE_ANALYTICS_BASE_URL: server.url, ...env,
     },
-  }, (error, stdout, stderr) => resolve({ code: error?.code || 0, stdout, stderr }))
+  }, (error, stdout, stderr) => resolve({ code: error?.code || 0, signal: error?.signal, stdout, stderr }))
 })
 const supported = major >= 4
 const drifted = 'experimental OpenTelemetry spans may have changed'
@@ -137,6 +137,43 @@ const runFixture = (files, config = {}, env = {}) => {
   }, { reporters: ['default', [path.join(cwd, '../../vitest/reporter.js'), { otelEnabled: true }], path.join(scratch, 'terminate-reporter.mjs')] })
   expect(result.stdout).toMatch(/20 passed/)
   expect(result.stderr).toContain('SIGTERM: Vitest exits before uploads can drain; results not yet uploaded are lost. Rerun the suite to recover missing results.')
+}, 30000)
+
+;(supported ? test : test.skip)('SIGTERM during final uploads still terminates after Vitest removes its listener', async () => {
+  const pidFile = path.join(scratch, 'closed.pid')
+  let signalled = false
+  let listenerCount
+  await server.close()
+  server = await startOtlpServer({ respond: () => {
+    // The public onClose hook marks the window after logger cleanup, before
+    // SDK shutdown. Signal only when an upload is actually in flight.
+    if (!signalled && fs.existsSync(pidFile)) {
+      signalled = true
+      const { pid, listeners } = JSON.parse(fs.readFileSync(pidFile, 'utf8'))
+      listenerCount = listeners
+      process.kill(pid, 'SIGTERM')
+    }
+    return { delay: 250 }
+  } })
+  const result = await runFixture({
+    'plain.test.js': `import { test } from 'vitest'; test('passes', () => {})`,
+    'closed-reporter.mjs': `
+      import fs from 'node:fs'
+      export default class { onInit(ctx) {
+        // Run before the collector. Remove optional bundler signal-exit
+        // handlers to exercise a CLI without other shutdown owners.
+        const existing = process.listeners('SIGTERM')
+        ctx.onClose(() => {
+          for (const listener of existing) process.off('SIGTERM', listener)
+          fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ pid: process.pid, listeners: process.listenerCount('SIGTERM') }))
+        })
+      } }
+    `,
+  }, { reporters: ['default', path.join(scratch, 'closed-reporter.mjs'), [path.join(cwd, '../../vitest/reporter.js'), { otelEnabled: true }]] })
+  expect(signalled).toBe(true)
+  expect(listenerCount).toBe(1)
+  expect(result.stderr).toContain('SIGTERM: Vitest exits before uploads can drain')
+  expect(result.signal).toBe('SIGTERM')
 }, 30000)
 
 ;(supported ? test : test.skip)('worker child commit failures warn once across tests and workers', async () => {

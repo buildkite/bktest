@@ -66,6 +66,11 @@ class VitestBuildkiteTestEngineReporter {
         this._terminated = true
         // Vitest's logger exits 1 ms after SIGTERM; an async drain cannot finish.
         warn('SIGTERM: Vitest exits before uploads can drain; results not yet uploaded are lost. Rerun the suite to recover missing results.')
+        // The logger removes its listener before SDK shutdown and final uploads.
+        if (!process.listenerCount('SIGTERM')) {
+          if (process.pid === 1) process.exit(143)
+          else process.kill(process.pid, 'SIGTERM')
+        }
       }
       process.prependOnceListener('SIGTERM', this._sigterm)
       const projects = ctx.projects?.length ? ctx.projects : [{ config: ctx.config }]
