@@ -62,9 +62,27 @@ If all is well, you should see the test run in the test analytics section of the
 
 Buildkite Test Analytics has support for tracing potentially slow operations within your tests (SQL queries, HTTP requests, etc).  Because ExUnit can run multiple tests simultaneously, it is difficult to achieve this without requiring code changes - we cannot simply use [telemetry](https://hex.pm/packages/telemetry) events because we cannot easily attribute the events to specific tests across process boundaries.  Instead we have provided [a simple API](https://hexdocs.pm/buildkite_test_collector/BuildkiteTestCollector.Tracing.html) to manually instrument operations within your tests.
 
+To record an annotation, pass `%{content: "message"}` as the detail:
+
+```elixir
+alias BuildkiteTestCollector.Tracing
+
+test "it records an annotation", tags do
+  assert :ok =
+           Tracing.measure(tags, :annotation, %{content: "checkpoint"}, fn ->
+             :ok
+           end)
+end
+```
+
+The function's return value and the detail are passed through unchanged. Annotation
+messages must be in `detail.content`, as required by the [JSON span schema](https://buildkite.com/docs/test-analytics/importing-json#json-test-results-data-reference-span-objects).
+A plain string detail does not populate that field. The same detail map applies
+when adding an annotation directly with `BuildkiteTestCollector.Formatter.add_span/2`.
+
 ## 🔜 Roadmap
 
-See the [GitHub 'enhancement' issues](https://github.com/buildkite/test_collector_elixir/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) for planned features. Pull requests are always welcome, and we’ll give you feedback and guidance if you choose to contribute 💚
+See the [GitHub 'enhancement' issues](https://github.com/buildkite/bktest/issues?q=is%3Aissue+is%3Aopen+label%3Aenhancement) for planned features. Pull requests are always welcome, and we’ll give you feedback and guidance if you choose to contribute 💚
 
 ## ⚒ Developing
 
@@ -80,11 +98,11 @@ And run the tests:
 mix test
 ```
 
-Useful resources for developing collectors include the [Buildkite Test Analytics docs](https://buildkite.com/docs/test-analytics) and the [RSpec and Minitest collectors](https://github.com/buildkite/rspec-buildkite-analytics).
+Useful resources for developing collectors include the [Buildkite Test Analytics docs](https://buildkite.com/docs/test-analytics) and the [RSpec and Minitest collectors](https://github.com/buildkite/bktest/tree/main/test-collector-ruby).
 
 ## 👩‍💻 Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/buildkite/test_collector_elixir
+Bug reports and pull requests are welcome on GitHub at https://github.com/buildkite/bktest
 
 Please use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 The version and changelog are maintained explicitly in a release pull request.

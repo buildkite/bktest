@@ -44,7 +44,7 @@ defmodule BuildkiteTestCollector.Formatter do
           required(:start_at) => Instant.t(),
           required(:end_at) => Instant.t(),
           optional(:duration) => Duration.t(),
-          optional(:detail) => String.t()
+          optional(:detail) => TestResult.span_detail()
         }
 
   @typedoc """
@@ -53,7 +53,7 @@ defmodule BuildkiteTestCollector.Formatter do
   @type span_with_duration :: %{
           required(:section) => :http | :sql | :sleep | :annotation,
           required(:duration) => Duration.t(),
-          optional(:detail) => String.t()
+          optional(:detail) => TestResult.span_detail()
         }
 
   @doc """
@@ -63,6 +63,10 @@ defmodule BuildkiteTestCollector.Formatter do
   test analytics.
 
   It's probably better to use the helpers in the `Tracing` module.
+
+  For `:annotation` spans, set `detail` to `%{content: "message"}`. Detail is
+  passed through unchanged; a plain string does not populate the annotation's
+  `detail.content` field.
 
   ## Example
 
