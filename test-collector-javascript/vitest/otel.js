@@ -5,7 +5,8 @@ const { readSettings } = require('../util/otel/config')
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
 
 const createWorker = (settings) => {
-  const [rootDir, project] = JSON.parse(process.env.BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT)
+  const [rootDir, project, native] = JSON.parse(process.env.BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT)
+  if (!native) return { async shutdown() {} }
   const { loadSdk, createProvider, createResource, createContextManager, createPropagator } = require('../util/otel/sdk')
   const sdk = loadSdk({ exporter: false, context: true })
   const { api } = sdk
@@ -25,14 +26,14 @@ const createWorker = (settings) => {
   const flush = () => {
     const spans = children.take()
     try { commitFile(settings.spool, undefined, { child: spans }) }
-    catch (error) { warn(`OpenTelemetry dropped ${spans.length} child span(s): ${describeError(error)}; test.execution results are unaffected.`) }
+    catch (error) { warnOncePerRun(settings.spool, 'vitest-flush', `OpenTelemetry dropped child spans (${spans.length} in this batch): ${describeError(error)}; test.execution results are unaffected.`) }
   }
 
-  // Admit phases with test-owned children, errors or events. Empty phases
-  // never consume the per-file child budget.
+  // Admit phases only when a test-owned child ends. Starting a child is not
+  // enough: unfinished children are dropped and must not bill empty phases.
   const forward = (node) => {
-    if (!node || node.root || node.sent !== undefined) return
-    node.sent = node.forwarder.onStart(node.span)
+    if (!node || node.root) return
+    if (node.sent === undefined) node.sent = node.forwarder.onStart(node.span)
     if (!node.sent) return
     forward(node.parent)
     let parent = node.parent
@@ -49,7 +50,8 @@ const createWorker = (settings) => {
       const parent = nodes.get(span.parentSpanContext?.spanId) || nodes.get(root.id)
       const node = { span, parent, forwarder: root.forwarder, root: context.spanId === root.id }
       if (!node.root && !(span.instrumentationScope.name === 'vitest' && span.name.startsWith('vitest.'))) {
-        forward(node)
+        // Reserve the child's budget before any grouping phases.
+        node.sent = node.forwarder.onStart(span)
         if (!node.sent) return
       }
       nodes.set(context.spanId, node)
@@ -59,9 +61,8 @@ const createWorker = (settings) => {
       const context = span.spanContext()
       const node = nodes.get(context.spanId)
       if (!node) return
-      if (!node.root && (span.status.code === api.SpanStatusCode.ERROR || span.events.length)) forward(node)
       node.ended = true
-      if (node.sent) node.forwarder.onEnd(span)
+      if (node.sent) forward(node)
       if (node.root) {
         children.closeTrace(context.traceId)
         // Retain only open spans, so late completions are still accounted for.
