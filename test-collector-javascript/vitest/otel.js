@@ -3,6 +3,7 @@ const { isMainThread } = require('worker_threads')
 const { activateBuiltins } = require('../util/otel/builtins')
 const { readSettings } = require('../util/otel/config')
 const { warn, warnOncePerRun, describeError } = require('../util/otel/warn')
+const Debug = require('../util/debug')
 
 const createWorker = (settings) => {
   const [rootDir, project, native] = JSON.parse(process.env.BUILDKITE_TEST_COLLECTOR_VITEST_PROJECT)
@@ -122,14 +123,30 @@ const createWorker = (settings) => {
   // An empty record tells the reporter this project's workers can recognise tests.
   recordRoot()
   api.propagation.setGlobalPropagator(createPropagator(sdk))
+  const warnOnce = (key, message) => warnOncePerRun(settings.spool, key, message)
+  let entries = []
   try {
     const { loadInstrumentations } = require('../util/otel/instrumentations')
-    const instances = loadInstrumentations(rootDir,
-      (key, message) => warnOncePerRun(settings.spool, key, message), ['http', 'undici']).map(entry => entry.instance)
-    activateBuiltins(instances, wrappedProvider, () => roots.has(api.trace.getSpanContext(api.context.active())?.traceId))
+    entries = loadInstrumentations(rootDir, warnOnce)
   } catch (error) {
-    warnOncePerRun(settings.spool, 'vitest-instrumentation', `Vitest HTTP instrumentation disabled (${describeError(error)}); manual children and test.execution export remain enabled.`)
+    warnOnce('vitest-instrumentation', `Vitest instrumentation disabled (${describeError(error)}); manual children and test.execution export remain enabled.`)
   }
+  const { activatePackages, isPackageEntry } = require('./otelPackages')
+  const selected = []
+  try {
+    const builtins = entries.filter(entry => !isPackageEntry(entry))
+    activateBuiltins(builtins.map(entry => entry.instance), wrappedProvider, () => roots.has(api.trace.getSpanContext(api.context.active())?.traceId))
+    selected.push(...builtins.map(entry => entry.name))
+  } catch (error) {
+    warnOnce('vitest-instrumentation-builtins', `Vitest HTTP instrumentation disabled (${describeError(error)}); manual children and test.execution export remain enabled.`)
+  }
+  try {
+    const packages = activatePackages(entries.filter(isPackageEntry), wrappedProvider, warnOnce)
+    if (packages) selected.push(`${packages.names.join(', ')} (${packages.loader})`)
+  } catch (error) {
+    warnOnce('vitest-instrumentation-packages', `Vitest package instrumentation disabled (${describeError(error)}); HTTP, manual children and test.execution export remain enabled.`)
+  }
+  Debug.log(`OpenTelemetry instrumentations selected in this Vitest worker: ${selected.join(', ') || '(none)'}`)
   const forceFlush = async () => {
     for (const forwarder of files.values()) await forwarder.shutdown()
     flush()
