@@ -1,5 +1,6 @@
 const path = require('path')
 const { createRequire } = require('module')
+const { describeError } = require('../util/otel/warn')
 
 // Prefer the running jest-runner's dependencies, including under Plug'n'Play.
 const BaseRuntime = (() => {
@@ -38,13 +39,18 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
       }
       esm.linkAndEvaluateModule = async (...args) => {
         const module = await evaluate(...args)
-        // Jest 30's synchronous graph loads static dependencies without
-        // calling loadEsmModule for each one. They are already in its registry.
-        for (const [modulePath, api] of esm.registries?.getActiveEsmRegistry() || []) {
-          if (/[\\/]@opentelemetry[\\/]api[\\/]/.test(modulePath)) apis.add(api)
-        }
-        for (const api of apis) {
-          if (api.status === 'evaluated' && typeof api.namespace.ProxyTracerProvider === 'function') this._buildkiteChildren.loadedApi(api.namespace)
+        // These are Jest internals: if they move, lose ESM children, not the test file.
+        try {
+          // Jest 30's synchronous graph loads static dependencies without
+          // calling loadEsmModule for each one. They are already in its registry.
+          for (const [modulePath, api] of esm.registries?.getActiveEsmRegistry() || []) {
+            if (/[\\/]@opentelemetry[\\/]api[\\/]/.test(modulePath)) apis.add(api)
+          }
+          for (const api of apis) {
+            if (api.status === 'evaluated' && typeof api.namespace.ProxyTracerProvider === 'function') this._buildkiteChildren.loadedApi(api.namespace)
+          }
+        } catch (error) {
+          this._buildkiteChildren.warnOnce('esm-api', `OpenTelemetry could not find @opentelemetry/api imported by native ES modules in this Jest version (${describeError(error)}); their child spans may be missing; test.execution export remains enabled.`)
         }
         return module
       }
