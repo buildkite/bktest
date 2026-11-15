@@ -113,7 +113,7 @@ steps:
           - "npm install --ignore-scripts --legacy-peer-deps"
           - "node .buildkite/otel-lines.js 3"
           - "node .buildkite/install-jest-otel-tools.js"
-          - "EXPECTED_JEST_VERSION=30.5.2 npm test -- --runInBand e2e/jest-otel.test.js --testNamePattern='runs the selected Jest version|ES module obtained'"
+          - "EXPECTED_JEST_VERSION=30.5.2 npm test -- --runInBand e2e/jest-otel.test.js --testNamePattern='runs the selected Jest version|ES module obtained|synchronously required'"
         plugins:
           - docker#v3.7.0:
               image: node:24.9.0

@@ -370,6 +370,45 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
 }
 
 ;(otelSupported ? describe : describe.skip)('file-backed parent export', () => {
+  test('keeps test and child uploads enabled for an inherited-property sampler name', async () => {
+    server = await startOtlpServer()
+    const result = await spoolRun({ args: ['--runInBand'], env: { OTEL_TRACES_SAMPLER: '__proto__' } })
+    expect(result.code).toBe(0)
+    expect(result.stderr).not.toContain('[buildkite-test-collector]')
+    const [root] = server.spans().filter(span => span.name === 'test.execution')
+    expect(root).toMatchObject({ attributes: { 'test.case.result.status': 'pass' } })
+    expect(server.spans().filter(span => span.name === 'child')).toEqual([
+      expect.objectContaining({ traceId: root.traceId, parentSpanId: root.spanId }),
+    ])
+  }, 30000)
+
+  ;(semver.gte(require('../util/otel/sdk').packageVersion('@opentelemetry/api'), '1.10.0') ? test : test.skip)('honors attached contexts and disposal in both sandbox API builds', async () => {
+    server = await startOtlpServer()
+    const result = await spoolRun({ args: ['--runInBand'], env: { NODE_OPTIONS: '--experimental-vm-modules' }, body: `
+      test('attached contexts', async () => {
+        for (const [kind, api] of [['cjs', require('@opentelemetry/api')], ['esm', await import('@opentelemetry/api')]]) {
+          const tracer = api.trace.getTracer('attach')
+          const parent = tracer.startSpan(kind + '-parent')
+          const token = api.context.attach(api.trace.setSpan(api.context.active(), parent))
+          try { tracer.startSpan(kind + '-nested').end() }
+          finally { token.dispose(); parent.end() }
+          tracer.startSpan(kind + '-sibling').end()
+        }
+      })
+    ` })
+    expect(result.code).toBe(0)
+    expect(result.stderr).not.toContain('[buildkite-test-collector]')
+    const spans = server.spans()
+    expect(spans).toHaveLength(7)
+    const root = spans.find(span => span.name === 'test.execution')
+    for (const kind of ['cjs', 'esm']) {
+      const parent = spans.find(span => span.name === `${kind}-parent`)
+      expect(parent).toMatchObject({ traceId: root.traceId, parentSpanId: root.spanId })
+      expect(spans.find(span => span.name === `${kind}-nested`)).toMatchObject({ traceId: root.traceId, parentSpanId: parent.spanId })
+      expect(spans.find(span => span.name === `${kind}-sibling`)).toMatchObject({ traceId: root.traceId, parentSpanId: root.spanId })
+    }
+  }, 30000)
+
   ;(semver.gte(require('../util/otel/sdk').packageVersion('@opentelemetry/api'), '1.10.0') ? test : test.skip)('preserves SDK 3 structured attributes through worker spool and OTLP upload', async () => {
     server = await startOtlpServer()
     const result = await spoolRun({ args: ['--runInBand'], body: `
@@ -1206,6 +1245,36 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
       expect.objectContaining({ parentSpanId: root.spanId, traceId: root.traceId }),
     ])
   }, 60000)
+
+  ;(semver.gte(jestVersion, '30.5.0') && semver.gte(process.versions.node, '24.9.0') ? test : test.skip)('exports children from synchronously required ES modules across resets and isolation', async () => {
+    server = await startOtlpServer()
+    const result = await spoolRun({ args: ['--runInBand'], env: { NODE_OPTIONS: '--experimental-vm-modules' },
+      config: ({ dir }) => {
+        fs.writeFileSync(path.join(dir, 'work.mjs'), `
+          import { trace } from '@opentelemetry/api'
+          const tracer = trace.getTracer('required-esm')
+          export const work = name => tracer.startSpan(name).end()
+        `)
+        return { transform: {} }
+      },
+      body: `
+        const early = require('./work.mjs')
+        beforeAll(() => jest.resetModules())
+        test('synchronous ESM children', () => {
+          early.work('early-required-child')
+          require('./work.mjs').work('reset-required-child')
+          jest.isolateModules(() => require('./work.mjs').work('isolated-required-child'))
+        })
+      `,
+    })
+    expect(result.code).toBe(0)
+    expect(result.stderr).not.toContain('[buildkite-test-collector]')
+    const spans = server.spans()
+    const [root] = spans.filter(span => span.name === 'test.execution')
+    expect(root).toMatchObject({ attributes: { 'test.case.result.status': 'pass' } })
+    expect(spans.filter(span => span.name !== 'test.execution').map(({ name, traceId, parentSpanId }) => ({ name, traceId, parentSpanId })))
+      .toEqual(['early-required-child', 'reset-required-child', 'isolated-required-child'].map(name => ({ name, traceId: root.traceId, parentSpanId: root.spanId })))
+  }, 30000)
 
   // A later project without the runtime sends no trace headers through the worker-wide
   // wrappers, including when a disabled instrumentation preloaded http.

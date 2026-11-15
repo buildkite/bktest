@@ -94,7 +94,7 @@ const SAMPLERS = {
 const environmentConfig = ({ trace, core, api }) => {
   const number = (name) => core.getNumberFromEnv(name)
   let name = core.getStringFromEnv('OTEL_TRACES_SAMPLER') ?? 'parentbased_always_on'
-  if (!SAMPLERS[name]) {
+  if (!Object.hasOwn(SAMPLERS, name)) {
     api.diag.error(`OTEL_TRACES_SAMPLER value "${name}" invalid, defaulting to "parentbased_always_on".`)
     name = 'parentbased_always_on'
   }

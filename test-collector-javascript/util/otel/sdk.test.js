@@ -22,6 +22,9 @@ test.each([
   ['parentbased_traceidratio', '1.1', [true, true, false, true]],
   ['parentbased_traceidratio', 'invalid', [true, true, false, true]],
   ['invalid', undefined, [true, true, false, true]],
+  ['constructor', undefined, [true, true, false, true]],
+  ['toString', undefined, [true, true, false, true]],
+  ['__proto__', undefined, [true, true, false, true]],
   [undefined, undefined, [true, true, false, true]],
 ])('matches SDK 2 sampling for %s / %s', async (name, arg, expected) => {
   if (name !== undefined) process.env.OTEL_TRACES_SAMPLER = name

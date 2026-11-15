@@ -37,8 +37,7 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
         if (/[\\/]@opentelemetry[\\/]api[\\/]/.test(modulePath)) apis.add(module)
         return module
       }
-      esm.linkAndEvaluateModule = async (...args) => {
-        const module = await evaluate(...args)
+      const bindApis = () => {
         // These are Jest internals: if they move, lose ESM children, not the test file.
         try {
           // Jest 30's synchronous graph loads static dependencies without
@@ -52,7 +51,20 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
         } catch (error) {
           this._buildkiteChildren.warnOnce('esm-api', `OpenTelemetry could not find @opentelemetry/api imported by native ES modules in this Jest version (${describeError(error)}); their child spans may be missing; test.execution export remains enabled.`)
         }
+      }
+      esm.linkAndEvaluateModule = async (...args) => {
+        const module = await evaluate(...args)
+        bindApis()
         return module
+      }
+      // require(esm) completes its graph without either async loader method.
+      if (typeof esm.requireEsmModule === 'function') {
+        const requireEsm = esm.requireEsmModule.bind(esm)
+        esm.requireEsmModule = (...args) => {
+          const exports = requireEsm(...args)
+          bindApis()
+          return exports
+        }
       }
     }
     if (!this._buildkiteChildren.packages.names.size) return
