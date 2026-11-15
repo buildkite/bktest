@@ -258,18 +258,16 @@ Supported platforms are Linux and macOS; Windows is untested.
 OpenTelemetry options, environment variables and span shape may change in minor releases.
 Test spans count as test executions, like JSON uploads, at no extra charge. Child spans are billed by data ingested and need a plan that includes them; without it, we still record test results and warn that child spans were dropped.
 
-The collector requires `sdk-trace >=2.9.0`, exporter `>=0.220.0`, and (for children)
-`context-async-hooks >=2.0.0`, without version caps. It probes serialization before
+The collector checks that the SDK, exporter and (for children) `context-async-hooks`
+are from the 2.9+ or 3.x line, without version caps, and probes serialization before
 recording results. On older Node versions with SDK 3 it warns and still attempts
-export; that combination is unsupported. Instrumentation built on 0.300+ requires
-API 1.10+; incompatible instrumentation is skipped with a warning, without
-disabling test results.
+export; that combination is unsupported. Incompatible instrumentation is skipped
+with a warning, without disabling test results.
 
 Jest native ESM supports API 1.10's separate ESM and CommonJS API objects, including
-tracers obtained before `resetModules`. With **Jest 29 + jsdom/happy-dom + SDK 3**, Express
-and GraphQL instrumentation resolve their platform dependency to the browser
-build and are skipped with a warning; HTTP/fetch children and test results still
-record. Use Jest 30, the Node environment, or SDK 2 for those contrib spans.
+tracers obtained before `resetModules`. Under **Jest 29 with jsdom or happy-dom**, SDK 3
+package instrumentation (Express, GraphQL, pg, Redis and others) loads its browser
+build and is skipped with a warning; HTTP/fetch children and test results still record.
 
 The spool preserves SDK 3's structured span/link attribute values, including byte
 arrays, nested maps, heterogeneous arrays and null. The SDK still accepts only
@@ -379,7 +377,7 @@ OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici npx jest
 We select instrumentation declared in your Jest `rootDir`'s package.json or its parents, including workspace roots (under Yarn Plug'n'Play, the workspace that runs Jest).
 If `@opentelemetry/auto-instrumentations-node` is resolvable, we select its whole bundle, with the exclusions below.
 Individual packages installed incidentally by another dependency don't opt you in; a resolvable auto-instrumentations bundle does.
-Choose instrumentation matching your SDK/API line. The collector accepts HTTP 0.200+ and undici 0.11+, with no caps. Other instrumentations are checked against their base instrumentation dependency (0.200+), not a fixed auto-instrumentations bundle version range. A base of 0.300+ needs API 1.10+.
+Choose instrumentation from your SDK line. Packages are checked against their base `@opentelemetry/instrumentation` version, not a fixed auto-instrumentations bundle version range.
 Incompatible instrumentation warns and is skipped without affecting results or manual spans.
 
 We leave logs and messages (`pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`), low-level I/O (`net`, `dns`, `fs`) and metrics (`host-metrics`, `runtime-node`) off by default.
@@ -397,7 +395,7 @@ The parent holds at most 16,384 sendable pending child spans in memory. It admit
 
 Per-file child-cap drops are included in the final run total rather than warning for every file. Child 403 and other permanent upload failures also use that single final warning, not a warning per rejected batch. Child-spool failures (including late completions) warn once per run and are included in the total when drop counts can be written. If drop-count records cannot be written or read, a warning says the total is incomplete or unavailable. Still-open children and children started after teardown are reported separately once per worker at exit; those worker-local counts are not included in the parent's total.
 
-Normal completion and `--bail` share one memoized final drain over a fixed snapshot, with a 10-second budget (the same constant as the stock exporter's timeout) and no batching delay. Healthy runs stop waiting as soon as uploads finish. In an outage, Jest normally exits about ten seconds after the tests finish. The drain stops waiting at its deadline and aborts each lane's connecting and active HTTP/HTTPS sockets through the Agent's signal option, supported even by exporter 0.200.0 on Node 18.19.0. In rare cases, a stock-exporter retry already scheduled can keep Node alive for up to ten additional seconds: `Retry-After` bypasses the usual five-second backoff cap. That retry fails with `ABORT_ERR` without opening another socket. The drain budget is not an exact process-exit deadline. Bail gates new files through the reporter's public start callback, so awaiting uploads does not keep dispatching files. Already running files can finish. SIGTERM gates new files too and shortens any existing drain to at most five more seconds. The collector snapshots other SIGTERM listeners before their once-handlers run, preserving their asynchronous cleanup; it re-raises SIGTERM (or exits with code 143 as PID 1) only if no other listener owned shutdown at signal delivery. Files arriving after the snapshot are not added to the drain. Unacknowledged test results are reported as `TEST RESULTS MISSING`; all unacknowledged children, whether resident or unread on disk, use child-drop wording and test results are unaffected by child losses. No JSON results are sent. Completed runs remove their spool directory; terminated runs may leave it behind. There is no replay tool.
+Normal completion and `--bail` share one memoized final drain over a fixed snapshot, with a 10-second budget (the same constant as the stock exporter's timeout) and no batching delay. Healthy runs stop waiting as soon as uploads finish. In an outage, Jest normally exits about ten seconds after the tests finish. The drain stops waiting at its deadline and aborts each lane's connecting and active HTTP/HTTPS sockets through the Agent's signal option. In rare cases, a stock-exporter retry already scheduled can keep Node alive for up to ten additional seconds: `Retry-After` bypasses the usual five-second backoff cap. That retry fails with `ABORT_ERR` without opening another socket. The drain budget is not an exact process-exit deadline. Bail gates new files through the reporter's public start callback, so awaiting uploads does not keep dispatching files. Already running files can finish. SIGTERM gates new files too and shortens any existing drain to at most five more seconds. The collector snapshots other SIGTERM listeners before their once-handlers run, preserving their asynchronous cleanup; it re-raises SIGTERM (or exits with code 143 as PID 1) only if no other listener owned shutdown at signal delivery. Files arriving after the snapshot are not added to the drain. Unacknowledged test results are reported as `TEST RESULTS MISSING`; all unacknowledged children, whether resident or unread on disk, use child-drop wording and test results are unaffected by child losses. No JSON results are sent. Completed runs remove their spool directory; terminated runs may leave it behind. There is no replay tool.
 
 File-result callbacks only register expected files; they never scan the spool or wait for uploads. The parent scans on its one-second timer and at the final snapshot, and reports files without readable commits once per reason plus an end-of-run file/test summary. If the spool is unreadable, recording status is unknown: the summary does not claim setup failed. With no credential only the configuration warning is printed. Suites with no test results after a worker/environment failure do not add collector warnings. Repeated in-band runs in one process reuse the worker session with the new spool directory (the run key remains process-scoped).
 

@@ -22,9 +22,17 @@ const dependencies = line => Object.fromEntries(Object.entries(lines[line]).map(
 
 if (require.main === module) {
   const { execFileSync } = require('child_process')
-  const specs = Object.entries(dependencies(process.argv[2])).map(([name, version]) => `${name}@${version}`)
-  execFileSync('npm', ['install', '--no-save', '--strict-peer-deps', ...specs], { stdio: 'inherit' })
+  const semver = require('semver')
+  const requested = Object.entries(dependencies(process.argv[2]))
+  execFileSync('npm', ['install', '--no-save', '--strict-peer-deps', ...requested.map(([name, version]) => `${name}@${version}`)], { stdio: 'inherit' })
   const { packageVersion } = require('../util/otel/sdk')
-  for (const name of Object.keys(dependencies(process.argv[2]))) console.log(name, packageVersion(name))
+  // Fail if the collector would resolve a copy other than the one requested.
+  let mismatched = false
+  for (const [name, version] of requested) {
+    const installed = packageVersion(name)
+    console.log(name, installed)
+    if (version !== 'latest' && !semver.satisfies(installed || '0.0.0', version)) mismatched = true
+  }
+  if (mismatched) process.exit(1)
 }
 module.exports = { dependencies }

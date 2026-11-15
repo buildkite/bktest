@@ -16,7 +16,7 @@ const PACKAGES = {
 // first built on it. CI installs explicit, matching SDK lines.
 const SUPPORTED_VERSIONS = {
   '@opentelemetry/sdk-trace': '>=2.9.0',
-  '@opentelemetry/context-async-hooks': '>=2.0.0',
+  '@opentelemetry/context-async-hooks': '>=2.9.0',
   '@opentelemetry/exporter-trace-otlp-proto': '>=0.220.0',
 }
 // SDK 3 packages (and 0.300+ instrumentation) need api 1.10 and Node 22.15.

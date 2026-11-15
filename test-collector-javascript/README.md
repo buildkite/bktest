@@ -76,8 +76,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
 
     Migrate any direct `sdk-trace-base` dependency to `sdk-trace`; SDK 2.0–2.8 is no longer
     supported in OTel mode. Playwright can omit `context-async-hooks`.
-    Jest 29 + jsdom/happy-dom + SDK 3 warns and skips affected Express/GraphQL instrumentation;
-    use Jest 30, Node's environment or SDK 2 for those child spans. Test results and HTTP/fetch still record.
+    Under Jest 29 with jsdom or happy-dom, SDK 3 package instrumentation is skipped with a warning;
+    test results, HTTP and fetch still record.
 
     ```js
     // jest.config.js
