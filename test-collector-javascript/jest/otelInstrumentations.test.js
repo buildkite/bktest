@@ -3,6 +3,9 @@ const os = require('os')
 const path = require('path')
 const { execFileSync } = require('child_process')
 
+let apiDirectory = path.dirname(require.resolve('@opentelemetry/api'))
+while (!fs.existsSync(path.join(apiDirectory, 'package.json'))) apiDirectory = path.dirname(apiDirectory)
+
 const excluded = ['fs', 'host-metrics', 'pino', 'winston', 'bunyan', 'aws-sdk', 'kafkajs', 'amqplib', 'net', 'dns', 'runtime-node',
   'fetch', 'xml-http-request', 'document-load', 'user-interaction', 'long-task']
 
@@ -38,8 +41,9 @@ test.each([
         const directory = path.join(base, 'node_modules/@opentelemetry', `instrumentation-${name}`)
         fs.mkdirSync(directory, { recursive: true })
         fs.writeFileSync(path.join(directory, 'index.js'),
-          `exports.TestInstrumentation = class { constructor() { this.instrumentationVersion = '${name === 'undici' ? '0.33.0' : '0.223.0'}' } }`)
+          `exports.TestInstrumentation = class { constructor() { this.instrumentationVersion = '${name === 'undici' ? '0.33.0' : '0.223.0'}' } setMeterProvider() {} }`)
       }
+      fs.symlinkSync(apiDirectory, path.join(base, 'node_modules/@opentelemetry/api'), 'dir')
       const sdk = path.join(base, 'node_modules/@opentelemetry/instrumentation')
       fs.mkdirSync(sdk)
       fs.writeFileSync(path.join(sdk, 'package.json'), JSON.stringify({ name: '@opentelemetry/instrumentation', version: '0.223.0', exports: './index.js' }))
@@ -50,6 +54,54 @@ test.each([
       `, project], { env: { ...process.env, OTEL_NODE_ENABLED_INSTRUMENTATIONS: enabled, OTEL_NODE_DISABLED_INSTRUMENTATIONS: disabled } })
       expect(JSON.parse(output)).toEqual(expected)
     }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test.each(['shared loader', 'Jest sandbox'])('records metrics after subclass field initialization in %s', (mode) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-metrics-'))
+  try {
+    const instrumentation = path.join(root, 'node_modules/@opentelemetry/instrumentation-http')
+    const client = path.join(root, 'node_modules/metric-client/index.js')
+    fs.mkdirSync(instrumentation, { recursive: true })
+    fs.mkdirSync(path.dirname(client), { recursive: true })
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ dependencies: { '@opentelemetry/instrumentation-http': '*' } }))
+    fs.writeFileSync(path.join(path.dirname(client), 'package.json'), JSON.stringify({ version: '1.0.0' }))
+    fs.symlinkSync(apiDirectory, path.join(root, 'node_modules/@opentelemetry/api'), 'dir')
+    fs.writeFileSync(path.join(instrumentation, 'index.js'), `
+      const { InstrumentationBase } = require(${JSON.stringify(require.resolve('@opentelemetry/instrumentation'))})
+      exports.TestInstrumentation = class extends InstrumentationBase {
+        duration // Like OpenAI, this overwrites the instrument created by super().
+        constructor(config) { super('fixture', '0.223.0', config) }
+        _updateMetricInstruments() { this.duration = this.meter.createHistogram('duration') }
+        record() { this.duration.record(1) }
+        init() { return [{ name: 'metric-client', supportedVersions: ['*'], patch: () => () => this.record() }] }
+      }
+    `)
+    execFileSync(process.execPath, ['-e', `
+      const assert = require('node:assert/strict')
+      const api = require(${JSON.stringify(require.resolve('@opentelemetry/api'))})
+      const { loadInstrumentations } = require(${JSON.stringify(require.resolve('../util/otel/instrumentations'))})
+      const entries = loadInstrumentations(${JSON.stringify(root)}, (_, message) => { throw new Error(message) })
+      assert.equal(entries.length, 1)
+      let record = () => entries[0].instance.record()
+      if (${JSON.stringify(mode)} === 'Jest sandbox') {
+        const Packages = require(${JSON.stringify(require.resolve('./otelPackages'))})
+        const packages = new Packages({
+          testPath: ${JSON.stringify(path.join(root, 'test.js'))}, cleanups: [],
+          warnOnce: (_, message) => { throw new Error(message) },
+          _worker: () => ({ tracerProvider: api.trace.getTracerProvider() }),
+          runtime: {
+            _resolveCjsModule: () => ${JSON.stringify(client)},
+            requireModuleOrMock: () => api,
+            requireModule: () => require(${JSON.stringify(instrumentation)}),
+          },
+        }, entries)
+        record = packages.load(${JSON.stringify(client)}, () => () => { throw new Error('client was not patched') })
+      }
+      assert.doesNotThrow(record)
+    `], { env: { ...process.env, OTEL_NODE_ENABLED_INSTRUMENTATIONS: 'http', OTEL_NODE_DISABLED_INSTRUMENTATIONS: '' } })
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }

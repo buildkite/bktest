@@ -433,6 +433,7 @@ Instrumentation needs a compatible API version; the collector checks its base `@
 Incompatible instrumentation warns and is skipped without affecting results or manual spans.
 
 We leave logs and messages (`pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`), low-level I/O (`net`, `dns`, `fs`) and metrics (`host-metrics`, `runtime-node`) off by default.
+We also exclude `lru-memoizer` (drops memoizer methods without recording spans) and `router` (duplicates Express 5 handler and middleware spans).
 Browser instrumentation (`fetch`, `xml-http-request`, `document-load`, `user-interaction`, `long-task`) is also off. Use `undici` for Node's fetch.
 You can opt in by listing short names in `OTEL_NODE_ENABLED_INSTRUMENTATIONS`. The disabled list always wins.
 We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2, and on Vitest as described in [Vitest package instrumentation](#vitest-package-instrumentation). Test other packages against your own operations before relying on them.
