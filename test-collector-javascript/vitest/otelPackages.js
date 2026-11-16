@@ -21,9 +21,38 @@ const loaderFor = (resolved) => {
   }
 }
 
-// Every file of the selected packages, but not their nested dependencies.
-// Vitest's own imports, including @opentelemetry/api, stay unwrapped.
-const includeFor = (names) => [new RegExp(`/node_modules/(?:${names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})/(?!.*/node_modules/)`)]
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const exportTargets = (value) => typeof value === 'string' ? [value] : value && typeof value === 'object' ? Object.values(value).flatMap(exportTargets) : []
+
+// The files Vite may import as a package's entry point: its CommonJS main, the
+// ES module build Vite picks for an extensionless "main" such as GraphQL's
+// "index" (vitest-dev/vitest#8414), and every target of its "exports" root.
+const entriesOf = (name, baseDir) => {
+  let main, manifest
+  try { main = Module.createRequire(path.join(baseDir, 'package.json')).resolve(name) } catch { /* No CommonJS entry. */ }
+  try { manifest = JSON.parse(fs.readFileSync(path.join(baseDir, 'package.json'), 'utf8')) } catch { return undefined }
+  const { exports } = manifest
+  const root = exports && typeof exports === 'object' && Object.keys(exports).some((key) => key.startsWith('.')) ? exports['.'] : exports
+  const esm = !exports && main?.endsWith('.js') ? `${main.slice(0, -3)}.mjs` : undefined
+  const files = new Set([main, esm, ...exportTargets(root).map((target) => path.join(baseDir, target))].filter(Boolean))
+  return { manifest, main, esm, files }
+}
+
+// The package names, as OpenTelemetry's own hook passes, plus the entry files
+// Vitest imports by path. Wrap only entry modules, as import 'pkg' does:
+// import-in-the-middle copies a wrapped module's exports, so later
+// reassignments never reach importers (openai 4 then fails to import).
+const includeFor = (names) => {
+  const lookup = Module.createRequire(path.join(process.cwd(), 'package.json'))
+  const entries = names.flatMap((name) => {
+    const found = lookup.resolve.paths(name)?.map((dir) => path.join(dir, name)).find((dir) => fs.existsSync(path.join(dir, 'package.json')))
+    if (!found) return []
+    const baseDir = fs.realpathSync(found)
+    const files = [...entriesOf(name, baseDir)?.files ?? []].map((file) => path.relative(baseDir, file).split(path.sep).join('/'))
+    return files.length ? [`${escape(name)}/(?:${files.map(escape).join('|')})`] : []
+  })
+  return entries.length ? [...names, new RegExp(`/node_modules/(?:${entries.join('|')})(?:[?#]|$)`)] : names
+}
 
 const register = ({ hook, iitm }, include) => {
   if (typeof Module.registerHooks === 'function') {
@@ -40,16 +69,12 @@ const register = ({ hook, iitm }, include) => {
 }
 
 const buildsOf = (name, baseDir, definitions) => {
-  let main, manifest
-  try { main = Module.createRequire(path.join(baseDir, 'package.json')).resolve(name) } catch { /* No CommonJS entry. */ }
-  try { manifest = JSON.parse(fs.readFileSync(path.join(baseDir, 'package.json'), 'utf8')) } catch { return {} }
-  // Without "exports", Vite resolves an extensionless "main" such as GraphQL's
-  // "index" to index.mjs before the index.js Node loads (vitest-dev/vitest#8414).
+  const entries = entriesOf(name, baseDir)
+  if (!entries) return {}
   return {
-    main,
-    esm: !manifest.exports && main?.endsWith('.js') ? `${main.slice(0, -3)}.mjs` : undefined,
+    ...entries,
     supported: definitions.filter((definition) => definition.supportedVersions.some((range) =>
-      semver.satisfies(manifest.version, range, { includePrerelease: definition.includePrerelease }))),
+      semver.satisfies(entries.manifest.version, range, { includePrerelease: definition.includePrerelease }))),
   }
 }
 
@@ -66,11 +91,11 @@ const watchUnpatched = (loader, packages, warnOnce) => {
       if (!packageName || !baseDir) return
       const { instrumentations, definitions } = packages.get(packageName)
       if (!builds.has(baseDir)) builds.set(baseDir, buildsOf(packageName, baseDir, definitions))
-      const { main, esm, supported } = builds.get(baseDir)
+      const { main, esm, files, supported } = builds.get(baseDir)
       if (!supported?.length) return
       const file = path.join(baseDir, name.slice(packageName.length + 1))
       const by = [...instrumentations].join(', ')
-      if (file === main && supported.every((definition) => definition.patch && !definition.files?.length)) {
+      if (files.has(file) && supported.every((definition) => definition.patch && !definition.files?.length)) {
         warnOnce(`vitest-package-path:${packageName}`, `${by} cannot patch ${packageName} in Vitest: Vitest imported its entry point by file path (${file}), which import-in-the-middle ${loader.version} does not treat as an import of ${packageName}. ` +
           `ES module and TypeScript files that import ${packageName} get no ${packageName} spans; require() still does, including through createRequire (${DOCS}); test.execution export remains enabled.`)
       } else if (file === esm && !supported.some((definition) => definition.files?.some((patched) => path.normalize(patched.name) === name))) {

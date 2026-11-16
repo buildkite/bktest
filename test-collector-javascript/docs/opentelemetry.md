@@ -147,16 +147,16 @@ to select them.
 
 Package instrumentation such as `pg`, `redis`, `ioredis`, `express` and `graphql`
 records spans under the test that made the call.
-Vitest loads packages through Node's ES module loader by file path, so each worker
-registers OpenTelemetry's import-in-the-middle loader for the selected packages only.
-It uses Node's synchronous module hooks where the installed import-in-the-middle
-supports them, and `module.register` otherwise.
+Vitest loads packages through Node's ES module loader by file path. Each worker
+registers OpenTelemetry's import-in-the-middle loader for the entry points of the
+selected packages only, using Node's synchronous module hooks where the installed
+import-in-the-middle supports them, and `module.register` otherwise.
 
 What you get depends on how your code loads a package:
 
 - `require()` from CommonJS records spans for all tested packages.
 - `import` from ES modules and TypeScript records spans for packages whose instrumentation
-  patches internal files, such as `pg` and `redis`.
+  patches files the package loads with `require()`, such as `pg` and `redis`.
 - Packages patched at their entry point, such as `express` and `ioredis`, get no spans
   from `import`. import-in-the-middle, up to at least 3.6.0, doesn't treat Vitest's
   file-path import of a package's entry point as an import of that package.
