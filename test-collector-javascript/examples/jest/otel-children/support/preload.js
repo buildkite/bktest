@@ -3,18 +3,18 @@
 // instrumentation, recording every span to a file.
 const fs = require('fs')
 const api = require('@opentelemetry/api')
-const { BasicTracerProvider, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base')
+const { TracerProvider, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace')
 const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks')
 const { HttpInstrumentation } = require('@opentelemetry/instrumentation-http')
 
-const provider = new BasicTracerProvider({
-  spanProcessors: [new SimpleSpanProcessor({
+const provider = new TracerProvider({
+  spanProcessors: [new SimpleSpanProcessor({ exporter: {
     export(spans, done) {
       fs.appendFileSync(process.env.OTEL_SUITE_SPANS_FILE, spans.map((span) => `${JSON.stringify({ name: span.name, kind: span.kind, attributes: span.attributes })}\n`).join(''))
       done({ code: 0 })
     },
     shutdown: async () => {},
-  })],
+  } })],
 })
 api.trace.setGlobalTracerProvider(provider)
 api.context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable())

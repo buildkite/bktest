@@ -16,6 +16,17 @@ const resolve = (overrides = {}) => resolveSettings({
 })
 
 const warnings = () => consoleWarnSpy.mock.calls.map(([message]) => message)
+const installHint = require('semver').gte(require('./sdk').packageVersion('@opentelemetry/api'), '1.10.0')
+  ? 'npm install --save-dev "@opentelemetry/api@^1.10" "@opentelemetry/sdk-trace@^3" "@opentelemetry/context-async-hooks@^3" "@opentelemetry/exporter-trace-otlp-proto@~0.301.0"'
+  : 'npm install --save-dev "@opentelemetry/api@~1.9.0" "@opentelemetry/sdk-trace@^2.9" "@opentelemetry/context-async-hooks@^2" "@opentelemetry/exporter-trace-otlp-proto@~0.223.0"'
+
+// SDK 3 packages export only their entry point, not package.json.
+const manifestOf = (name, load = require) => {
+  const fs = require('fs'), path = require('path')
+  let directory = path.dirname(load.resolve(name))
+  while (!fs.existsSync(path.join(directory, 'package.json')) || JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8')).name !== name) directory = path.dirname(directory)
+  return path.join(directory, 'package.json')
+}
 
 const OLD_ENV = process.env
 
@@ -181,19 +192,18 @@ describe('resolveSettings', () => {
 
   it('falls back to JSON with the default probe when the SDK cannot be loaded', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
-    jest.doMock('@opentelemetry/sdk-trace-base', () => {
-      throw Object.assign(new Error("Cannot find module '@opentelemetry/sdk-trace-base'"), { code: 'MODULE_NOT_FOUND' })
+    jest.doMock('@opentelemetry/sdk-trace', () => {
+      throw Object.assign(new Error("Cannot find module '@opentelemetry/sdk-trace'"), { code: 'MODULE_NOT_FOUND' })
     })
 
     try {
       expect(resolve({ probe: undefined })).toBeNull()
     } finally {
-      jest.dontMock('@opentelemetry/sdk-trace-base')
+      jest.dontMock('@opentelemetry/sdk-trace')
     }
     expect(warnings()).toEqual([
-      "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace-base'. " +
-      'Install the OpenTelemetry packages with: npm install --save-dev "@opentelemetry/sdk-trace-base@^2" ' +
-      '"@opentelemetry/context-async-hooks@^2" "@opentelemetry/exporter-trace-otlp-proto@<0.300"; results were not uploaded; fix the OpenTelemetry configuration and rerun (no JSON fallback).',
+      "[buildkite-test-collector] OpenTelemetry span export disabled: Error: Cannot find module '@opentelemetry/sdk-trace'. " +
+      `Install the OpenTelemetry packages with: ${installHint}; results were not uploaded; fix the OpenTelemetry configuration and rerun (no JSON fallback).`,
     ])
     expect(readSettings()).toBeNull()
   })
@@ -213,8 +223,7 @@ describe('resolveSettings', () => {
     }
     expect(warnings()).toEqual([
       "[buildkite-test-collector] OpenTelemetry span export disabled: Error: the installed OpenTelemetry packages cannot export spans together (TypeError: Cannot read properties of undefined (reading 'name')). " +
-      'Install matching versions with: npm install --save-dev "@opentelemetry/sdk-trace-base@^2" ' +
-      '"@opentelemetry/context-async-hooks@^2" "@opentelemetry/exporter-trace-otlp-proto@<0.300"; results were not uploaded; fix the OpenTelemetry configuration and rerun (no JSON fallback).',
+      `Install matching versions with: ${installHint}; results were not uploaded; fix the OpenTelemetry configuration and rerun (no JSON fallback).`,
     ])
     expect(readSettings()).toBeNull()
   })
@@ -222,8 +231,8 @@ describe('resolveSettings', () => {
   it('does not use API metadata as an export compatibility cap', () => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
     jest.resetModules()
-    const fromTrace = createRequire(require.resolve('@opentelemetry/sdk-trace-base'))
-    const manifest = createRequire(fromTrace.resolve('@opentelemetry/api')).resolve('../../package.json')
+    const fromTrace = createRequire(require.resolve('@opentelemetry/sdk-trace'))
+    const manifest = manifestOf('@opentelemetry/api', fromTrace)
     jest.doMock(manifest, () => ({ name: '@opentelemetry/api', version: '1.10.0' }))
     try {
       // The default probe creates and serializes a real SDK 2 span.
@@ -239,7 +248,7 @@ describe('resolveSettings', () => {
   it.each(['missing', '1.30.1'])('exports test spans when the child context package is %s', (version) => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
     jest.resetModules()
-    const manifest = require.resolve('@opentelemetry/context-async-hooks/package.json')
+    const manifest = manifestOf('@opentelemetry/context-async-hooks')
     jest.doMock(manifest, () => {
       if (version === 'missing') throw new Error('context package is not installed')
       return { name: '@opentelemetry/context-async-hooks', version }
@@ -255,25 +264,24 @@ describe('resolveSettings', () => {
   })
 
   it.each([
-    ['@opentelemetry/sdk-trace-base', '1.30.1'],
-    ['@opentelemetry/sdk-trace-base', '3.0.0'],
-    ['@opentelemetry/exporter-trace-otlp-proto', '0.300.0'],
+    ['@opentelemetry/sdk-trace', '2.8.0'],
+    ['@opentelemetry/exporter-trace-otlp-proto', '0.219.0'],
   ])('names unsupported %s %s and explains how to install compatible packages', (name, version) => {
     process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
     jest.resetModules()
-    jest.doMock(`${name}/package.json`, () => ({ name, version }))
+    jest.doMock(manifestOf(name), () => ({ name, version }))
     try {
       expect(resolve({ probe: undefined })).toBeNull()
     } finally {
-      jest.dontMock(`${name}/package.json`)
+      jest.dontMock(manifestOf(name))
       jest.resetModules()
     }
     expect(warnings()).toEqual([
       expect.stringContaining(`unsupported ${name}@${version}`),
     ])
     expect(warnings()[0]).toContain('Install the OpenTelemetry packages with: npm install --save-dev')
-    expect(warnings()[0]).toContain('@opentelemetry/context-async-hooks@^2')
-    expect(warnings()[0]).not.toContain('@opentelemetry/api@')
+    expect(warnings()[0]).toContain('@opentelemetry/context-async-hooks')
+    expect(warnings()[0]).toContain(installHint)
     expect(warnings()[0]).toContain('results were not uploaded')
     expect(readSettings()).toBeNull()
   })
@@ -284,6 +292,45 @@ describe('resolveSettings', () => {
 
     expect(resolve({ probe })).toBeNull()
     expect(warnings()).toEqual([expect.stringMatching(/results were not uploaded.*no JSON fallback/)])
+  })
+
+  it.each([
+    ['v22.15.0', '1.10.0', '^3'],
+    ['v22.15.0', '1.9.0', '^2.9'],
+    ['v20.19.0', '1.10.0', '^2.9'],
+  ])('gives a compatible install hint on Node %s with API %s', (node, api, line) => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'version')
+    const manifest = manifestOf('@opentelemetry/api')
+    Object.defineProperty(process, 'version', { value: node })
+    jest.doMock(manifest, () => ({ name: '@opentelemetry/api', version: api }))
+    jest.doMock('@opentelemetry/sdk-trace', () => { throw new Error('missing SDK fixture') })
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    try {
+      expect(resolve({ probe: undefined })).toBeNull()
+      expect(warnings().at(-1)).toContain(`@opentelemetry/sdk-trace@${line}`)
+      expect(warnings().at(-1)).toContain(line === '^3' ? '@opentelemetry/api@^1.10' : '@opentelemetry/api@~1.9.0')
+    } finally {
+      Object.defineProperty(process, 'version', descriptor)
+      jest.dontMock(manifest)
+      jest.dontMock('@opentelemetry/sdk-trace')
+      jest.resetModules()
+    }
+  })
+
+  it('warns but still probes and enables SDK 3 on older Node', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'version')
+    const manifest = manifestOf('@opentelemetry/sdk-trace')
+    Object.defineProperty(process, 'version', { value: 'v20.19.0' })
+    jest.doMock(manifest, () => ({ name: '@opentelemetry/sdk-trace', version: '3.1.0' }))
+    process.env.BUILDKITE_ANALYTICS_TOKEN = 'env-token'
+    try {
+      expect(resolve({ probe: undefined })).toMatchObject({ token: 'env-token' })
+      expect(warnings()).toEqual([expect.stringMatching(/SDK 3 requires Node.js >=22.15.0.*Export will still be attempted/)])
+    } finally {
+      Object.defineProperty(process, 'version', descriptor)
+      jest.dontMock(manifest)
+      jest.resetModules()
+    }
   })
 })
 

@@ -57,6 +57,10 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     In 1.13.0, experimental OpenTelemetry submission sends test results as spans, with HTTP calls,
     database queries and manual spans underneath. JSON uploads remain the default.
 
+    Jest, Vitest and Playwright support `@opentelemetry/sdk-trace` 2.9+ and 3.x.
+    SDK 3 requires Node.js 22.15+ and API 1.10+. The [OpenTelemetry setup](docs/opentelemetry.md#setup-1)
+    has package sets for both SDK lines and migration notes for `sdk-trace-base` users.
+
     ```js
     // jest.config.js
     module.exports = {

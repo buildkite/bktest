@@ -1,5 +1,6 @@
 const path = require('path')
 const { createRequire } = require('module')
+const { describeError } = require('../util/otel/warn')
 
 // Prefer the running jest-runner's dependencies, including under Plug'n'Play.
 const BaseRuntime = (() => {
@@ -25,6 +26,45 @@ const extend = (Base) => class BuildkiteTestEngineRuntime extends Base {
     this._buildkiteChildren = environment?._buildkite?.children
     if (!this._buildkiteChildren) return
     this._buildkiteChildren.attachRuntime(this)
+    // API 1.10 has a separate native ESM singleton.
+    const esm = this.esmLoader || this
+    if (typeof esm.loadEsmModule === 'function' && typeof esm.linkAndEvaluateModule === 'function') {
+      const apis = new Set()
+      const load = esm.loadEsmModule.bind(esm), evaluate = esm.linkAndEvaluateModule.bind(esm)
+      esm.loadEsmModule = async (modulePath, ...args) => {
+        const module = await load(modulePath, ...args)
+        if (/[\\/]@opentelemetry[\\/]api[\\/]/.test(modulePath)) apis.add(module)
+        return module
+      }
+      const bindApis = () => {
+        // Changes to Jest internals must not fail the test file.
+        try {
+          // The sync loader bypasses loadEsmModule for static dependencies.
+          for (const [modulePath, api] of esm.registries?.getActiveEsmRegistry() || []) {
+            if (/[\\/]@opentelemetry[\\/]api[\\/]/.test(modulePath)) apis.add(api)
+          }
+          for (const api of apis) {
+            if (api.status === 'evaluated' && typeof api.namespace.ProxyTracerProvider === 'function') this._buildkiteChildren.loadedApi(api.namespace)
+          }
+        } catch (error) {
+          this._buildkiteChildren.warnOnce('esm-api', `OpenTelemetry could not find @opentelemetry/api imported by native ES modules in this Jest version (${describeError(error)}); their child spans may be missing; test.execution export remains enabled.`)
+        }
+      }
+      esm.linkAndEvaluateModule = async (...args) => {
+        const module = await evaluate(...args)
+        bindApis()
+        return module
+      }
+      // require(esm) completes its graph without either async loader method.
+      if (typeof esm.requireEsmModule === 'function') {
+        const requireEsm = esm.requireEsmModule.bind(esm)
+        esm.requireEsmModule = (...args) => {
+          const exports = requireEsm(...args)
+          bindApis()
+          return exports
+        }
+      }
+    }
     if (!this._buildkiteChildren.packages.names.size) return
     // Newer Jest 30 releases moved the CJS loader off the runtime.
     const loader = this.cjsLoader || this

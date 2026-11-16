@@ -32,6 +32,7 @@ const fillContextManager = (api) => {
   if (fallback.constructor.name === 'NoopContextManager') {
     const manager = contextManager()
     for (const method of ['active', 'with', 'bind']) fallback[method] = manager[method].bind(manager)
+    if (typeof manager.attach === 'function') fallback.attach = manager.attach.bind(manager)
   }
   if (!hasContextManager(api)) throw new Error('could not set up an async context manager')
 }

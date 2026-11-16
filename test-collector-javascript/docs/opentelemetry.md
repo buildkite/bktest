@@ -8,8 +8,7 @@ HTTP calls and your own spans for Jest and Vitest.
 
 Use Playwright 1.41.2 or newer (the oldest version verified), with the Node.js and
 OpenTelemetry SDK requirements in [Setup](#setup-1). Install the collector,
-`@opentelemetry/api@~1.9.0`, `@opentelemetry/sdk-trace-base@^2` and
-`@opentelemetry/exporter-trace-otlp-proto@>=0.200.0 <0.300.0`, then enable
+one of the matching [SDK package sets](#setup-1), then enable
 `otelEnabled` on the reporter. No fixture or test changes are needed;
 `@opentelemetry/context-async-hooks` and Jest's runtime are **not needed**.
 
@@ -101,15 +100,8 @@ Vitest 5 requires Node.js 22.12+.
 
 ### Setup
 
-Install the collector and OpenTelemetry packages:
-
-```bash
-npm install --save-dev buildkite-test-collector \
-  '@opentelemetry/api@~1.9.0' \
-  '@opentelemetry/sdk-trace-base@^2' \
-  '@opentelemetry/context-async-hooks@^2' \
-  '@opentelemetry/exporter-trace-otlp-proto@<0.300'
-```
+Install the collector and one of the matching [SDK package sets](#setup-1).
+SDK 3 requires Node.js 22.15+, including when used with Vitest 4.
 
 Enable the reporter and native tracing in your config:
 
@@ -222,24 +214,61 @@ module.exports = {
 
 ## Setup
 
+All three runners support `@opentelemetry/sdk-trace` 2.9+ and 3.x. The package sets
+below have compatible peers; the collector does not impose upper version limits.
+
+SDK 3 requires Node.js 22.15+ and API 1.10+:
+
 ```bash
 npm install --save-dev buildkite-test-collector \
-  '@opentelemetry/sdk-trace-base@^2' \
-  '@opentelemetry/context-async-hooks@^2' \
-  '@opentelemetry/exporter-trace-otlp-proto@<0.300'
+  '@opentelemetry/api@^1.10' \
+  '@opentelemetry/sdk-trace@^3' \
+  '@opentelemetry/context-async-hooks@^3' \
+  '@opentelemetry/exporter-trace-otlp-proto@~0.301.0'
 ```
 
-With pnpm or Yarn, also add `@opentelemetry/api@~1.9.0`.
-Under Yarn Plug'n'Play, declare these packages in the root workspace.
+SDK 2.9+ requires Node.js 18.19+ or 20.6+, or your runner's higher minimum:
 
-Use Jest 29 or 30 with `jest-circus` (tested with 29.7.0 and 30.5.2). OpenTelemetry SDK 2 needs Node.js 18.19+ or 20.6+.
+```bash
+npm install --save-dev buildkite-test-collector \
+  '@opentelemetry/api@~1.9.0' \
+  '@opentelemetry/sdk-trace@^2.9' \
+  '@opentelemetry/context-async-hooks@^2' \
+  '@opentelemetry/exporter-trace-otlp-proto@~0.223.0'
+```
+
+Playwright does not need `context-async-hooks`. Yarn Plug'n'Play needs these
+packages in the root workspace.
+
+**Migration:** replace your direct `@opentelemetry/sdk-trace-base` dependency with
+`@opentelemetry/sdk-trace` 2.9+; OTel mode no longer supports SDK 2.0–2.8.
+Custom provider setup needs `TracerProvider` instead of `BasicTracerProvider`,
+and processors take `{ exporter }` options. Collector configuration is unchanged.
+Child spans keep environment-selected sampling and limits; test spans keep
+AlwaysOn sampling and fixed limits.
+
+Use Jest 29 or 30 with `jest-circus` (tested with 29.7.0 and 30.5.2).
 Jest 30.0 and 30.1 can drop `afterEach` children in files mixing concurrent and sequential tests.
 It's experimental and off by default.
 Supported platforms are Linux and macOS; Windows is untested.
 OpenTelemetry options, environment variables and span shape may change in minor releases.
 Test spans count as test executions, like JSON uploads, at no extra charge. Child spans are billed by data ingested and need a plan that includes them; without it, we still record test results and warn that child spans were dropped.
 
-Install the versions above. The collector checks SDK 2 and exporter 0.200–0.2xx compatibility, including a serialization probe. SDK 3 is unsupported; API package versions are not independently gated.
+The collector probes serialization before recording results. SDK 3 on older Node
+versions warns but still attempts export. Incompatible instrumentation is skipped
+with a warning; test results remain enabled.
+
+Jest native ESM spans work with API 1.10, including tracers obtained before
+`resetModules` and synchronous `require(esm)`. Under **Jest 29 with jsdom or happy-dom**,
+SDK 3 package instrumentation loads its browser build and is skipped with a warning;
+test results, HTTP and fetch still record. Jest 30, the Node environment and SDK 2
+do not have this limitation.
+
+SDK 3 structured span/link attributes survive export, including bytes, nested maps,
+mixed arrays and null. Event/resource attributes are still limited to simple values
+by the SDK. Under Jest, SDK 3 also rejects nested plain objects created inside a test;
+null-prototype maps (`Object.create(null)`) work around this. SDK validation warnings
+are available through OpenTelemetry's `diag` logger.
 
 Reporter `token` and `tags` options work as usual.
 For TypeScript, check your reporter options with `satisfies Options`, importing `Options` from `buildkite-test-collector/jest/reporter`.
@@ -323,16 +352,26 @@ OpenTelemetry results don't yet count toward auto-quarantine or tag-to-label map
 
 ## Choosing instrumentation
 
+For SDK 3 / API 1.10+:
+
 ```bash
-npm install --save-dev '@opentelemetry/instrumentation-http@>=0.200.0 <0.300.0' \
-  '@opentelemetry/instrumentation-undici@>=0.11.0 <0.34.0'
+npm install --save-dev '@opentelemetry/instrumentation-http@^0.301.0' \
+  '@opentelemetry/instrumentation-undici@^0.35.0'
+OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici npx jest
+```
+
+For SDK 2 / API 1.9:
+
+```bash
+npm install --save-dev '@opentelemetry/instrumentation-http@^0.223.0' \
+  '@opentelemetry/instrumentation-undici@^0.33.0'
 OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici npx jest
 ```
 
 We select instrumentation declared in your Jest `rootDir`'s package.json or its parents, including workspace roots (under Yarn Plug'n'Play, the workspace that runs Jest).
 If `@opentelemetry/auto-instrumentations-node` is resolvable, we select its whole bundle, with the exclusions below.
 Individual packages installed incidentally by another dependency don't opt you in; a resolvable auto-instrumentations bundle does.
-Use the SDK 2.x line: HTTP 0.200–0.2xx and undici 0.11–0.33. Other instrumentations are checked against their base instrumentation dependency (0.200–0.2xx), not a fixed auto-instrumentations bundle version range.
+Instrumentation needs a compatible API version; the collector checks its base `@opentelemetry/instrumentation` dependency.
 Incompatible instrumentation warns and is skipped without affecting results or manual spans.
 
 We leave logs and messages (`pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`), low-level I/O (`net`, `dns`, `fs`) and metrics (`host-metrics`, `runtime-node`) off by default.
@@ -342,7 +381,7 @@ We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2.
 
 ## Delivery and interruptions
 
-At file teardown the worker writes plain span data as JSON to private local spool files and atomically renames each before returning. Children are committed separately before the test commit, which carries the file path and Jest project ID for accounting. A child serialization or write failure drops those children and warns once per run, but still attempts the test commit; it does not mean test results are missing. This waits for local I/O only, not the network; it is not fsync/power-loss durability. The reporter creates the per-run temporary directory. Its worker settings contain no OTLP token. This JSON is only a local transport envelope, never a JSON results upload. Non-finite numeric attributes (NaN and positive/negative Infinity) are encoded and revived losslessly, including inside arrays.
+At file teardown, workers write spans to private local spool files using Node's V8 serializer and atomic renames. Child commits are separate, so a child serialization or write failure warns without blocking test results. Workers wait for local I/O, not the network; commits are not fsync/power-loss durable. The reporter owns the temporary directory and OTLP token. Spools stay within the Node process tree and preserve structured attributes and non-finite numbers; they are not JSON uploads or a cross-version interchange format.
 
 The parent scans committed files on its one-second timer, rebuilds readable spans and uploads through one stock OpenTelemetry `OTLPTraceExporter` per lane (test and child), with up to four exports in flight per lane. It batches across files for up to one second, retaining span-count caps and measuring with the stock protobuf serializer to enforce a **750 KiB uncompressed protobuf** cap per request, leaving headroom below the endpoint's 900 KiB limit. The stock exporter owns gzip, the authorization/run-key/stream headers, 10-second request timeouts and its retry policy. Its Agent also has a 10-second inactivity timeout that starts before TCP connects, so a silently dropped connection does not occupy a lane slot until the OS timeout; keep-alive remains enabled. Failed batches remain on disk and are requeued through the run for network errors, 429 and 5xx, honoring `Retry-After`. Other HTTP errors are reported without retries. Lost acknowledgments can cause duplicates; delivery is not exactly once.
 
@@ -350,7 +389,7 @@ The parent holds at most 16,384 sendable pending child spans in memory. It admit
 
 Per-file child-cap drops are included in the final run total rather than warning for every file. Child 403 and other permanent upload failures also use that single final warning, not a warning per rejected batch. Child-spool failures (including late completions) warn once per run and are included in the total when drop counts can be written. If drop-count records cannot be written or read, a warning says the total is incomplete or unavailable. Still-open children and children started after teardown are reported separately once per worker at exit; those worker-local counts are not included in the parent's total.
 
-Normal completion and `--bail` share one memoized final drain over a fixed snapshot, with a 10-second budget (the same constant as the stock exporter's timeout) and no batching delay. Healthy runs stop waiting as soon as uploads finish. In an outage, Jest normally exits about ten seconds after the tests finish. The drain stops waiting at its deadline and aborts each lane's connecting and active HTTP/HTTPS sockets through the Agent's signal option, supported even by exporter 0.200.0 on Node 18.19.0. In rare cases, a stock-exporter retry already scheduled can keep Node alive for up to ten additional seconds: `Retry-After` bypasses the usual five-second backoff cap. That retry fails with `ABORT_ERR` without opening another socket. The drain budget is not an exact process-exit deadline. Bail gates new files through the reporter's public start callback, so awaiting uploads does not keep dispatching files. Already running files can finish. SIGTERM gates new files too and shortens any existing drain to at most five more seconds. The collector snapshots other SIGTERM listeners before their once-handlers run, preserving their asynchronous cleanup; it re-raises SIGTERM (or exits with code 143 as PID 1) only if no other listener owned shutdown at signal delivery. Files arriving after the snapshot are not added to the drain. Unacknowledged test results are reported as `TEST RESULTS MISSING`; all unacknowledged children, whether resident or unread on disk, use child-drop wording and test results are unaffected by child losses. No JSON results are sent. Completed runs remove their spool directory; terminated runs may leave it behind. There is no replay tool.
+Normal completion and `--bail` share one memoized final drain over a fixed snapshot, with a 10-second budget (the same constant as the stock exporter's timeout) and no batching delay. Healthy runs stop waiting as soon as uploads finish. In an outage, Jest normally exits about ten seconds after the tests finish. The drain stops waiting at its deadline and aborts each lane's connecting and active HTTP/HTTPS sockets through the Agent's signal option. In rare cases, a stock-exporter retry already scheduled can keep Node alive for up to ten additional seconds: `Retry-After` bypasses the usual five-second backoff cap. That retry fails with `ABORT_ERR` without opening another socket. The drain budget is not an exact process-exit deadline. Bail gates new files through the reporter's public start callback, so awaiting uploads does not keep dispatching files. Already running files can finish. SIGTERM gates new files too and shortens any existing drain to at most five more seconds. The collector snapshots other SIGTERM listeners before their once-handlers run, preserving their asynchronous cleanup; it re-raises SIGTERM (or exits with code 143 as PID 1) only if no other listener owned shutdown at signal delivery. Files arriving after the snapshot are not added to the drain. Unacknowledged test results are reported as `TEST RESULTS MISSING`; all unacknowledged children, whether resident or unread on disk, use child-drop wording and test results are unaffected by child losses. No JSON results are sent. Completed runs remove their spool directory; terminated runs may leave it behind. There is no replay tool.
 
 File-result callbacks only register expected files; they never scan the spool or wait for uploads. The parent scans on its one-second timer and at the final snapshot, and reports files without readable commits once per reason plus an end-of-run file/test summary. If the spool is unreadable, recording status is unknown: the summary does not claim setup failed. With no credential only the configuration warning is printed. Suites with no test results after a worker/environment failure do not add collector warnings. Repeated in-band runs in one process reuse the worker session with the new spool directory (the run key remains process-scoped).
 

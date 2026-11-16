@@ -66,7 +66,7 @@ const createUploads = (settings, directory) => {
       if (children && countOnly) { yield { children }; continue }
       if (children && childForbidden) continue
       if (children && (childFull || heldChildren + children > MAX_RESIDENT_CHILDREN)) { childFull = true; continue }
-      try { yield { name, file: parseFile(fs.readFileSync(path.join(directory, name), 'utf8')) } } catch (error) { readFailed(error) }
+      try { yield { name, file: parseFile(fs.readFileSync(path.join(directory, name))) } } catch (error) { readFailed(error) }
     }
   }
   const split = (spans, stream, name) => {

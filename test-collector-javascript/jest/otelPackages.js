@@ -85,7 +85,9 @@ class JestOtelPackages {
         }
       } catch (error) {
         // Optional packages are not a prerequisite for test-result export.
-        this.context.warnOnce(`package:${name}`, `OpenTelemetry instrumentation ${name} could not patch ${record.file}: ${error.message.split('\n')[0]}; test.execution export remains enabled.`)
+        const platformHint = /\.enable is not a function/.test(error.message)
+          ? ' The instrumentation may have resolved its browser platform under Jest 29 + jsdom/happy-dom; use Jest 30, the Node environment, or SDK 2 for these child spans.' : ''
+        this.context.warnOnce(`package:${name}`, `OpenTelemetry instrumentation ${name} could not patch ${record.file}: ${error.message.split('\n')[0]}; test.execution export remains enabled.${platformHint}`)
       }
     }
     files.set(record.path, exports)

@@ -4,7 +4,7 @@
 // to their provider alone.
 const { trace, context, propagation } = require('@opentelemetry/api')
 const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks')
-const { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base')
+const { TracerProvider, InMemorySpanExporter, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace')
 
 const propagator = { inject() {}, extract: (context) => context, fields: () => ['own-header'] }
 let appTracer = trace.getTracer('cached-app')
@@ -15,7 +15,7 @@ beforeEach(() => {
   appTracer.startSpan('before-takeover').end()
   exporter = new InMemorySpanExporter()
   registered = [
-    trace.setGlobalTracerProvider(new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] })),
+    trace.setGlobalTracerProvider(new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] })),
     context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable()),
     propagation.setGlobalPropagator(propagator),
   ]
