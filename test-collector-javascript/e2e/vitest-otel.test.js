@@ -1,7 +1,9 @@
-const { execFile } = require('child_process')
+const { execFile, execFileSync } = require('child_process')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const { createRequire } = require('module')
+const { pathToFileURL } = require('url')
 const { startOtlpServer } = require('./support/otlpServer')
 const version = require('vitest/package.json').version
 const major = Number(version.split('.')[0])
@@ -287,6 +289,86 @@ const runFixture = (files, config = {}, env = {}) => {
     expect(byId.get(incoming.parentSpanId).kind).toBe(3)
   }
 }, 30000)
+
+// Whether the installed import-in-the-middle reports an import of a package's
+// entry point by file path, as Vitest makes, as an import of that package.
+const hooksEntryPaths = () => {
+  const base = createRequire(require.resolve('@opentelemetry/instrumentation-express')).resolve('@opentelemetry/instrumentation')
+  const iitm = path.dirname(createRequire(base).resolve('import-in-the-middle'))
+  const script = `
+    import { register } from 'node:module'
+    const { Hook } = (await import(${JSON.stringify(pathToFileURL(path.join(iitm, 'index.js')).href)})).default
+    register(${JSON.stringify(pathToFileURL(path.join(iitm, 'hook.mjs')).href)}, { data: { include: [/\\/node_modules\\/express\\//] } })
+    let hooked
+    new Hook(['express'], (exports, name) => { hooked = name })
+    await import(${JSON.stringify(pathToFileURL(require.resolve('express')).href)})
+    console.log(hooked)
+  `
+  return execFileSync(process.execPath, ['--no-warnings', '--input-type=module', '-e', script], { encoding: 'utf8' }).trim() === 'express'
+}
+const runPackages = (env = {}, args = []) => run({ OTEL_TEST_CASE: 'packages', ...env }, args)
+const packageSpans = () => {
+  const spans = server.spans()
+  const byId = new Map(spans.map(s => [s.spanId, s]))
+  const roots = spans.filter(s => s.name === 'test.execution')
+  const root = name => roots.find(s => s.attributes['buildkite.test.name'] === name)
+  const descendants = name => spans.filter(s => {
+    for (let parent = byId.get(s.parentSpanId); parent; parent = byId.get(parent.parentSpanId)) if (parent === root(name)) return true
+    return false
+  })
+  return { spans, roots, names: name => descendants(name).map(s => s.name) }
+}
+const EXPRESS = ['middleware - query', 'middleware - expressInit', 'request handler - /route']
+const GRAPHQL = ['graphql.parse', 'graphql.validate', 'graphql.resolve message']
+const CLIENTS = ['pg.connect', 'pg.query:SELECT fixture', 'redis-connect', 'redis-SET', 'redis-GET']
+const ESM_TESTS = ['esm app', 'esm failure after I/O', 'ts app']
+
+;(supported ? test : test.skip).each(['forks', 'threads'])('package spans nest under CommonJS, ES module and TypeScript tests, and gaps warn (%s)', async pool => {
+  const entryPaths = hooksEntryPaths()
+  const result = await runPackages({ OTEL_TEST_POOL: pool, BUILDKITE_ANALYTICS_DEBUG_ENABLED: 'true' })
+  expect(result.code).toBe(1) // One test deliberately fails after its I/O.
+  const modes = [...result.stdout.matchAll(/instrumentations selected in this Vitest worker: .*\(import-in-the-middle [^,]+, (\w+)\)/g)].map(match => match[1])
+  expect(modes.length).toBeGreaterThan(0)
+  if (process.env.EXPECTED_VITEST_HOOK_MODE) expect([...new Set(modes)]).toEqual([process.env.EXPECTED_VITEST_HOOK_MODE])
+  const { roots, names } = packageSpans()
+  expect(roots).toHaveLength(5)
+  expect(names('cjs app')).toEqual(expect.arrayContaining([...CLIENTS, ...EXPRESS, ...GRAPHQL]))
+  for (const test of ESM_TESTS) {
+    expect(names(test)).toEqual(expect.arrayContaining(CLIENTS))
+    // Express needs import-in-the-middle to hook Vitest's file-path import;
+    // GraphQL needs its CommonJS build, which Vitest does not load.
+    expect([test, EXPRESS.filter(name => names(test).includes(name))]).toEqual([test, entryPaths ? EXPRESS : []])
+    expect([test, GRAPHQL.filter(name => names(test).includes(name))]).toEqual([test, []])
+  }
+  expect([...result.stderr.matchAll(/cannot patch (\S+) in Vitest: (.*)/g)].map(([, name, reason]) => [name, reason.split(' (')[0]]).sort()).toEqual([
+    ...(entryPaths ? [] : [['express', 'Vitest imported its entry point by file path']]),
+    ['graphql', 'Vitest loaded its ES module build'],
+  ])
+  expect(result.stderr).toContain('not the CommonJS build Node loads (index.js)')
+  expect(result.stderr).not.toMatch(/disabled|dropped|TEST RESULTS MISSING|DEP0205/)
+
+  // Tracing does not change results or what the packages export.
+  const statuses = Object.fromEntries(roots.map(s => [s.attributes['buildkite.test.name'], s.attributes['test.case.result.status']]))
+  const output = path.join(scratch, 'plain.json')
+  const plain = await runPackages({ OTEL_TEST_POOL: pool, OTEL_TEST_NO_SDK: '1' }, ['--reporter=default', '--reporter=json', `--outputFile=${output}`])
+  expect(plain.code).toBe(result.code)
+  const results = JSON.parse(fs.readFileSync(output)).testResults.flatMap(file => file.assertionResults)
+  expect(Object.fromEntries(results.map(r => [r.title, r.status === 'passed' ? 'pass' : 'fail']))).toEqual(statuses)
+  const namespaces = stdout => stdout.match(/NAMESPACES .*/)?.[0]
+  expect(namespaces(result.stdout)).toMatch(/"express",\[.*"graphql",\[/)
+  expect(namespaces(plain.stdout)).toBe(namespaces(result.stdout))
+}, 60000)
+
+;(supported ? test : test.skip)('resolving GraphQL and its subpaths to CommonJS records GraphQL spans from ES module tests', async () => {
+  const result = await runPackages({ OTEL_TEST_GRAPHQL_CJS: '1' })
+  expect(result.code).toBe(1)
+  const { roots, names } = packageSpans()
+  // One GraphQL copy: mixing builds fails with "from another module or realm".
+  expect(Object.fromEntries(roots.map(s => [s.attributes['buildkite.test.name'], s.attributes['test.case.result.status']])))
+    .toEqual({ 'cjs app': 'pass', 'esm app': 'pass', 'esm failure after I/O': 'fail', 'package namespaces': 'pass', 'ts app': 'pass' })
+  for (const test of ['cjs app', ...ESM_TESTS]) expect([test, GRAPHQL.filter(name => names(test).includes(name))]).toEqual([test, GRAPHQL])
+  expect(result.stderr).not.toContain('cannot patch graphql')
+}, 60000)
 
 ;(supported ? test : test.skip).each(['forks', 'threads'])('projects namespace IDs and discover project-only HTTP instrumentation (%s)', async pool => {
   // Outside the workspace: only this project's manifest declares instrumentation.
