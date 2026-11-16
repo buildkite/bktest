@@ -7,7 +7,6 @@ const { packageVersion } = require('./sdk')
 const sets = new Map()
 
 const PREFIX = '@opentelemetry/instrumentation-'
-// Contrib versions don't identify the SDK line; check their base instead.
 const MINIMUM_VERSIONS = { http: '0.200.0', undici: '0.11.0' }
 const optionalVersion = (name, load) => {
   try { return packageVersion(name, load) } catch { return undefined }
@@ -76,8 +75,7 @@ const loadInstrumentations = (rootDir, warnOnce, only) => {
         continue
       }
       try {
-        // Contrib versions don't identify the SDK line; their base dependency does.
-        // Check before construction: base 0.300+ throws on api 1.9 (no api.logs).
+        // Check the base before construction: 0.300+ needs api.logs from API 1.10.
         const from = createRequire(resolved)
         const base = optionalVersion('@opentelemetry/instrumentation', from)
         const apiVersion = optionalVersion('@opentelemetry/api', from)

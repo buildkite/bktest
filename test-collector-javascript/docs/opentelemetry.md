@@ -214,12 +214,10 @@ module.exports = {
 
 ## Setup
 
-All three runners use `@opentelemetry/sdk-trace` 2.9+ or 3.x. Choose a matching
-package set; mixing SDK lines can cause npm peer-resolution errors or missing
-child instrumentation. These are install recommendations, not upper bounds on
-the collector's supported packages.
+All three runners support `@opentelemetry/sdk-trace` 2.9+ and 3.x. The package sets
+below have compatible peers; the collector does not impose upper version limits.
 
-For SDK 3, use Node.js 22.15+ and API 1.10+:
+SDK 3 requires Node.js 22.15+ and API 1.10+:
 
 ```bash
 npm install --save-dev buildkite-test-collector \
@@ -229,7 +227,7 @@ npm install --save-dev buildkite-test-collector \
   '@opentelemetry/exporter-trace-otlp-proto@~0.301.0'
 ```
 
-For SDK 2.9+, use Node.js 18.19+ or 20.6+, subject to your runner's own Node requirements:
+SDK 2.9+ requires Node.js 18.19+ or 20.6+, or your runner's higher minimum:
 
 ```bash
 npm install --save-dev buildkite-test-collector \
@@ -239,17 +237,15 @@ npm install --save-dev buildkite-test-collector \
   '@opentelemetry/exporter-trace-otlp-proto@~0.223.0'
 ```
 
-Playwright does not need `context-async-hooks`. With pnpm, Yarn or npm, declare
-the API explicitly. Under Yarn Plug'n'Play, declare these packages in the root workspace.
+Playwright does not need `context-async-hooks`. Yarn Plug'n'Play needs these
+packages in the root workspace.
 
 **Migration:** replace your direct `@opentelemetry/sdk-trace-base` dependency with
-`@opentelemetry/sdk-trace` 2.9+ (or 3.x with its Node/API requirements). SDK 2.0–2.8
-is no longer supported in OTel mode. If your own setup creates providers or
-processors, replace `BasicTracerProvider` with `TracerProvider` and use
-`new SimpleSpanProcessor({ exporter })` / `new BatchSpanProcessor({ exporter })`.
-The collector configuration is unchanged. Child spans retain the environment's
-sampler (including `parentbased_*`) and span limits, with `OTEL_SPAN_ATTRIBUTE_*`
-taking precedence over `OTEL_ATTRIBUTE_*`; test spans keep fixed limits and AlwaysOn sampling.
+`@opentelemetry/sdk-trace` 2.9+; OTel mode no longer supports SDK 2.0–2.8.
+Custom provider setup needs `TracerProvider` instead of `BasicTracerProvider`,
+and processors take `{ exporter }` options. Collector configuration is unchanged.
+Child spans keep environment-selected sampling and limits; test spans keep
+AlwaysOn sampling and fixed limits.
 
 Use Jest 29 or 30 with `jest-circus` (tested with 29.7.0 and 30.5.2).
 Jest 30.0 and 30.1 can drop `afterEach` children in files mixing concurrent and sequential tests.
@@ -258,23 +254,21 @@ Supported platforms are Linux and macOS; Windows is untested.
 OpenTelemetry options, environment variables and span shape may change in minor releases.
 Test spans count as test executions, like JSON uploads, at no extra charge. Child spans are billed by data ingested and need a plan that includes them; without it, we still record test results and warn that child spans were dropped.
 
-The collector checks that the SDK and exporter are from the 2.9+ or 3.x line,
-without version caps, and probes serialization before
-recording results. On older Node versions with SDK 3 it warns and still attempts
-export; that combination is unsupported. Incompatible instrumentation is skipped
-with a warning, without disabling test results.
+The collector probes serialization before recording results. SDK 3 on older Node
+versions warns but still attempts export. Incompatible instrumentation is skipped
+with a warning; test results remain enabled.
 
-Jest native ESM supports API 1.10's separate ESM and CommonJS API objects, including
-tracers obtained before `resetModules`. Under **Jest 29 with jsdom or happy-dom**, SDK 3
-package instrumentation (Express, GraphQL, pg, Redis and others) loads its browser
-build and is skipped with a warning; HTTP/fetch children and test results still record.
+Jest native ESM spans work with API 1.10, including tracers obtained before
+`resetModules` and synchronous `require(esm)`. Under **Jest 29 with jsdom or happy-dom**,
+SDK 3 package instrumentation loads its browser build and is skipped with a warning;
+test results, HTTP and fetch still record. Jest 30, the Node environment and SDK 2
+do not have this limitation.
 
-The spool preserves SDK 3's structured span/link attribute values, including byte
-arrays, nested maps, heterogeneous arrays and null. The SDK still accepts only
-simple event/resource attributes. Its plain-object validation also rejects nested
-objects from Jest's foreign VM realm; use null-prototype maps (`Object.create(null)`)
-for those nested values. Values rejected by the SDK never reach the collector;
-enable an OpenTelemetry `diag` logger to see SDK attribute-validation warnings.
+SDK 3 structured span/link attributes survive export, including bytes, nested maps,
+mixed arrays and null. Event/resource attributes are still limited to simple values
+by the SDK. Under Jest, SDK 3 also rejects nested plain objects created inside a test;
+null-prototype maps (`Object.create(null)`) work around this. SDK validation warnings
+are available through OpenTelemetry's `diag` logger.
 
 Reporter `token` and `tags` options work as usual.
 For TypeScript, check your reporter options with `satisfies Options`, importing `Options` from `buildkite-test-collector/jest/reporter`.
@@ -377,7 +371,7 @@ OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici npx jest
 We select instrumentation declared in your Jest `rootDir`'s package.json or its parents, including workspace roots (under Yarn Plug'n'Play, the workspace that runs Jest).
 If `@opentelemetry/auto-instrumentations-node` is resolvable, we select its whole bundle, with the exclusions below.
 Individual packages installed incidentally by another dependency don't opt you in; a resolvable auto-instrumentations bundle does.
-Choose instrumentation from your SDK line. Packages are checked against their base `@opentelemetry/instrumentation` version, not a fixed auto-instrumentations bundle version range.
+Instrumentation needs a compatible API version; the collector checks its base `@opentelemetry/instrumentation` dependency.
 Incompatible instrumentation warns and is skipped without affecting results or manual spans.
 
 We leave logs and messages (`pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`), low-level I/O (`net`, `dns`, `fs`) and metrics (`host-metrics`, `runtime-node`) off by default.
@@ -387,7 +381,7 @@ We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2.
 
 ## Delivery and interruptions
 
-At file teardown the worker writes plain span data with Node's V8 binary serializer to private local spool files and atomically renames each before returning. Children are committed separately before the test commit, which carries the file path and Jest project ID for accounting. A child serialization or write failure drops those children and warns once per run, but still attempts the test commit; it does not mean test results are missing. This waits for local I/O only, not the network; it is not fsync/power-loss durability. The reporter creates the per-run temporary directory. Its worker settings contain no OTLP token. The binary spool is only a local transport envelope within the Node process tree, never a JSON results upload or a cross-version interchange format. Structured SDK 3 span/link attributes and non-finite numeric attributes (NaN and positive/negative Infinity) round-trip losslessly.
+At file teardown, workers write spans to private local spool files using Node's V8 serializer and atomic renames. Child commits are separate, so a child serialization or write failure warns without blocking test results. Workers wait for local I/O, not the network; commits are not fsync/power-loss durable. The reporter owns the temporary directory and OTLP token. Spools stay within the Node process tree and preserve structured attributes and non-finite numbers; they are not JSON uploads or a cross-version interchange format.
 
 The parent scans committed files on its one-second timer, rebuilds readable spans and uploads through one stock OpenTelemetry `OTLPTraceExporter` per lane (test and child), with up to four exports in flight per lane. It batches across files for up to one second, retaining span-count caps and measuring with the stock protobuf serializer to enforce a **750 KiB uncompressed protobuf** cap per request, leaving headroom below the endpoint's 900 KiB limit. The stock exporter owns gzip, the authorization/run-key/stream headers, 10-second request timeouts and its retry policy. Its Agent also has a 10-second inactivity timeout that starts before TCP connects, so a silently dropped connection does not occupy a lane slot until the OS timeout; keep-alive remains enabled. Failed batches remain on disk and are requeued through the run for network errors, 429 and 5xx, honoring `Retry-After`. Other HTTP errors are reported without retries. Lost acknowledgments can cause duplicates; delivery is not exactly once.
 

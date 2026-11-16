@@ -1,5 +1,4 @@
-// Install a coherent line, never the collector's uncapped support ranges:
-// npm cannot pair SDK 2's api <1.10 peer with SDK 3's api >=1.10 peer.
+// SDK 2 and 3 have incompatible API peers; install each line separately.
 const lines = {
   '2': {
     api: '~1.9.0', 'sdk-trace': '^2.9', resources: '^2.9', 'context-async-hooks': '^2.9',
@@ -26,7 +25,6 @@ if (require.main === module) {
   const requested = Object.entries(dependencies(process.argv[2]))
   execFileSync('npm', ['install', '--no-save', '--strict-peer-deps', ...requested.map(([name, version]) => `${name}@${version}`)], { stdio: 'inherit' })
   const { packageVersion } = require('../util/otel/sdk')
-  // Fail if the collector would resolve a copy other than the one requested.
   let mismatched = false
   for (const [name, version] of requested) {
     const installed = packageVersion(name)

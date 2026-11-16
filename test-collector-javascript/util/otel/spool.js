@@ -18,8 +18,7 @@ const size = (suffix, fallback, limit = 2147483647, directory) => {
 const batchSize = (stream, directory) => stream === 'test'
   ? size('TEST_SPAN_BATCH_SIZE', 1000, 1000, directory) : size('CHILD_SPAN_BATCH_SIZE', 512, undefined, directory)
 
-// Spools never leave this Node process tree. V8 preserves SDK 3's structured
-// attributes (including Uint8Array and null) as well as non-finite numbers.
+// V8 preserves structured attributes; spools stay within this Node process tree.
 const parseFile = (buffer) => deserialize(buffer)
 
 const spanData = (span) => {

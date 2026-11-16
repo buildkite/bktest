@@ -46,8 +46,7 @@ test('preserves non-finite numbers in span, event, link and distinct resource at
   const providers = []
   const attributes = { $number: 'Infinity', other: 'value', attributes: Infinity,
     nan: NaN, positive: Infinity, negative: -Infinity, array: [NaN, Infinity, -Infinity, 1] }
-  // SDK 3 supports structured span/link values, but events and resources still
-  // accept only simple attributes. Do not mistake SDK rejection for codec loss.
+  // SDK 3 still restricts event/resource attributes to simple values.
   const eventAttributes = { ...attributes }
   if (require('semver').gte(sdk.apiVersion, '1.10.0')) Object.assign(attributes, {
     bytes: new Uint8Array([1, 127, 255]), nested: { map: { value: null } }, mixed: [1, 'two', false, null, { three: 3 }],

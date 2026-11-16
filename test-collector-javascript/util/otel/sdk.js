@@ -12,14 +12,12 @@ const PACKAGES = {
   exporter: '@opentelemetry/exporter-trace-otlp-proto',
 }
 
-// Floors, not caps. sdk-trace exists from 2.9.0 and exporter 0.220.0 is the
-// first built on it. CI installs explicit, matching SDK lines.
+// sdk-trace starts at 2.9.0; exporter 0.220.0 is the first to use it.
 const SUPPORTED_VERSIONS = {
   '@opentelemetry/sdk-trace': '>=2.9.0',
   '@opentelemetry/context-async-hooks': '>=2.0.0',
   '@opentelemetry/exporter-trace-otlp-proto': '>=0.220.0',
 }
-// SDK 3 packages (and 0.300+ instrumentation) need api 1.10 and Node 22.15.
 const SDK3_NODE = '>=22.15.0'
 
 const installCommand = () => {
@@ -80,9 +78,7 @@ const createResource = ({ resources }, runEnv) => resources.defaultResource()
   .merge(resources.detectResources({ detectors: [resources.envDetector] }))
   .merge(resources.resourceFromAttributes(resourceAttributes(runEnv)))
 
-// sdk-trace reads no environment on either line. Children follow the
-// OTEL_TRACES_SAMPLER and span limit variables, as sdk-trace-base's
-// BasicTracerProvider (loadDefaultConfig/reconfigureLimits) did.
+// sdk-trace no longer reads env config; retain sdk-trace-base's child defaults.
 const SAMPLERS = {
   always_on: (trace) => new trace.AlwaysOnSampler(),
   always_off: (trace) => new trace.AlwaysOffSampler(),

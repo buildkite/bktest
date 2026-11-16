@@ -57,27 +57,9 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     In 1.13.0, experimental OpenTelemetry submission sends test results as spans, with HTTP calls,
     database queries and manual spans underneath. JSON uploads remain the default.
 
-    All OTel modes (Jest, Vitest and Playwright) use `@opentelemetry/sdk-trace` 2.9+ or 3.x.
-    SDK 3 needs Node.js 22.15+ and API 1.10+:
-
-    ```bash
-    npm install --save-dev buildkite-test-collector '@opentelemetry/api@^1.10' \
-      '@opentelemetry/sdk-trace@^3' '@opentelemetry/context-async-hooks@^3' \
-      '@opentelemetry/exporter-trace-otlp-proto@~0.301.0'
-    ```
-
-    For SDK 2.9+ (Node.js 18.19+ or 20.6+, or your runner's higher requirement):
-
-    ```bash
-    npm install --save-dev buildkite-test-collector '@opentelemetry/api@~1.9.0' \
-      '@opentelemetry/sdk-trace@^2.9' '@opentelemetry/context-async-hooks@^2' \
-      '@opentelemetry/exporter-trace-otlp-proto@~0.223.0'
-    ```
-
-    Migrate any direct `sdk-trace-base` dependency to `sdk-trace`; SDK 2.0–2.8 is no longer
-    supported in OTel mode. Playwright can omit `context-async-hooks`.
-    Under Jest 29 with jsdom or happy-dom, SDK 3 package instrumentation is skipped with a warning;
-    test results, HTTP and fetch still record.
+    Jest, Vitest and Playwright support `@opentelemetry/sdk-trace` 2.9+ and 3.x.
+    SDK 3 requires Node.js 22.15+ and API 1.10+. The [OpenTelemetry setup](docs/opentelemetry.md#setup-1)
+    has package sets for both SDK lines and migration notes for `sdk-trace-base` users.
 
     ```js
     // jest.config.js

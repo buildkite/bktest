@@ -42,8 +42,7 @@ const createExporter = ({ sdk, endpoint, token, runKey, stream, metrics, directo
       'Buildkite-Tests-Span-Stream': stream,
     },
     compression: 'gzip', timeoutMillis: EXPORT_TIMEOUT_MILLISECONDS, concurrencyLimit: Infinity,
-    // Keep the agent even if a refused connection fails before Node 18's
-    // request.start diagnostic. Both supported exporter lines accept a factory.
+    // Node 18 can refuse a connection before request.start exposes the agent.
     httpAgentOptions: () => agent,
   }))
   const matches = (request) => request.getHeader('buildkite-tests-run-key') === runKey &&

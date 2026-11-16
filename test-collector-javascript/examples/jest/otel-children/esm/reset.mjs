@@ -1,6 +1,3 @@
-// Native ESM (--experimental-vm-modules): API 1.10 has separate ESM and CJS
-// singletons. A tracer obtained at load, before a reset in beforeAll, must
-// record children on either API line.
 import { trace } from '@opentelemetry/api'
 import http from 'node:http'
 

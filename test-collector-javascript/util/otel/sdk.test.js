@@ -6,8 +6,7 @@ beforeEach(() => {
 })
 afterEach(() => { process.env = originalEnv })
 
-// These decisions and limits were checked against sdk-trace-base 2.8.0's
-// BasicTracerProvider. Keep its environment contract on both sdk-trace lines.
+// Expected values come from sdk-trace-base 2.8.0's BasicTracerProvider.
 test.each([
   ['always_on', undefined, [true, true, true, true]],
   ['always_off', undefined, [false, false, false, false]],
@@ -46,7 +45,6 @@ test.each([
         const span = tracer.startSpan('child', {}, context)
         recording.push(span.isRecording()); span.end()
       }
-      // ParentBased's local-parent decisions must match the remote ones too.
       for (const flags of [0, 1]) {
         const context = sdk.api.trace.setSpanContext(sdk.api.ROOT_CONTEXT, {
           traceId: high, spanId: '0123456789abcdef', traceFlags: flags, isRemote: false,

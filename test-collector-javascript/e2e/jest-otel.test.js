@@ -414,8 +414,7 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     const result = await spoolRun({ args: ['--runInBand'], body: `
       test('structured attributes', () => {
         const { trace } = require('@opentelemetry/api')
-        // SDK 3 rejects plain objects from a foreign VM realm. Null-prototype
-        // maps are accepted by the SDK before reaching the collector's spool.
+        // SDK 3 rejects nested plain objects from Jest's VM realm.
         const attributes = { bytes: new Uint8Array([1, 127, 255]), nested: Object.assign(Object.create(null), { answer: 42, missing: null }), mixed: ['two', 3, false, null] }
         const span = trace.getTracer('structured').startSpan('structured child', { attributes })
         span.addEvent('event', { simple: 'saved' })
@@ -1233,8 +1232,6 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
     expect(roots.map((root) => root.attributes['test.case.result.status'])).toEqual(['pass', 'pass', 'pass', 'pass'])
   }, 60000)
 
-  // API 1.9 imports share CommonJS; 1.10 has a separate native ESM proxy.
-  // Run this on both Jest 30 loader paths: async (Node 22.15) and sync (24.9+).
   test('exports children from a tracer an ES module obtained before a reset in beforeAll', async () => {
     const outcome = await runChildren('esm', { env: { NODE_OPTIONS: '--experimental-vm-modules' } })
     expect([outcome.result.code, outcome.warnings, outcome.roots.length]).toEqual([0, [], 1])
