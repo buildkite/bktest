@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.15.0
+
+- Support OpenTelemetry JS SDK 3 (`@opentelemetry/sdk-trace` 3.x, API 1.10+, Node.js 22.15+) in Jest, Vitest and Playwright. SDK 2.9+ still works, and child spans keep environment-selected sampling and limits.
+- **Migration:** OTel mode now loads `@opentelemetry/sdk-trace` 2.9+ instead of `sdk-trace-base`. Projects on SDK 2.0–2.8 or Yarn Plug'n'Play must add it, or the collector warns and uploads nothing. Custom providers use `TracerProvider`, and processors take `{ exporter }`. See the [setup guide](docs/opentelemetry.md#setup-1).
+- Preserve SDK 3 structured span/link attributes and Jest native ESM manual spans. SDK 3 rejects nested plain objects created inside Jest tests; use `Object.create(null)` instead.
+- Keep test results when child spans fail. A child-stream HTTP 403 stops child uploads for the rest of the run and shows the server's reason. Child serialization and spool-write failures only warn.
+- Playwright: redact API input values from child span names, keep results on SIGTERM and global timeouts (interrupted attempts report as skipped), support 1.41.2, and truncate large step errors.
+- Vitest: stop sending billed child spans for uninstrumented suites, send execution spans only for VM pools, warn on SIGTERM instead of attempting a drain, and warn when a Vitest release changes its spans so children can't be linked to tests.
+- Fall back to `BUILDKITE_ANALYTICS_TOKEN` when the reporter token is blank.
+
 ## 1.14.0
 
 - Add experimental OpenTelemetry mode for Playwright. Each test attempt becomes a span, with `test.step` blocks, hooks, fixtures, assertions and actions as child spans. Enable it with reporter option `otelEnabled: true`; see the [Playwright guide](docs/opentelemetry.md#playwright).
