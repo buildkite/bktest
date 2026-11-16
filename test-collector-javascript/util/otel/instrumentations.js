@@ -8,7 +8,7 @@ const sets = new Map()
 
 const PREFIX = '@opentelemetry/instrumentation-'
 // Contrib versions don't identify the SDK line; check their base instead.
-const MINIMUM_VERSIONS = { http: '0.220.0', undici: '0.30.0' }
+const MINIMUM_VERSIONS = { http: '0.200.0', undici: '0.11.0' }
 const optionalVersion = (name, load) => {
   try { return packageVersion(name, load) } catch { return undefined }
 }

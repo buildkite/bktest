@@ -15,8 +15,8 @@ const lines = {
   },
 }
 lines.floor = { ...lines['2'], api: '1.9.0', 'sdk-trace': '2.9.0', resources: '2.9.0',
-  'context-async-hooks': '2.9.0', 'exporter-trace-otlp-proto': '0.220.0',
-  'instrumentation-http': '0.220.0', 'instrumentation-undici': '0.30.0' }
+  'context-async-hooks': '2.0.0', 'exporter-trace-otlp-proto': '0.220.0',
+  'instrumentation-http': '0.200.0', 'instrumentation-undici': '0.11.0' }
 lines.latest = Object.fromEntries(Object.keys(lines['3']).map(name => [name, 'latest']))
 const dependencies = line => Object.fromEntries(Object.entries(lines[line]).map(([name, version]) => [`@opentelemetry/${name}`, version]))
 

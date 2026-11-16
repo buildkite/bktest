@@ -258,8 +258,8 @@ Supported platforms are Linux and macOS; Windows is untested.
 OpenTelemetry options, environment variables and span shape may change in minor releases.
 Test spans count as test executions, like JSON uploads, at no extra charge. Child spans are billed by data ingested and need a plan that includes them; without it, we still record test results and warn that child spans were dropped.
 
-The collector checks that the SDK, exporter and (for children) `context-async-hooks`
-are from the 2.9+ or 3.x line, without version caps, and probes serialization before
+The collector checks that the SDK and exporter are from the 2.9+ or 3.x line,
+without version caps, and probes serialization before
 recording results. On older Node versions with SDK 3 it warns and still attempts
 export; that combination is unsupported. Incompatible instrumentation is skipped
 with a warning, without disabling test results.
