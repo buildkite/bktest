@@ -55,17 +55,130 @@ Reporter `token` and `tags` options and the shared [settings](#settings) apply.
 Per-test `@key:value` tags (Playwright 1.42+) override reporter tags. Child export limits apply per
 file across workers and retries; dropped children do not displace test results.
 
-For sharded blob reports, configure this reporter in the `merge-reports` step,
-**not in the shards**. Enabling it in both uploads the executions twice.
+For reporter-only tracing with sharded blob reports, configure this reporter in
+the `merge-reports` step, **not in the shards**. Enabling it in both uploads the
+executions twice. App tracing instead requires the reporter in each live shard;
+see below.
 UI mode uploads on **every run** when a token is set; use a separate suite or
 disable the reporter if those local runs should not be recorded.
 
 With OTel enabled, configuration or upload failures warn without falling back to
 JSON or changing Playwright's exit code. Turn `otelEnabled` off to use JSON again.
 
-This is reporter-side tracing only. It does not propagate context into workers
-or collect automatic HTTP/database spans, manual worker spans, browser application
-traces or in-test annotations.
+By itself the reporter does not collect worker HTTP/database spans, manual worker
+spans, browser application traces or in-test annotations. To continue each test's
+trace into the app under test, opt into the experimental fixture below.
+
+### Playwright: app spans (experimental)
+
+This experiment is not ready for release. An instrumented app can export its HTTP,
+Express and database spans under the test that drove it, alongside Playwright steps.
+The app needs an OTel SDK that reads `OTEL_*` environment variables and a W3C
+Trace Context propagator. This does not install or configure instrumentation in your app.
+
+Importing the fixture opts into browser routing, with these trade-offs:
+
+- The browser HTTP cache is disabled.
+- Chromium accepts every CORS preflight, for every origin, including the app's
+  cross-origin APIs. Firefox and WebKit still send and enforce preflights for
+  page-supplied non-safelisted headers. Keep CORS-specific tests on plain
+  `@playwright/test`, without this fixture, rather than relying on routed networking.
+- Header overrides follow redirects in Chromium, Firefox and WebKit. Browser
+  requests carrying `Authorization` are left unmodified, with no added
+  `traceparent`, so the browser can strip auth on cross-origin redirects. An
+  unauthenticated app request redirected to another origin still carries
+  `traceparent` and the copied headers to that origin in Playwright 1.56.1.
+  Firefox in Playwright 1.41.2 instead drops overrides on redirects, so the
+  redirected request does not continue the test trace.
+- WebKit in Playwright 1.56.1 and Firefox in 1.41.2 can preflight an authenticated
+  redirect for `Authorization` even though they strip the header before reaching
+  the destination. That destination must allow `Authorization` in its CORS
+  preflight response.
+
+App-tracing e2e coverage on Linux includes Chromium, Firefox and WebKit with
+Playwright 1.56.1 and 1.41.2. WebKit 1.41.2 passes in Debian 12 CI, but could not
+run locally on Debian 13 because its fallback build needs unavailable legacy
+libraries. Windows remains unverified.
+
+```js
+// playwright.config.js
+const { appTracingEnv } = require('buildkite-test-collector/playwright/fixture')
+module.exports = {
+  reporter: [['buildkite-test-collector/playwright/reporter', { otelEnabled: true }]],
+  use: { baseURL: 'http://localhost:3000' },
+  webServer: [{
+    command: 'node --require ./instrumentation.js server.js',
+    url: 'http://localhost:3000/health',
+    env: {
+      ...appTracingEnv(),
+      NODE_ENV: 'test',
+      OTEL_METRICS_EXPORTER: 'none',
+      OTEL_LOGS_EXPORTER: 'none',
+    },
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 5000 }, // Playwright 1.50+
+  }],
+}
+// tests: use this test instead of @playwright/test's test
+const { test, expect } = require('buildkite-test-collector/playwright/fixture')
+```
+
+Use the array form even for one server: Playwright's JSON reporter writes a single
+`webServer` object, including its env and credential, into the report; arrays are omitted.
+
+ESM projects import from `buildkite-test-collector/playwright/fixture.js`, including
+the `.js` extension: `import { test, expect, appTracingEnv } from 'buildkite-test-collector/playwright/fixture.js'`.
+
+Set a suite token as in [Settings](#settings). Prefer `BUILDKITE_ANALYTICS_TOKEN`
+(or `BUILDKITE_TESTS_OTLP_TOKEN` for OpenTelemetry) and call `appTracingEnv()`
+without a token. If you use the reporter's `token` option, pass the same value to
+`appTracingEnv({ token })`. The helper honours
+`BUILDKITE_TESTS_OTLP_TOKEN` and `BUILDKITE_ANALYTICS_OTLP_ENDPOINT`, including
+bktec's relay, and shares the run key with the reporter (also for local runs).
+Without a credential or valid configuration it returns `{}`; without the OTel
+reporter's run seed the fixtures do not add tracing headers.
+The config object holds the real credential: do not log it or the returned environment.
+
+App tracing requires the reporter in each live run, including every shard, and
+**not** in `merge-reports`. Merge-only app tracing is unsupported: replaying blobs
+generates new test IDs that do not join the app spans, and reporting both live and
+at merge time duplicates executions.
+
+The app must flush its SDK on SIGTERM. Use `webServer.gracefulShutdown` on
+Playwright 1.50+ to give batched spans time to flush; older Playwright forcibly
+kills the app and can lose pending spans. For ESM apps, use the SDK/instrumentation's
+ESM loader hook (for example `--import`), not only a CommonJS `--require` preload.
+With `reuseExistingServer: true`, a reused dev server must already have the same
+export environment; `appTracingEnv()` cannot configure an already-running server.
+
+Initial browser header injection is restricted to `use.baseURL`'s origin and resource types
+`document`, `fetch` and `xhr`. Set `use.buildkiteAppOrigins` to an array of app/API
+origins for multi-origin apps, and `use.buildkiteAppResourceTypes` to change the
+resource types. Static assets are excluded by default to reduce billed volume.
+User route handlers on app origins must call `route.fallback()`; `route.continue()`
+or `route.fulfill()` stops the chain before the collector's handler can run.
+The `request` fixture preserves the inherited request context, base URL and headers and
+adds `traceparent` to **every origin**, not just the app's; API requests have no
+browser CORS restriction. Use it only with destinations that should receive test context.
+An explicit per-call `traceparent` takes priority over the fixture's value.
+For existing custom fixtures, extend your base test with the exported
+`appTracingFixtures` instead of importing the collector's `test`.
+
+Each retry has a separate trace. App spans sit directly under the test, **not the
+Playwright step** that caused the request. WebSockets, service-worker requests,
+and contexts created with `browser.newContext()` are not covered; block service
+workers if they intercept your test's requests.
+This is for apps whose environment you control, not deployed preview/staging apps
+that cannot receive the run's export configuration.
+
+App spans use the `child` stream and are billed by decoded GB ingested, requiring
+a plan with child-span ingestion. The parent-based sampler drops health probes and
+other root requests, but accepts **any sampled remote parent**, not just tests.
+For example, browser-side OTel on an unrouted request can produce app spans that
+are billed but do not sit under a test. App export goes directly
+through its SDK, not the reporter's spool or per-file child cap; configure app SDK
+limits separately. Check URLs, queries and database statements for sensitive data.
+App upload failures do not change test results, but SDK startup and shutdown remain
+the app's responsibility.
 
 ### Playwright delivery and interruptions
 
