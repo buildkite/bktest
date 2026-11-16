@@ -247,6 +247,79 @@ describe('examples/playwright in OTel mode', () => {
     server = null;
   });
 
+  test('imports all app tracing fixtures from native ESM', async () => {
+    const script = `
+      import { test, expect, appTracingFixtures, appTracingEnv } from ${JSON.stringify(require.resolve('../playwright/fixture.js'))};
+      console.log(JSON.stringify([typeof test, typeof expect, typeof appTracingFixtures, typeof appTracingEnv]));
+    `;
+    const stdout = await new Promise((resolve, reject) => {
+      execFile(process.execPath, ['--input-type=module', '-e', script], { cwd }, (error, out) => error ? reject(error) : resolve(out));
+    });
+    expect(JSON.parse(stdout)).toEqual(['function', 'function', 'object', 'function']);
+  });
+
+  test.each(process.env.PLAYWRIGHT_APP_ALL_BROWSERS === '1' ? ['chromium', 'firefox', 'webkit'] : ['chromium'])('continues each attempt into the app with scoped headers and browser-specific redirects (%s)', async browser => {
+    server = await startOtlpServer();
+    // Hold both ports until allocated so they cannot be the same port.
+    const listeners = await Promise.all([0, 1].map(() => new Promise(resolve => {
+      const listener = require('net').createServer();
+      listener.listen(0, '127.0.0.1', () => resolve(listener));
+    })));
+    const [appPort, thirdPartyPort] = listeners.map(listener => String(listener.address().port));
+    await Promise.all(listeners.map(listener => new Promise(resolve => listener.close(resolve))));
+    const env = { PLAYWRIGHT_APP_PORT: appPort, PLAYWRIGHT_APP_THIRD_PARTY_PORT: thirdPartyPort };
+    const args = ['--config', 'otel-app.config.js', '--project', browser];
+    const result = await run(args, env);
+    expect(result.code).toBe(0);
+    expect(result.stderr).not.toMatch(/\[buildkite-test-collector\]|Error in reporter/);
+    const roots = testSpans();
+    // Array webServer + composed env keeps credentials out of JSON reports.
+    expect(result.report.config.webServer).toBeNull();
+    expect(JSON.stringify(result.report)).not.toContain('relay-token');
+    expect(roots).toHaveLength(7);
+    expect(new Set(roots.map(span => span.traceId)).size).toBe(7);
+
+    const appRequests = server.requests.filter(request => request.decoded?.resourceSpans.some(resource => resource.resource['service.name'] === 'playwright-e2e-app'));
+    expect(appRequests.length).toBeGreaterThan(0);
+    for (const request of appRequests) {
+      expect(request.decodeError).toBeNull();
+      expect(request.headers).toMatchObject({
+        authorization: 'Bearer relay-token',
+        'buildkite-tests-run-key': 'playwright-otel-e2e',
+        'buildkite-tests-span-stream': 'child',
+        'content-type': 'application/x-protobuf',
+        'content-encoding': 'gzip',
+      });
+    }
+    const appSpans = appRequests.flatMap(request => request.decoded.resourceSpans.flatMap(resource => resource.scopeSpans.flatMap(scope => scope.spans)));
+    const servers = appSpans.filter(span => span.kind === 2);
+    // Firefox 1.41.2 drops overrides on redirects, so the target is not sampled.
+    const followsRedirects = browser !== 'firefox' || require('@playwright/test/package.json').version !== '1.41.2';
+    expect(servers).toHaveLength(followsRedirects ? 15 : 14); // Documents, fetches, relative API request, redirect and (where propagated) target.
+    expect(appSpans.every(span => roots.some(root => root.traceId === span.traceId))).toBe(true);
+    expect(appSpans.some(span => Object.values(span.attributes).some(value => typeof value === 'string' && /\/app\.js|\/health|\/widget/.test(value)))).toBe(false);
+    for (const root of roots) {
+      const name = root.attributes['buildkite.test.name'];
+      const status = root.attributes['test.case.result.status'];
+      const marker = name === 'request fixture' ? 'r' : name === 'passes on retry' ? `t${status === 'fail' ? 0 : 1}` : name.slice(-1);
+      const requests = servers.filter(span => span.traceId === root.traceId);
+      expect(requests).toHaveLength(name === 'request fixture' ? 1 : name === 'page a' ? (followsRedirects ? 4 : 3) : 2);
+      expect(requests.every(span => span.parentSpanId === root.spanId)).toBe(true);
+      expect(appSpans.filter(span => span.traceId === root.traceId && span.name === 'load item').map(span => span.attributes['app.marker'])).toEqual([marker]);
+    }
+    expect(roots.filter(span => span.attributes['buildkite.test.name'] === 'passes on retry').map(span => span.attributes['test.case.result.status']).sort()).toEqual(['fail', 'pass']);
+    expect(roots.filter(span => span.attributes['buildkite.test.name'] !== 'passes on retry').every(span => span.attributes['test.case.result.status'] === 'pass')).toBe(true);
+    expect(childSpans().filter(span => span.attributes['test.step.category']).map(span => span.name).join('\n')).not.toMatch(/route\.fallback/);
+
+    const requestsBeforeOff = server.requests.length;
+    const off = await run(args, { ...env, PLAYWRIGHT_OTEL_ENABLED: 'false', BUILDKITE_ANALYTICS_TOKEN: 'json-token' });
+    expect(off.code).toBe(result.code);
+    const outcomes = report => specs(report).map(spec => [spec.title, spec.tests.flatMap(test => test.results.map(attempt => attempt.status))]).sort();
+    expect(outcomes(off.report)).toEqual(outcomes(result.report));
+    expect(jsonRecords(off.stdout)).toHaveLength(7);
+    expect(server.requests).toHaveLength(requestsBeforeOff);
+  }, 60000);
+
   test('redacts quoted API values without filtering step categories or user titles', async () => {
     server = await startOtlpServer();
     const result = await run(['--grep', 'API values'], { PLAYWRIGHT_OTEL_TEST_MATCH: 'values.js' });

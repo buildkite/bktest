@@ -184,9 +184,9 @@ steps:
           - "cd test-collector-javascript"
           - "npm pkg set 'devDependencies.@playwright/test={{matrix.version}}' --include-workspace-root --workspace examples/playwright"
           - "npm install --ignore-scripts --legacy-peer-deps"
-          - "npx playwright install --with-deps chromium"
+          - "npx playwright install --with-deps chromium firefox webkit"
           # The legacy JSON fixtures use Playwright's 1.42+ tag details argument.
-          - "npm test -- --runInBand e2e/playwright.test.js --testNamePattern='OTel mode'"
+          - "PLAYWRIGHT_APP_ALL_BROWSERS=1 npm test -- --runInBand e2e/playwright.test.js --testNamePattern='OTel mode'"
         plugins:
           - docker#v3.7.0:
               image: node:22.15.0

@@ -1,6 +1,6 @@
 const Reporter = require('./reporter')
 
-test('stops advertising app tracing when a rerun disables OTel', async () => {
+test('stops advertising app tracing when the run finishes', async () => {
   const originalEnv = process.env
   process.env = { ...originalEnv, BUILDKITE_ANALYTICS_KEY: 'playwright-rerun', BUILDKITE_TESTS_OTLP_TOKEN: 'test-token' }
   const reporter = new Reporter({ otelEnabled: true })
@@ -8,7 +8,6 @@ test('stops advertising app tracing when a rerun disables OTel', async () => {
     reporter.onBegin({ version: '1.56.1' })
     expect(JSON.parse(process.env.BUILDKITE_TEST_COLLECTOR_PLAYWRIGHT_OTEL).seed).toEqual(expect.any(String))
     await reporter.onEnd()
-    new Reporter({ otelEnabled: false }).onBegin({ version: '1.56.1' })
     expect(JSON.parse(process.env.BUILDKITE_TEST_COLLECTOR_PLAYWRIGHT_OTEL)).toBeNull()
   } finally {
     await reporter.onEnd()
