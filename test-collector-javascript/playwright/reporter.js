@@ -1,5 +1,5 @@
 const stripAnsi = require('strip-ansi');
-const { randomUUID } = require('crypto')
+const { randomBytes, randomUUID } = require('crypto')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
@@ -10,6 +10,7 @@ const { resolveSettings, credentialFor } = require('../util/otel/config')
 const { createSession } = require('../util/otel/session')
 const { warn, describeError } = require('../util/otel/warn')
 const { truncate } = require('../util/otel/describeTest')
+const { testIds, publishRun } = require('./otelIds')
 
 /**
  * JSDoc Imports
@@ -46,6 +47,8 @@ class PlaywrightBuildkiteTestEngineReporter {
   }
 
   onBegin(config) {
+    // A disabled or failed rerun in the same process must not reuse old IDs.
+    publishRun(null);
     if (!this._otelEnabled) return;
 
     this._hasCredential = Boolean(credentialFor(this._options.token));
@@ -62,6 +65,10 @@ class PlaywrightBuildkiteTestEngineReporter {
       this._spool = fs.mkdtempSync(path.join(os.tmpdir(), 'buildkite-playwright-otel-'));
       this._session = createSession({ ...settings, spool: this._spool });
       this._sender = require('../util/otel/uploads').createUploads(settings, this._spool);
+      // Workers start after onBegin and inherit this; a new seed per run keeps
+      // reruns in one process (UI mode) from reusing trace IDs.
+      this._seed = randomBytes(16).toString('hex');
+      publishRun({ seed: this._seed, spool: this._spool });
       this._sigterm = () => {
         const otherListeners = process.listenerCount('SIGTERM') > 0;
         this._terminated = true;
@@ -111,6 +118,7 @@ class PlaywrightBuildkiteTestEngineReporter {
         this._draining = true;
         await this._sender?.drain(Math.max(0, this._deadline - Date.now()));
       } finally {
+        publishRun(null);
         await this._session?.shutdown();
         if (this._sigterm) process.off('SIGTERM', this._sigterm);
         if (this._missingTests) warn(`TEST RESULTS MISSING: ${this._missingTests} Playwright test execution(s) were not recorded; fix the earlier warnings and rerun (no JSON fallback).`);
@@ -129,7 +137,8 @@ class PlaywrightBuildkiteTestEngineReporter {
       const record = this.testEngineRecord(test, result);
       record.id = randomUUID();
       const { line, column } = test.location;
-      const handle = this._session.startTestSpan(record, { line, column, startTime: result.startTime.getTime() });
+      const ids = testIds(this._seed, test.id, result.retry);
+      const handle = this._session.startTestSpan(record, { line, column, startTime: result.startTime.getTime(), ids });
       this._attempts.set(result, { test, handle, id: record.id, steps: new Map(), endTime: result.startTime.getTime() });
     } catch (error) {
       warn(`Could not start the Playwright test span: ${describeError(error)}`);

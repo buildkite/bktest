@@ -115,6 +115,9 @@ const readSettings = () => {
 
 module.exports = {
   credentialFor,
+  isValidEndpoint,
+  isValidRunKey,
+  otlpEndpoint,
   resolveSettings,
   publishSettings,
   readSettings,
