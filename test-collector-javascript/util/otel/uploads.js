@@ -31,6 +31,7 @@ const createUploads = (settings, directory) => {
   })
   let timer, completion, snapshot, childForbidden
   let heldChildren = 0
+  let discardedChildren = 0, discardedOversizedChildren = 0
   let finalizing = false, stopped = false, spoolReadFailed = false, deadline = Infinity
 
   const record = (testPath, projectId) => {
@@ -51,6 +52,17 @@ const createUploads = (settings, directory) => {
     files.delete(name)
     snapshot?.delete(name)
   }
+  const forgetSettledFiles = () => {
+    for (const [name, { parts }] of files) {
+      if (!parts.every((part) => part.done || (part.stream === 'child' && !part.sending && part.retryAt === Infinity))) continue
+      for (const part of parts) {
+        if (part.done) continue
+        discardedChildren += part.count
+        if (part.oversized) discardedOversizedChildren += part.count
+      }
+      forget(name)
+    }
+  }
   const readFailed = (error) => {
     spoolReadFailed = true
     warnOncePerRun(directory, 'spool-read', `TEST RESULTS MISSING: could not read the OpenTelemetry spool (${describeError(error)}); test and child counts are unavailable for unreadable files. Check temporary directory permissions/free space and rerun (no JSON fallback).`)
@@ -64,21 +76,25 @@ const createUploads = (settings, directory) => {
       if (files.has(name) || acknowledged.has(name)) continue
       const children = Number(name.match(/\.c(\d+)\.spool$/)?.[1] || 0)
       if (children && countOnly) { yield { children }; continue }
-      if (children && childForbidden) continue
+      if (children && childForbidden) {
+        discardedChildren += children
+        forget(name)
+        continue
+      }
       if (children && (childFull || heldChildren + children > MAX_RESIDENT_CHILDREN)) { childFull = true; continue }
       try { yield { name, file: parseFile(fs.readFileSync(path.join(directory, name))) } } catch (error) { readFailed(error) }
     }
   }
-  const split = (spans, stream, name) => {
+  const split = (spans, stream) => {
     if (!spans.length) return []
     const bytes = ProtobufTraceSerializer.serializeRequest(spans).length
-    if (bytes <= MAX_BYTES) return [{ spans, stream, file: name, count: spans.length, bytes, retryAt: 0, attempts: 0 }]
+    if (bytes <= MAX_BYTES) return [{ spans, stream, count: spans.length, bytes, retryAt: 0, attempts: 0 }]
     if (spans.length === 1) {
       warnOncePerRun(directory, `oversize-${stream}`, `${stream === 'test' ? 'TEST RESULTS MISSING' : 'OpenTelemetry dropped a child span; test results are unaffected'}: a span exceeds 750 KiB of protobuf and cannot be uploaded; reduce its attributes and rerun (no JSON fallback).`)
-      return [{ spans: stream === 'child' ? null : spans, stream, file: name, count: 1, bytes, retryAt: Infinity, oversized: true }]
+      return [{ spans: stream === 'child' ? null : spans, stream, count: 1, bytes, retryAt: Infinity, oversized: true }]
     }
     const middle = Math.floor(spans.length / 2)
-    return [...split(spans.slice(0, middle), stream, name), ...split(spans.slice(middle), stream, name)]
+    return [...split(spans.slice(0, middle), stream), ...split(spans.slice(middle), stream)]
   }
   const scan = () => {
     for (const { name, file } of readSpoolFiles()) {
@@ -87,7 +103,7 @@ const createUploads = (settings, directory) => {
         const parts = lanes.flatMap(({ stream, limit }) => {
           const result = []
           const spans = streams[stream] || []
-          for (let i = 0; i < spans.length; i += limit) result.push(...split(spans.slice(i, i + limit), stream, name))
+          for (let i = 0; i < spans.length; i += limit) result.push(...split(spans.slice(i, i + limit), stream))
           return result
         })
         heldChildren += parts.reduce((n, part) => n + (part.stream === 'child' && part.spans ? part.count : 0), 0)
@@ -98,6 +114,7 @@ const createUploads = (settings, directory) => {
         warnOncePerRun(directory, 'spool-decode', `TEST RESULTS MISSING: could not restore OpenTelemetry spool spans (${describeError(error)}); check the SDK installation and rerun (no JSON fallback).`)
       }
     }
+    forgetSettledFiles()
   }
   const pending = () => [...files.values()].flatMap((file) => file.parts).filter((part) => !part.done)
   const arm = () => {
@@ -139,10 +156,8 @@ const createUploads = (settings, directory) => {
           part.retryAt = Infinity
         }
       }
-      for (const name of new Set(batch.map((part) => part.file))) {
-        if (files.get(name).parts.every((part) => part.done)) forget(name)
-      }
-      if (finalizing && (success || terminal) && lane.stream === 'child') scan()
+      forgetSettledFiles()
+      if (childForbidden || (finalizing && (success || terminal) && lane.stream === 'child')) scan()
       pump(); arm()
     }
     try {
@@ -197,8 +212,8 @@ const createUploads = (settings, directory) => {
       }
       stopped = true
       for (const lane of lanes) lane.exporter.shutdown().catch(() => {})
-      const counts = { test: 0, child: 0 }
-      const oversized = { test: 0, child: 0 }
+      const counts = { test: 0, child: discardedChildren }
+      const oversized = { test: 0, child: discardedOversizedChildren }
       for (const part of pending()) {
         counts[part.stream] += part.count
         if (part.oversized) oversized[part.stream] += part.count
