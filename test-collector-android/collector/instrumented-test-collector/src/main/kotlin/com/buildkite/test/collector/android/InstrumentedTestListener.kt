@@ -67,8 +67,8 @@ internal class InstrumentedTestListener(
 
     private fun addTestDetailsToCollection(test: Description) {
         val testHistory = TestHistory(
-            startAt = testObserver.startTime / 1_000_000_000.0,
-            endAt = testObserver.endTime / 1_000_000_000.0,
+            startAt = testObserver.startTime,
+            endAt = testObserver.endTime,
             duration = testObserver.getDuration()
         )
 

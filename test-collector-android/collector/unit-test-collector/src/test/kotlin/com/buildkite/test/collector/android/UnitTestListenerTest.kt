@@ -58,7 +58,7 @@ class UnitTestListenerTest {
         assertEquals(listOf("checkout", "checkout"), uploaded.map { it.tags?.get("feature") })
         assertEquals(0.351, uploaded[0].history.duration, 0.000001)
         assertEquals(1.502, uploaded[1].history.duration, 0.000001)
-        assertEquals(1_700_000_000.123, uploaded[0].history.startAt.toDouble(), 0.000001)
-        assertEquals(1_700_000_001.702, uploaded[1].history.endAt!!.toDouble(), 0.000001)
+        assertEquals(1_700_000_000L, uploaded[0].history.startAt)
+        assertEquals(1_700_000_001L, uploaded[1].history.endAt)
     }
 }

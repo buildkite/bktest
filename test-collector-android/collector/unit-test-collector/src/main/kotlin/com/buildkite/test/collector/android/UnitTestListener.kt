@@ -80,8 +80,8 @@ internal class UnitTestListener(
             tags["test.selector.primary"] = selector
         }
         val testHistory = TestHistory(
-            startAt = result.startTime / 1000.0,
-            endAt = result.endTime / 1000.0,
+            startAt = result.startTime / 1000,
+            endAt = result.endTime / 1000,
             duration = (result.endTime - result.startTime) / 1000.0
         )
 
