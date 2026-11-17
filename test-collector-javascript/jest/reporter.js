@@ -17,6 +17,27 @@ class JestBuildkiteTestEngineReporter {
   constructor(globalConfig, options) {
     this._globalConfig = globalConfig
     this._options = options
+    // JSON reports serialize this shared config. Match copying wrappers by
+    // token, preserving caller options and watch-mode token copying.
+    try {
+      for (const entry of globalConfig.reporters || []) {
+        if (!options?.token || entry[1]?.token !== options.token) continue
+        const sourceOptions = entry[1]
+        const toJSON = sourceOptions.toJSON
+        const reportOptions = { ...sourceOptions, token: sourceOptions.token }
+        Object.defineProperty(reportOptions, 'toJSON', {
+          enumerable: false,
+          value(key) {
+            const json = typeof toJSON === 'function' ? toJSON.call(sourceOptions, key) : this
+            if (!json || typeof json !== 'object' || Array.isArray(json)) return json
+            return { ...json, token: undefined }
+          },
+        })
+        entry[1] = reportOptions
+      }
+    } catch {
+      warn('Could not omit the Jest reporter token from JSON reports; reports may contain credentials. Uploads will still be attempted.')
+    }
     this._testResults = []
     this._testEnv = new CI().env('jest')
     this._tags = options?.tags
