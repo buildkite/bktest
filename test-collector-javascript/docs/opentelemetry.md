@@ -228,7 +228,7 @@ Custom spans from the `vitest` tracer are kept unless their names start with `vi
 
 ### Using bktec
 
-Set both bktec commands, without `--reporter` flags:
+Set both bktec commands without `--reporter` flags, which replace the collector:
 
 ```sh
 export BUILDKITE_TEST_ENGINE_TEST_CMD="npx vitest run {{testExamples}} \
@@ -238,15 +238,10 @@ export BUILDKITE_TEST_ENGINE_RETRY_CMD="npx vitest run \
 ```
 
 Add `'json'` to the reporters in the config above.
-Both default commands pass `--reporter` flags, which replace config reporters.
-Changing only the test command leaves retries without the collector. With bktec's
-own upload off, retry results never reach Test Engine and pass-on-retry flaky signals are lost.
 The JSON file is for bktec. The collector uploads OpenTelemetry only.
 Keep bktec's own upload off with `BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`.
 
-The retry command searches every test file. The collector also uploads every test
-excluded by `--testNamePattern` as skipped, including tests in files with no match.
-These extra skipped executions count toward plan usage.
+Retries upload tests that `--testNamePattern` excludes as skipped, and these count toward usage.
 
 ### Limitations
 
@@ -279,16 +274,8 @@ module.exports = {
 }
 ```
 
-With `jest.retryTimes`, each attempt gets a separate `test.execution` span and
-execution ID. A failure followed by a passing retry still makes the completed
-Test Engine run **failed**: any failed execution fails the run. JSON mode reports
-only the final result, so the same test is passing there. Every attempt counts
-toward your plan's test execution usage.
-
-With auto-quarantine enabled, each failed attempt on the default branch also
-counts toward the failure threshold within its evaluation window. JSON mode
-sends only the final result, so failures before a passing retry do not count
-toward that threshold.
+With `jest.retryTimes`, each attempt is a separate execution and counts toward usage.
+A fail-then-pass test still fails the Test Engine run; each failed default-branch attempt counts toward auto-quarantine's threshold when enabled, while JSON mode sends only the final result.
 
 ## Setup
 
@@ -322,9 +309,8 @@ packages in the root workspace.
 `@opentelemetry/sdk-trace` 2.9+; OTel mode no longer supports SDK 2.0–2.8.
 Custom provider setup needs `TracerProvider` instead of `BasicTracerProvider`,
 and processors take `{ exporter }` options. Collector configuration is unchanged.
-Test spans keep AlwaysOn sampling and fixed limits. Child spans keep
-environment-selected limits; see [sampling](#child-span-sampling) before using
-`OTEL_TRACES_SAMPLER` to reduce billed children.
+Child spans keep environment-selected sampling and limits; test spans keep
+AlwaysOn sampling and fixed limits.
 
 Use Jest 29 or 30 with `jest-circus` (tested with 29.7.0 and 30.5.2).
 Jest 30.0 and 30.1 can drop `afterEach` children in files mixing concurrent and sequential tests.
@@ -384,36 +370,18 @@ The run key is the ID that groups results from one test run. It must be 1–255 
 | `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` | Child spans accepted per test file, including still-open spans. Further children are dropped and counted | 2,048 |
 | `OTEL_RESOURCE_ATTRIBUTES` | Adds resource attributes to every span | None |
 
-OTLP export doesn't use `HTTP_PROXY` or `HTTPS_PROXY`. JSON uploads honour them.
-Inside Buildkite jobs, use [bktec's relay](#bktecs-relay) for OTLP through a proxy.
-Outside Buildkite, use your own forwarding endpoint if a proxy is required.
+Children are billed by data ingested. Set `OTEL_TRACES_SAMPLER` to `traceidratio` (with `OTEL_TRACES_SAMPLER_ARG` from 0 to 1) to keep or drop whole tests' children, or `always_off` to drop all children.
+In Jest and Playwright, `parentbased_*` samplers (the default) keep every child; Vitest honours their root sampler and can reduce children.
+
+OTLP export doesn't use `HTTP_PROXY` or `HTTPS_PROXY`. JSON uploads honour them. Use [bktec's relay](#bktecs-relay) for OTLP through a proxy.
 If you route OTLP through your own endpoint, forward `Authorization`, `Buildkite-Tests-Run-Key` and `Buildkite-Tests-Span-Stream`.
-We ignore `OTEL_EXPORTER_OTLP_*`, `OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_TRACES_SAMPLER` for test results. Children use environment-selected span limits, not a suite provider's code-configured limits. See [child-span sampling](#child-span-sampling) for sampler behavior. `OTEL_BSP_*` does not control either stream.
+We ignore `OTEL_EXPORTER_OTLP_*`, `OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_TRACES_SAMPLER` for test results. Children use the environment's sampler and span limits, not a suite provider's code-configured sampler. `OTEL_BSP_*` does not control either stream.
 Sizes must be positive whole numbers (at most 1,000 for test batches). Both streams also have a 750 KiB uncompressed protobuf cap; large spans reduce how many fit in one upload. Invalid values warn and use defaults. The old `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` is ignored: test results are no longer fed through a bounded SDK queue.
 An OpenTelemetry `diag` logger at DEBUG receives selected names once per test file. `OTEL_LOG_LEVEL=DEBUG` alone doesn't install a logger.
 
-### Child-span sampling
-
-Children are billed by data ingested. For Jest and Playwright, only
-`OTEL_TRACES_SAMPLER=traceidratio` (with `OTEL_TRACES_SAMPLER_ARG` from 0 to 1)
-and `OTEL_TRACES_SAMPLER=always_off` reduce children. `traceidratio` keeps or
-drops a whole test's children together, not individual children; `always_off`
-drops them all. Test results are always sampled and still upload.
-
-In Jest and Playwright, `parentbased_*` samplers, including the default `parentbased_always_on`,
-keep every child because their test parent is always sampled.
-`parentbased_traceidratio` with an argument of 0 and `parentbased_always_off`
-do not reduce children.
-
-Vitest samples its native test root separately, so its `parentbased_*` root
-sampler can reduce children. Its free `test.execution` result still uploads.
-
 ### bktec's relay
 
-The relay is optional and works only inside Buildkite jobs. It requires
-`bktec run` (3.5.0 or later) with agent OIDC authentication; bktec rejects
-`BUILDKITE_TESTS_OTLP_RELAY` when OIDC is disabled. A suite API token alone is
-not enough. Enable it with:
+The relay is optional and works only inside Buildkite jobs with agent OIDC (`bktec run` 3.5.0 or later). Enable it with:
 
 ```sh
 export BUILDKITE_TESTS_OTLP_RELAY=true
@@ -426,8 +394,7 @@ Keep bktec's own upload off (`BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`).
 
 ## What gets recorded
 
-The details below are for Jest. See [Vitest](#vitest) and [Playwright](#playwright)
-for their recording behavior.
+The details below are for Jest; see [Vitest](#vitest) and [Playwright](#playwright) for their recording behavior.
 
 ```js
 const { trace } = require('@opentelemetry/api')
@@ -448,15 +415,14 @@ For Vitest, use `process.env.VITEST === 'true'` instead; it does not set `JEST_W
 - Children belong to tests, `beforeEach` and `afterEach`, not file loading, `beforeAll` or `afterAll`.
 - Concurrent tests, callbacks, generators, fake timers and module resets work. Results include hook failures.
 - We always sample test results and never trace our own uploads, including in band. We do not replace a suite-owned provider. Where none exists, the collector installs a worker context manager and propagator, fills sandbox noop context managers, and delegates sandbox tracer proxies to its provider. Cached tracers follow a provider registered later by the suite.
-- A Jest attempt still open at file teardown without errors retains the `unset` result, not `pass`. Test Engine ignores that result span and creates no execution for it. Vitest reports tests skipped by interruption or bail as skipped instead.
+- A Jest attempt still open at file teardown without errors has an `unset` result, which Test Engine ignores without creating an execution.
 
 `trace.getActiveSpan()` in a test is non-recording. It carries the parent context for children, but changing or ending it doesn't change the test result.
 Child spans can contain URLs, query strings and database statements. Check what your instrumentation records before enabling it.
 
 ## Choosing instrumentation
 
-These packages and selection variables apply to Jest and Vitest. The commands
-below use Jest; for Vitest, run `npx vitest run` instead.
+These packages and selection variables apply to Jest and Vitest; for Vitest, run `npx vitest run` instead of `npx jest`.
 
 For SDK 3 / API 1.10+:
 
@@ -511,7 +477,7 @@ SIGKILL can prevent the drain and warning and **loses files not yet uploaded**. 
 - **Changed headers or messages:** disable the affected instrumentation using the table above if propagation changes what your tests expect.
 - **Missing HTTP client spans:** call `http.get(...)` on the module object instead of destructuring `get` at file load.
 - **MSW dropping headers:** disable `http` with MSW 2 (fixed in MSW 3, [issue #804](https://github.com/mswjs/interceptors/issues/804)).
-- **Jest native ESM missing package spans:** packages loaded as ES modules don't get package spans. HTTP, fetch and manual spans work. For Vitest's import support, see [Vitest package instrumentation](#vitest-package-instrumentation).
+- **Jest native ESM missing package spans:** packages loaded as ES modules don't get package spans. HTTP, fetch and manual spans work.
 - **Dropped children or interrupted runs:** end spans, close connections and let Jest finish flushing before stopping workers. Work started after file teardown is dropped.
 - **Slow teardown:** files wait only for local serialization/write/rename. Check local storage performance. The parent, not every file, pays the network tail.
 - **Slow exports or `TEST RESULTS MISSING`:** check the error, token and endpoint access and rerun. A single span exceeding 750 KiB cannot be sent and is reported; reduce its attributes. A 413 below our cap may indicate a smaller intermediary limit.
