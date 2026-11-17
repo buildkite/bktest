@@ -39,6 +39,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     testLocationInResults: true
     ```
 
+    Prefer `BUILDKITE_ANALYTICS_TOKEN`: `jest --showConfig` and config-dumping reporters can print reporter options.
+
     If you would like to pass in the API token using a custom environment variable, you can do so using the report options.
 
     ```js
