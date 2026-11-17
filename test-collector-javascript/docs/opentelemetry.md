@@ -2,7 +2,7 @@
 
 Test Engine can receive your Jest, Playwright and Vitest results as OpenTelemetry traces.
 Each test becomes a span, with its work underneath: steps for Playwright, and
-HTTP calls and your own spans for Jest and Vitest.
+HTTP calls, package calls such as database queries, and your own spans for Jest and Vitest.
 
 ## Playwright
 
@@ -137,12 +137,69 @@ With Yarn Plug'n'Play, declare the packages in the root workspace.
 For multiple projects, set tracing in the root config.
 Projects inherit it unless they override `enabled` or `sdkPath`.
 
-To capture HTTP and fetch calls, install the packages in
+To capture HTTP, fetch and package calls, install the packages in
 [Choosing instrumentation](#choosing-instrumentation).
-Vitest supports only `http` and `undici`.
-It checks each project's package.json and its parents for declared instrumentation.
+Vitest checks each project's package.json and its parents for declared instrumentation.
 Use `OTEL_NODE_ENABLED_INSTRUMENTATIONS` and `OTEL_NODE_DISABLED_INSTRUMENTATIONS`
 to select them.
+
+### Vitest package instrumentation
+
+Package instrumentation such as `pg`, `redis`, `ioredis`, `express` and `graphql`
+records spans under the test that made the call.
+Vitest loads packages through Node's ES module loader by file path. Each worker
+registers OpenTelemetry's import-in-the-middle loader for the entry points of the
+selected packages only, using Node's synchronous module hooks where the installed
+import-in-the-middle supports them, and `module.register` otherwise.
+
+What you get depends on how your code loads a package:
+
+- `require()` from CommonJS records spans for all tested packages.
+- `import` from ES modules and TypeScript records spans for packages whose instrumentation
+  patches files the package loads with `require()`, such as `pg` and `redis`.
+- Packages patched at their entry point, such as `express` and `ioredis`, get no spans
+  from `import`. import-in-the-middle, up to at least 3.6.0, doesn't treat Vitest's
+  file-path import of a package's entry point as an import of that package.
+  The collector warns once per package. Load these packages with `require()` instead,
+  through `createRequire` in ES modules:
+
+  ```js
+  import { createRequire } from 'node:module'
+  const require = createRequire(import.meta.url)
+  const express = require('express')
+  ```
+- `graphql` gets no spans from `import` until you resolve it to its CommonJS build, as below.
+  The collector warns.
+
+GraphQL 16's package.json `main` is `index`, without an extension. Vitest resolves it to
+`index.mjs`, unlike Node, which loads `index.js` ([vitest-dev/vitest#8414](https://github.com/vitest-dev/vitest/issues/8414)).
+The instrumentation patches only the CommonJS build.
+Resolve `graphql` and its subpaths to the CommonJS build:
+
+```js
+// vitest.config.js
+import { createRequire } from 'node:module'
+import { defineConfig } from 'vitest/config'
+
+const require = createRequire(import.meta.url)
+
+export default defineConfig({
+  plugins: [{
+    name: 'graphql-commonjs',
+    enforce: 'pre',
+    resolveId: (id) => (/^graphql(\/|$)/.test(id) ? require.resolve(id) : undefined),
+  }],
+  test: { /* as above */ },
+})
+```
+
+Resolve the subpaths too. Mixing the builds loads two copies of GraphQL, and GraphQL
+throws `Cannot use GraphQLSchema ... from another module or realm`.
+
+Packages that Vite runs itself, through `server.deps.inline`, never reach Node's ES module loader.
+Instrumentation that patches their entry point records nothing for them, without a warning.
+We test HTTP, fetch, Express 4, GraphQL 16, node-redis and pg on Vitest 4.0.11, 4.1 and 5.1
+with both SDK lines, and both module hook modes on Node 22, 24 and 26.
 
 ### What you get
 
@@ -418,7 +475,7 @@ Incompatible instrumentation warns and is skipped without affecting results or m
 We leave logs and messages (`pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`), low-level I/O (`net`, `dns`, `fs`) and metrics (`host-metrics`, `runtime-node`) off by default.
 Browser instrumentation (`fetch`, `xml-http-request`, `document-load`, `user-interaction`, `long-task`) is also off. Use `undici` for Node's fetch.
 You can opt in by listing short names in `OTEL_NODE_ENABLED_INSTRUMENTATIONS`. The disabled list always wins.
-We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2. Test other packages against your own operations before relying on them.
+We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2, and on Vitest as described in [Vitest package instrumentation](#vitest-package-instrumentation). Test other packages against your own operations before relying on them.
 
 ## Delivery and interruptions
 

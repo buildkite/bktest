@@ -2,8 +2,13 @@ import { defineConfig } from 'vitest/config'
 import { createRequire } from 'node:module'
 const require = createRequire(import.meta.url)
 
-export default defineConfig({ test: {
+export default defineConfig({ plugins: process.env.OTEL_TEST_GRAPHQL_CJS ? [{
+  // The documented way to load GraphQL's CommonJS build, which its instrumentation patches.
+  name: 'graphql-commonjs', enforce: 'pre', resolveId: (id) => (/^graphql(\/|$)/.test(id) ? require.resolve(id) : undefined),
+}] : [], test: {
   include: process.env.OTEL_TEST_CASE === 'collisions' ? ['otel/collisions/*.test.js']
+    // Not *.test.*, so the plain examples config does not run them.
+    : process.env.OTEL_TEST_CASE === 'packages' ? ['otel/packages/cjs.js', 'otel/packages/esm.js', 'otel/packages/ts.ts']
     : process.env.OTEL_TEST_CASE ? [`otel/${process.env.OTEL_TEST_CASE}.js`] : ['otel/core.js', 'otel/second.js'],
   projects: process.env.OTEL_TEST_PROJECT_ROOT ? ['Aa', 'BB'].map(name => ({ test: {
     name, root: process.env.OTEL_TEST_PROJECT_ROOT, include: ['*.test.js'], setupFiles: [], env: { PROJECT_LABEL: name },
