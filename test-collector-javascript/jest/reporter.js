@@ -17,12 +17,12 @@ class JestBuildkiteTestEngineReporter {
   constructor(globalConfig, options) {
     this._globalConfig = globalConfig
     this._options = options
-    // JSON reports serialize this shared config. Copy before adding a JSON
-    // form so caller options stay untouched and watch-mode copies keep token.
+    // JSON reports serialize this shared config. Match copying wrappers by
+    // token, preserving caller options and watch-mode token copying.
     try {
       for (const entry of globalConfig.reporters || []) {
-        if (!options?.token || entry[1] !== options) continue
-        const reportOptions = { ...options }
+        if (!options?.token || entry[1]?.token !== options.token) continue
+        const reportOptions = { ...entry[1] }
         Object.defineProperty(reportOptions, 'toJSON', {
           value: () => ({ ...reportOptions, token: undefined }),
         })
