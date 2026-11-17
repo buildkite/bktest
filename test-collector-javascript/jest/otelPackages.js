@@ -66,6 +66,8 @@ class JestOtelPackages {
           }
           const mod = context.runtime.requireModule(context.testPath, resolved)
           const instance = new mod[className]({ enabled: false })
+          // Use this sandbox's API, not the worker's copy.
+          instance.setMeterProvider(api.metrics.getMeterProvider())
           instance.setTracerProvider(context._worker().tracerProvider)
           instance.setConfig({ ...instance.getConfig(), enabled: true })
           instance.enable()

@@ -22,6 +22,10 @@ const DEFAULT_EXCLUDED = [
   'net', 'dns',
   // Metrics only: this collector exports spans.
   'runtime-node',
+  // Drops memoizer methods without recording spans.
+  'lru-memoizer',
+  // Duplicates Express 5 handler/middleware spans.
+  'router',
   // Browser globals, not Node I/O (Node fetch is covered by undici).
   'fetch', 'xml-http-request', 'document-load', 'user-interaction', 'long-task',
 ]
@@ -88,6 +92,8 @@ const loadInstrumentations = (rootDir, warnOnce) => {
           const instance = new Class({ enabled: false })
           const version = MINIMUM_VERSIONS[name] ? instance.instrumentationVersion : base
           if (!semver.valid(version) || semver.lt(version, MINIMUM_VERSIONS[name] || '0.200.0')) throw new Error(`unsupported SDK line (${version})`)
+          // Reinitialize metrics after subclass fields have run, as NodeSDK does.
+          instance.setMeterProvider(from('@opentelemetry/api').metrics.getMeterProvider())
           found.push({ name, resolved, className, instance })
         }
         entries.push(...found)
