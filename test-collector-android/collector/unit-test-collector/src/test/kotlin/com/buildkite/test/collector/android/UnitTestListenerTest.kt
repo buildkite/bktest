@@ -23,20 +23,25 @@ class UnitTestListenerTest {
         val result = mock(TestResult::class.java)
         `when`(result.resultType).thenReturn(TestResult.ResultType.SUCCESS)
 
-        for (className in listOf("example.FirstTest", "example.FirstTest", "example.SecondTest")) {
+        val descriptors = listOf("example.FirstTest", "example.SecondTest").map { className ->
             val descriptor = mock(TestDescriptor::class.java)
             `when`(descriptor.className).thenReturn(className)
             `when`(descriptor.displayName).thenReturn("aMethod")
-            listener.beforeTest(descriptor)
+            descriptor
+        }
+        // Two Gradle forks can start tests before either has finished.
+        listener.beforeTest(descriptors[0])
+        listener.beforeTest(descriptors[1])
+        for (descriptor in descriptors) {
             observer.setExecutionTag("feature", "checkout")
             listener.afterTest(descriptor, result)
         }
         listener.afterSuite(mock(TestDescriptor::class.java), result)
 
         assertEquals(
-            listOf("example.FirstTest", "example.FirstTest", "example.SecondTest"),
+            listOf("example.FirstTest", "example.SecondTest"),
             uploaded.map { it.tags?.get("test.selector.primary") }
         )
-        assertEquals(listOf("checkout", "checkout", "checkout"), uploaded.map { it.tags?.get("feature") })
+        assertEquals(listOf("checkout", "checkout"), uploaded.map { it.tags?.get("feature") })
     }
 }

@@ -34,9 +34,6 @@ internal class UnitTestListener(
 
     override fun beforeTest(testDescriptor: TestDescriptor) {
         testObserver.startTest()
-        testDescriptor.className?.let { className ->
-            testObserver.setExecutionTag("test.selector.primary", className)
-        }
     }
 
     override fun afterTest(testDescriptor: TestDescriptor, result: TestResult) {
@@ -78,6 +75,10 @@ internal class UnitTestListener(
     }
 
     private fun addTestDetailsToCollection(test: TestDescriptor) {
+        val tags = testObserver.executionTags.toMutableMap()
+        test.className?.let { className ->
+            tags["test.selector.primary"] = className
+        }
         val testHistory = TestHistory(
             startAt = testObserver.startTime,
             endAt = testObserver.endTime,
@@ -92,7 +93,7 @@ internal class UnitTestListener(
             result = testObserver.outcome,
             failureReason = testObserver.failureReason,
             failureExpanded = testObserver.failureDetails,
-            tags = testObserver.executionTags.toMap().ifEmpty { null },
+            tags = tags.ifEmpty { null },
             history = testHistory
         )
 
