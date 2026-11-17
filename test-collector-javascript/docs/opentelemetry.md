@@ -243,8 +243,9 @@ Keep bktec's own upload off with `BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`.
 
 - Retries share one execution per test, with every attempt's phases and children underneath. Jest's OpenTelemetry mode records one execution per attempt.
 - SIGTERM, including Buildkite cancellation, warns synchronously that results not yet uploaded are lost. Vitest exits before an asynchronous drain can finish; already uploaded results survive. Rerun the suite to recover missing results. SIGKILL can lose pending results without a warning.
+- SIGINT (Ctrl-C, and the first signal [GitHub Actions sends to a cancelled step's entry process](https://docs.github.com/en/actions/reference/workflow-cancellation-reference)) loses results not yet uploaded without a warning.
 - Vitest ID collisions can mix up parallel results. The collector warns and keeps traces separate, but uploads what Vitest reports. Rename either file named in the warning.
-- Browser mode sends `test.execution` spans only and warns. Watch mode is unsupported.
+- Browser mode sends `test.execution` spans only and warns. Watch mode disables OpenTelemetry with a warning and uploads nothing; use `vitest run` to upload results.
 - VM pools (`vmThreads` and `vmForks`), including per-project pools, send `test.execution` spans only and warn once per run. Vitest's `instanceof Promise` check does not recognise a cross-realm Promise returned by `run.test`, ending its test span before the work finishes. Use `threads` or `forks` for child spans until Vitest fixes this upstream bug.
 - Vitest 3 sends test spans only and warns. So do runs with a custom SDK or missing native config. Vitest 1–2 warn and upload nothing in OpenTelemetry mode.
 - Isolation adds SDK startup cost per test file. Turning it off changes how your tests run, not just telemetry performance.
