@@ -16,6 +16,9 @@ const uploadTestResults = (env, tags, results, options, done) => {
     return
   }
 
+  // Transport errors can include the authenticated request in their message.
+  const redact = message => message.split(buildkiteAnalyticsToken).join('[REDACTED]')
+
   const config = {
     headers: {
       'Authorization': `Token token="${buildkiteAnalyticsToken}"`,
@@ -29,13 +32,13 @@ const uploadTestResults = (env, tags, results, options, done) => {
   if (Debug.enabled()) {
     client.interceptors.request.use(function (config) {
       const { method, url, data } = config;
-      Debug.log(`Test Engine Sending: ${JSON.stringify({ method, url, data })}`);
+      Debug.log(redact(`Test Engine Sending: ${JSON.stringify({ method, url, data })}`));
       return config;
     }, function (error) {
       if (error.response) {
-        Debug.log(`Test Engine request error: ${error.response.status} ${error.response.statusText} ${JSON.stringify(error.response.data)}`);
+        Debug.log(redact(`Test Engine request error: ${error.response.status} ${error.response.statusText} ${JSON.stringify(error.response.data)}`));
       } else {
-        Debug.log(`Test Engine request error: ${error.message}`)
+        Debug.log(redact(`Test Engine request error: ${error.message}`))
       }
       // Do something with request error
       return Promise.reject(error);
@@ -46,13 +49,13 @@ const uploadTestResults = (env, tags, results, options, done) => {
   client.interceptors.response.use(function (response) {
     // Any status code that lie within the range of 2xx cause this function to trigger
     // Do something with response data
-    Debug.log(`Test Engine success response ${JSON.stringify(response.data)}`);
+    Debug.log(redact(`Test Engine success response ${JSON.stringify(response.data)}`));
     return response;
   }, function (error) {
     if (error.response) {
-      console.log(`⚠️ Test Engine error response: ${error.response.status} ${error.response.statusText} ${JSON.stringify(error.response.data)}`);
+      console.log(redact(`⚠️ Test Engine error response: ${error.response.status} ${error.response.statusText} ${JSON.stringify(error.response.data)}`));
     } else {
-      console.log(`⚠️ Test Engine error: ${error.message}`)
+      console.log(redact(`⚠️ Test Engine error: ${error.message}`))
     }
     return Promise.reject(error);
   });

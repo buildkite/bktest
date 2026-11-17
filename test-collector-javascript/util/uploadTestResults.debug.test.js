@@ -33,6 +33,18 @@ it('describes each debug upload without logging its authorization token', async 
     }
     expect(output).toContain('401')
     expect(output).toContain('connection reset')
+
+    // Nock's unmatched-request error includes the request's Authorization header.
+    nock('https://collector.example.test').post('/different-route').reply(200, {})
+    for (const debug of ['false', 'true']) {
+      log.mockClear()
+      process.env.BUILDKITE_ANALYTICS_DEBUG_ENABLED = debug
+      await uploadTestResults({}, {}, ['debug result'], { token, url })
+      const errorOutput = log.mock.calls.flat().join('\n')
+      expect(errorOutput).toContain('Nock: No match for request')
+      expect(errorOutput).not.toContain(token)
+      expect(errorOutput).toContain('[REDACTED]')
+    }
   } finally {
     log.mockRestore()
     nock.cleanAll()
