@@ -6,6 +6,8 @@ plugins {
 
 dependencies {
     implementation(projects.collector.testDataUploader)
+    testImplementation(libs.testing.junit)
+    testImplementation("org.mockito:mockito-core:5.14.2")
 }
 
 gradlePlugin {

@@ -109,6 +109,16 @@ BuildkiteTestCollector.configure(
 
 When both programmatic and environment variable tags are provided, the environment variable values take precedence on key collision.
 
+### Test splitting (unit tests)
+
+The unit-test collector tags each execution with `test.selector.primary` set to
+its fully qualified class name, for example `com.example.CheckoutTest`. Use the
+same class names as selectors with bktec's custom runner and Gradle test filters
+to balance parallel jobs using recorded timings. All methods in a class share
+that selector; their durations contribute to the class's total duration.
+
+This does not enable method-level splitting or tag instrumented tests.
+
 ### Execution-level tags (instrumented tests)
 
 Tag individual test executions during the test:

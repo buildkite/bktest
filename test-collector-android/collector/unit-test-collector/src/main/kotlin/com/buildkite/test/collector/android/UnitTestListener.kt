@@ -34,6 +34,9 @@ internal class UnitTestListener(
 
     override fun beforeTest(testDescriptor: TestDescriptor) {
         testObserver.startTest()
+        testDescriptor.className?.let { className ->
+            testObserver.setExecutionTag("test.selector.primary", className)
+        }
     }
 
     override fun afterTest(testDescriptor: TestDescriptor, result: TestResult) {
