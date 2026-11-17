@@ -112,10 +112,14 @@ When both programmatic and environment variable tags are provided, the environme
 ### Test splitting (unit tests)
 
 The unit-test collector tags each execution with `test.selector.primary` set to
-its fully qualified class name, for example `com.example.CheckoutTest`. Use the
-same class names as selectors with bktec's custom runner and Gradle test filters
-to balance parallel jobs using recorded timings. All methods in a class share
-that selector; their durations contribute to the class's total duration.
+the outermost class-bearing descriptor in its Gradle parent chain, for example
+`com.example.CheckoutTest`. Nested classes and JUnit 4 suite members share their
+runnable ancestor's selector because Gradle selects that whole subtree. Binary
+class names preserve `$`. Use this same mapping for custom-runner discovery and
+Gradle `--tests` filters; each method contributes to its selector's total timing.
+Execution timing comes from each completed Gradle result, so overlapping forks
+do not overwrite one another's start time or duration. History timestamps and
+durations are serialized in seconds.
 
 This does not enable method-level splitting or tag instrumented tests.
 

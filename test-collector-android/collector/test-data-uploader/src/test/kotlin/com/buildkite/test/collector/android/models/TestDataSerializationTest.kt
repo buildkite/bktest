@@ -51,7 +51,7 @@ class TestDataSerializationTest {
             result = TestOutcome.Passed,
             failureReason = null,
             tags = tags,
-            history = TestHistory(startAt = 0, endAt = 1000, duration = 0.001)
+            history = TestHistory(startAt = 0.0, endAt = 0.001, duration = 0.001)
         )
         val json = gson.toJson(testDetails)
         assertTrue(json.contains("\"tags\""))
@@ -70,7 +70,7 @@ class TestDataSerializationTest {
             result = TestOutcome.Passed,
             failureReason = null,
             tags = executionTags,
-            history = TestHistory(startAt = 0, endAt = 1000, duration = 0.001)
+            history = TestHistory(startAt = 0.0, endAt = 0.001, duration = 0.001)
         )
         val testData = TestData(
             runEnvironment = RunEnvironment(),

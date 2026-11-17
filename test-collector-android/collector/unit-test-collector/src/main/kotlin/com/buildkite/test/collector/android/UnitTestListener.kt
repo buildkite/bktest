@@ -33,12 +33,10 @@ internal class UnitTestListener(
     }
 
     override fun beforeTest(testDescriptor: TestDescriptor) {
-        testObserver.startTest()
+        /* Timing comes from the completed Gradle TestResult, not shared state. */
     }
 
     override fun afterTest(testDescriptor: TestDescriptor, result: TestResult) {
-        testObserver.endTest()
-
         when (result.resultType) {
             TestResult.ResultType.SUCCESS -> {
                 testObserver.recordSuccess()
@@ -71,18 +69,20 @@ internal class UnitTestListener(
             }
         }
 
-        addTestDetailsToCollection(test = testDescriptor)
+        addTestDetailsToCollection(test = testDescriptor, result = result)
     }
 
-    private fun addTestDetailsToCollection(test: TestDescriptor) {
+    private fun addTestDetailsToCollection(test: TestDescriptor, result: TestResult) {
         val tags = testObserver.executionTags.toMutableMap()
-        test.className?.let { className ->
-            tags["test.selector.primary"] = className
+        // Gradle selects a class/suite together with its nested/member tests.
+        // Match discovery's outermost class-bearing descriptor, preserving '$'.
+        generateSequence(test) { it.parent }.mapNotNull { it.className }.lastOrNull()?.let { selector ->
+            tags["test.selector.primary"] = selector
         }
         val testHistory = TestHistory(
-            startAt = testObserver.startTime,
-            endAt = testObserver.endTime,
-            duration = testObserver.getDuration()
+            startAt = result.startTime / 1000.0,
+            endAt = result.endTime / 1000.0,
+            duration = (result.endTime - result.startTime) / 1000.0
         )
 
         val testDetails = TestDetails(
