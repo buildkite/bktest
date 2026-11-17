@@ -6,7 +6,7 @@ const limitReason = 'OTel trace ingest limit reached for this billing period'
 
 // Like session.test.js, use plain Node for the stock exporter's dynamic HTTP
 // imports, which Jest's VM cannot execute without experimental flags.
-const scenario = async ({ status, testStatus = 200, reason, cap, late }) => {
+const scenario = async ({ status, testStatus = 200, reason, cap, late, ongoing }) => {
   const fs = require('fs')
   const os = require('os')
   const path = require('path')
@@ -38,6 +38,7 @@ const scenario = async ({ status, testStatus = 200, reason, cap, late }) => {
   }
   const settings = { endpoint: server.url, token: 'secret', runEnv: { key: 'uploads-test' }, spool: directory }
   const children = createChildExport(settings)
+  const uploads = createUploads(settings, directory)
   try {
     if (cap || late) {
       for (let i = 0; i < 3; i++) {
@@ -64,10 +65,28 @@ const scenario = async ({ status, testStatus = 200, reason, cap, late }) => {
       const count = status === 403 ? MAX_RESIDENT_CHILDREN + 3 : 7
       commitFile(directory, 'tests.js', { child: Array(count).fill(span()), test: [span('test.execution')] })
     }
-    const counts = await createUploads(settings, directory).drain()
-    return { counts, requests, names: server.spans().map((span) => span.name), warnings }
+    const liveRemaining = []
+    if (ongoing) {
+      const waitForCleanup = async () => {
+        const deadline = Date.now() + 5000
+        while (fs.readdirSync(directory).some((name) => name.endsWith('.spool'))) {
+          if (Date.now() >= deadline) throw new Error('spool files were not removed during the run')
+          await new Promise((resolve) => setTimeout(resolve, 20))
+        }
+        liveRemaining.push(fs.readdirSync(directory).filter((name) => name.endsWith('.spool')))
+      }
+      uploads.collect('tests.js', 1)
+      await waitForCleanup()
+      commitFile(directory, 'later.js', { child: Array(11).fill(span()), test: [span('test.execution')] })
+      uploads.collect('later.js', 1)
+      await waitForCleanup()
+    }
+    const counts = await uploads.drain()
+    const remaining = fs.readdirSync(directory).filter((name) => name.endsWith('.spool'))
+    return { counts, requests, names: server.spans().map((span) => span.name), warnings, remaining, liveRemaining }
   } finally {
     process.off('exit', children.reportDropped)
+    await uploads.drain()
     await provider.shutdown()
     await server.close()
     fs.rmSync(directory, { recursive: true, force: true })
@@ -85,6 +104,17 @@ test.each([planReason, limitReason])('stops child uploads on 403 and counts resi
   expect(result.requests).toBeLessThanOrEqual(4) // Only requests already in flight.
   expect(result.names).toEqual(['test.execution'])
   expect(result.warnings).toEqual([expect.stringContaining(`dropped 16387 child span(s) in total (HTTP 403: ${reason}; child uploads stopped for this run)`)])
+  expect(result.remaining).toEqual([])
+}, 15000)
+
+test('removes forbidden child files during the run, including later commits, without losing their counts', async () => {
+  const result = await run({ status: 403, reason: planReason, ongoing: true })
+  expect(result.liveRemaining).toEqual([[], []])
+  expect(result.remaining).toEqual([])
+  expect(result.counts).toEqual({ test: 0, child: 16398 })
+  expect(result.requests).toBeLessThanOrEqual(4)
+  expect(result.names).toEqual(['test.execution', 'test.execution'])
+  expect(result.warnings).toEqual([expect.stringContaining(`dropped 16398 child span(s) in total (HTTP 403: ${planReason}; child uploads stopped for this run)`)])
 }, 15000)
 
 test('keeps other child 4xx per batch and sends later children', async () => {
@@ -93,11 +123,14 @@ test('keeps other child 4xx per batch and sends later children', async () => {
   expect(result.requests).toBe(7)
   expect(result.names.filter((name) => name === 'child')).toHaveLength(6)
   expect(result.warnings).toEqual([expect.stringContaining('dropped 1 child span(s) in total (HTTP 413)')])
+  expect(result.remaining).toEqual([])
 })
 
 test('reports each lane\'s own failure and keeps sending children after a test-stream 403', async () => {
   const result = await run({ status: 413, testStatus: 403 })
   expect(result.counts).toEqual({ test: 1, child: 1 })
+  expect(result.remaining).toHaveLength(1)
+  expect(result.remaining[0]).not.toMatch(/\.c\d+\.spool$/)
   expect(result.requests).toBe(7)
   expect(result.names).toEqual(Array(6).fill('child'))
   expect(result.warnings).toEqual([

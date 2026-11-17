@@ -30,6 +30,12 @@ class VitestBuildkiteTestEngineReporter {
     this._start = Date.now()
     this._paths = new Paths({ rootDir: ctx.config.root }, this._testEnv.location_prefix)
     globalThis[Symbol.for('buildkite.vitest.reporter')] = { shutdown: () => this._finish() }
+    if (this._otelEnabled && ctx.config.watch) {
+      warn('Vitest OpenTelemetry mode is disabled in watch mode; use vitest run to upload results.')
+      publishSettings(null)
+      // Keep the OTel path selected so disabled export cannot fall back to JSON.
+      return
+    }
     const settings = resolveSettings({
       otelEnabled: this._otelEnabled, token: this._options?.token,
       testRunner: 'vitest', frameworkVersion: version, runEnv: this._testEnv, tags: this._tags,
