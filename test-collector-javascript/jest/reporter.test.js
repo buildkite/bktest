@@ -5,6 +5,13 @@ test('omits the token from JSON reports through copying wrappers without changin
   class CopyingReporter extends Reporter {
     constructor(config, options) { super(config, { ...options, tags: { suite: 'wrapper' } }) }
   }
+  class Options {
+    #tags = { suite: 'jest' }
+    url = 'http://collector.test/uploads'
+    tags = this.#tags
+    password = 'private-password'
+    toJSON() { return { token: this.token, url: this.url, tags: this.#tags } }
+  }
   const token = 'jest-reporter-option-secret'
   const upload = nock('http://collector.test', {
     reqheaders: { authorization: `Token token="${token}"` },
@@ -12,10 +19,9 @@ test('omits the token from JSON reports through copying wrappers without changin
 
   try {
     for (const hiddenToken of [false, true]) {
-      const options = Object.freeze(Object.defineProperty({
-        url: 'http://collector.test/uploads', tags: { suite: 'jest' }, password: 'private-password',
-        toJSON() { return { token: this.token, url: this.url, tags: this.tags } },
-      }, 'token', { value: token, enumerable: !hiddenToken }))
+      const options = Object.freeze(Object.defineProperty(new Options(), 'token', {
+        value: token, enumerable: !hiddenToken,
+      }))
       const otherOptions = { title: 'HTML report' }
       const globalConfig = Object.freeze({
         rootDir: __dirname,

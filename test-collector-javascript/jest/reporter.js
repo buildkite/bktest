@@ -22,12 +22,13 @@ class JestBuildkiteTestEngineReporter {
     try {
       for (const entry of globalConfig.reporters || []) {
         if (!options?.token || entry[1]?.token !== options.token) continue
-        const toJSON = entry[1].toJSON
-        const reportOptions = { ...entry[1], token: entry[1].token }
+        const sourceOptions = entry[1]
+        const toJSON = sourceOptions.toJSON
+        const reportOptions = { ...sourceOptions, token: sourceOptions.token }
         Object.defineProperty(reportOptions, 'toJSON', {
           enumerable: false,
           value(key) {
-            const json = typeof toJSON === 'function' ? toJSON.call(this, key) : this
+            const json = typeof toJSON === 'function' ? toJSON.call(sourceOptions, key) : this
             if (!json || typeof json !== 'object' || Array.isArray(json)) return json
             return { ...json, token: undefined }
           },
