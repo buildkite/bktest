@@ -284,6 +284,11 @@ Test Engine run **failed**: any failed execution fails the run. JSON mode report
 only the final result, so the same test is passing there. Every attempt counts
 toward your plan's test execution usage.
 
+With auto-quarantine enabled, each failed attempt on the default branch also
+counts toward the failure threshold within its evaluation window. JSON mode
+sends only the final result, so failures before a passing retry do not count
+toward that threshold.
+
 ## Setup
 
 All three runners support `@opentelemetry/sdk-trace` 2.9+ and 3.x. The package sets
@@ -446,7 +451,6 @@ For Vitest, use `process.env.VITEST === 'true'` instead; it does not set `JEST_W
 
 `trace.getActiveSpan()` in a test is non-recording. It carries the parent context for children, but changing or ending it doesn't change the test result.
 Child spans can contain URLs, query strings and database statements. Check what your instrumentation records before enabling it.
-OpenTelemetry results don't yet count toward auto-quarantine or tag-to-label mappings, and don't update a test's file location.
 
 ## Choosing instrumentation
 
