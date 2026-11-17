@@ -37,10 +37,12 @@ describe('with no token', () => {
   })
 
   it('prints a console message and returns', () => {
-    uploadTestResults({}, {}, [])
+    uploadTestResults({}, {}, ['result'])
 
     expect(console.error).toBeCalledTimes(1)
     expect(console.error).toHaveBeenLastCalledWith('Missing BUILDKITE_ANALYTICS_TOKEN')
+    expect(console.log).not.toHaveBeenCalled()
+    expect(axios.post).not.toHaveBeenCalled()
   })
 
   ensureDoneBeingCalledOnce(mockDone => {
@@ -54,10 +56,12 @@ describe('with empty token', () => {
   })
 
   it('prints a console message and returns', () => {
-    uploadTestResults({}, {}, [])
+    uploadTestResults({}, {}, ['result'], { token: '' })
 
     expect(console.error).toBeCalledTimes(1)
     expect(console.error).toHaveBeenLastCalledWith('Missing BUILDKITE_ANALYTICS_TOKEN')
+    expect(console.log).not.toHaveBeenCalled()
+    expect(axios.post).not.toHaveBeenCalled()
   })
 
   ensureDoneBeingCalledOnce(mockDone => {
