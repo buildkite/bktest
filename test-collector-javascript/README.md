@@ -200,10 +200,12 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
 
     For experimental OpenTelemetry submission, pass `{ otelEnabled: true }` to the reporter. See [OpenTelemetry submission](docs/opentelemetry.md#playwright) for dependencies and behavior.
 
+    Prefer `BUILDKITE_ANALYTICS_TOKEN` (or `BUILDKITE_TESTS_OTLP_TOKEN` for OpenTelemetry) so the credential stays out of your Playwright configuration. The collector omits its `token` option from Playwright's JSON report, but does not redact other credentials in your configuration or test output. Redaction failures warn that reports may contain credentials, but do not prevent uploads.
+
     If you would like to pass in the API token using a custom environment variable, you can do so using the report options.
 
     ```js
-    // jest.config.js
+    // playwright.config.js
 
     // Send results to Test Engine
     reporter: [

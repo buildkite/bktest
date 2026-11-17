@@ -46,6 +46,21 @@ class PlaywrightBuildkiteTestEngineReporter {
   }
 
   onBegin(config) {
+    // Playwright copies constructor options, but JSON reports serialize these
+    // config options. Match re-exports by token and never mutate caller options.
+    try {
+      const token = this._options?.token;
+      for (const entry of config.reporter || []) {
+        if (!token || entry[1]?.token !== token) continue;
+        const options = { ...entry[1] };
+        Object.defineProperty(options, 'toJSON', {
+          value: () => ({ ...options, token: undefined }),
+        });
+        entry[1] = options;
+      }
+    } catch {
+      warn('Could not omit the Playwright reporter token from JSON reports; reports may contain credentials. Uploads will still be attempted.');
+    }
     if (!this._otelEnabled) return;
 
     this._hasCredential = Boolean(credentialFor(this._options.token));
