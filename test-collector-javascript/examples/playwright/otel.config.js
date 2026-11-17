@@ -1,3 +1,10 @@
+const collectorOptions = {
+  otelEnabled: process.env.PLAYWRIGHT_OTEL_ENABLED === undefined ? true : JSON.parse(process.env.PLAYWRIGHT_OTEL_ENABLED),
+  token: process.env.PLAYWRIGHT_REPORTER_TOKEN,
+  tags: { hello: 'playwright', priority: 'run', 'ci.worker.id': 'configured-worker' },
+};
+if (process.env.PLAYWRIGHT_REPORTER_OPTIONS === 'frozen') Object.freeze(collectorOptions);
+
 module.exports = {
   testDir: './otel',
   testMatch: process.env.PLAYWRIGHT_OTEL_TEST_MATCH || 'outcomes.js',
@@ -7,9 +14,8 @@ module.exports = {
     ['line'],
     ['json', { outputFile: process.env.PLAYWRIGHT_JSON_OUTPUT_NAME }],
     [require.resolve('./otel-steps-observer')],
-    ['buildkite-test-collector/playwright/reporter', {
-      otelEnabled: process.env.PLAYWRIGHT_OTEL_ENABLED === undefined ? true : JSON.parse(process.env.PLAYWRIGHT_OTEL_ENABLED),
-      tags: { hello: 'playwright', priority: 'run', 'ci.worker.id': 'configured-worker' },
-    }],
+    [process.env.PLAYWRIGHT_REPORTER_OPTIONS === 'wrapper'
+      ? require.resolve('./otel-reporter-wrapper')
+      : 'buildkite-test-collector/playwright/reporter', collectorOptions],
   ],
 }

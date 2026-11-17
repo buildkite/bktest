@@ -191,6 +191,8 @@ describe('examples/playwright in OTel mode', () => {
     PLAYWRIGHT_OTEL_SIGNAL: undefined,
     PLAYWRIGHT_OTEL_OTHER_SIGTERM: undefined,
     PLAYWRIGHT_OTEL_TERM_ON_END: undefined,
+    PLAYWRIGHT_REPORTER_TOKEN: undefined,
+    PLAYWRIGHT_REPORTER_OPTIONS: undefined,
   };
 
   const run = async (args = [], env = {}) => {
@@ -246,6 +248,63 @@ describe('examples/playwright in OTel mode', () => {
     if (server) await server.close();
     server = null;
   });
+
+  test.each([false, true].flatMap(otelEnabled =>
+    ['direct', 'wrapper', 'frozen'].map(options => [otelEnabled, options])
+  ))('keeps the token option out of JSON reports while authenticating uploads (otelEnabled: %s, options: %s)', async (otelEnabled, options) => {
+    server = await startOtlpServer();
+    const token = 'reporter-option-secret';
+    const result = await run(['--grep', 'passes with tags'], {
+      PLAYWRIGHT_OTEL_ENABLED: JSON.stringify(otelEnabled),
+      PLAYWRIGHT_REPORTER_TOKEN: token,
+      PLAYWRIGHT_REPORTER_OPTIONS: options,
+      BUILDKITE_TESTS_OTLP_TOKEN: undefined,
+      BUILDKITE_ANALYTICS_TOKEN: 'fallback-token',
+      BUILDKITE_ANALYTICS_BASE_URL: server.url,
+    });
+
+    expect(result.code).toBe(0);
+    expect(result.report.stats.expected).toBe(1);
+    expect(server.requests.length).toBeGreaterThan(0);
+    expect(server.requests.every(request => request.headers.authorization === `Token token="${token}"`)).toBe(true);
+    expect(result.stderr).not.toMatch(/TypeError|\[buildkite-test-collector\]|Error in reporter/);
+    const reporter = options === 'wrapper'
+      ? require.resolve('../examples/playwright/otel-reporter-wrapper')
+      : require.resolve('../playwright/reporter');
+    expect(result.report.config.reporter).toEqual(expect.arrayContaining([
+      [reporter, expect.objectContaining({ otelEnabled })],
+    ]));
+    expect(JSON.stringify(result.report)).not.toContain(token);
+  }, 30000);
+
+  test('warns when report redaction fails without preventing authenticated uploads', async () => {
+    server = await startOtlpServer();
+    const script = `
+      const Reporter = require('buildkite-test-collector/playwright/reporter');
+      const options = Object.freeze({ otelEnabled: true, token: 'option-token' });
+      const reporter = new Reporter({ ...options });
+      (async () => {
+        reporter.onBegin({ version: require('@playwright/test/package.json').version,
+          reporter: [Object.freeze([require.resolve('buildkite-test-collector/playwright/reporter'), options])] });
+        reporter.onTestEnd({ id: 'test', title: 'passes', titlePath: () => ['passes'],
+          location: { file: __filename, line: 1, column: 1 } },
+        { status: 'passed', startTime: new Date(), duration: 1 });
+        await reporter.onEnd();
+      })().catch(error => { console.error(error); process.exitCode = 1; });
+    `;
+    const result = await new Promise(resolve => {
+      execFile(process.execPath, ['-e', script], { cwd, timeout: 15000,
+        env: { ...process.env, ...baseEnv, BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url,
+          BUILDKITE_TESTS_OTLP_TOKEN: undefined, BUILDKITE_ANALYTICS_TOKEN: 'fallback-token' },
+      }, (error, stdout, stderr) => resolve({ error, stderr }));
+    });
+    expect(result.error).toBeNull();
+    expect(result.stderr).toContain('reports may contain credentials');
+    expect(result.stderr).not.toContain('TEST RESULTS MISSING');
+    expect(server.requests.length).toBeGreaterThan(0);
+    expect(server.requests.every(request => request.headers.authorization === 'Token token="option-token"')).toBe(true);
+    expect(testSpans()).toHaveLength(1);
+  }, 20000);
 
   test('redacts quoted API values without filtering step categories or user titles', async () => {
     server = await startOtlpServer();
