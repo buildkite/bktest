@@ -24,10 +24,12 @@ const uploadTestResults = (env, tags, results, options, done) => {
   }
 
   const requests = [];
+  const client = axios.create();
 
   if (Debug.enabled()) {
-    axios.interceptors.request.use(function (config) {
-      Debug.log(`Test Engine Sending: ${JSON.stringify(config)}`);
+    client.interceptors.request.use(function (config) {
+      const { method, url, data } = config;
+      Debug.log(`Test Engine Sending: ${JSON.stringify({ method, url, data })}`);
       return config;
     }, function (error) {
       if (error.response) {
@@ -41,7 +43,7 @@ const uploadTestResults = (env, tags, results, options, done) => {
   }
 
   // Add a response interceptor
-  axios.interceptors.response.use(function (response) {
+  client.interceptors.response.use(function (response) {
     // Any status code that lie within the range of 2xx cause this function to trigger
     // Do something with response data
     Debug.log(`Test Engine success response ${JSON.stringify(response.data)}`);
@@ -63,7 +65,7 @@ const uploadTestResults = (env, tags, results, options, done) => {
       "data": results.slice(i, i + CHUNK_SIZE),
     }
 
-    requests.push(axios.post(buildkiteAnalyticsUrl, data, config))
+    requests.push(client.post(buildkiteAnalyticsUrl, data, config))
   }
 
   return Promise.allSettled(requests)

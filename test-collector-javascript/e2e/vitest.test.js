@@ -94,9 +94,11 @@ describe('examples/vitest', () => {
 				expect(stdout).toMatch(/.*Test Engine Sending: ({.*})/m);
 
 				const jsonMatch = stdout.match(/.*Test Engine Sending: ({.*})/m)
-				const json = JSON.parse(jsonMatch[1])["headers"]
+				const json = JSON.parse(jsonMatch[1])
 
-				expect(json).toHaveProperty("Authorization", 'Token token="abc"')
+				expect(json).not.toHaveProperty("headers")
+				expect(stdout + stderr).not.toContain('Token token=')
+				expect(uploads[0].headers.authorization).toBe('Token token="abc"')
 
 				done()
 			})
@@ -109,9 +111,11 @@ describe('examples/vitest', () => {
 				expect(stdout).toMatch(/.*Test Engine Sending: ({.*})/m);
 
 				const jsonMatch = stdout.match(/.*Test Engine Sending: ({.*})/m)
-				const json = JSON.parse(jsonMatch[1])["headers"]
+				const json = JSON.parse(jsonMatch[1])
 
-				expect(json).toHaveProperty("Authorization", 'Token token="xyz"')
+				expect(json).not.toHaveProperty("headers")
+				expect(stdout + stderr).not.toContain('Token token=')
+				expect(uploads[0].headers.authorization).toBe('Token token="xyz"')
 
 				done()
 			})

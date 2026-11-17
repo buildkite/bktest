@@ -16,14 +16,15 @@ describe('examples/jasmine', () => {
   }
 
   describe('when token is defined through reporter options', () => {
-    test('it uses the correct token', (done) => {
+    test('it omits authentication from debug output', (done) => {
       exec('npm test spec/token.spec.js', { cwd, env: { ...env, BUILDKITE_ANALYTICS_TOKEN: undefined } }, (error, stdout, stderr) => {
         expect(stdout).toMatch(/.*Test Engine Sending: ({.*})/m);
 
         const jsonMatch = stdout.match(/.*Test Engine Sending: ({.*})/m)
-        const json = JSON.parse(jsonMatch[1])["headers"]
+        const json = JSON.parse(jsonMatch[1])
 
-        expect(json).toHaveProperty("Authorization", 'Token token="abc"')
+        expect(json).not.toHaveProperty("headers")
+        expect(stdout + stderr).not.toContain('Token token=')
 
         done()
       })
@@ -31,14 +32,15 @@ describe('examples/jasmine', () => {
   })
 
   describe('when token is defined through BUILDKITE_ANALYTICS_TOKEN', () => {
-    test('it uses the correct token', (done) => {
+    test('it omits authentication from debug output', (done) => {
       exec('npm test spec/example.spec.js', { cwd, env }, (error, stdout, stderr) => {
         expect(stdout).toMatch(/.*Test Engine Sending: ({.*})/m);
 
         const jsonMatch = stdout.match(/.*Test Engine Sending: ({.*})/m)
-        const json = JSON.parse(jsonMatch[1])["headers"]
+        const json = JSON.parse(jsonMatch[1])
 
-        expect(json).toHaveProperty("Authorization", 'Token token="xyz"')
+        expect(json).not.toHaveProperty("headers")
+        expect(stdout + stderr).not.toContain('Token token=')
 
         done()
       })

@@ -4,6 +4,7 @@ const axios = require('axios');
 const { version } = require('../package.json')
 
 jest.mock('axios');
+axios.create.mockReturnValue(axios);
 
 const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation()
 const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation()

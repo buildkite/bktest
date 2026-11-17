@@ -20,11 +20,12 @@ const runPlaywright = (args, env) => {
   })
 }
 
-const expectOutputToHaveToken = (stdout, expectation) => {
+const expectOutputToOmitAuthentication = (stdout) => {
   const jsonMatch = stdout.match(/.*Test Engine Sending: ({.*})/m)
-  const headers = JSON.parse(jsonMatch[1])["headers"]
+  const request = JSON.parse(jsonMatch[1])
 
-  expect(headers).toHaveProperty("Authorization", `Token token="${expectation}"`)
+  expect(request).not.toHaveProperty("headers")
+  expect(stdout).not.toContain('Token token=')
 }
 
 describe('examples/playwright', () => {
@@ -35,18 +36,18 @@ describe('examples/playwright', () => {
   }
 
   describe('when token is defined through reporter options', () => {
-    test('it uses the correct token', async () => {
+    test('it omits authentication from debug output', async () => {
       const stdout = await runPlaywright(["--config", "token.config.js"], { ...env, BUILDKITE_ANALYTICS_PLAYWRIGHT_TOKEN: 'abc' })
 
-      expectOutputToHaveToken(stdout, 'abc')
+      expectOutputToOmitAuthentication(stdout)
     }, TIMEOUT)
   });
 
   describe('when token is defined through BUILDKITE_ANALYTICS_TOKEN', () => {
-    test('it uses the correct token', async () => {
+    test('it omits authentication from debug output', async () => {
       const stdout = await runPlaywright([], env)
 
-      expectOutputToHaveToken(stdout, 'xyz')
+      expectOutputToOmitAuthentication(stdout)
     }, TIMEOUT)
   });
 
