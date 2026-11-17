@@ -19,7 +19,8 @@ afterEach(async () => {
   fs.rmSync(scratch, { recursive: true, force: true })
 })
 const run = (env = {}, args = []) => new Promise(resolve => {
-  execFile(process.execPath, [bin, 'run', ...(args.includes('--config') ? [] : ['--config', 'otel.config.js']), ...args], {
+  execFile(process.execPath, [bin, ...(args.includes('--watch') ? [] : ['run']), ...(args.includes('--config') ? [] : ['--config', 'otel.config.js']), ...args], {
+    timeout: args.includes('--watch') ? 25000 : undefined,
     cwd, env: { ...process.env,
       BUILDKITE_ANALYTICS_TOKEN: 'test-token', BUILDKITE_ANALYTICS_KEY: 'vitest-otel-e2e',
       BUILDKITE_ANALYTICS_OTLP_ENDPOINT: server.url, BUILDKITE_ANALYTICS_BASE_URL: server.url, ...env,
@@ -31,7 +32,7 @@ const drifted = 'experimental OpenTelemetry spans may have changed'
 const preload = (file) => ({ NODE_OPTIONS: [process.env.NODE_OPTIONS, file.endsWith('.mjs') ? '--import' : '--require', path.join(cwd, 'otel', file)].filter(Boolean).join(' ') })
 
 // Standalone suites have no example setup hooks or declared instrumentation.
-const runFixture = (files, config = {}, env = {}) => {
+const runFixture = (files, config = {}, env = {}, args = []) => {
   fs.symlinkSync(path.join(__dirname, '../node_modules'), path.join(scratch, 'node_modules'), 'dir')
   fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ type: 'module' }))
   for (const [name, source] of Object.entries(files)) fs.writeFileSync(path.join(scratch, name), source)
@@ -42,7 +43,7 @@ const runFixture = (files, config = {}, env = {}) => {
     experimental: { openTelemetry: { enabled: true, sdkPath: path.join(cwd, '../../vitest/otel.js') } },
     ...config,
   } })}`)
-  return run(env, ['--config', file])
+  return run(env, ['--config', file, ...args])
 }
 
 ;(supported ? test : test.skip).each(['passing', 'failing'])('uninstrumented %s suites never send the billed child stream', async outcome => {
@@ -145,6 +146,44 @@ const runFixture = (files, config = {}, env = {}) => {
   expect(server.spans().map(s => s.name)).toEqual(['test.execution'])
   expect(result.stderr).toContain('browser mode sends test.execution spans only')
   expect(result.stderr).not.toMatch(/root config|Enable tracing with the collector sdkPath|child spans disabled|TEST RESULTS MISSING/)
+}, 30000)
+
+;(supported ? test : test.skip)('watch mode warns once and uploads neither executions nor children across reruns', async () => {
+  const result = await runFixture({
+    'watched.test.js': `
+      import { test, expect } from 'vitest'
+      import { trace } from '@opentelemetry/api'
+      test('watched', () => {
+        console.log('RUN run 1')
+        console.log('WORKER SETTINGS', process.env.BUILDKITE_TEST_COLLECTOR_OTEL_SETTINGS || 'none')
+        trace.getTracer('app').startSpan('child run 1').end()
+        expect('run 1').toBe('run 1')
+      })
+    `,
+    'watch-reporter.mjs': `
+      import fs from 'node:fs'
+      export default class {
+        runs = 0
+        onWatcherStart() {
+          if (++this.runs === 1) {
+            const file = ${JSON.stringify(path.join(scratch, 'watched.test.js'))}
+            setTimeout(() => fs.writeFileSync(file, fs.readFileSync(file, 'utf8')
+              .replaceAll('run 1', 'run 2').replace("toBe('run 2')", "toBe('run 1')")), 100)
+          } else {
+            console.log('WATCH RERUN FINISHED')
+            setTimeout(() => process.kill(process.pid, 'SIGTERM'), 100)
+          }
+        }
+      }
+    `,
+  }, { reporters: ['default', [path.join(cwd, '../../vitest/reporter.js'), { otelEnabled: true }], path.join(scratch, 'watch-reporter.mjs')] }, { CI: undefined }, ['--watch'])
+  expect(result.code).toBe(1) // Vitest preserves the failed rerun's exit code on SIGTERM.
+  expect(result.stdout).toContain('WATCH RERUN FINISHED')
+  expect(result.stdout).toContain('RUN run 2')
+  expect(result.stdout).toContain('1 failed')
+  expect((result.stdout.match(/WORKER SETTINGS none/g) || [])).toHaveLength(2)
+  expect((result.stderr.match(/OpenTelemetry mode is disabled in watch mode/g) || [])).toHaveLength(1)
+  expect(server.requests).toHaveLength(0)
 }, 30000)
 
 ;(supported ? test : test.skip)('SIGTERM warns synchronously about results not yet uploaded', async () => {
