@@ -450,6 +450,9 @@ OpenTelemetry results don't yet count toward auto-quarantine or tag-to-label map
 
 ## Choosing instrumentation
 
+These packages and selection variables apply to Jest and Vitest. The commands
+below use Jest; for Vitest, run `npx vitest run` instead.
+
 For SDK 3 / API 1.10+:
 
 ```bash
@@ -466,7 +469,8 @@ npm install --save-dev '@opentelemetry/instrumentation-http@^0.223.0' \
 OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici npx jest
 ```
 
-We select instrumentation declared in your Jest `rootDir`'s package.json or its parents, including workspace roots (under Yarn Plug'n'Play, the workspace that runs Jest).
+For Jest, we select instrumentation declared in your `rootDir`'s package.json or its parents, including workspace roots (under Yarn Plug'n'Play, the workspace that runs Jest).
+Vitest uses each project's root instead; see [Vitest package instrumentation](#vitest-package-instrumentation) for its module-loading limits.
 If `@opentelemetry/auto-instrumentations-node` is resolvable, we select its whole bundle, with the exclusions below.
 Individual packages installed incidentally by another dependency don't opt you in; a resolvable auto-instrumentations bundle does.
 Instrumentation needs a compatible API version; the collector checks its base `@opentelemetry/instrumentation` dependency.
@@ -502,7 +506,7 @@ SIGKILL can prevent the drain and warning and **loses files not yet uploaded**. 
 - **Changed headers or messages:** disable the affected instrumentation using the table above if propagation changes what your tests expect.
 - **Missing HTTP client spans:** call `http.get(...)` on the module object instead of destructuring `get` at file load.
 - **MSW dropping headers:** disable `http` with MSW 2 (fixed in MSW 3, [issue #804](https://github.com/mswjs/interceptors/issues/804)).
-- **Native ESM missing package spans:** packages loaded as ES modules don't get package spans. HTTP, fetch and manual spans work.
+- **Jest native ESM missing package spans:** packages loaded as ES modules don't get package spans. HTTP, fetch and manual spans work. For Vitest's import support, see [Vitest package instrumentation](#vitest-package-instrumentation).
 - **Dropped children or interrupted runs:** end spans, close connections and let Jest finish flushing before stopping workers. Work started after file teardown is dropped.
 - **Slow teardown:** files wait only for local serialization/write/rename. Check local storage performance. The parent, not every file, pays the network tail.
 - **Slow exports or `TEST RESULTS MISSING`:** check the error, token and endpoint access and rerun. A single span exceeding 750 KiB cannot be sent and is reported; reduce its attributes. A 413 below our cap may indicate a smaller intermediary limit.
