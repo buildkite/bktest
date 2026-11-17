@@ -5,7 +5,7 @@ final class TestObserver: NSObject, XCTestObservation {
   let logger: Logger?
   let telemetry: TelemetryClient?
   let uuid: () -> UUID
-  let splitByMethod: Bool
+  let splitBy: String?
 
   /// The state of the current test.
   var test: TestState?
@@ -25,12 +25,12 @@ final class TestObserver: NSObject, XCTestObservation {
   init(
     logger: Logger? = .init(),
     telemetry: TelemetryClient? = nil,
-    splitByMethod: Bool = false,
+    splitBy: String? = nil,
     uuid: @escaping () -> UUID = UUID.init
   ) {
     self.logger = logger
     self.telemetry = telemetry
-    self.splitByMethod = splitByMethod
+    self.splitBy = splitBy
     self.uuid = uuid
   }
 
@@ -53,9 +53,12 @@ final class TestObserver: NSObject, XCTestObservation {
   /// Called exactly once per test case.
   func testCaseWillStart(_ testCase: XCTestCase) {
     self.executionTags.withValue {
-      $0[ObjectIdentifier(testCase)] = [
-        "test.selector.primary": XCTestCase.selector(of: testCase, splitByMethod: self.splitByMethod)
-      ]
+      var tags: [String: String] = [:]
+      // Preserve existing file-based timing keys unless native selectors are requested.
+      if self.splitBy == "class" || self.splitBy == "method" {
+        tags["test.selector.primary"] = XCTestCase.selector(of: testCase, splitByMethod: self.splitBy == "method")
+      }
+      $0[ObjectIdentifier(testCase)] = tags
     }
     let test = TestState(
       id: self.uuid(),

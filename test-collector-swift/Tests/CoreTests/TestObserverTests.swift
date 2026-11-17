@@ -5,7 +5,7 @@ final class TestObserverTests: XCTestCase {
   func testExecutionTagsFlowToTelemetry() {
     let recordedTags = LockIsolated([[String: String]?]())
     let telemetry = self.telemetry { tags in recordedTags.withValue { $0.append(tags) } }
-    let observer = TestObserver(logger: nil, telemetry: telemetry)
+    let observer = TestObserver(logger: nil, telemetry: telemetry, splitBy: "class")
 
     observer.testCaseWillStart(self)
     observer.setTag(for: self, key: "suite", value: "smoke")
@@ -22,7 +22,7 @@ final class TestObserverTests: XCTestCase {
   func testAutomaticClassSelector() {
     let recordedTags = LockIsolated([[String: String]?]())
     let telemetry = self.telemetry { tags in recordedTags.withValue { $0.append(tags) } }
-    let observer = TestObserver(logger: nil, telemetry: telemetry)
+    let observer = TestObserver(logger: nil, telemetry: telemetry, splitBy: "class")
 
     observer.testCaseWillStart(self)
     observer.testCaseDidFinish(self)
@@ -58,8 +58,8 @@ final class TestObserverTests: XCTestCase {
   func testNativeSelectorsForInheritedAndObjectiveCMethods() {
     let recordedTags = LockIsolated([[String: String]?]())
     let telemetry = self.telemetry { tags in recordedTags.withValue { $0.append(tags) } }
-    for splitByMethod in [false, true] {
-      let observer = TestObserver(logger: nil, telemetry: telemetry, splitByMethod: splitByMethod)
+    for splitBy in ["class", "method"] {
+      let observer = TestObserver(logger: nil, telemetry: telemetry, splitBy: splitBy)
       for testCase in [
         SelectorBaseCase(selector: #selector(SelectorBaseCase.exampleMethod)),
         SelectorChildCase(selector: #selector(SelectorBaseCase.exampleMethod)),
@@ -79,6 +79,18 @@ final class TestObserverTests: XCTestCase {
     ])
   }
   #endif
+
+  func testUnsetSplitDoesNotOverrideFileTimingFallback() {
+    let recordedTags = LockIsolated([[String: String]?]())
+    let telemetry = self.telemetry { tags in recordedTags.withValue { $0.append(tags) } }
+    let observer = TestObserver(logger: nil, telemetry: telemetry)
+
+    observer.testCaseWillStart(self)
+    observer.testCaseDidFinish(self)
+
+    XCTAssertEqual(recordedTags.value.count, 1)
+    XCTAssertNil(recordedTags.value[0])
+  }
 
   private func telemetry(onFinish: @escaping ([String: String]?) -> Void) -> TelemetryClient {
     TelemetryClient(

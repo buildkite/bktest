@@ -296,7 +296,12 @@ The existing `tagExecution` API is unchanged. Execution tags are exported as
 
 ### Native XCTest selectors (Unreleased)
 
-The collector automatically tags every XCTest execution with
+Opt in to native selectors with `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY=class`
+or `method`. When unset, no selector tag is added, preserving existing
+file-based timing history. Switching from file selectors to native class or
+method selectors starts timing history afresh; run once to record those keys.
+
+In class mode the collector tags every XCTest execution with
 `test.selector.primary`. On Xcode this is the native `Target/Class` selector,
 using the executing test bundle and runtime class, including inherited methods
 and custom Objective-C names. No test superclass or setup hook is required.

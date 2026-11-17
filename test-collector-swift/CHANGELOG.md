@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Tag XCTest executions with native class selectors for timing-aware custom-runner splitting, including inherited tests. Set `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY=method` for method-level selectors; explicit execution tags still take precedence.
+- Opt in to native XCTest selectors for timing-aware custom-runner splitting with `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY=class|method`, including inherited tests. Unset preserves existing file-based timing keys; explicit execution tags still take precedence.
 
 ## 2.0.0-beta.4
 
