@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Tag XCTest executions with native class selectors for timing-aware custom-runner splitting, including inherited tests. Set `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY=method` for method-level selectors; explicit execution tags still take precedence.
+
 ## 2.0.0-beta.4
 
 - Rename the OpenTelemetry instrumentation scope from `test-collector-swift` to `buildkite-test-collector`; keep test root span names as `test.execution`

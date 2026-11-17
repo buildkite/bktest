@@ -5,6 +5,7 @@ final class TestObserver: NSObject, XCTestObservation {
   let logger: Logger?
   let telemetry: TelemetryClient?
   let uuid: () -> UUID
+  let splitByMethod: Bool
 
   /// The state of the current test.
   var test: TestState?
@@ -24,10 +25,12 @@ final class TestObserver: NSObject, XCTestObservation {
   init(
     logger: Logger? = .init(),
     telemetry: TelemetryClient? = nil,
+    splitByMethod: Bool = false,
     uuid: @escaping () -> UUID = UUID.init
   ) {
     self.logger = logger
     self.telemetry = telemetry
+    self.splitByMethod = splitByMethod
     self.uuid = uuid
   }
 
@@ -49,7 +52,11 @@ final class TestObserver: NSObject, XCTestObservation {
   ///
   /// Called exactly once per test case.
   func testCaseWillStart(_ testCase: XCTestCase) {
-    self.executionTags.withValue { $0[ObjectIdentifier(testCase)] = [:] }
+    self.executionTags.withValue {
+      $0[ObjectIdentifier(testCase)] = [
+        "test.selector.primary": XCTestCase.selector(of: testCase, splitByMethod: self.splitByMethod)
+      ]
+    }
     let test = TestState(
       id: self.uuid(),
       className: XCTestCase.className(of: testCase),

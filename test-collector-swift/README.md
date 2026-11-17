@@ -294,6 +294,22 @@ class PaymentTests: XCTestCase {
 The existing `tagExecution` API is unchanged. Execution tags are exported as
 `buildkite.tag.<key>` attributes on that test's root span.
 
+### Native XCTest selectors (Unreleased)
+
+The collector automatically tags every XCTest execution with
+`test.selector.primary`. On Xcode this is the native `Target/Class` selector,
+using the executing test bundle and runtime class, including inherited methods
+and custom Objective-C names. No test superclass or setup hook is required.
+An explicit `tagExecution("test.selector.primary", "...")` overrides this default.
+
+For method-level splitting, set `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY=method`
+for both native enumeration and the test runner. Map it through the Xcode test
+plan/scheme or forward it as `TEST_RUNNER_BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY`,
+like the collector's other variables. Tags then include the native method
+identifier (`Target/Class/method()` for ordinary Swift classes, bare method
+names for Objective-C/nested runtime identifiers). Discovery and tags must use
+the same granularity. On Linux, SwiftPM identifiers use `Module.Class[/method]`.
+
 ## OpenTelemetry behavior and delivery
 
 The collector creates each `test.execution` span through a private AlwaysOn

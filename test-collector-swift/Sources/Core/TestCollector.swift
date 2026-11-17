@@ -36,7 +36,11 @@ public struct TestCollector {
       logger: logger
     )
 
-    self.observer = TestObserver(logger: logger, telemetry: telemetry)
+    self.observer = TestObserver(
+      logger: logger,
+      telemetry: telemetry,
+      splitByMethod: environment.string(for: "BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY") == "method"
+    )
   }
 
   /// Annotates the current test.
