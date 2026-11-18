@@ -59,6 +59,52 @@ test.each([
   }
 })
 
+test.each([
+  ['http', 'active', 1],
+  ['http', 'disabled', 0],
+  ['http', 'loaded', 0],
+  ['http', 'absent', 0],
+  ['undici', 'active', 0],
+  ['pg', 'active', 0],
+])('dd-trace coexistence warning preserves %s selection (DD HTTP %s)', (enabled, state, count) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-dd-trace-'))
+  try {
+    fs.symlinkSync(path.join(__dirname, '../node_modules'), path.join(root, 'node_modules'), 'dir')
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ dependencies: {
+      '@opentelemetry/instrumentation-http': '*',
+      '@opentelemetry/instrumentation-undici': '*',
+      '@opentelemetry/instrumentation-pg': '*',
+    } }))
+    const output = execFileSync(process.execPath, ['-e', `
+      const { loadInstrumentations } = require(${JSON.stringify(require.resolve('../util/otel/instrumentations'))})
+      const { warnOncePerRun } = require(${JSON.stringify(require.resolve('../util/otel/warn'))})
+      // Only dd-trace 5's already-active HTTP client is detected at startup.
+      if (${JSON.stringify(state)} !== 'absent') globalThis._ddtrace = {
+        _tracingInitialized: ${state !== 'loaded'},
+        _pluginManager: { _pluginsByName: { http: { client: { _enabled: ${state !== 'disabled'} } } } },
+      }
+      const warnings = []
+      console.warn = message => warnings.push(message)
+      const selected = []
+      for (const directory of [process.argv[1], process.argv[1] + '/second-project']) {
+        selected.push(loadInstrumentations(directory, (key, message) => warnOncePerRun(undefined, key, message)).map(entry => entry.name))
+      }
+      console.log(JSON.stringify({ warnings, selected, loaded: Boolean(globalThis._ddtrace) }))
+    `, root], { env: { ...process.env, OTEL_NODE_ENABLED_INSTRUMENTATIONS: enabled, OTEL_NODE_DISABLED_INSTRUMENTATIONS: '' } })
+    const result = JSON.parse(output)
+    expect(result.selected).toEqual([[enabled], [enabled]])
+    expect(result.loaded).toBe(state !== 'absent')
+    expect(result.warnings).toHaveLength(count)
+    if (count) {
+      expect(result.warnings[0]).toMatch(/dd-trace.*traceparent.*HTTP server child spans may be missing/)
+      expect(result.warnings[0]).toContain('Configure only one tracer to instrument HTTP/fetch/undici')
+      expect(result.warnings[0]).toContain('test.execution export remains enabled')
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test.each(['shared loader', 'Jest sandbox'])('records metrics after subclass field initialization in %s', (mode) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'otel-metrics-'))
   try {

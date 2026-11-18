@@ -107,6 +107,13 @@ const loadInstrumentations = (rootDir, warnOnce) => {
   }
   if (skipped.length) warnOnce('instrumentation', `OpenTelemetry instrumentation skipped: ${skipped.join(', ')}. ` +
     'The collector records child spans with instrumentation from the OpenTelemetry JavaScript SDK 2.x or 3.x line matching your @opentelemetry/api; test.execution export remains enabled.')
+  // Best-effort startup advisory for dd-trace 5's already-active HTTP client.
+  // Do not load dd-trace or follow its lazy/late plugin initialization.
+  const dd = globalThis._ddtrace
+  if (dd?._tracingInitialized && dd._pluginManager?._pluginsByName?.http?.client?._enabled && entries.some(({ name }) => name === 'http')) {
+    warnOnce('dd-trace-http', 'dd-trace and OpenTelemetry HTTP instrumentation are both enabled. Overlapping instrumentation can overwrite or duplicate traceparent headers and HTTP server child spans may be missing. ' +
+      'Configure only one tracer to instrument HTTP/fetch/undici; test.execution export remains enabled.')
+  }
   sets.set(rootDir, entries)
   return entries
 }
