@@ -143,33 +143,18 @@ Vitest checks each project's package.json and its parents for declared instrumen
 Use `OTEL_NODE_ENABLED_INSTRUMENTATIONS` and `OTEL_NODE_DISABLED_INSTRUMENTATIONS`
 to select them.
 
-### Vitest tracing ownership
+### Using your own tracing SDK
 
-Choose one owner for tracing in each worker. Vitest loads the collector's `sdkPath`
-**before `setupFiles`** and registers its global tracer provider if none exists.
-A NodeSDK or Sentry initialized later in `setupFiles` can fail to register its
-provider: its spans go to Buildkite instead of its own exporter. This was verified
-with SDK 3, NodeSDK 0.301.2 and Sentry 10.78.0. The collector does not replace an
-already-registered provider. Late SDK startup can lose delivery without a collector
-warning; passing tests do not prove application telemetry delivery.
+Vitest loads the collector **before `setupFiles`**. Starting another SDK there
+(such as NodeSDK or Sentry) can send its spans to Buildkite instead of your usual backend.
+Choose one:
 
-To keep application telemetry, use your application's SDK module as `sdkPath`, or
-preload its provider before the collector's `sdkPath` runs. Both startup orders
-preserved application delivery with NodeSDK 0.301.2 and Sentry 10.78.0; Buildkite
-warns and sends `test.execution` spans only, without children. This is not a
-verified recipe for every Sentry version or startup configuration: check delivery
-to your own backend.
+- **Buildkite tracing:** skip your application's SDK setup when `process.env.VITEST === 'true'`.
+- **Your application's tracing:** use its SDK module as `sdkPath`, or preload it before Vitest.
+  Buildkite then sends test results only, without child spans. Check that your usual backend receives its spans.
 
-An application-owned `sdkPath` must default-export an object with `shutdown()`.
-For CommonJS, export the started NodeSDK with `module.exports = sdk`; the tested
-Sentry module exports `module.exports = { shutdown: () => Sentry.close(2000) }`
-after `Sentry.init(...)`. For earlier preload, keep the collector's `sdkPath` and
-load your SDK with `NODE_OPTIONS="--require /absolute/path/to/app-sdk.cjs"` before
-running Vitest. Remove duplicate application SDK initialization from `setupFiles`.
-Preloaded application SDKs remain responsible for their own flush and shutdown.
-
-To let Buildkite collect children instead, deliberately skip application SDK
-initialization when `process.env.VITEST === 'true'`.
+Your own `sdkPath` must default-export an object with `shutdown()`.
+If you preload the SDK, keep its flush/shutdown handling and don't initialize it again in `setupFiles`.
 
 ### Vitest package instrumentation
 
@@ -229,15 +214,10 @@ Instrumentation that patches their entry point records nothing for them, without
 We test HTTP, fetch, Express 4, GraphQL 16, node-redis and pg on Vitest 4.0.11, 4.1 and 5.1
 with both SDK lines, and both module hook modes on Node 22, 24 and 26.
 
-Yarn Plug'n'Play support is best-effort, even with root-workspace declarations.
-With Yarn 4.9.2 PnP on Node 22.23.2 or 24.21.0, import-in-the-middle 3.6.0's
-synchronous package hook is incompatible with the PnP resolver. The collector
-skips package instrumentation and warns that `conditions` is unsupported;
-HTTP, manual children and `test.execution` export remain enabled, but Express
-and other package spans are absent. To retain package spans, use the tested Yarn
-4.18.1 (verified on Node 24.21.0 with SDK 2 and 3), or Yarn's `node-modules` linker.
-The earliest fixed Yarn version has not been established. Alternatively, avoid
-the package hook intentionally by selecting only HTTP and fetch instrumentation:
+Yarn Plug'n'Play support is best-effort. If you see a `conditions` warning,
+package tracing is disabled; tests and HTTP/manual spans still work.
+Upgrade Yarn (4.18.1 was tested) or use `nodeLinker: node-modules` to restore package spans.
+To leave package tracing off explicitly:
 
 ```sh
 OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici yarn vitest run
@@ -449,8 +429,7 @@ test('does work', async () => {
 
 Under Jest, if your suite registers its own tracer provider, it keeps its own child spans and we send test spans only.
 To collect children in Buildkite, skip your application's provider setup when `JEST_WORKER_ID` is set.
-Vitest does not set `JEST_WORKER_ID`; follow [Vitest tracing ownership](#vitest-tracing-ownership)
-for its startup-order requirements and test-only alternative.
+For Vitest, see [Using your own tracing SDK](#using-your-own-tracing-sdk).
 
 - Every test gets a `test.execution` span, including skipped and todo tests. Each retry attempt gets a separate span and execution ID.
 - Results keep names, locations, failures, tags and CI details. Durations use real time and stop when the test finishes.
@@ -483,15 +462,8 @@ npm install --save-dev '@opentelemetry/instrumentation-http@^0.223.0' \
 OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici npx jest
 ```
 
-For a broader auto-instrumentation bundle, match it to your SDK line:
-
-```bash
-# SDK 3 / API 1.10+ (tested with 0.83.1)
-npm install --save-dev '@opentelemetry/auto-instrumentations-node@0.83.1'
-
-# SDK 2 / API 1.9 (tested with 0.81.2)
-npm install --save-dev '@opentelemetry/auto-instrumentations-node@~0.81.0'
-```
+For the broader bundle, install `@opentelemetry/auto-instrumentations-node@0.83.1`
+with SDK 3, or `@opentelemetry/auto-instrumentations-node@~0.81.0` with SDK 2.
 
 For Jest, we select instrumentation declared in your `rootDir`'s package.json or its parents, including workspace roots (under Yarn Plug'n'Play, the workspace that runs Jest).
 Vitest uses each project's root instead; see [Vitest package instrumentation](#vitest-package-instrumentation) for its module-loading limits.
@@ -506,20 +478,13 @@ Browser instrumentation (`fetch`, `xml-http-request`, `document-load`, `user-int
 You can opt in by listing short names in `OTEL_NODE_ENABLED_INSTRUMENTATIONS`. The disabled list always wins.
 We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2, and on Vitest as described in [Vitest package instrumentation](#vitest-package-instrumentation). Test other packages against your own operations before relying on them.
 
-### Overlapping APM instrumentation
+### Using dd-trace
 
-Select one owner for HTTP/fetch tracing. With dd-trace 5.136.0, Vitest 4.0.18 and
-SDK 3.1.1 on Node 22.15.0, preloading `dd-trace/init`, alone or with
-`dd-trace/register.js`, lost both HTTP SERVER children in an HTTP/fetch test,
-despite passing results and intact CLIENT spans. Overlapping instrumentation can
-overwrite or duplicate trace headers. The collector warns once per run when it
-sees an active Datadog HTTP client integration at startup while collector HTTP
-instrumentation is selected. Detection is best-effort: lazy/late initialization,
-fetch-only overlap and other dd-trace layouts may not warn. Absence of a warning
-does not establish compatibility; check server spans as well as test results.
+Don't let dd-trace and OpenTelemetry both trace HTTP/fetch calls: conflicting
+trace headers can leave server spans missing even when tests pass.
+The collector warns about some startup conflicts, but cannot detect every overlap.
 
-To retain OpenTelemetry HTTP/fetch coverage in this tested configuration, disable
-all three Datadog integrations before startup:
+To use OpenTelemetry for network tracing, disable **all three** Datadog integrations:
 
 ```sh
 DD_TRACE_HTTP_ENABLED=false \
@@ -529,13 +494,8 @@ OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici \
 NODE_OPTIONS='--require dd-trace/init' npx vitest run
 ```
 
-If you also use `dd-trace/register.js`, keep all three toggles and use
-`NODE_OPTIONS='--import dd-trace/register.js --require dd-trace/init'`.
-This restores both SERVER children under their matching CLIENT spans in the test
-trace, but intentionally removes Datadog's automatic HTTP server/client, global
-fetch and undici coverage. Datadog's manual async scope remained active in these
-controls; Datadog backend ingestion was not tested. Disabling only Datadog HTTP,
-or HTTP and undici without fetch, is not a complete workaround.
+This disables Datadog's automatic network tracing, not manual spans.
+If you also preload `dd-trace/register.js`, keep it in `NODE_OPTIONS`.
 
 ## Delivery and interruptions
 
@@ -557,7 +517,7 @@ SIGKILL can prevent the drain and warning and **loses files not yet uploaded**. 
 
 - **No spans:** check the reporter, runtime, SDK versions, token, endpoint, temporary directory permissions/free space and earlier warnings, and use Jest 29 or 30 with `jest-circus`. Fix and rerun; there is no JSON fallback.
 - **Missing children:** check your plan includes child spans. Check instrumentation warnings and mocked APIs, skip your own provider setup under Jest, and supply fetch yourself in jsdom if needed.
-- **Missing HTTP server spans with dd-trace:** passing results and CLIENT spans do not prove server coverage. See [overlapping APM instrumentation](#overlapping-apm-instrumentation) for the tested configuration and Datadog coverage trade-off.
+- **Missing HTTP server spans with dd-trace:** see [Using dd-trace](#using-dd-trace) to avoid overlapping instrumentation.
 - **Duplicates:** retries after a lost acknowledgment can duplicate executions until the server deduplicates them.
 - **Changed stacks:** package instrumentation adds collector frames to errors created while a module loads. Failing tests show context-manager frames whenever runtime is set. Use explicit labels if test names or snapshots include stacks.
 - **Changed headers or messages:** disable the affected instrumentation using the table above if propagation changes what your tests expect.

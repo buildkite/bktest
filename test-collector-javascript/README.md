@@ -88,10 +88,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     To see hooks, manual spans and HTTP/fetch calls under each test, use
     experimental [OpenTelemetry mode](docs/opentelemetry.md#vitest).
     It requires Vitest 4.0.11+ and extra setup. JSON uploads remain the default.
-    If you already use an SDK or APM, choose which owns tracing before enabling it;
-    see [provider startup order](docs/opentelemetry.md#vitest-tracing-ownership)
-    and [overlapping HTTP instrumentation](docs/opentelemetry.md#overlapping-apm-instrumentation).
-    Yarn Plug'n'Play is best-effort; see the [tested configurations and alternatives](docs/opentelemetry.md#vitest-package-instrumentation).
+    If you already use NodeSDK, Sentry or dd-trace, check the guide before enabling OTel.
 
     Update your [Vitest configuration](https://vitest.dev/config/):<br>
 
