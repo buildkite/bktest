@@ -9,6 +9,7 @@ androidxLifecycle = "2.7.0"
 androidxTestExt = "1.1.5"
 detekt = "1.23.1"
 junit = "4.13.2"
+mockito = "5.14.2"
 kotlin = "1.9.25"
 okhttp = "5.0.0-alpha.12"
 retrofit = "2.9.0"
@@ -32,6 +33,7 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 retrofit-core = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
 retrofit-converter-gson = { group = "com.squareup.retrofit2", name = "converter-gson", version.ref = "retrofit" }
 testing-junit = { group = "junit", name = "junit", version.ref = "junit" }
+testing-mockito = { group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
 
 # build-logic module dependencies
 detekt-gradlePlugin = { group = "io.gitlab.arturbosch.detekt", name = "detekt-gradle-plugin", version.ref = "detekt" }
