@@ -1,229 +1,9 @@
 # OpenTelemetry (experimental)
 
-Test Engine can receive your Jest, Playwright and Vitest results as OpenTelemetry traces.
-Each test becomes a span, with its work underneath: steps for Playwright, and
-HTTP calls, package calls such as database queries, and your own spans for Jest and Vitest.
-
-## Playwright
-
-Use Playwright 1.41.2 or newer (the oldest version verified), with the Node.js and
-OpenTelemetry SDK requirements in [Setup](#setup-1). Install the collector,
-one of the matching [SDK package sets](#setup-1), then enable
-`otelEnabled` on the reporter. No fixture or test changes are needed;
-`@opentelemetry/context-async-hooks` and Jest's runtime are **not needed**.
-
-```js
-// playwright.config.js
-module.exports = {
-  reporter: [
-    ['line'],
-    ['buildkite-test-collector/playwright/reporter', { otelEnabled: true }],
-  ],
-}
-```
-
-Each test attempt becomes a `test.execution` span, including retries and skips,
-starting at Playwright's reported start and extending to enclose all observed
-steps. Test Engine's execution duration can therefore exceed Playwright's JSON
-duration, including suite hooks and setup outside Playwright's test timer.
-Reporter and upload latency are not added. Test identity and failure details match JSON reporting.
-Interrupted attempts are reported as skipped; expected failures remain failures,
-as in JSON mode.
-
-Playwright steps become nested child spans: `test.step` blocks, hooks, fixtures,
-assertions and Playwright actions. Repeated titles remain separate spans, with
-Playwright's parent relationships and start/duration timings. Step errors mark
-the child as failed without changing the test result. Steps left open when an
-attempt ends are marked `test.step.incomplete` and closed at the root span's end;
-cancellation does not make them failures.
-
-All reporter step categories are retained, not just explicit `test.step` blocks.
-A small test with a `beforeEach`, two `test.step` blocks, a fill, a click and an
-expect produced one free test span and 19 child spans. Realistic end-to-end tests
-can produce 50–200 children per attempt. Children are billed by decoded GB
-ingested, not by span count, so check your volume before enabling this on a large suite.
-
-Quoted values in `pw:api` titles are redacted in both the child span name and
-`test.step.name`, including typed text, pressed keys, option values and locator
-literals. Playwright does not escape embedded quotes, so the whole quoted region
-is replaced with `[REDACTED]`; parenthesized API arguments from older versions
-are redacted too. User-written `test.step` titles and assertion/error
-text are not redacted; do not put secrets there. Step error text is truncated to
-10,243 code points, like test exception messages.
-
-Reporter `token` and `tags` options and the shared [settings](#settings) apply.
-Per-test `@key:value` tags (Playwright 1.42+) override reporter tags. Child export limits apply per
-file across workers and retries; dropped children do not displace test results.
-
-For sharded blob reports, configure this reporter in the `merge-reports` step,
-**not in the shards**. Enabling it in both uploads the executions twice.
-UI mode uploads on **every run** when a token is set; use a separate suite or
-disable the reporter if those local runs should not be recorded.
-
-With OTel enabled, configuration or upload failures warn without falling back to
-JSON or changing Playwright's exit code. Turn `otelEnabled` off to use JSON again.
-
-This is reporter-side tracing only. It does not propagate context into workers
-or collect automatic HTTP/database spans, manual worker spans, browser application
-traces or in-test annotations.
-
-### Playwright delivery and interruptions
-
-The reporter commits each completed attempt and its children to a local spool;
-the parent uploads in the background. Normal completion drains for up to ten
-seconds. `globalTimeout` can notify reporters before interrupted attempts finish:
-the collector waits up to one second for those callbacks, then records any still
-open attempts as interrupted/skipped before taking the final upload snapshot.
-Late callbacks do not duplicate those attempts. This wait is within the drain budget.
-
-Ctrl-C lets Playwright interrupt workers and flush results. A second Ctrl-C can
-kill the runner before uploads or warnings finish. Playwright itself does not
-handle SIGTERM as a graceful interruption. The collector handles SIGTERM with a
-five-second budget, including the bounded attempt wait, and shortens an existing
-drain. It preserves other SIGTERM listeners and their cleanup; without another
-listener it re-raises SIGTERM (or exits 143 as PID 1). Open attempts are recorded
-as skipped, with unfinished children marked incomplete, not as failures.
-
-Unacknowledged results warn `TEST RESULTS MISSING`; lost children warn separately
-and do not displace test results. SIGKILL, a second interrupt or a crash can
-prevent both flushing and warnings. Completed runs remove the spool; terminated
-runs can leave it behind, with no replay tool. See the shared
-[delivery details](#delivery-and-interruptions) for batching, limits and retries;
-its worker/runtime lifecycle description is Jest-specific.
-
-## Vitest
-
-### Requirements
-
-Use Vitest 4.0.11+ for test traces with child spans.
-Vitest 5 requires Node.js 22.12+.
-
-### Setup
-
-Install the collector and one of the matching [SDK package sets](#setup-1).
-SDK 3 requires Node.js 22.15+, including when used with Vitest 4.
-
-Enable the reporter and native tracing in your config:
-
-```js
-// vitest.config.js
-import { defineConfig } from 'vitest/config'
-import { createRequire } from 'node:module'
-const require = createRequire(import.meta.url)
-
-export default defineConfig({
-  test: {
-    reporters: [
-      'default',
-      ['buildkite-test-collector/vitest/reporter', { otelEnabled: true }],
-    ],
-    includeTaskLocation: true,
-    experimental: {
-      openTelemetry: {
-        enabled: true,
-        sdkPath: require.resolve('buildkite-test-collector/vitest/otel.js'),
-      },
-    },
-  },
-})
-```
-
-Set `BUILDKITE_ANALYTICS_TOKEN` to your suite token, then run `npx vitest run`.
-See [Settings](#settings) for other authentication options, tags and upload settings.
-
-`require.resolve` gives Vitest the filesystem path it needs, including with pnpm
-and Yarn. In CommonJS, omit `createRequire` and use `require.resolve` directly.
-With Yarn Plug'n'Play, declare the packages in the root workspace.
-For multiple projects, set tracing in the root config.
-Projects inherit it unless they override `enabled` or `sdkPath`.
-
-To capture HTTP, fetch and package calls, install the packages in
-[Choosing instrumentation](#choosing-instrumentation).
-Vitest checks each project's package.json and its parents for declared instrumentation.
-Use `OTEL_NODE_ENABLED_INSTRUMENTATIONS` and `OTEL_NODE_DISABLED_INSTRUMENTATIONS`
-to select them.
-
-### Using your own tracing SDK
-
-Vitest loads the collector **before `setupFiles`**. Starting another SDK there
-(such as NodeSDK or Sentry) can send its spans to Buildkite instead of your usual backend.
-Choose one:
-
-- **Buildkite tracing:** skip your application's SDK setup when `process.env.VITEST === 'true'`.
-- **Your application's tracing:** use its SDK module as `sdkPath`, or preload it before Vitest.
-  Buildkite then sends test results only, without child spans. Check that your usual backend receives its spans.
-
-Your own `sdkPath` must default-export an object with `shutdown()`.
-If you preload the SDK, keep its flush/shutdown handling and don't initialize it again in `setupFiles`.
-
-### Vitest package instrumentation
-
-Package instrumentation such as `pg`, `redis`, `ioredis`, `express` and `graphql`
-records spans under the test that made the call.
-Vitest loads packages through Node's ES module loader by file path. Each worker
-registers OpenTelemetry's import-in-the-middle loader for the entry points of the
-selected packages only, using Node's synchronous module hooks where the installed
-import-in-the-middle supports them, and `module.register` otherwise.
-
-What you get depends on how your code loads a package:
-
-- `require()` from CommonJS records spans for all tested packages.
-- `import` from ES modules and TypeScript records spans for packages whose instrumentation
-  patches files the package loads with `require()`, such as `pg` and `redis`.
-- Packages patched at their entry point, such as `express` and `ioredis`, get no spans
-  from `import`. import-in-the-middle, up to at least 3.6.0, doesn't treat Vitest's
-  file-path import of a package's entry point as an import of that package.
-  The collector warns once per package. Load these packages with `require()` instead,
-  through `createRequire` in ES modules:
-
-  ```js
-  import { createRequire } from 'node:module'
-  const require = createRequire(import.meta.url)
-  const express = require('express')
-  ```
-- `graphql` gets no spans from `import` until you resolve it to its CommonJS build, as below.
-  The collector warns.
-
-GraphQL 16's package.json `main` is `index`, without an extension. Vitest resolves it to
-`index.mjs`, unlike Node, which loads `index.js` ([vitest-dev/vitest#8414](https://github.com/vitest-dev/vitest/issues/8414)).
-The instrumentation patches only the CommonJS build.
-Resolve `graphql` and its subpaths to the CommonJS build:
-
-```js
-// vitest.config.js
-import { createRequire } from 'node:module'
-import { defineConfig } from 'vitest/config'
-
-const require = createRequire(import.meta.url)
-
-export default defineConfig({
-  plugins: [{
-    name: 'graphql-commonjs',
-    enforce: 'pre',
-    resolveId: (id) => (/^graphql(\/|$)/.test(id) ? require.resolve(id) : undefined),
-  }],
-  test: { /* as above */ },
-})
-```
-
-Resolve the subpaths too. Mixing the builds loads two copies of GraphQL, and GraphQL
-throws `Cannot use GraphQLSchema ... from another module or realm`.
-
-Packages that Vite runs itself, through `server.deps.inline`, never reach Node's ES module loader.
-Instrumentation that patches their entry point records nothing for them, without a warning.
-We test HTTP, fetch, Express 4, GraphQL 16, node-redis and pg on Vitest 4.0.11, 4.1 and 5.1
-with both SDK lines, and both module hook modes on Node 22, 24 and 26.
-
-Yarn Plug'n'Play support is best-effort. If you see a `conditions` warning,
-package tracing is disabled; tests and HTTP/manual spans still work.
-Upgrade Yarn (4.18.1 was tested) or use `nodeLinker: node-modules` to restore package spans.
-To leave package tracing off explicitly:
-
-```sh
-OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici yarn vitest run
-```
-
-### What you get
+Jest, Vitest and Playwright can send results to Test Engine as OpenTelemetry traces.
+A **test span** (`test.execution`) records a test result. **Child spans** show the
+work underneath: HTTP calls, database queries and your own spans in Jest and
+Vitest, or steps in Playwright. For example, in Vitest:
 
 ```text
 test.execution  "checkout charges the card"
@@ -236,73 +16,16 @@ test.execution  "checkout charges the card"
             └── handler              (manual span)
 ```
 
-Each test gets a trace, including skipped tests and tests cancelled by bail.
-Hook phases keep Vitest's names, statuses and exceptions.
-Phases are sent only if they group an exported child span, not for errors or events alone.
-Starting a child without ending it does not export its otherwise-empty phases.
-Without instrumentation or manual spans, passing and failing suites send no child-stream requests.
-Failures are still recorded on the free `test.execution` spans.
-Other phases, collection, suite work and `beforeAll` are excluded.
-Outgoing HTTP and fetch calls made outside tests bypass instrumentation: they create
-no spans and send no trace headers, even when a parent context is active.
-Servers started outside tests, for example in `beforeAll`, still trace requests from tests.
-Custom spans from the `vitest` tracer are kept unless their names start with `vitest.`.
+JSON uploads stay the default. OpenTelemetry is opt-in and experimental: options,
+environment variables and span shape may change in minor releases. Linux and
+macOS are supported. Windows support is not established.
 
-### Using bktec
+<a id="setup-1"></a>
 
-Set both bktec commands without `--reporter` flags, which replace the collector:
+## Install
 
-```sh
-export BUILDKITE_TEST_ENGINE_TEST_CMD="npx vitest run {{testExamples}} \
---outputFile {{resultPath}}"
-export BUILDKITE_TEST_ENGINE_RETRY_CMD="npx vitest run \
---testNamePattern '{{testNamePattern}}' --outputFile {{resultPath}}"
-```
-
-Add `'json'` to the reporters in the config above.
-The JSON file is for bktec. The collector uploads OpenTelemetry only.
-Keep bktec's own upload off with `BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`.
-
-Retries upload tests that `--testNamePattern` excludes as skipped, and these count toward usage.
-
-### Limitations
-
-- Retries share one execution per test, with every attempt's phases and children underneath. Jest's OpenTelemetry mode records one execution per attempt.
-- SIGTERM, including Buildkite cancellation, warns synchronously that results not yet uploaded are lost. Vitest exits before an asynchronous drain can finish; already uploaded results survive. Rerun the suite to recover missing results. SIGKILL can lose pending results without a warning.
-- SIGINT (Ctrl-C, and the first signal [GitHub Actions sends to a cancelled step's entry process](https://docs.github.com/en/actions/reference/workflow-cancellation-reference)) loses results not yet uploaded without a warning.
-- Vitest ID collisions can mix up parallel results. The collector warns and keeps traces separate, but uploads what Vitest reports. Rename either file named in the warning.
-- Browser mode sends `test.execution` spans only and warns. Watch mode disables OpenTelemetry with a warning and uploads nothing; use `vitest run` to upload results.
-- VM pools (`vmThreads` and `vmForks`), including per-project pools, send `test.execution` spans only and warn once per run. Vitest's `instanceof Promise` check does not recognise a cross-realm Promise returned by `run.test`, ending its test span before the work finishes. Use `threads` or `forks` for child spans until Vitest fixes this upstream bug.
-- Vitest 3 sends test spans only and warns. So do runs with a custom SDK or missing native config. Vitest 1–2 warn and upload nothing in OpenTelemetry mode.
-- Isolation adds SDK startup cost per test file. Turning it off changes how your tests run, not just telemetry performance.
-- Configuration or upload failures do not fall back to JSON. Turn off `otelEnabled` to use JSON again.
-- End child spans before workers exit. Children started after their test ends are dropped and counted in a warning.
-- Child spans rely on Vitest's experimental OpenTelemetry spans. If a Vitest release changes them, the collector warns that children were not recorded or could not be linked, and still sends test spans.
-
-## Jest
-
-Jest runs tests in worker processes and reporters in the main process.
-The runtime records spans in the workers; the reporter uploads them.
-
-```js
-// jest.config.js
-module.exports = {
-  reporters: [
-    'default',
-    ['buildkite-test-collector/jest/reporter', { otelEnabled: true }],
-  ],
-  runtime: 'buildkite-test-collector/jest/runtime',
-  testLocationInResults: true,
-}
-```
-
-With `jest.retryTimes`, each attempt is a separate execution and counts toward usage.
-A fail-then-pass test still fails the Test Engine run; each failed default-branch attempt counts toward auto-quarantine's threshold when enabled, while JSON mode sends only the final result.
-
-## Setup
-
-All three runners support `@opentelemetry/sdk-trace` 2.9+ and 3.x. The package sets
-below have compatible peers; the collector does not impose upper version limits.
+All three runners support `@opentelemetry/sdk-trace` 2.9+ and 3.x, with no
+collector-imposed upper version limit. Choose one matching package set.
 
 SDK 3 requires Node.js 22.15+ and API 1.10+:
 
@@ -324,128 +47,236 @@ npm install --save-dev buildkite-test-collector \
   '@opentelemetry/exporter-trace-otlp-proto@~0.223.0'
 ```
 
-Playwright does not need `context-async-hooks`. Yarn Plug'n'Play needs these
-packages in the root workspace.
+With Yarn Plug'n'Play, declare these packages in the root workspace.
 
-**Migration:** replace your direct `@opentelemetry/sdk-trace-base` dependency with
-`@opentelemetry/sdk-trace` 2.9+; OTel mode no longer supports SDK 2.0–2.8.
-Custom provider setup needs `TracerProvider` instead of `BasicTracerProvider`,
-and processors take `{ exporter }` options. Collector configuration is unchanged.
-Child spans keep environment-selected sampling and limits; test spans keep
-AlwaysOn sampling and fixed limits.
+## Jest
 
-Use Jest 29 or 30 with `jest-circus` (tested with 29.7.0 and 30.5.2).
-Jest 30.0 and 30.1 can drop `afterEach` children in files mixing concurrent and sequential tests.
-It's experimental and off by default.
-Supported platforms are Linux and macOS; Windows is untested.
-OpenTelemetry options, environment variables and span shape may change in minor releases.
-Test spans count as test executions, like JSON uploads, at no extra charge. Child spans are billed by data ingested and need a plan that includes them; without it, we still record test results and warn that child spans were dropped.
+Use Jest 29 or 30 with `jest-circus`.
 
-The collector probes serialization before recording results. SDK 3 on older Node
-versions warns but still attempts export. Incompatible instrumentation is skipped
-with a warning; test results remain enabled.
+1. [Install the collector and SDK](#install).
+2. Enable the reporter in the root config and the runtime in every project:
 
-Jest native ESM spans work with API 1.10, including tracers obtained before
-`resetModules` and synchronous `require(esm)`. Under **Jest 29 with jsdom or happy-dom**,
-SDK 3 package instrumentation loads its browser build and is skipped with a warning;
-test results, HTTP and fetch still record. Jest 30, the Node environment and SDK 2
-do not have this limitation.
+   ```js
+   // jest.config.js
+   module.exports = {
+     reporters: [
+       'default',
+       ['buildkite-test-collector/jest/reporter', { otelEnabled: true }],
+     ],
+     runtime: 'buildkite-test-collector/jest/runtime',
+     testLocationInResults: true,
+   }
+   ```
 
-SDK 3 structured span/link attributes survive export, including bytes, nested maps,
-mixed arrays and null. Event/resource attributes are still limited to simple values
-by the SDK. Under Jest, SDK 3 also rejects nested plain objects created inside a test;
-null-prototype maps (`Object.create(null)`) work around this. SDK validation warnings
-are available through OpenTelemetry's `diag` logger.
+3. Set `BUILDKITE_ANALYTICS_TOKEN` to your suite token and run `npx jest`.
+4. Open the run in your Test Engine suite. Each test, including skips and todos,
+   has a test span. Install [instrumentation](#child-spans) to add child spans.
 
-Reporter `token` and `tags` options work as usual.
-For TypeScript, check your reporter options with `satisfies Options`, importing `Options` from `buildkite-test-collector/jest/reporter`.
+<a id="what-gets-recorded"></a>
 
-Upgrading from a 1.13.0 beta? Remove `testEnvironment: 'buildkite-test-collector/jest/environment'` and add `runtime`. Batch-size variables now limit parent uploads, the child queue-size variable caps children per file, and the test queue-size variable is ignored; see [Settings](#settings).
-With `otelEnabled: true`, every project needs `runtime`. A project without it warns and uploads nothing. There is **no JSON fallback**, including for unsupported Jest/SDK versions, invalid settings, worker setup failures, or an unwritable temporary directory. Fix the warning and rerun. To use JSON instead, turn `otelEnabled` off for the run.
-A `@jest-environment` docblock doesn't opt a file out.
-For a custom runtime, use `require('buildkite-test-collector/jest/runtime').extend(MyRuntime)`.
+Children belong to tests, `beforeEach` and `afterEach`, not file loading,
+`beforeAll` or `afterAll`. Jest selects instrumentation declared in `rootDir`
+and parent package.json files (the running workspace under PnP).
 
-The parent reporter uploads, not the workers. Worker HTTP mocks do not intercept uploads. In-band tests or parent-process mocks can still intercept them; if you use nock's `disableNetConnect` there, allow the collector's POST:
+An application-owned provider keeps its children. Skip its setup when
+`JEST_WORKER_ID` is set to send them to Buildkite instead.
+
+With `jest.retryTimes`, each attempt is a separate execution. A fail-then-pass
+test still fails the Test Engine run. Each failed default-branch attempt counts
+toward auto-quarantine's threshold when enabled. JSON mode sends only the final result.
+
+Keep your usual test environment. A `@jest-environment` docblock does not opt a
+file out. For a custom runtime, use
+`require('buildkite-test-collector/jest/runtime').extend(MyRuntime)`.
+Reporter `token` and `tags` options still work. In TypeScript, use `satisfies Options`
+with `Options` from `buildkite-test-collector/jest/reporter`.
+
+### Jest limits and cancellation
+
+- Jest 30.0–30.1 can lose `afterEach` children in files mixing concurrent and sequential tests.
+- With API 1.10, native ESM supports HTTP, fetch and manual spans, but not package instrumentation.
+- In Jest 29 with jsdom or happy-dom, SDK 3 package instrumentation is skipped with a warning. Test results, HTTP and fetch still record. Use Jest 30, the Node environment or SDK 2 for package spans.
+- SDK 3 rejects nested plain-object attributes created inside a test. Use null-prototype maps (`Object.create(null)`).
+- `trace.getActiveSpan()` is non-recording: changing or ending it doesn't change the test result.
+- On completion or `--bail`, Jest gives uploads up to 10 seconds. Healthy runs finish as soon as uploads do. An already-scheduled exporter retry can keep Node alive for up to 10 more seconds during an outage.
+- SIGTERM stops new files from starting and gives uploads up to 5 more seconds. Already-running files can finish, but results arriving after the final upload snapshot are not included.
+
+## Vitest
+
+<a id="requirements"></a>
+
+Use Vitest 4.0.11+ for child spans. Vitest 5 requires Node.js 22.12+.
+
+<a id="setup"></a>
+
+1. [Install the collector and SDK](#install). SDK 3 needs Node.js 22.15+ even with Vitest 4.
+2. Enable the reporter and native tracing in the root config:
+
+   ```js
+   // vitest.config.js
+   import { defineConfig } from 'vitest/config'
+   import { createRequire } from 'node:module'
+   const require = createRequire(import.meta.url)
+
+   export default defineConfig({
+     test: {
+       reporters: [
+         'default',
+         ['buildkite-test-collector/vitest/reporter', { otelEnabled: true }],
+       ],
+       includeTaskLocation: true,
+       experimental: {
+         openTelemetry: {
+           enabled: true,
+           sdkPath: require.resolve('buildkite-test-collector/vitest/otel.js'),
+         },
+       },
+     },
+   })
+   ```
+
+3. Set `BUILDKITE_ANALYTICS_TOKEN` to your suite token and run `npx vitest run`.
+4. Open the run in your Test Engine suite. Add [instrumentation](#child-spans)
+   for HTTP, fetch and package calls beneath each test.
+
+Use `require.resolve` for pnpm and Yarn too. In CommonJS, omit `createRequire`.
+Projects inherit root tracing unless they override `enabled` or `sdkPath`.
+Instrumentation comes from each project's package.json and parents.
+
+<a id="what-you-get"></a>
+
+Retries share one execution with every attempt underneath. Hook phases appear
+only around exported children. Collection, suite work and `beforeAll` are
+excluded. HTTP/fetch outside tests creates no spans or trace headers, but servers
+started in `beforeAll` can trace requests from tests. Avoid the `vitest.` name
+prefix for custom spans from the `vitest` tracer: those spans are excluded.
+
+### Using your own tracing SDK
+
+Vitest loads the collector before `setupFiles`. Starting NodeSDK, Sentry or
+another SDK there can send its spans to Buildkite instead of your usual backend.
+Choose one:
+
+- **Buildkite tracing:** skip application SDK setup when `process.env.VITEST === 'true'`.
+- **Application tracing:** use its SDK module as `sdkPath`, or preload it before Vitest. Buildkite sends test results only. Ensure your usual backend receives its spans.
+
+Your `sdkPath` must default-export an object with `shutdown()`. For a preloaded
+SDK, keep its flush/shutdown handling and don't initialize it again in `setupFiles`.
+
+### Vitest package instrumentation
+
+`require()` supports package spans. ES module/TypeScript `import` supports
+packages such as `pg` and `redis`, but not entry-point patches such as `express`
+and `ioredis`. For those, use `createRequire`:
 
 ```js
-nock.enableNetConnect(/tests-otlp\.buildkite\.com|127\.0\.0\.1/)
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+const express = require('express')
 ```
 
-With MSW, bypass that request. A mock answering it makes results disappear without a warning.
+For GraphQL, resolve both `graphql` and its subpaths to CommonJS
+([Vitest issue #8414](https://github.com/vitest-dev/vitest/issues/8414)):
 
-## Settings
+```js
+// Add to vitest.config.js, using require from above
+plugins: [{
+  name: 'graphql-commonjs',
+  enforce: 'pre',
+  resolveId: (id) => (/^graphql(\/|$)/.test(id) ? require.resolve(id) : undefined),
+}],
+```
 
-Set a suite API token, or an agent OIDC token that your suite's OIDC policy grants `write_uploads`.
-The run key is the ID that groups results from one test run. It must be 1–255 printable ASCII characters without spaces.
-
-| Variable | What it does | Default |
-| --- | --- | --- |
-| `BUILDKITE_ANALYTICS_TOKEN` | Authenticates uploads. In OTel mode a nonblank reporter `token` takes priority; a blank one falls back to this variable | Not set |
-| `BUILDKITE_TESTS_OTLP_TOKEN` | Overrides the token for OpenTelemetry only | Uses the suite token |
-| `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` | Sets an HTTP or HTTPS destination | `https://tests-otlp.buildkite.com/v1/traces` |
-| `BUILDKITE_ANALYTICS_KEY` | Sets the run key | Derived from CI, or generated locally |
-| `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | Prints selected instrumentation and JSON upload debug output | `false` |
-| `OTEL_NODE_ENABLED_INSTRUMENTATIONS` | Selects only these comma-separated short names | Declared packages, with exclusions below |
-| `OTEL_NODE_DISABLED_INSTRUMENTATIONS` | Removes names, even from the enabled list | None |
-| `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | Maximum test spans in a parent upload (at most 1,000), also capped at 750 KiB uncompressed protobuf | 1,000 |
-| `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` | Maximum child spans in a parent upload | 512 |
-| `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` | Child spans accepted per test file, including still-open spans. Further children are dropped and counted | 2,048 |
-| `OTEL_RESOURCE_ATTRIBUTES` | Adds resource attributes to every span | None |
-
-Children are billed by data ingested. Set `OTEL_TRACES_SAMPLER` to `traceidratio` (with `OTEL_TRACES_SAMPLER_ARG` from 0 to 1) to keep or drop whole tests' children, or `always_off` to drop all children.
-In Jest and Playwright, `parentbased_*` samplers (the default) keep every child; Vitest honours their root sampler and can reduce children.
-
-OTLP export doesn't use `HTTP_PROXY` or `HTTPS_PROXY`. JSON uploads honour them. Use [bktec's relay](#bktecs-relay) for OTLP through a proxy.
-If you route OTLP through your own endpoint, forward `Authorization`, `Buildkite-Tests-Run-Key` and `Buildkite-Tests-Span-Stream`.
-We ignore `OTEL_EXPORTER_OTLP_*`, `OTEL_BSP_*`, `OTEL_SPAN_*` and `OTEL_TRACES_SAMPLER` for test results. Children use the environment's sampler and span limits, not a suite provider's code-configured sampler. `OTEL_BSP_*` does not control either stream.
-Sizes must be positive whole numbers (at most 1,000 for test batches). Both streams also have a 750 KiB uncompressed protobuf cap; large spans reduce how many fit in one upload. Invalid values warn and use defaults. The old `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE` is ignored: test results are no longer fed through a bounded SDK queue.
-An OpenTelemetry `diag` logger at DEBUG receives selected names once per test file. `OTEL_LOG_LEVEL=DEBUG` alone doesn't install a logger.
-
-### bktec's relay
-
-The relay is optional and works only inside Buildkite jobs with agent OIDC (`bktec run` 3.5.0 or later). Enable it with:
+Mixing GraphQL builds causes `Cannot use GraphQLSchema ... from another module or realm`.
+Entry-point instrumentation cannot record packages in `server.deps.inline`,
+without a warning. Yarn Plug'n'Play is best-effort: a `conditions` warning means
+package tracing is disabled, but test, HTTP and manual spans still work. Upgrade
+Yarn or use `nodeLinker: node-modules`. To leave package tracing off explicitly:
 
 ```sh
-export BUILDKITE_TESTS_OTLP_RELAY=true
-export BUILDKITE_TESTS_OTLP_RELAY_BATCHING=true
+OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici yarn vitest run
 ```
 
-The relay sets the endpoint and token for the collector, acknowledges each export locally, and retries delivery in the background. Collector 1.13.0 removes per-file network waits even without the relay.
-The relay uses Go's default HTTP transport, which reads `HTTP_PROXY` and `HTTPS_PROXY`. This proxy behavior was checked in bktec's code, not tested end to end.
-Keep bktec's own upload off (`BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false`).
+### Using bktec
 
-## What gets recorded
+Remove `--reporter` flags from both bktec commands, and add `'json'` to the
+configured reporters:
 
-The details below are for Jest; see [Vitest](#vitest) and [Playwright](#playwright) for their recording behavior.
-
-```js
-const { trace } = require('@opentelemetry/api')
-test('does work', async () => {
-  await trace.getTracer('my-suite').startActiveSpan('work', async (span) => {
-    try { await doWork() } finally { span.end() }
-  })
-})
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_CMD="npx vitest run {{testExamples}} \
+--outputFile {{resultPath}}"
+export BUILDKITE_TEST_ENGINE_RETRY_CMD="npx vitest run \
+--testNamePattern '{{testNamePattern}}' --outputFile {{resultPath}}"
+export BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false
 ```
 
-Under Jest, if your suite registers its own tracer provider, it keeps its own child spans and we send test spans only.
-To collect children in Buildkite, skip your application's provider setup when `JEST_WORKER_ID` is set.
-For Vitest, see [Using your own tracing SDK](#using-your-own-tracing-sdk).
+The JSON file is for bktec, not collector uploads. Name-filtered retries also
+upload excluded tests as skipped.
 
-- Every test gets a `test.execution` span, including skipped and todo tests. Each retry attempt gets a separate span and execution ID.
-- Results keep names, locations, failures, tags and CI details. Durations use real time and stop when the test finishes.
-- Tests have separate traces. The Agent with tracing enabled links them to the job using `TRACEPARENT` and `TRACESTATE`.
-- Children belong to tests, `beforeEach` and `afterEach`, not file loading, `beforeAll` or `afterAll`.
-- Concurrent tests, callbacks, generators, fake timers and module resets work. Results include hook failures.
-- We always sample test results and never trace our own uploads, including in band. We do not replace a suite-owned provider. Where none exists, the collector installs a worker context manager and propagator, fills sandbox noop context managers, and delegates sandbox tracer proxies to its provider. Cached tracers follow a provider registered later by the suite.
-- A Jest attempt still open at file teardown without errors has an `unset` result, which Test Engine ignores without creating an execution.
+<a id="limitations"></a>
 
-`trace.getActiveSpan()` in a test is non-recording. It carries the parent context for children, but changing or ending it doesn't change the test result.
-Child spans can contain URLs, query strings and database statements. Check what your instrumentation records before enabling it.
+### Vitest limits and cancellation
 
-## Choosing instrumentation
+- Watch mode disables OpenTelemetry and uploads nothing. Use `vitest run`.
+- Browser mode, VM pools (`vmThreads`/`vmForks`, including per-project pools), Vitest 3, custom SDKs and missing native config send test spans only and warn. Use `threads` or `forks` for VM-pool child spans. Vitest 1–2 upload nothing and warn.
+- Child spans depend on Vitest's experimental tracing. If it changes, a warning reports missing/unlinked children while test spans still upload.
+- Isolation adds SDK startup cost per file. Disabling it also changes test behavior.
+- SIGTERM, including Buildkite cancellation, warns that pending results are lost. Vitest exits before uploads drain. Rerun to recover missing results.
+- SIGINT (Ctrl-C, also the first [GitHub Actions cancellation signal](https://docs.github.com/en/actions/reference/workflow-cancellation-reference)) loses pending results without a warning.
+- End children before workers exit. Children started after their test ends are dropped and counted in a warning.
+- **ID collision:** rename either file named in the warning. Traces stay separate, but results are what Vitest reports.
 
-These packages and selection variables apply to Jest and Vitest; for Vitest, run `npx vitest run` instead of `npx jest`.
+## Playwright
 
+Requires Playwright 1.41.2 or later.
+
+1. [Install the collector and SDK](#install). Playwright needs neither `context-async-hooks` nor Jest's runtime.
+2. Enable the reporter:
+
+   ```js
+   // playwright.config.js
+   module.exports = {
+     reporter: [
+       ['line'],
+       ['buildkite-test-collector/playwright/reporter', { otelEnabled: true }],
+     ],
+   }
+   ```
+
+3. Set `BUILDKITE_ANALYTICS_TOKEN` to your suite token and run `npx playwright test`.
+4. Open the run in your Test Engine suite. Each attempt, including retries and
+   skips, has a test span with nested steps, hooks, fixtures, assertions and actions.
+
+No fixture or test changes are needed. Durations include steps outside
+Playwright's test timer, but not upload latency. Interrupted attempts are skipped.
+Expected failures remain failures, as in JSON mode.
+
+Quoted API values and older parenthesized API arguments are replaced with
+`[REDACTED]` in step names. User-written `test.step` titles and assertion/error
+text are not redacted: keep secrets out of them. Prefer environment tokens over
+reporter options. The collector omits its `token` from Playwright JSON reports,
+not other credentials or test output. Redaction failures warn but allow uploads.
+
+Reporter `token` and `tags` options work. Per-test `@key:value` tags (Playwright
+1.42+) override reporter tags. Child limits apply per file across workers and retries.
+For sharded blob reports, enable this reporter only in `merge-reports`, not in
+the shards, to avoid duplicate uploads. UI mode uploads every run with a token:
+use a separate suite or disable the reporter for local runs you don't want recorded.
+
+<a id="playwright-delivery-and-interruptions"></a>
+
+### Playwright limits and cancellation
+
+- Tracing is reporter-side only: no worker HTTP/database or manual spans, browser application traces, context propagation into workers or in-test annotations.
+- Completion drains uploads for up to 10 seconds. Global timeouts allow up to 1 second within that budget for interrupted callbacks, then record open attempts as skipped.
+- Ctrl-C interrupts workers and flushes. A second Ctrl-C can stop uploads and warnings.
+- The collector's SIGTERM handler allows 5 seconds, including the interrupted-attempt wait, and shortens any existing drain. Configuration/upload failures do not change Playwright's exit code.
+
+<a id="choosing-instrumentation"></a>
+
+## Child spans
+
+For Jest and Vitest, install instrumentation for the calls you want to record.
 For SDK 3 / API 1.10+:
 
 ```bash
@@ -462,29 +293,41 @@ npm install --save-dev '@opentelemetry/instrumentation-http@^0.223.0' \
 OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici npx jest
 ```
 
-For the broader bundle, install `@opentelemetry/auto-instrumentations-node@0.83.1`
-with SDK 3, or `@opentelemetry/auto-instrumentations-node@~0.81.0` with SDK 2.
+For Vitest, substitute `npx vitest run`. For the broader bundle, use
+`@opentelemetry/auto-instrumentations-node@0.83.1` with SDK 3 or
+`@opentelemetry/auto-instrumentations-node@~0.81.0` with SDK 2.
 
-For Jest, we select instrumentation declared in your `rootDir`'s package.json or its parents, including workspace roots (under Yarn Plug'n'Play, the workspace that runs Jest).
-Vitest uses each project's root instead; see [Vitest package instrumentation](#vitest-package-instrumentation) for its module-loading limits.
-If `@opentelemetry/auto-instrumentations-node` is resolvable, we select its whole bundle, with the exclusions below.
-Individual packages installed incidentally by another dependency don't opt you in; a resolvable auto-instrumentations bundle does.
-Instrumentation needs a compatible API version; the collector checks its base `@opentelemetry/instrumentation` dependency.
-Incompatible instrumentation warns and is skipped without affecting results or manual spans.
+Incidental dependencies don't opt you in, but a resolvable auto-instrumentations
+bundle selects its whole bundle, except these defaults:
 
-We leave logs and messages (`pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`), low-level I/O (`net`, `dns`, `fs`) and metrics (`host-metrics`, `runtime-node`) off by default.
-We also exclude `lru-memoizer` (drops memoizer methods without recording spans) and `router` (duplicates Express 5 handler and middleware spans).
-Browser instrumentation (`fetch`, `xml-http-request`, `document-load`, `user-interaction`, `long-task`) is also off. Use `undici` for Node's fetch.
-You can opt in by listing short names in `OTEL_NODE_ENABLED_INSTRUMENTATIONS`. The disabled list always wins.
-We test HTTP, fetch, Express 4, GraphQL, Redis and pg on Jest 29.7.0 and 30.5.2, and on Vitest as described in [Vitest package instrumentation](#vitest-package-instrumentation). Test other packages against your own operations before relying on them.
+- Logs/messages: `pino`, `winston`, `bunyan`, `aws-sdk`, `kafkajs`, `amqplib`.
+- Low-level I/O and metrics: `net`, `dns`, `fs`, `host-metrics`, `runtime-node`.
+- `lru-memoizer` and `router`.
+- Browser instrumentation: `fetch`, `xml-http-request`, `document-load`, `user-interaction`, `long-task`. Use `undici` for Node fetch.
+
+Opt in with `OTEL_NODE_ENABLED_INSTRUMENTATIONS`. The disabled list always wins.
+Incompatible instrumentation warns and is skipped, leaving results and manual
+spans enabled. Evaluate other packages against your own operations before relying on them.
+
+For manual spans, end each span yourself:
+
+```js
+const { trace } = require('@opentelemetry/api')
+test('does work', async () => {
+  await trace.getTracer('my-suite').startActiveSpan('work', async (span) => {
+    try { await doWork() } finally { span.end() }
+  })
+})
+```
+
+Children can contain URLs, query strings and database statements. Review what
+instrumentation records before enabling it.
 
 ### Using dd-trace
 
-Don't let dd-trace and OpenTelemetry both trace HTTP/fetch calls: conflicting
-trace headers can leave server spans missing even when tests pass.
-The collector warns about some startup conflicts, but cannot detect every overlap.
-
-To use OpenTelemetry for network tracing, disable **all three** Datadog integrations:
+Don't let dd-trace and OpenTelemetry both trace HTTP/fetch: conflicting headers
+can leave server spans missing. Startup warnings cannot detect every overlap.
+Disable all three Datadog network integrations:
 
 ```sh
 DD_TRACE_HTTP_ENABLED=false \
@@ -494,36 +337,107 @@ OTEL_NODE_ENABLED_INSTRUMENTATIONS=http,undici \
 NODE_OPTIONS='--require dd-trace/init' npx vitest run
 ```
 
-This disables Datadog's automatic network tracing, not manual spans.
-If you also preload `dd-trace/register.js`, keep it in `NODE_OPTIONS`.
+This leaves manual Datadog spans enabled. If you preload `dd-trace/register.js`,
+keep it in `NODE_OPTIONS`.
 
-## Delivery and interruptions
+## Billing
 
-At file teardown, workers write spans to private local spool files using Node's V8 serializer and atomic renames. Child commits are separate, so a child serialization or write failure warns without blocking test results. Workers wait for local I/O, not the network; commits are not fsync/power-loss durable. The reporter owns the temporary directory and OTLP token. Spools stay within the Node process tree and preserve structured attributes and non-finite numbers; they are not JSON uploads or a cross-version interchange format.
+Test spans count as test executions, like JSON uploads, at no extra charge.
+This includes each Jest/Playwright retry attempt and Vitest's name-filtered skips.
+Children are billed by data ingested and require a plan that includes them.
+Playwright records all step categories, so review volume before enabling a large suite.
 
-The parent scans committed files on its one-second timer, rebuilds readable spans and uploads through one stock OpenTelemetry `OTLPTraceExporter` per lane (test and child), with up to four exports in flight per lane. It batches across files for up to one second, retaining span-count caps and measuring with the stock protobuf serializer to enforce a **750 KiB uncompressed protobuf** cap per request, leaving headroom below the endpoint's 900 KiB limit. The stock exporter owns gzip, the authorization/run-key/stream headers, 10-second request timeouts and its retry policy. Its Agent also has a 10-second inactivity timeout that starts before TCP connects, so a silently dropped connection does not occupy a lane slot until the OS timeout; keep-alive remains enabled. Failed batches remain on disk and are requeued through the run for network errors, 429 and 5xx, honoring `Retry-After`. Other HTTP errors are reported without retries. Lost acknowledgments can cause duplicates; delivery is not exactly once.
+Test results are always sampled. To reduce children, use
+`OTEL_TRACES_SAMPLER=traceidratio` with `OTEL_TRACES_SAMPLER_ARG` from 0 to 1,
+or `always_off` to drop all children. In Jest and Playwright, `parentbased_*`
+samplers (the default) keep every child. Vitest honors their root sampler and
+can reduce children. Children use environment sampling/limits, not a provider's
+code-configured sampler.
 
-The parent holds at most 16,384 sendable pending child spans in memory. It admits timestamp-ordered child files only when there is capacity; excess files stay unread on disk until acknowledgments or permanent failures free room. The first **child-stream HTTP 403 stops new child uploads for the rest of the run**: a plan without child spans or an exhausted ingest allowance will not recover during that run. Already in-flight requests can finish. The parent deletes rejected child files, including later commits on subsequent scans, retaining their drop counts in memory instead of their payloads on disk. Unread child files are counted from their filenames without loading their payloads. Workers still serialize and commit children until the run ends. The final child-drop warning includes the server's reason when available and the full drop total. Test results continue uploading independently. Other permanent child failures (for example HTTP 413) remain per batch: they release payloads and capacity, and later children continue uploading. Child files are removed once every part is acknowledged or permanently dropped. Oversized single spans also release their payloads and retain drop counts. Retryable failures retain capacity until acknowledged or the drain ends. This memory cap never excludes test spans and does not itself drop children. Child counts in filenames allow final accounting without loading deferred payloads. Files with a larger configured per-file child cap are split into admissible chunks by the worker.
+## Settings
 
-Per-file child-cap drops are included in the final run total rather than warning for every file. Child 403 and other permanent upload failures also use that single final warning, not a warning per rejected batch. Child-spool failures (including late completions) warn once per run and are included in the total when drop counts can be written. If drop-count records cannot be written or read, a warning says the total is incomplete or unavailable. Still-open children and children started after teardown are reported separately once per worker at exit; those worker-local counts are not included in the parent's total.
+Use a suite API token, or an agent OIDC token granted `write_uploads` by your
+suite's OIDC policy. Run keys group results and must be 1–255 printable ASCII
+characters without spaces.
 
-Normal completion and `--bail` share one memoized final drain over a fixed snapshot, with a 10-second budget (the same constant as the stock exporter's timeout) and no batching delay. Healthy runs stop waiting as soon as uploads finish. In an outage, Jest normally exits about ten seconds after the tests finish. The drain stops waiting at its deadline and aborts each lane's connecting and active HTTP/HTTPS sockets through the Agent's signal option. In rare cases, a stock-exporter retry already scheduled can keep Node alive for up to ten additional seconds: `Retry-After` bypasses the usual five-second backoff cap. That retry fails with `ABORT_ERR` without opening another socket. The drain budget is not an exact process-exit deadline. Bail gates new files through the reporter's public start callback, so awaiting uploads does not keep dispatching files. Already running files can finish. SIGTERM gates new files too and shortens any existing drain to at most five more seconds. The collector snapshots other SIGTERM listeners before their once-handlers run, preserving their asynchronous cleanup; it re-raises SIGTERM (or exits with code 143 as PID 1) only if no other listener owned shutdown at signal delivery. Files arriving after the snapshot are not added to the drain. Unacknowledged test results are reported as `TEST RESULTS MISSING`; all unacknowledged children, whether resident or unread on disk, use child-drop wording and test results are unaffected by child losses. No JSON results are sent. Completed runs remove their spool directory; terminated runs may leave it behind. There is no replay tool.
+| Variable | What it does | Default |
+| --- | --- | --- |
+| `BUILDKITE_ANALYTICS_TOKEN` | Authenticates uploads. A nonblank reporter `token` takes priority | Not set |
+| `BUILDKITE_TESTS_OTLP_TOKEN` | Overrides the token for OpenTelemetry | Suite token |
+| `BUILDKITE_ANALYTICS_OTLP_ENDPOINT` | HTTP or HTTPS destination | `https://tests-otlp.buildkite.com/v1/traces` |
+| `BUILDKITE_ANALYTICS_KEY` | Run key | Derived from CI, or generated locally |
+| `BUILDKITE_ANALYTICS_DEBUG_ENABLED` | Prints selected instrumentation and JSON upload debug output | `false` |
+| `OTEL_NODE_ENABLED_INSTRUMENTATIONS` | Selects comma-separated short names | Declared packages, minus exclusions above |
+| `OTEL_NODE_DISABLED_INSTRUMENTATIONS` | Removes names, even from the enabled list | None |
+| `BUILDKITE_TESTS_OTEL_TEST_SPAN_BATCH_SIZE` | Maximum test spans per upload, at most 1,000 | 1,000 |
+| `BUILDKITE_TESTS_OTEL_CHILD_SPAN_BATCH_SIZE` | Maximum child spans per upload | 512 |
+| `BUILDKITE_TESTS_OTEL_CHILD_SPAN_QUEUE_SIZE` | Children accepted per file, including open spans | 2,048 |
+| `OTEL_RESOURCE_ATTRIBUTES` | Resource attributes on every span | None |
 
-File-result callbacks only register expected files; they never scan the spool or wait for uploads. The parent scans on its one-second timer and at the final snapshot, and reports files without readable commits once per reason plus an end-of-run file/test summary. If the spool is unreadable, recording status is unknown: the summary does not claim setup failed. With no credential only the configuration warning is printed. Suites with no test results after a worker/environment failure do not add collector warnings. Repeated in-band runs in one process reuse the worker session with the new spool directory (the run key remains process-scoped).
+Sizes must be positive whole numbers. Invalid values warn and use defaults.
+Uploads also have a 750 KiB uncompressed protobuf cap. Large spans reduce batch
+counts. Test results ignore `OTEL_SPAN_*` and `OTEL_TRACES_SAMPLER`.
+`OTEL_EXPORTER_OTLP_*` and `OTEL_BSP_*` don't control uploads.
+For instrumentation diagnostics, install an OpenTelemetry `diag` logger at DEBUG.
+`OTEL_LOG_LEVEL=DEBUG` alone doesn't install one.
 
-SIGKILL can prevent the drain and warning and **loses files not yet uploaded**. A crash/interruption before a file commits also loses that file's results. Late-ending children that started before teardown can commit separately; children started after their trace closed are dropped and counted. Children still open when a worker exits are counted as dropped. Neither filesystem survival nor an HTTP request reaching the server proves remote acknowledgment.
+OTLP ignores `HTTP_PROXY`/`HTTPS_PROXY`, unlike JSON uploads. Use bktec's relay
+for a proxy. Your own OTLP endpoint must forward `Authorization`,
+`Buildkite-Tests-Run-Key` and `Buildkite-Tests-Span-Stream`.
 
-## Troubleshooting and known limits
+### bktec's relay
 
-- **No spans:** check the reporter, runtime, SDK versions, token, endpoint, temporary directory permissions/free space and earlier warnings, and use Jest 29 or 30 with `jest-circus`. Fix and rerun; there is no JSON fallback.
-- **Missing children:** check your plan includes child spans. Check instrumentation warnings and mocked APIs, skip your own provider setup under Jest, and supply fetch yourself in jsdom if needed.
-- **Missing HTTP server spans with dd-trace:** see [Using dd-trace](#using-dd-trace) to avoid overlapping instrumentation.
-- **Duplicates:** retries after a lost acknowledgment can duplicate executions until the server deduplicates them.
-- **Changed stacks:** package instrumentation adds collector frames to errors created while a module loads. Failing tests show context-manager frames whenever runtime is set. Use explicit labels if test names or snapshots include stacks.
-- **Changed headers or messages:** disable the affected instrumentation using the table above if propagation changes what your tests expect.
-- **Missing HTTP client spans:** call `http.get(...)` on the module object instead of destructuring `get` at file load.
-- **MSW dropping headers:** disable `http` with MSW 2 (fixed in MSW 3, [issue #804](https://github.com/mswjs/interceptors/issues/804)).
-- **Jest native ESM missing package spans:** packages loaded as ES modules don't get package spans. HTTP, fetch and manual spans work.
-- **Dropped children or interrupted runs:** end spans, close connections and let Jest finish flushing before stopping workers. Work started after file teardown is dropped.
-- **Slow teardown:** files wait only for local serialization/write/rename. Check local storage performance. The parent, not every file, pays the network tail.
-- **Slow exports or `TEST RESULTS MISSING`:** check the error, token and endpoint access and rerun. A single span exceeding 750 KiB cannot be sent and is reported; reduce its attributes. A 413 below our cap may indicate a smaller intermediary limit.
+The optional relay requires `bktec run` 3.5.0+ inside Buildkite with agent OIDC:
+
+```sh
+export BUILDKITE_TESTS_OTLP_RELAY=true
+export BUILDKITE_TESTS_OTLP_RELAY_BATCHING=true
+export BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=false
+```
+
+It sets the collector endpoint/token, acknowledges exports locally and retries
+delivery in the background. Its transport honors `HTTP_PROXY` and `HTTPS_PROXY`.
+
+<a id="delivery-and-interruptions"></a>
+
+## Uploads and cancellation
+
+Uploads run in the background and retry temporary failures. Test files wait for
+local writes, not the network. Runner-specific completion and signal behavior
+is described in [Jest](#jest-limits-and-cancellation),
+[Vitest](#vitest-limits-and-cancellation) and [Playwright](#playwright-limits-and-cancellation).
+
+- **`TEST RESULTS MISSING`:** fix the earlier warning and rerun the suite.
+- **Child upload rejected:** child losses don't block test results. A plan/allowance rejection (HTTP 403) stops child uploads for the rest of the run and warns. Other permanent child failures affect only that batch.
+- **SIGKILL or crash:** results not yet uploaded can be lost without a warning. There is no replay tool.
+
+OpenTelemetry never falls back to JSON on configuration or delivery failures.
+Fix warnings and rerun, or turn off `otelEnabled` to use JSON.
+
+<a id="troubleshooting-and-known-limits"></a>
+
+## Troubleshooting
+
+- **No spans:** check runner config, SDK versions, token, endpoint and temporary-directory permissions/free space.
+- **Missing children:** check your plan, instrumentation warnings, mocked APIs and the runner's provider rules. In Jest's jsdom environment, supply fetch if needed. End spans before teardown and close connections. Still-open spans at worker exit are dropped and counted.
+- **Vitest children missing after an upgrade:** follow the warning to find a collector update or report the Vitest version.
+- **Changed stacks:** instrumentation/context managers add frames. Use explicit labels if names or snapshots contain stacks.
+- **Changed headers/messages:** disable the affected instrumentation with `OTEL_NODE_DISABLED_INSTRUMENTATIONS`.
+- **Missing HTTP client spans:** call `http.get(...)` on the module instead of destructuring `get` at file load.
+- **Missing HTTP server spans with dd-trace:** follow [Using dd-trace](#using-dd-trace).
+- **MSW drops headers:** disable `http` with MSW 2. MSW 3 fixes [issue #804](https://github.com/mswjs/interceptors/issues/804).
+- **Mocks swallow uploads:** Jest workers don't upload, but in-band/parent-process mocks can intercept them. With nock's `disableNetConnect`, allow `nock.enableNetConnect(/tests-otlp\.buildkite\.com|127\.0\.0\.1/)`. With MSW, bypass the collector POST. A mock response can hide lost results.
+- **Slow teardown:** check local storage performance. Network waits happen in the parent, not per file.
+- **Slow exports/missing results:** check token and endpoint access, then rerun. Reduce attributes on spans over 750 KiB. HTTP 413 below that cap can mean an intermediary has a smaller limit.
+- **Duplicates:** retries after a lost acknowledgment can duplicate executions until server deduplication.
+
+## Upgrading
+
+Replace direct `@opentelemetry/sdk-trace-base` with `@opentelemetry/sdk-trace`
+2.9+. Custom providers need `TracerProvider`, not `BasicTracerProvider`, and
+processors take `{ exporter }` options. Collector config is unchanged.
+
+From a 1.13.0 beta, replace the collector's `testEnvironment` with `runtime` and
+keep your usual environment. Batch sizes now limit parent uploads, the child
+queue size caps children per file, and `BUILDKITE_TESTS_OTEL_TEST_SPAN_QUEUE_SIZE`
+is ignored. See [Settings](#settings) and the [CHANGELOG](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/CHANGELOG.md).
