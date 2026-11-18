@@ -60,6 +60,10 @@ const register = ({ hook, iitm }, include) => {
     try { hooks = require(path.join(iitm, 'register-hooks.mjs')) } catch { /* Added in import-in-the-middle 3.1. */ }
     // In-thread hooks avoid module.register, which Node 26 deprecates at runtime (DEP0205).
     if (hooks?.supportsSyncHooks?.()) {
+      // Node's synchronous hooks pass conditions to the CommonJS resolver.
+      // Older Yarn PnP rejects that option. Check before installing a hook:
+      // catching an activation error afterwards leaves require() broken.
+      require.resolve('./otelPackages', { conditions: ['node', 'require'] })
       hooks.register({ include })
       return 'synchronous'
     }
