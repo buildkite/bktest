@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.16.0
+
+- Vitest: record package spans for database queries and framework calls in OpenTelemetry mode. See the [package instrumentation guide](docs/opentelemetry.md#vitest-package-instrumentation) for import limits.
+- Vitest: disable OpenTelemetry in watch mode with a warning. Use `vitest run` to upload results.
+- Vitest: keep incompatible Yarn Plug'n'Play package hooks from breaking tests; test results, HTTP and manual spans still record when package tracing is disabled.
+- Jest and Playwright: omit reporter tokens from JSON reports and serialized reporter configuration. Prefer environment variables for credentials.
+- Fix package-call failures caused by instrumentation metric initialization. Exclude `lru-memoizer` and `router` by default to preserve memoizer methods and avoid duplicate Express 5 spans.
+- Remove rejected child-span spool files during the run, including after plan or allowance limits stop child uploads. Test results continue uploading independently.
+- Warn about overlapping dd-trace HTTP/fetch instrumentation, which can hide HTTP server spans. See [Using dd-trace](docs/opentelemetry.md#using-dd-trace).
+
 ## 1.15.0
 
 - Support OpenTelemetry JS SDK 3 in Jest, Vitest and Playwright. SDK 3 needs Node.js 22.15+ and API 1.10+.
