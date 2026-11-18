@@ -413,7 +413,6 @@ is described in [Jest](#jest-limits-and-cancellation),
 
 OpenTelemetry never falls back to JSON on configuration or delivery failures.
 Fix warnings and rerun, or turn off `otelEnabled` to use JSON.
-For delivery internals, see [DESIGN.md](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/DESIGN.md).
 
 <a id="troubleshooting-and-known-limits"></a>
 

@@ -1,3 +1,3 @@
 - Put bug fixes in `CHANGELOG.md`. Change the user guide only when users must do something differently.
 - State supported behavior in user docs; don't describe it as "tested", "verified" or "checked".
-- Put implementation internals in `DESIGN.md`, not the user guide.
+- Keep implementation internals out of the user guide.
