@@ -1,7 +1,8 @@
 # Buildkite Test Engine CLI and Collectors
 
 Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine)
-test collectors and [CLI](#test-engine-cli), together in one repository.
+[`bktest` CLI](#test-engine-cli) and test collectors, together in one repository.
+To run or split tests, [install the CLI](#installation).
 
 ## Test collectors
 
@@ -80,11 +81,21 @@ the dispatcher in [.buildkite/pipeline.yml](.buildkite/pipeline.yml).
 
 ## Releasing
 
-See [RELEASING.md](RELEASING.md) for the current process and status of every
-collector. Anyone can prepare a release pull request; publishing packages and
-creating releases requires the appropriate maintainer permissions.
+See [RELEASING.md](RELEASING.md) for collector releases and the planned CLI
+release contract.
+Anyone can prepare a release pull request. Publishing packages and creating
+releases require the appropriate maintainer permissions.
 
 ## Contributing
+
+After cutover, open CLI issues and pull requests here. The plan is to generate
+the legacy Go source from this repository, not maintain two implementations.
+Until cutover, use [buildkite/test-engine-client](https://github.com/buildkite/test-engine-client)
+for ordinary CLI contributions. See [CLI development](#development) to build
+and test the CLI preview in this checkout. Contribute pipeline examples and
+the Tests plugin in their own repositories:
+[test-engine-client-examples](https://github.com/buildkite/test-engine-client-examples)
+and [tests-buildkite-plugin](https://github.com/buildkite-plugins/tests-buildkite-plugin).
 
 Issues and pull requests are welcome right here! A PR touching one
 collector runs only that collector's CI, and cross-collector changes are
@@ -142,7 +153,10 @@ tool availability in a new login shell rather than sourcing the profile.
 
 ## Test Engine CLI
 
-Buildkite Test Engine Client (`bktec`) is a command-line tool for running test suites with Buildkite Test Engine.
+`bktest` is the planned new name for the Buildkite Test Engine CLI (`bktec`).
+In this source preview, help and version output use `bktest` under either
+executable name. The rollout is designed to keep existing `bktec` commands
+working without pipeline changes.
 
 Its main responsibilities are discovering runnable tests, requesting a test plan from Test Engine, running the tests assigned to the current parallel job, reading runner results, and uploading results when configured.
 
@@ -242,26 +256,46 @@ Splitting quality depends on the timing data available for the suite. First runs
 
 ## Installation
 
-The latest version of bktec can be downloaded from https://github.com/buildkite/test-engine-client/releases
+For a released CLI, keep using the [`bktec` installation guide](https://github.com/buildkite/test-engine-client#installation).
+To try the source preview, see [Development](#development).
+
+### Planned `bktest` install paths
+
+These install routes are a preview, not instructions to switch now:
+
+- **Downloads:** Pick an exact plain `v3.x.y` CLI tag from the
+  [releases page](https://github.com/buildkite/bktest/releases) and verify the
+  binary's checksum. This repository also hosts collector releases, so its
+  `releases/latest` is not a CLI selector.
+- **Go:** `go install github.com/buildkite/bktest/v3/cmd/bktest@<version>`,
+  where `<version>` is the exact CLI tag, including `v`.
+- **Homebrew:** `brew install bktest` will use an alias to the existing
+  `bktec` formula, not a second formula.
+- **Linux packages and containers:** Keep the existing `bktec` package for
+  apt/dnf and the existing `test-engine-client` image. The plan is for both to
+  ship both executable names, with the legacy image entrypoint unchanged.
+  Separate `bktest` package, image, and Buildkite Files namespaces are outside
+  the initial rollout.
+
+Keep any pinned Tests plugin steps unchanged unless you want to choose the
+CLI yourself. For an explicitly installed binary, set `install-client: false`
+and invoke the intended binary in `command`. Keep the plugin's runner, suite,
+and upload configuration.
 
 ### Supported OS/Architecture
 
-ARM and AMD architecture for linux, darwin, and windows
-
-The available Go binaries
-
-- bktec-darwin-amd64
-- bktec-darwin-arm64
-- bktec-linux-amd64
-- bktec-linux-arm64
-- bktec-windows-amd64.exe
-- bktec-windows-arm64.exe
+CLI releases provide Linux, macOS (Darwin), and Windows binaries for AMD64
+and ARM64. Windows binaries have an `.exe` extension.
 
 ## Quickstart
 
-Download `bktec` from the [latest release](https://github.com/buildkite/test-engine-client/releases), make it available in your test environment, and configure your Test Engine suite for authentication. From bktec 2.6.0, the default authentication path uses a Buildkite Agent OIDC token. See [Authentication](#authentication) for details.
+Install the released [`bktec`](#installation), make it available in your test
+environment, and configure your Test Engine suite for
+[OIDC authentication](#authentication). Existing `bktec` installs have used
+OIDC by default since version 2.6.0.
 
-This example runs RSpec across 10 parallel Buildkite jobs and uploads results using bktec's built-in upload support, available in bktec 2.7.0 or later:
+This example runs RSpec across 10 parallel Buildkite jobs and uploads results
+using the CLI's built-in uploader, available since `bktec` 2.7.0:
 
 ```yaml
 steps:
@@ -768,6 +802,9 @@ bktec may exit with a variety of exit statuses, outlined below:
   11) = 139.
 
 ## Development
+
+The Go command lives in `cmd/bktest`. Build it from the repository root with
+`go build ./cmd/bktest`.
 
 Make sure you have Go, Ruby, and Node.js installed in your environment. You can follow the installation guides for each of these tools:
 

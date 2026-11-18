@@ -1,14 +1,30 @@
 # Releasing collectors
 
-This is the public release guide for every collector in this repository. It
-describes the release contract without documenting credentials or private
-infrastructure.
+This guide describes the collector release contracts and previews the planned
+CLI release contract without documenting credentials or private infrastructure.
 
 Anyone can prepare a release pull request. Pushing release tags, publishing
 packages, approving release jobs, and creating GitHub releases require the
 appropriate GitHub, Buildkite, or package-registry permissions. If you do not
 have those permissions, prepare the pull request and ask a Buildkite Test
 Engine maintainer to complete the release.
+
+## CLI releases
+
+The CLI release contract below is a preview. It does not authorize tags,
+publishing, or install-channel changes. The existing `bktec` release process
+remains in place until cutover.
+
+The plan reserves plain `v3.x.y` and `v3.x.y-rc.N` tags here for the CLI;
+collectors use the prefixed tags below. Each operating system and architecture
+will have one build from the reviewed canonical commit, distributed under both
+executable names. The generated legacy Go source will come from that same
+commit. Record the paired source commits, exact tags, and artifact checksums
+before any approved publication. Existing legacy asset names and the CLI-only
+legacy `releases/latest` remain part of the compatibility contract.
+
+Versioned publication and install-channel changes require separate approval.
+Prereleases must not move stable channels, and published versions are immutable.
 
 ## Shared release contract
 
@@ -19,7 +35,7 @@ Engine maintainer to complete the release.
 3. An authorized maintainer tags the merge commit using
    `<collector-directory>/vX.Y.Z`, or a collector-supported prerelease form
    described below. Tags are scoped because all collectors share this
-   repository; do not create an unprefixed release tag.
+   repository; do not create an unprefixed tag for a collector release.
 
    ```sh
    git tag test-collector-python/v1.10.0 <release-merge-sha>
@@ -128,7 +144,7 @@ tagged bktest history, checks that it extends the existing release mirror, and
 pushes the corresponding plain version tag. It never updates the standalone
 repository's default branch.
 
-Do not create an unprefixed tag in bktest or push a release tag directly to
+Do not create an unprefixed Swift tag in bktest or push a release tag directly to
 the standalone repository. After publishing, verify that the plain tag is
 present there and resolves through Swift Package Manager.
 
