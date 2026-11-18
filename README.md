@@ -269,8 +269,10 @@ These install routes are a preview, not instructions to switch now:
   `releases/latest` is not a CLI selector.
 - **Go:** `go install github.com/buildkite/bktest/v3/cmd/bktest@<version>`,
   where `<version>` is the exact CLI tag, including `v`.
-- **Homebrew:** `brew install bktest` will use an alias to the existing
-  `bktec` formula, not a second formula.
+- **Homebrew:** The plan is for `bktest` to be an alias of the existing `bktec`
+  formula, not a second formula. In a local Homebrew 7 rehearsal with an
+  untrusted tap, a fresh alias install required trusting the owning formula.
+  The install steps for a fresh client using the official tap are not yet verified.
 - **Linux packages and containers:** Keep the existing `bktec` package for
   apt/dnf and the existing `test-engine-client` image. The plan is for both to
   ship both executable names, with the legacy image entrypoint unchanged.
