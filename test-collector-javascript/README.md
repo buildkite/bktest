@@ -56,7 +56,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ];
     ```
 
-    In 1.13.0, experimental OpenTelemetry submission sends test results as spans, with HTTP calls,
+    Experimental OpenTelemetry submission sends test results as spans, with HTTP calls,
     database queries and manual spans underneath. JSON uploads remain the default.
 
     Jest, Vitest and Playwright support `@opentelemetry/sdk-trace` 2.9+ and 3.x.
@@ -88,6 +88,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     To see hooks, manual spans and HTTP/fetch calls under each test, use
     experimental [OpenTelemetry mode](docs/opentelemetry.md#vitest).
     It requires Vitest 4.0.11+ and extra setup. JSON uploads remain the default.
+    If you already use NodeSDK, Sentry or dd-trace, check the guide before enabling OTel.
 
     Update your [Vitest configuration](https://vitest.dev/config/):<br>
 
