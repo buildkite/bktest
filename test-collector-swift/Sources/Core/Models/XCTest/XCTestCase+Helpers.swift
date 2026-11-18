@@ -9,7 +9,7 @@ extension XCTestCase {
   static func selector(of testCase: XCTestCase, splitByMethod: Bool) -> String {
     #if canImport(ObjectiveC)
     let runtimeClass = NSStringFromClass(type(of: testCase))
-    let testClass = runtimeClass.split(separator: ".").last!
+    let testClass = runtimeClass.split(separator: ".").last.map(String.init) ?? runtimeClass
     let target = Bundle(for: type(of: testCase)).bundleURL.deletingPathExtension().lastPathComponent
     var selector = "\(target)/\(testClass)"
     if splitByMethod {

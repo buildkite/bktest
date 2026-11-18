@@ -2,10 +2,15 @@ import XCTest
 
 /// An object that captures test data and exports it in real time.
 final class TestObserver: NSObject, XCTestObservation {
+  enum SplitBy: String {
+    case `class`
+    case method
+  }
+
   let logger: Logger?
   let telemetry: TelemetryClient?
   let uuid: () -> UUID
-  let splitBy: String?
+  let splitBy: SplitBy?
 
   /// The state of the current test.
   var test: TestState?
@@ -30,8 +35,15 @@ final class TestObserver: NSObject, XCTestObservation {
   ) {
     self.logger = logger
     self.telemetry = telemetry
-    self.splitBy = splitBy
+    self.splitBy = splitBy.flatMap(SplitBy.init(rawValue:))
     self.uuid = uuid
+    super.init()
+
+    if let splitBy, !splitBy.isEmpty, self.splitBy == nil {
+      logger?.warning(
+        "Invalid BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY value \"\(splitBy)\"; expected class or method. Using file-based timing history."
+      )
+    }
   }
 
   /// Sets a tag on the execution for the given test case.
@@ -55,8 +67,8 @@ final class TestObserver: NSObject, XCTestObservation {
     self.executionTags.withValue {
       var tags: [String: String] = [:]
       // Without this tag, Test Engine matches file-based timing history.
-      if self.splitBy == "class" || self.splitBy == "method" {
-        tags["test.selector.primary"] = XCTestCase.selector(of: testCase, splitByMethod: self.splitBy == "method")
+      if let splitBy = self.splitBy {
+        tags["test.selector.primary"] = XCTestCase.selector(of: testCase, splitByMethod: splitBy == .method)
       }
       $0[ObjectIdentifier(testCase)] = tags
     }

@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add opt-in XCTest selector tags for bktec custom-runner splitting (`BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY=class` or `method`). Unset keeps file-based timing history.
+- Warn once when `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY` is invalid and keep file-based timing history.
 
 ## 2.0.0-beta.4
 

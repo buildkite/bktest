@@ -79,16 +79,42 @@ final class TestObserverTests: XCTestCase {
   }
   #endif
 
-  func testUnsetSplitDoesNotOverrideFileTimingFallback() {
+  func testInvalidSplitWarnsOnceAndDoesNotOverrideFileTimingFallback() {
+    let messages = LockIsolated([String]())
+    let logger = Logger(printer: { message in messages.withValue { $0.append(message) } })
     let recordedTags = LockIsolated([[String: String]?]())
     let telemetry = self.telemetry { tags in recordedTags.withValue { $0.append(tags) } }
-    let observer = TestObserver(logger: nil, telemetry: telemetry)
+    let observer = TestObserver(logger: logger, telemetry: telemetry, splitBy: "clas")
 
-    observer.testCaseWillStart(self)
-    observer.testCaseDidFinish(self)
+    for _ in 0..<2 {
+      observer.testCaseWillStart(self)
+      observer.testCaseDidFinish(self)
+    }
+    logger.waitForLogs()
 
-    XCTAssertEqual(recordedTags.value.count, 1)
-    XCTAssertNil(recordedTags.value[0])
+    XCTAssertEqual(recordedTags.value.count, 2)
+    XCTAssertTrue(recordedTags.value.allSatisfy { $0 == nil })
+    XCTAssertEqual(messages.value, [
+      "[BuildkiteTestCollector] warning: Invalid BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY value \"clas\"; expected class or method. Using file-based timing history."
+    ])
+  }
+
+  func testUnsetSplitDoesNotOverrideFileTimingFallback() {
+    for splitBy: String? in [nil, ""] {
+      let messages = LockIsolated([String]())
+      let logger = Logger(printer: { message in messages.withValue { $0.append(message) } })
+      let recordedTags = LockIsolated([[String: String]?]())
+      let telemetry = self.telemetry { tags in recordedTags.withValue { $0.append(tags) } }
+      let observer = TestObserver(logger: logger, telemetry: telemetry, splitBy: splitBy)
+
+      observer.testCaseWillStart(self)
+      observer.testCaseDidFinish(self)
+      logger.waitForLogs()
+
+      XCTAssertEqual(recordedTags.value.count, 1)
+      XCTAssertNil(recordedTags.value[0])
+      XCTAssertTrue(messages.value.isEmpty)
+    }
   }
 
   private func telemetry(onFinish: @escaping ([String: String]?) -> Void) -> TelemetryClient {
