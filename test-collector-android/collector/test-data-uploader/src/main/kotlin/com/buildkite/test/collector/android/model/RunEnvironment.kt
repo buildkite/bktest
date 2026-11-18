@@ -35,7 +35,7 @@ data class RunEnvironment(
     companion object {
         // When bumping version, update VERSION_NAME to match new version
         // Used for uploading correct library version
-        const val VERSION_NAME = "0.4.0"
+        const val VERSION_NAME = "0.4.1"
         const val COLLECTOR_NAME = "android-buildkite-test-collector"
     }
 }
