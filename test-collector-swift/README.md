@@ -296,12 +296,16 @@ The existing `tagExecution` API is unchanged. Execution tags are exported as
 
 ### Native XCTest selectors (Unreleased)
 
-On Apple platforms, the collector always sends two facts on each test root:
-`buildkite.test.xctest.bundle_name` (the `.xctest` filename stem) and
+On Apple platforms, the collector sends two facts on each test root:
+`buildkite.test.xctest.bundle_name` (the executing `.xctest` filename stem) and
 `buildkite.test.xctest.runtime_class` (the exact `NSStringFromClass` runtime name).
 Test Engine uses them to derive class-level `Target/Class` selectors for Xcode
 and timing-based splitting. The collector does not write the selector itself;
 no environment variable or test code is needed.
+
+The bundle comes from XCTest's bundle-start callback, even when the test class
+is defined in a linked framework. If collection starts after that callback,
+the bundle fact is omitted rather than guessed.
 
 This requires `PRODUCT_NAME = $(TARGET_NAME)` (Xcode's default). A renamed bundle
 does not identify the Xcode target. Inherited tests use the subclass that ran

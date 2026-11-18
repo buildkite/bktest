@@ -35,6 +35,42 @@ final class TestObserverTests: XCTestCase {
     XCTAssertNil(recordedTags.value.first!!["after"])
   }
 
+  func testOmitsBundleOutsideBundleExecution() {
+    let recordedTests = LockIsolated([TestState]())
+    let telemetry = TelemetryClient(
+      start: { test in
+        recordedTests.withValue { $0.append(test) }
+        return test.id
+      },
+      annotate: { _, _ in },
+      finish: { _, _, _ in },
+      flush: {}
+    )
+    let observer = TestObserver(logger: nil, telemetry: telemetry)
+    let bundle = Bundle(for: type(of: self))
+
+    // An observer registered after bundle start must not guess the bundle.
+    observer.testCaseWillStart(self)
+    observer.testCaseDidFinish(self)
+    observer.testBundleWillStart(bundle)
+    observer.testCaseWillStart(self)
+    observer.testCaseDidFinish(self)
+    observer.testBundleDidFinish(bundle)
+    observer.testCaseWillStart(self)
+    observer.testCaseDidFinish(self)
+
+    #if canImport(ObjectiveC)
+    XCTAssertEqual(recordedTests.value.map(\.xctestBundleName), [nil, "BuildkiteTestCollectorPackageTests", nil])
+    XCTAssertEqual(
+      recordedTests.value.map(\.xctestRuntimeClass),
+      Array(repeating: NSStringFromClass(type(of: self)), count: 3)
+    )
+    #else
+    XCTAssertEqual(recordedTests.value.map(\.xctestBundleName), [nil, nil, nil])
+    XCTAssertEqual(recordedTests.value.map(\.xctestRuntimeClass), [nil, nil, nil])
+    #endif
+  }
+
   private func telemetry(onFinish: @escaping ([String: String]?) -> Void) -> TelemetryClient {
     TelemetryClient(
       start: { $0.id },

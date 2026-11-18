@@ -133,9 +133,12 @@ final class TelemetryClientTests: XCTestCase {
       childExporter: childExporter
     ))
     let observer = TestObserver(logger: nil, telemetry: client)
+    observer.testBundleWillStart(Bundle(for: type(of: self)))
     var testCases: [XCTestCase] = [self]
     #if canImport(ObjectiveC)
     testCases += [
+      // A test class can come from a linked framework instead of the executing bundle.
+      XCTestCase(selector: NSSelectorFromString("tearDown")),
       XCTestFactBaseCase(selector: #selector(XCTestFactBaseCase.exampleMethod)),
       XCTestFactChildCase(selector: #selector(XCTestFactBaseCase.exampleMethod)),
       XCTestFactCustomCase(selector: #selector(XCTestFactCustomCase.exampleMethod)),
