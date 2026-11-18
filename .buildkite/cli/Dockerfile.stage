@@ -1,0 +1,17 @@
+FROM golang:1.27.3-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+RUN git config --system --add safe.directory /work
+RUN set -eu; \
+    arch=$(uname -m); \
+    case "$arch" in \
+      x86_64) sha=2afaa5ffb5e3493402e31e7c67a5a1fb42133e3f66fc315ca0051934125561c7 ;; \
+      aarch64) arch=arm64; sha=d4eee71839e92c68cbd3b101640bad32d2856fc551acae0635be9118e48c9d9c ;; \
+      *) exit 1 ;; \
+    esac; \
+    file="nfpm_2.49.0_Linux_${arch}.tar.gz"; \
+    curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v2.49.0/$file" -o "/tmp/$file"; \
+    echo "$sha  /tmp/$file" | sha256sum -c -; \
+    tar -xz -f "/tmp/$file" -C /usr/local/bin nfpm; \
+    rm "/tmp/$file"

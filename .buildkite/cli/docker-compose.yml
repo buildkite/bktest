@@ -1,0 +1,16 @@
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ../..:/work
+    working_dir: /work
+
+  stage:
+    build:
+      context: .
+      dockerfile: Dockerfile.stage
+    volumes:
+      - ../..:/work
+    working_dir: /work

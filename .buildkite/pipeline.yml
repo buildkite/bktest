@@ -1,7 +1,4 @@
-# Monorepo dispatcher pipeline for the gathered repo.
-#
-# This file is injected by `ctg gather` from the ctg repo's overlay/
-# directory; edit it there, not in the gathered repo.
+# Repository-owned monorepo CI dispatcher, originally from the ctg overlay.
 #
 # It does no work itself: for each top-level project that changed, it
 # uploads that project's own nested pipeline. Per-project pipelines live
@@ -27,6 +24,10 @@ agents:
   queue: hosted
 
 steps:
+  - label: ":pipeline: bktest CLI"
+    if_changed: "{cmd/**,internal/**,go.mod,go.sum,util/**,bin/**,.golangci.yaml,.tool-versions,mise.toml,packaging/**,.buildkite/pipeline.yml,.buildkite/pipeline.release.yml,.buildkite/pipeline.cli*.yml,.buildkite/cli/**,test-collector-ruby/**,test-collector-python/**}"
+    command: "[ ! -f go.mod ] || buildkite-agent pipeline upload .buildkite/pipeline.cli.yml"
+
   - label: ":pipeline: test-collector-ruby"
     if_changed: "test-collector-ruby/**"
     command: "[ ! -d test-collector-ruby ] || buildkite-agent pipeline upload test-collector-ruby/.buildkite/pipeline.yml"

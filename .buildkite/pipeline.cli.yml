@@ -1,0 +1,48 @@
+# Public CI: no Test Engine service tokens, no release plugins.
+steps:
+  - label: ":golangci-lint: CLI lint"
+    if_changed: &go_paths "{cmd/**,internal/**,go.mod,go.sum,util/**,bin/**,.golangci.yaml,.tool-versions,mise.toml,.buildkite/pipeline.yml,.buildkite/pipeline.cli.yml,.buildkite/cli/**}"
+    command: golangci-lint run
+    plugins:
+      - docker#v5.13.0:
+          image: golangci/golangci-lint:v2.14.0
+
+  - label: ":go: CLI tests with coverage"
+    if_changed: *go_paths
+    command: bash .buildkite/cli/test.sh go
+    artifact_paths: "dist/coverage/*"
+    plugins: &fixture_image
+      - docker-compose#v5.12.1:
+          config: .buildkite/cli/docker-compose.yml
+          cli-version: 2
+          run: test
+
+  - label: ":ruby: CLI Ruby runner contract"
+    if_changed: "{cmd/**,internal/**,go.mod,go.sum,.tool-versions,.buildkite/pipeline.yml,.buildkite/pipeline.cli.yml,.buildkite/cli/**,test-collector-ruby/**}"
+    command: bash .buildkite/cli/test.sh ruby
+    plugins: *fixture_image
+
+  # Go-only changes already run these tests as part of the full Go suite.
+  - label: ":python: CLI Python runner contract"
+    if_changed: "test-collector-python/**"
+    command: bash .buildkite/cli/test.sh python
+    plugins: *fixture_image
+
+  - label: ":hammer_and_wrench: Build CLI {{matrix.os}} {{matrix.arch}}"
+    if_changed: "{cmd/**,internal/**,go.mod,go.sum,.tool-versions,packaging/cli/build.sh,.buildkite/pipeline.yml,.buildkite/pipeline.cli.yml}"
+    command: bash packaging/cli/build.sh 3.0.0-ci dist/cli {{matrix.os}} {{matrix.arch}}
+    artifact_paths: "dist/cli/*"
+    plugins:
+      - docker#v5.13.0:
+          image: golang:1.27.3-bookworm
+    matrix:
+      setup:
+        os: [darwin, linux, windows]
+        arch: [amd64, arm64]
+
+  - label: ":package: CLI release guard tests"
+    if_changed: "{packaging/**,.buildkite/pipeline.yml,.buildkite/pipeline.release.yml,.buildkite/pipeline.cli*.yml,.buildkite/cli/**}"
+    command: python3 -B -m unittest discover -s packaging/cli -v
+    plugins:
+      - docker#v5.13.0:
+          image: python:3.13-bookworm
