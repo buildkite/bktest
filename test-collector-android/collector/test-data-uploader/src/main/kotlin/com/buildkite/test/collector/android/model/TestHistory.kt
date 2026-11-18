@@ -7,7 +7,7 @@ import com.google.gson.annotations.SerializedName
  *
  * @property startAt The start timestamp of the test.
  * @property endAt The end timestamp of the test.
- * @property duration The total duration of the test.
+ * @property duration The total duration of the test, in seconds.
  * @property children A collection of [TestSpan] objects detailing specific segments or operations within the test.
  */
 data class TestHistory(

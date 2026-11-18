@@ -6,6 +6,8 @@ plugins {
 
 dependencies {
     implementation(projects.collector.testDataUploader)
+    testImplementation(libs.testing.junit)
+    testImplementation(libs.testing.mockito)
 }
 
 gradlePlugin {

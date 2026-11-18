@@ -17,6 +17,7 @@ import com.google.gson.annotations.SerializedName
  * @property failureExpanded Detailed failure information as a list of [TestFailureExpanded] objects.
  * @property tags Optional execution-level tags (key-value pairs) for this test.
  * @property history The span information capturing the duration and execution details of the test.
+ * @property outermostDescriptorClassName The outermost non-blank Gradle descriptor class name, preserving binary spelling.
  */
 data class TestDetails(
     @SerializedName("id") val id: String = generateUUIDString(),
@@ -28,5 +29,6 @@ data class TestDetails(
     @SerializedName("failure_reason") val failureReason: String?,
     @SerializedName("failure_expanded") val failureExpanded: List<TestFailureExpanded>? = null,
     @SerializedName("tags") val tags: Map<String, String>? = null,
-    @SerializedName("history") val history: TestHistory
+    @SerializedName("history") val history: TestHistory,
+    @SerializedName("outermost_descriptor_class_name") val outermostDescriptorClassName: String? = null
 )

@@ -109,6 +109,24 @@ BuildkiteTestCollector.configure(
 
 When both programmatic and environment variable tags are provided, the environment variable values take precedence on key collision.
 
+### Test splitting (unit tests)
+
+The unit-test collector sends `run_env.test_runner = "gradle"` and each result's
+`outermost_descriptor_class_name`. Test Engine derives `test.selector.primary`
+from these facts so bktec's custom runner can match classes to timing history.
+No test code changes are needed.
+
+Nested classes and JUnit 4 suite members use the outermost class Gradle ran,
+matching its `--tests` filter. Binary class names keep any `$`; the collector
+omits the class fact when no descriptor has a non-blank class name. Scope and
+name stay unchanged. Each method contributes to its class or suite's total
+duration. An explicit execution-level `test.selector.primary` tag overrides the
+derived selector in Test Engine.
+
+Timings come from completed Gradle results, so overlapping forks keep their own
+durations. Timestamps and durations are uploaded in seconds. This does not add
+method-level splitting. The instrumented collector sends neither fact.
+
 ### Execution-level tags (instrumented tests)
 
 Tag individual test executions during the test:

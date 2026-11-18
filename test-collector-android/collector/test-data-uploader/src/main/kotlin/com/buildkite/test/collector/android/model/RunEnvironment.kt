@@ -17,6 +17,7 @@ import com.google.gson.annotations.SerializedName
  * @property message The commit message for the head of the branch.
  * @property version The current version of the collector.
  * @property collector The current name of the collector.
+ * @property testRunner The test runner, when known.
  */
 data class RunEnvironment(
     @SerializedName("CI") val ci: String? = null,
@@ -28,7 +29,8 @@ data class RunEnvironment(
     @SerializedName("job_id") val jobId: String? = null,
     @SerializedName("message") val message: String? = null,
     @SerializedName("version") val version: String = VERSION_NAME,
-    @SerializedName("collector") val collector: String = COLLECTOR_NAME
+    @SerializedName("collector") val collector: String = COLLECTOR_NAME,
+    @SerializedName("test_runner") val testRunner: String? = null
 ) {
     companion object {
         // When bumping version, update VERSION_NAME to match new version

@@ -6,6 +6,9 @@ import com.buildkite.test.collector.android.model.TestDetails
 import com.buildkite.test.collector.android.model.TestHistory
 import com.buildkite.test.collector.android.model.TestOutcome
 import com.google.gson.Gson
+import com.google.gson.JsonObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -38,6 +41,7 @@ class TestDataSerializationTest {
         // The key thing is it doesn't blow up and the data is still valid
         assertTrue(json.contains("\"format\":\"json\""))
         assertTrue(json.contains("\"run_env\""))
+        assertFalse(gson.fromJson(json, JsonObject::class.java).getAsJsonObject("run_env").has("test_runner"))
     }
 
     @Test
@@ -51,15 +55,16 @@ class TestDataSerializationTest {
             result = TestOutcome.Passed,
             failureReason = null,
             tags = tags,
-            history = TestHistory(startAt = 0, endAt = 1000, duration = 0.001)
+            history = TestHistory(startAt = 0, endAt = 1, duration = 0.001)
         )
         val json = gson.toJson(testDetails)
         assertTrue(json.contains("\"tags\""))
         assertTrue(json.contains("\"user_type\":\"premium\""))
+        assertFalse(gson.fromJson(json, JsonObject::class.java).has("outermost_descriptor_class_name"))
     }
 
     @Test
-    fun fullPayloadIncludesTagsAtBothLevels() {
+    fun fullPayloadIncludesGradleFactsAndTagsAtBothLevels() {
         val uploadTags = mapOf("environment" to "ci")
         val executionTags = mapOf("feature" to "checkout")
         val testDetails = TestDetails(
@@ -70,15 +75,21 @@ class TestDataSerializationTest {
             result = TestOutcome.Passed,
             failureReason = null,
             tags = executionTags,
-            history = TestHistory(startAt = 0, endAt = 1000, duration = 0.001)
+            history = TestHistory(startAt = 0, endAt = 1, duration = 0.001),
+            outermostDescriptorClassName = "example.Container\$SuiteTest"
         )
         val testData = TestData(
-            runEnvironment = RunEnvironment(),
+            runEnvironment = RunEnvironment(testRunner = "gradle"),
             tags = uploadTags,
             data = listOf(testDetails)
         )
         val json = gson.toJson(testData)
         assertTrue(json.contains("\"environment\":\"ci\""))
         assertTrue(json.contains("\"feature\":\"checkout\""))
+        val payload = gson.fromJson(json, JsonObject::class.java)
+        assertEquals("gradle", payload.getAsJsonObject("run_env").get("test_runner").asString)
+        val execution = payload.getAsJsonArray("data")[0].asJsonObject
+        assertEquals("example.Container\$SuiteTest", execution.get("outermost_descriptor_class_name").asString)
+        assertFalse(execution.getAsJsonObject("tags").has("test.selector.primary"))
     }
 }
