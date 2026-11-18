@@ -11,20 +11,29 @@ import com.buildkite.test.collector.android.util.logger.Logger
 import retrofit2.Response
 
 /**
- * Manages the upload of test data to the Buildkite Test Analytics Suite.
- *
- * @property testSuiteApiToken The API token for authentication.
- * @property runEnvironment The test run environment configuration.
- * @property uploadTags Optional upload-level tags that apply to all test executions.
- * @property logger The logger for logging messages.
+ * Uploads test data to Buildkite Test Analytics.
  */
-class BuildKiteTestDataUploader(
+class BuildKiteTestDataUploader internal constructor(
     private val testSuiteApiToken: String,
     private val runEnvironment: RunEnvironment,
-    private val uploadTags: Map<String, String> = emptyMap(),
-    private val logger: Logger = Logger()
+    private val uploadTags: Map<String, String>,
+    private val logger: Logger,
+    private val testUploaderApiFactory: TestUploaderApiFactory
 ) : TestDataUploader {
-    private val testUploaderApiFactory: TestUploaderApiFactory = DefaultTestUploaderApiFactory()
+    /**
+     * Creates an uploader for a test suite.
+     *
+     * @param testSuiteApiToken The test suite API token for authentication.
+     * @param runEnvironment The test run environment configuration.
+     * @param uploadTags Optional upload-level tags that apply to all test executions.
+     * @param logger The logger for upload messages.
+     */
+    constructor(
+        testSuiteApiToken: String,
+        runEnvironment: RunEnvironment,
+        uploadTags: Map<String, String> = emptyMap(),
+        logger: Logger = Logger()
+    ) : this(testSuiteApiToken, runEnvironment, uploadTags, logger, DefaultTestUploaderApiFactory())
 
     init {
         logger.debug { "TestDataUploader initialized with test analytics API token." }
@@ -36,14 +45,14 @@ class BuildKiteTestDataUploader(
     }
 
     /**
-     * Uploads test data to the Buildkite Test Analytics Suite.
-     * The number of test data uploaded in a single request is constrained by [CollectorUtils.Uploader.TEST_DATA_UPLOAD_LIMIT].
+     * Uploads test results in batches of up to [CollectorUtils.Uploader.TEST_DATA_UPLOAD_LIMIT].
      *
-     * @param testCollection A list of [TestDetails] representing all the tests within the suite.
+     * @param testCollection The test results to upload.
      */
     override fun uploadTestData(testCollection: List<TestDetails>) {
-        val testData = prepareTestData(testCollection)
-        uploadTestData(testData)
+        testCollection.chunked(CollectorUtils.Uploader.TEST_DATA_UPLOAD_LIMIT).forEach { chunk ->
+            uploadTestData(prepareTestData(chunk))
+        }
     }
 
     private fun prepareTestData(testCollection: List<TestDetails>): TestData {
@@ -51,7 +60,7 @@ class BuildKiteTestDataUploader(
             format = "json",
             runEnvironment = runEnvironment,
             tags = uploadTags.ifEmpty { null },
-            data = testCollection.take(CollectorUtils.Uploader.TEST_DATA_UPLOAD_LIMIT)
+            data = testCollection
         )
     }
 

@@ -14,4 +14,5 @@ dependencies {
     implementation(libs.okhttp)
 
     testImplementation(libs.testing.junit)
+    testImplementation(libs.testing.mockito)
 }
