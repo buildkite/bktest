@@ -296,26 +296,24 @@ The existing `tagExecution` API is unchanged. Execution tags are exported as
 
 ### Native XCTest selectors (Unreleased)
 
-Set `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY` to `class` or `method` to tag XCTest
-executions with `test.selector.primary` for bktec custom-runner splitting. No
-test code is required. When unset, no selector tag is added and file-based
-timing history is unchanged. Changing to class or method selectors starts new
-timing history; run the suite once to record it.
+On Apple platforms, the collector always sends two facts on each test root:
+`buildkite.test.xctest.bundle_name` (the `.xctest` filename stem) and
+`buildkite.test.xctest.runtime_class` (the exact `NSStringFromClass` runtime name).
+Test Engine uses them to derive class-level `Target/Class` selectors for Xcode
+and timing-based splitting. The collector does not write the selector itself;
+no environment variable or test code is needed.
 
-Xcode class selectors are `Target/Class`. Method selectors add `/method()` for
-ordinary Swift classes or `/method` for Objective-C and nested classes.
-Inherited methods use the concrete subclass, and custom Objective-C names keep
-their runtime spelling. Linux SwiftPM uses `Module.Class[/method]`. Explicit
-`tagExecution("test.selector.primary", "...")` values override the automatic tag.
-These selectors do not support macOS `swift test --filter`.
+This requires `PRODUCT_NAME = $(TARGET_NAME)` (Xcode's default). A renamed bundle
+does not identify the Xcode target. Inherited tests use the subclass that ran
+them, and custom Objective-C and nested class names keep their runtime spelling.
 
-Xcode requires `PRODUCT_NAME = $(TARGET_NAME)` (the default). The collector uses
-the test bundle filename for `Target`, so custom product names do not match
-Xcode's target identifiers. The companion splitting example rejects them.
+macOS `swift test` also emits these facts, but the derived selectors do not work
+with `swift test --filter`. Linux emits neither fact and gets no derived XCTest
+selector. Swift Testing is not collected and gets none either.
 
-Use the same split mode for discovery and execution. Pass the setting through
-your test plan or scheme, or set
-`TEST_RUNNER_BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY` when invoking `xcodebuild`.
+An explicit `tagExecution("test.selector.primary", "...")` value overrides
+Test Engine's derived selector. Moving from file-based to class-based selectors
+starts new timing history; run the suite once to record it.
 
 ## OpenTelemetry behavior and delivery
 

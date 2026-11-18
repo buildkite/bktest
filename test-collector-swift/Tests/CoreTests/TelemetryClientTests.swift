@@ -122,6 +122,74 @@ final class TelemetryClientTests: XCTestCase {
     )
   }
 
+  func testExportsNativeXCTestFactsOnlyOnExecutionRoots() throws {
+    let rootExporter = InMemoryExporter()
+    let childExporter = InMemoryExporter()
+    let client = try XCTUnwrap(TelemetryClient.live(
+      environment: self.configuredEnvironment,
+      uploadTags: [:],
+      logger: nil,
+      rootExporter: rootExporter,
+      childExporter: childExporter
+    ))
+    let observer = TestObserver(logger: nil, telemetry: client)
+    var testCases: [XCTestCase] = [self]
+    #if canImport(ObjectiveC)
+    testCases += [
+      XCTestFactBaseCase(selector: #selector(XCTestFactBaseCase.exampleMethod)),
+      XCTestFactChildCase(selector: #selector(XCTestFactBaseCase.exampleMethod)),
+      XCTestFactCustomCase(selector: #selector(XCTestFactCustomCase.exampleMethod)),
+      XCTestFactNamespace.NestedCase(selector: #selector(XCTestFactNamespace.NestedCase.exampleMethod)),
+    ]
+    #endif
+    testCases.append(self)
+
+    for (index, testCase) in testCases.enumerated() {
+      observer.testCaseWillStart(testCase)
+      if index == testCases.count - 1 {
+        observer.setTag(for: testCase, key: "test.selector.primary", value: "user-supplied-selector")
+      }
+      OpenTelemetry.instance.tracerProvider
+        .get(instrumentationName: "example-app")
+        .spanBuilder(spanName: "child")
+        .startSpan()
+        .end()
+      observer.testCaseDidFinish(testCase)
+    }
+    client.forceFlush()
+
+    let spans = rootExporter.getFinishedSpanItems()
+    XCTAssertEqual(spans.count, testCases.count)
+    for (index, pair) in zip(testCases, spans).enumerated() {
+      let (testCase, span) = pair
+      XCTAssertEqual(span.name, "test.execution")
+      XCTAssertEqual(span.attributes["buildkite.test.scope"], .string(String(describing: type(of: testCase))))
+      #if canImport(ObjectiveC)
+      XCTAssertEqual(span.attributes["buildkite.test.xctest.bundle_name"], .string("BuildkiteTestCollectorPackageTests"))
+      XCTAssertEqual(
+        span.attributes["buildkite.test.xctest.runtime_class"],
+        .string(NSStringFromClass(type(of: testCase)))
+      )
+      #else
+      XCTAssertNil(span.attributes["buildkite.test.xctest.bundle_name"])
+      XCTAssertNil(span.attributes["buildkite.test.xctest.runtime_class"])
+      #endif
+      XCTAssertNil(span.attributes["test.selector.primary"])
+      XCTAssertEqual(
+        span.attributes["buildkite.tag.test.selector.primary"],
+        index == testCases.count - 1 ? .string("user-supplied-selector") : nil
+      )
+      XCTAssertNil(span.resource.attributes["buildkite.test.xctest.bundle_name"])
+      XCTAssertNil(span.resource.attributes["buildkite.test.xctest.runtime_class"])
+    }
+    let children = childExporter.getFinishedSpanItems()
+    XCTAssertEqual(children.count, testCases.count)
+    for child in children {
+      XCTAssertNil(child.attributes["buildkite.test.xctest.bundle_name"])
+      XCTAssertNil(child.attributes["buildkite.test.xctest.runtime_class"])
+    }
+  }
+
   func testExportsFailureLocationStatusAndException() throws {
     let rootExporter = InMemoryExporter()
     let client = try XCTUnwrap(TelemetryClient.live(
@@ -882,6 +950,21 @@ final class TelemetryClientTests: XCTestCase {
     return try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
   }
 }
+
+#if canImport(ObjectiveC)
+class XCTestFactBaseCase: XCTestCase {
+  @objc func exampleMethod() {}
+}
+final class XCTestFactChildCase: XCTestFactBaseCase {}
+@objc(CollectorXCTestCustomCase) final class XCTestFactCustomCase: XCTestCase {
+  @objc func exampleMethod() {}
+}
+enum XCTestFactNamespace {
+  final class NestedCase: XCTestCase {
+    @objc func exampleMethod() {}
+  }
+}
+#endif
 
 private extension Array {
   var only: Element? {

@@ -38,8 +38,7 @@ public struct TestCollector {
 
     self.observer = TestObserver(
       logger: logger,
-      telemetry: telemetry,
-      splitBy: environment.string(for: "BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY")
+      telemetry: telemetry
     )
   }
 

@@ -6,24 +6,6 @@ extension XCTestCase {
     "\(type(of: testCase))"
   }
 
-  static func selector(of testCase: XCTestCase, splitByMethod: Bool) -> String {
-    #if canImport(ObjectiveC)
-    let runtimeClass = NSStringFromClass(type(of: testCase))
-    let testClass = runtimeClass.split(separator: ".").last.map(String.init) ?? runtimeClass
-    let target = Bundle(for: type(of: testCase)).bundleURL.deletingPathExtension().lastPathComponent
-    var selector = "\(target)/\(testClass)"
-    if splitByMethod {
-      // Objective-C and nested classes use bare method selectors in Xcode.
-      selector += "/\(self.testName(of: testCase))\(runtimeClass.contains(".") ? "()" : "")"
-    }
-    #else
-    // SwiftPM uses Module.Class[/method], not Xcode's Target/Class[/method()].
-    var selector = String(reflecting: type(of: testCase))
-    if splitByMethod { selector += "/\(self.testName(of: testCase))" }
-    #endif
-    return selector
-  }
-
   /// Returns the name of the test.
   static func testName(of testCase: XCTestCase) -> String {
     #if canImport(ObjectiveC)
