@@ -36,7 +36,10 @@ public struct TestCollector {
       logger: logger
     )
 
-    self.observer = TestObserver(logger: logger, telemetry: telemetry)
+    self.observer = TestObserver(
+      logger: logger,
+      telemetry: telemetry
+    )
   }
 
   /// Annotates the current test.

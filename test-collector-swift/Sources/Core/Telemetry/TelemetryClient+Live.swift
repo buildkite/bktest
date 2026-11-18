@@ -31,6 +31,8 @@ enum BuildkiteTelemetryAttribute {
   static let stepID = "buildkite.step_id"
   static let tagPrefix = "buildkite.tag."
   static let testName = "buildkite.test.name"
+  static let xctestBundleName = "buildkite.test.xctest.bundle_name"
+  static let xctestRuntimeClass = "buildkite.test.xctest.runtime_class"
 }
 
 /// Per-value length caps applied before export so one oversized value cannot
@@ -535,6 +537,12 @@ private final class LiveTelemetryClient {
     set(BuildkiteTelemetryAttribute.executionExternalID, .string(test.id.uuidString))
     set(SemanticConventions.Test.caseName.rawValue, .string(qualifiedTestName))
     set(SemanticConventions.Test.suiteName.rawValue, .string(test.className))
+    if let bundleName = test.xctestBundleName {
+      set(BuildkiteTelemetryAttribute.xctestBundleName, .string(bundleName))
+    }
+    if let runtimeClass = test.xctestRuntimeClass {
+      set(BuildkiteTelemetryAttribute.xctestRuntimeClass, .string(runtimeClass))
+    }
 
     // The Swift SDK keeps the most recently set attributes when the span's
     // start-time attribute limit is exceeded. Set the three synthesis fields

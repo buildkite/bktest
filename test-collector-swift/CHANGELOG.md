@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Send XCTest bundle and runtime-class facts on Apple test roots so Test Engine can derive class-level Xcode selectors; explicit selector tags still override.
+
 ## 2.0.0-beta.4
 
 - Rename the OpenTelemetry instrumentation scope from `test-collector-swift` to `buildkite-test-collector`; keep test root span names as `test.execution`

@@ -15,6 +15,8 @@ final class TestObserver: NSObject, XCTestObservation {
   /// Per-test execution tags, keyed by test case identity.
   private let executionTags = LockIsolated([ObjectIdentifier: [String: String]]())
 
+  private var testBundleName: String?
+
   /// Creates a new test observer.
   ///
   /// - Parameters:
@@ -45,16 +47,28 @@ final class TestObserver: NSObject, XCTestObservation {
     }
   }
 
+  func testBundleWillStart(_ testBundle: Bundle) {
+    self.testBundleName = testBundle.bundleURL.deletingPathExtension().lastPathComponent
+  }
+
   /// Notifies the observer immediately before a test case begins executing.
   ///
   /// Called exactly once per test case.
   func testCaseWillStart(_ testCase: XCTestCase) {
-    self.executionTags.withValue { $0[ObjectIdentifier(testCase)] = [:] }
-    let test = TestState(
+    self.executionTags.withValue {
+      $0[ObjectIdentifier(testCase)] = [:]
+    }
+    var test = TestState(
       id: self.uuid(),
       className: XCTestCase.className(of: testCase),
       testName: XCTestCase.testName(of: testCase)
     )
+    #if canImport(ObjectiveC)
+    let testClass = type(of: testCase)
+    // The class may be defined in a linked framework, not the executing test bundle.
+    test.xctestBundleName = self.testBundleName
+    test.xctestRuntimeClass = NSStringFromClass(testClass)
+    #endif
     self.test = test
     self.executionID = self.telemetry?.startExecution(test)
   }
@@ -119,6 +133,7 @@ final class TestObserver: NSObject, XCTestObservation {
   /// - Note: The test process will generally exit after this method returns, so it must block until all asynchronous
   /// work is complete.
   func testBundleDidFinish(_ testBundle: Bundle) {
+    self.testBundleName = nil
     self.telemetry?.forceFlush()
     self.logger?.waitForLogs()
   }
