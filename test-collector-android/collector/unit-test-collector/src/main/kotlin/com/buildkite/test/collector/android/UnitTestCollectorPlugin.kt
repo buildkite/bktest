@@ -39,7 +39,7 @@ class UnitTestCollectorPlugin : Plugin<Project> {
             val testListener = UnitTestListener(
                 testUploader = BuildKiteTestDataUploader(
                     testSuiteApiToken = testSuiteApiToken,
-                    runEnvironment = testEnvironmentProvider.getRunEnvironment(),
+                    runEnvironment = testEnvironmentProvider.getRunEnvironment().copy(testRunner = "gradle"),
                     uploadTags = uploadTags,
                     logger = logger
                 ),

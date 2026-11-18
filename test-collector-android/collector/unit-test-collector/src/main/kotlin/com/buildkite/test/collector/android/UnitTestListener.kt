@@ -60,11 +60,6 @@ internal class UnitTestListener(
     }
 
     private fun addTestDetailsToCollection(test: TestDescriptor, result: TestResult) {
-        val tags = testObserver.executionTags.toMutableMap()
-        // Gradle selects the whole runnable ancestor, including suite members.
-        generateSequence(test) { it.parent }.mapNotNull { it.className }.lastOrNull()?.let { selector ->
-            tags["test.selector.primary"] = selector
-        }
         val testHistory = TestHistory(
             startAt = result.startTime / 1000,
             endAt = result.endTime / 1000,
@@ -79,8 +74,11 @@ internal class UnitTestListener(
             result = testObserver.outcome,
             failureReason = testObserver.failureReason,
             failureExpanded = testObserver.failureDetails,
-            tags = tags.ifEmpty { null },
-            history = testHistory
+            tags = testObserver.executionTags.toMap().ifEmpty { null },
+            history = testHistory,
+            outermostDescriptorClassName = generateSequence(test) { it.parent }
+                .mapNotNull { it.className }
+                .lastOrNull { it.isNotBlank() }
         )
 
         testCollection.add(testDetails)
