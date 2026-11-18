@@ -4,37 +4,25 @@ import com.buildkite.test.collector.android.model.TestDetails
 import com.buildkite.test.collector.android.model.TestFailureExpanded
 import com.buildkite.test.collector.android.model.TestHistory
 import com.buildkite.test.collector.android.tracer.TestObserver
-import org.gradle.api.tasks.testing.Test
 import org.gradle.api.tasks.testing.TestDescriptor
 import org.gradle.api.tasks.testing.TestListener
 import org.gradle.api.tasks.testing.TestResult
 
-/**
- * A listener for Gradle's [Test] tasks that collects and uploads test results.
- * This listener observes the test execution, records details about each test, and uploads the results at the end of the test suite.
- *
- * @property testUploader The uploader used to send test data to the analytics service.
- * @property testObserver The observer used to track and record test details.
- */
 internal class UnitTestListener(
     private val testUploader: TestDataUploader,
     private val testObserver: TestObserver
 ) : TestListener {
     private val testCollection: MutableList<TestDetails> = mutableListOf()
 
-    override fun beforeSuite(suite: TestDescriptor) {
-        /* Nothing to do before the test suite has started */
-    }
+    override fun beforeSuite(suite: TestDescriptor) = Unit
 
     override fun afterSuite(suite: TestDescriptor, result: TestResult) {
-        if (isFinalTestSuiteCall(testDescription = suite)) {
+        if (suite.className == null && suite.parent == null) {
             testUploader.uploadTestData(testCollection = testCollection)
         }
     }
 
-    override fun beforeTest(testDescriptor: TestDescriptor) {
-        /* Timing comes from the completed Gradle TestResult, not shared state. */
-    }
+    override fun beforeTest(testDescriptor: TestDescriptor) = Unit
 
     override fun afterTest(testDescriptor: TestDescriptor, result: TestResult) {
         when (result.resultType) {
@@ -62,7 +50,6 @@ internal class UnitTestListener(
             }
 
             null -> {
-                // Handle the case where TestResult is unexpectedly null */
                 testObserver.recordFailure(
                     reason = "TestResult type was unexpectedly null, indicating an error in the test framework."
                 )
@@ -74,8 +61,7 @@ internal class UnitTestListener(
 
     private fun addTestDetailsToCollection(test: TestDescriptor, result: TestResult) {
         val tags = testObserver.executionTags.toMutableMap()
-        // Gradle selects a class/suite together with its nested/member tests.
-        // Match discovery's outermost class-bearing descriptor, preserving '$'.
+        // Gradle selects the whole runnable ancestor, including suite members.
         generateSequence(test) { it.parent }.mapNotNull { it.className }.lastOrNull()?.let { selector ->
             tags["test.selector.primary"] = selector
         }
@@ -100,13 +86,4 @@ internal class UnitTestListener(
         testCollection.add(testDetails)
         testObserver.reset()
     }
-
-    /**
-     * Determines if the provided test suite descriptor indicates the final call of the test suite,
-     * which is true when both className and parent are null.
-     *
-     * @param testDescription The test description. [TestDescriptor] can be atomic (a single test) or compound (containing children tests).
-     */
-    private fun isFinalTestSuiteCall(testDescription: TestDescriptor) =
-        testDescription.className == null && testDescription.parent == null
 }
