@@ -36,7 +36,7 @@ steps:
     key: android-build
     command: test-collector-android/.buildkite/steps/release
     plugins:
-      - docker#v3.7.0:
+      - docker#v5.12.0:
           # Android 34/JDK 17 on supported Ubuntu 24.04 (34.0.0-jdk17 is EOL 23.10).
           image: "mobiledevops/android-sdk-image:34.0.1"
           user: "root"
@@ -58,7 +58,7 @@ steps:
       RELEASE_PUBLISH: "true"
     command: test-collector-android/.buildkite/steps/release
     plugins:
-      - docker#v3.7.0:
+      - docker#v5.12.0:
           image: "mobiledevops/android-sdk-image:34.0.1"
           user: "root"
           mount-buildkite-agent: true
