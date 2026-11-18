@@ -14,5 +14,5 @@ dependencies {
     implementation(libs.okhttp)
 
     testImplementation(libs.testing.junit)
-    testImplementation("org.mockito:mockito-core:5.14.2")
+    testImplementation(libs.testing.mockito)
 }

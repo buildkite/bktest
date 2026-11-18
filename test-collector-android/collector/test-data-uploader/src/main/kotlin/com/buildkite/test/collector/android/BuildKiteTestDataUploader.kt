@@ -10,6 +10,9 @@ import com.buildkite.test.collector.android.util.CollectorUtils
 import com.buildkite.test.collector.android.util.logger.Logger
 import retrofit2.Response
 
+/**
+ * Uploads test data to Buildkite Test Analytics.
+ */
 class BuildKiteTestDataUploader internal constructor(
     private val testSuiteApiToken: String,
     private val runEnvironment: RunEnvironment,
@@ -17,6 +20,14 @@ class BuildKiteTestDataUploader internal constructor(
     private val logger: Logger,
     private val testUploaderApiFactory: TestUploaderApiFactory
 ) : TestDataUploader {
+    /**
+     * Creates an uploader for a test suite.
+     *
+     * @param testSuiteApiToken The test suite API token for authentication.
+     * @param runEnvironment The test run environment configuration.
+     * @param uploadTags Optional upload-level tags that apply to all test executions.
+     * @param logger The logger for upload messages.
+     */
     constructor(
         testSuiteApiToken: String,
         runEnvironment: RunEnvironment,
@@ -33,6 +44,11 @@ class BuildKiteTestDataUploader internal constructor(
         }
     }
 
+    /**
+     * Uploads test results in batches of up to [CollectorUtils.Uploader.TEST_DATA_UPLOAD_LIMIT].
+     *
+     * @param testCollection The test results to upload.
+     */
     override fun uploadTestData(testCollection: List<TestDetails>) {
         testCollection.chunked(CollectorUtils.Uploader.TEST_DATA_UPLOAD_LIMIT).forEach { chunk ->
             uploadTestData(prepareTestData(chunk))
