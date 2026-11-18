@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.0.0-beta.5
+
 - Send XCTest bundle and runtime-class facts on Apple test roots so Test Engine can derive class-level Xcode selectors; explicit selector tags still override.
 
 ## 2.0.0-beta.4

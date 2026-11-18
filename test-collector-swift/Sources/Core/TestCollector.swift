@@ -85,5 +85,5 @@ public struct TestCollector {
 
   public static let endpoint = "https://tests-otlp.buildkite.com/v1/traces"
   static let name = "test-collector-swift"
-  static let version = "2.0.0-beta.4"
+  static let version = "2.0.0-beta.5"
 }

@@ -47,7 +47,7 @@ To use the Buildkite Test Collector with a SwiftPM project, add this repository 
 let package = Package(
   name: "MyProject",
   dependencies: [
-    .package(url: "https://github.com/buildkite/test-collector-swift", exact: "2.0.0-beta.4")
+    .package(url: "https://github.com/buildkite/test-collector-swift", exact: "2.0.0-beta.5")
   ],
   targets: [
     .target(name: "MyProject"),
@@ -294,7 +294,7 @@ class PaymentTests: XCTestCase {
 The existing `tagExecution` API is unchanged. Execution tags are exported as
 `buildkite.tag.<key>` attributes on that test's root span.
 
-### Native XCTest selectors (Unreleased)
+### Native XCTest selectors
 
 On Apple platforms, the collector sends two facts on each test root:
 `buildkite.test.xctest.bundle_name` (the executing `.xctest` filename stem) and
