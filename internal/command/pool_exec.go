@@ -1,0 +1,407 @@
+package command
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/buildkite/bktest/v3/internal/api"
+	"github.com/buildkite/bktest/v3/internal/config"
+	"github.com/buildkite/bktest/v3/internal/debug"
+	"github.com/buildkite/bktest/v3/internal/plan"
+	"github.com/buildkite/bktest/v3/internal/runner"
+	"github.com/buildkite/bktest/v3/internal/runnerexec"
+	"github.com/urfave/cli/v3"
+)
+
+// PoolExec resolves directly (no separate pool plan invocation is required), then
+// runs one persistent process. Native bktec uploads are never invoked here.
+func PoolExec(ctx context.Context, cfg *config.Config, files string, argv []string, retries int, opts runnerexec.Options) error {
+	if len(argv) == 0 {
+		return errors.New("pool exec requires a runner executable")
+	}
+	return poolWork(ctx, cfg, files, retries, func(ctx context.Context, source *poolSource) error {
+		// #nosec G204 G702 -- the runner executable and arguments are explicitly supplied by the CLI user after --.
+		cmd := exec.Command(argv[0], argv[1:]...)
+		// Leave Stdin nil, like pool consume: exec.Cmd then gives the runner
+		// /dev/null. Setpgid puts the runner in a background process group, and
+		// a terminal stdin can stop it with SIGTTOU before it handshakes, for
+		// example when Python's readline setup changes the terminal settings.
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return runnerexec.Run(ctx, cmd, source, opts)
+	})
+}
+
+// poolRunner runs the batches a pool source offers until the source finishes.
+type poolRunner func(context.Context, *poolSource) error
+
+// poolWork resolves the pool shared by pool exec and pool consume, then runs
+// this worker's leases with run.
+func poolWork(ctx context.Context, cfg *config.Config, files string, retries int, run poolRunner) error {
+	if retries < 0 {
+		return errors.New("local retry count must not be negative")
+	}
+	if cfg.AccessToken == "" && !cfg.OIDC {
+		return errors.New("test pools require a supplied Scheduler OIDC token or agent OIDC authentication")
+	}
+	printPlanningBanner(os.Stderr)
+	var mint func(context.Context) (string, error)
+	if cfg.OIDC {
+		mint = cfg.RequestSchedulerOIDCToken
+	}
+	client := api.NewClient(api.ClientConfig{OrganizationSlug: cfg.OrganizationSlug, ServerBaseURL: cfg.ServerBaseURL, TokenProvider: refreshingPoolToken(cfg.AccessToken, mint, cfg.OIDCLifetime)})
+	pool, err := ResolvePool(ctx, cfg, files, client, true)
+	if err != nil {
+		return poolExecFallback(ctx, cfg, err, files, retries, run)
+	}
+	switch pool.State {
+	case "populating", "consuming", "consumed":
+		// GET and idempotent planning POST return the same representation.
+	default:
+		return fmt.Errorf("test pool %s has unsupported state %q", pool.ID, pool.State)
+	}
+	if cfg.PoolID == "" && cfg.MaxParallelism > 0 && pool.Parallelism != nil {
+		fmt.Fprintf(os.Stderr, "  Parallelism: %d (recommended)\n", *pool.Parallelism)
+	}
+	var checkJob func(context.Context) (bool, error)
+	if cfg.JobID != "" {
+		checkJob = func(ctx context.Context) (bool, error) {
+			return client.WaitForPoolJob(ctx, pool.ID, cfg.JobID)
+		}
+	}
+	if pool.State == "consumed" {
+		legacy := checkJob == nil
+		if checkJob != nil {
+			failed, err := checkJob(ctx)
+			var unavailable *api.NotFoundError
+			if err != nil && !errors.As(err, &unavailable) {
+				return err
+			}
+			if failed {
+				return cli.Exit("This job participated in a terminal Test Scheduler failure.", 1)
+			}
+			legacy = unavailable != nil
+		}
+		// Keep the previous retry behavior without a job ID or job API support.
+		if legacy && cfg.JobRetryCount > 0 {
+			results, err := client.WaitForPoolResults(ctx, pool.ID)
+			if err != nil {
+				return err
+			}
+			if results.Failed > 0 || results.Errored > 0 {
+				return cli.Exit(fmt.Sprintf("This Test Scheduler pool has already finished with %d failed and %d errored attempts. Retrying a job doesn't re-run its tests; rebuild instead, or use --local-retry-count to retry failed tests within a worker.", results.Failed, results.Errored), 1)
+			}
+		}
+		fmt.Println("+++ Buildkite Test Engine Client: No tests to run on this node")
+		debug.Printf("Pool already consumed; skipping runner")
+		return nil
+	}
+	// Server-planned pools publish entries, the muted-tests snapshot, and their
+	// ready state atomically. An externally visible ready pool without a snapshot
+	// is therefore a manual pool, which pool workers cannot account for safely.
+	if pool.MutedTests == nil {
+		return fmt.Errorf("test pool %s is missing its muted tests snapshot", pool.ID)
+	}
+	debug.Printf("Pool ready (state=%s); starting runner", pool.State)
+	return runPool(ctx, client, pool, retries, leaseLog, run, checkJob)
+}
+
+// poolExecFallback runs this job's share of a static split when Test Scheduler
+// is unavailable before leasing starts, like bktec run's local fallback. Once
+// leasing has started, other workers may already have run some tests, so
+// failures after that point are never recovered this way.
+func poolExecFallback(ctx context.Context, cfg *config.Config, err error, files string, retries int, run poolRunner) error {
+	if !poolSchedulerUnavailable(ctx, err) {
+		return poolFatal(err)
+	}
+	warnPoolFallback(err)
+	if cfg.Parallelism < 1 || cfg.NodeIndex < 0 || cfg.NodeIndex >= cfg.Parallelism {
+		return fmt.Errorf("%w; cannot fall back to a static split: BUILDKITE_PARALLEL_JOB (%d) must be less than BUILDKITE_PARALLEL_JOB_COUNT (%d)", err, cfg.NodeIndex, cfg.Parallelism)
+	}
+	testRunner, detectErr := runner.DetectRunner(cfg)
+	if detectErr != nil {
+		return fmt.Errorf("%w; cannot fall back to a static split: %w", err, detectErr)
+	}
+	targets, discoverErr := getTestTargets(cfg, testRunner, files)
+	if discoverErr != nil {
+		return fmt.Errorf("%w; cannot fall back to a static split: %w", err, discoverErr)
+	}
+	fallback := plan.CreateFallbackPlan(targets, cfg.Parallelism)
+	printPlanningSummary(os.Stderr, fallback, "local fallback", cfg)
+	share := fallback.Tasks[strconv.Itoa(cfg.NodeIndex)].Tests
+	if len(share) == 0 {
+		fmt.Println("+++ Buildkite Test Engine Client: No tests to run on this node")
+		return nil
+	}
+	scheduler := &fallbackScheduler{}
+	for i, test := range share {
+		// One selector per lease keeps each batch well inside the runner batch
+		// timeout, since a local split has no timings to size batches with.
+		scheduler.leases = append(scheduler.leases, api.Lease{
+			ID: fmt.Sprintf("fallback-%d", i+1),
+			Attempts: []api.LeaseAttempt{{
+				ID:           fmt.Sprintf("fallback-%d", i+1),
+				SelectorType: "test_plan_test_case_v1",
+				Selector:     plan.TestCase{Format: plan.TestCaseFormatSelector, Value: test.Path},
+			}},
+		})
+	}
+	// Local leases are an implementation detail; like bktec run, show only the
+	// runner's output and the final result.
+	return runPool(ctx, scheduler, api.Pool{ID: "fallback", State: "consuming"}, retries, log.New(io.Discard, "", 0), run, nil)
+}
+
+// fallbackLeaseTTL is how long a local fallback lease stays owned between
+// heartbeats; nothing else can take its tests.
+const fallbackLeaseTTL = 10 * time.Minute
+
+// fallbackScheduler serves a static split's share as local leases, so the
+// fallback reuses the pool runner, local retries and results.
+type fallbackScheduler struct {
+	mu     sync.Mutex
+	leases []api.Lease
+}
+
+func (f *fallbackScheduler) AcquireLease(context.Context, string) (api.LeaseResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var response api.LeaseResponse
+	response.Pool.State = "consumed"
+	if len(f.leases) > 0 {
+		lease := f.leases[0]
+		f.leases = f.leases[1:]
+		lease.ExpiresAt = time.Now().Add(fallbackLeaseTTL)
+		response.Lease = &lease
+		response.Pool.State = "consuming"
+	}
+	return response, nil
+}
+
+func (f *fallbackScheduler) HeartbeatLease(context.Context, string, string) (api.LeaseHeartbeat, error) {
+	return api.LeaseHeartbeat{ExpiresAt: time.Now().Add(fallbackLeaseTTL)}, nil
+}
+
+func (f *fallbackScheduler) CompleteLease(context.Context, string, string, []api.AttemptResult) error {
+	return nil
+}
+
+func (f *fallbackScheduler) ReleaseLease(context.Context, string, string) error { return nil }
+
+func runPool(ctx context.Context, client poolScheduler, pool api.Pool, retries int, leases *log.Logger, run poolRunner, checkJob func(context.Context) (bool, error)) error {
+	fmt.Println("+++ Buildkite Test Engine Client: Running tests")
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	source := newPoolSource(cancel)
+	source.leaseLog = leases
+	source.connected = make(chan struct{})
+	done := make(chan struct{})
+	go func() { defer close(done); source.work(workCtx, client, pool, retries) }()
+	err := run(workCtx, source)
+	cancel()
+	<-done
+	outcome := source.outcome()
+	printPoolSummary(os.Stdout, source)
+	debug.Printf("Pool runner stopped (runner error=%v, worker error=%v)", err, outcome)
+	if err == nil && outcome == nil {
+		fmt.Fprintf(os.Stdout, "pool execution: passed attempts: %d; failed attempts: 0; errored attempts: 0\n", source.passedAttempts)
+	}
+	// Execution and accounting failures must not be masked by a successful
+	// Scheduler outcome. Attempt failures alone defer to the job's contribution.
+	if err == nil && source.err == nil && checkJob != nil {
+		failed, checkErr := checkJob(ctx)
+		var unavailable *api.NotFoundError
+		if !errors.As(checkErr, &unavailable) {
+			if checkErr != nil {
+				return checkErr
+			}
+			if failed {
+				return cli.Exit("This job participated in a terminal Test Scheduler failure.", 1)
+			}
+			if source.failedAttempts > 0 || source.erroredAttempts > 0 {
+				fmt.Println("Test Scheduler confirmed no terminal failures for this worker.")
+			}
+			return nil
+		}
+		debug.Printf("Job failure API unavailable; using local attempt results")
+	}
+	if err == nil && source.err == nil && source.erroredAttempts == 0 && source.failedAttempts > 0 {
+		return cli.Exit(outcome, 1)
+	}
+	return errors.Join(err, outcome)
+}
+
+func printPoolSummary(w io.Writer, source *poolSource) {
+	failed, errored := source.summary()
+	if len(failed) == 0 && len(errored) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "+++ ========== Buildkite Test Engine Pool Summary ==========")
+	if len(failed) > 0 {
+		fmt.Fprintln(w, "❌ Failed Entries:")
+		entry := ""
+		examplesStarted := false
+		for _, test := range failed {
+			if test.entry.Format == plan.TestCaseFormatExample {
+				if !examplesStarted {
+					fmt.Fprintln(w)
+					examplesStarted = true
+				}
+				fmt.Fprintf(w, "- %s\n", reportedTestDescription(test.test))
+				continue
+			}
+			if next := attemptSelector(test.entry); next != entry {
+				if entry != "" {
+					fmt.Fprintln(w)
+				}
+				entry = next
+				fmt.Fprintf(w, "- %s:\n", entry)
+			}
+			fmt.Fprintf(w, "  - %s\n", reportedTestDescription(test.test))
+		}
+	}
+	if len(errored) > 0 {
+		if len(failed) > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintln(w, "🚨 Errored Attempts:")
+		for _, attempt := range errored {
+			selector := attemptSelector(attempt.Selector)
+			if selector == "" {
+				fmt.Fprintf(w, "- attempt %s\n", attempt.ID)
+			} else {
+				fmt.Fprintf(w, "- %s (attempt %s)\n", selector, attempt.ID)
+			}
+		}
+	}
+	fmt.Fprintln(w, "==========================================================")
+}
+
+func reportedTestDescription(test runner.ReportedTest) string {
+	name := strings.TrimSpace(test.TestCase.Scope + " " + test.TestCase.Name)
+	reference := reportedTestReference(test)
+	if name == "" {
+		return reference
+	}
+	if reference == "" {
+		return name
+	}
+	return fmt.Sprintf("%s (%s)", name, reference)
+}
+
+func reportedTestReference(test runner.ReportedTest) string {
+	if test.Location != "" {
+		locationFile := test.Location
+		if colon := strings.LastIndexByte(locationFile, ':'); colon >= 0 {
+			locationFile = locationFile[:colon]
+		}
+		if strings.TrimPrefix(locationFile, "./") == strings.TrimPrefix(test.Selector, "./") {
+			return test.Location
+		}
+	}
+	if test.TestCase.Identifier != "" {
+		return test.TestCase.Identifier
+	}
+	if test.TestCase.Path != "" {
+		return test.TestCase.Path
+	}
+	return test.Location
+}
+
+func attemptSelector(test plan.TestCase) string {
+	switch test.Format {
+	case plan.TestCaseFormatSelector:
+		return test.Value
+	case plan.TestCaseFormatExample:
+		if test.Identifier != "" {
+			return test.Identifier
+		}
+	}
+	return test.Path
+}
+
+// jwtExpiration is only for scheduling refresh, not for authenticating a token;
+// the Scheduler verifies the supplied token's signature and claims.
+func jwtExpiration(token string) time.Time {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return time.Time{}
+	}
+	data, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return time.Time{}
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if json.Unmarshal(data, &claims) != nil || claims.Exp <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(claims.Exp, 0)
+}
+
+func refreshingPoolToken(initial string, request func(context.Context) (string, error), lifetime time.Duration) func(context.Context) (string, error) {
+	var mu sync.Mutex
+	token := initial
+	expires := jwtExpiration(initial)
+	refresh := time.Time{}
+	if !expires.IsZero() && request != nil {
+		refresh = time.Now().Add(time.Until(expires) / 2)
+	} else if request != nil && initial != "" {
+		// Unknown supplied expiry: use it once, then mint rather than guessing.
+		refresh = time.Now()
+	}
+	first := initial != ""
+	return func(ctx context.Context) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if first {
+			first = false
+			if expires.IsZero() || time.Now().Before(expires) {
+				return token, nil
+			}
+		}
+		if token != "" && (refresh.IsZero() || time.Now().Before(refresh)) && (expires.IsZero() || time.Now().Before(expires)) {
+			return token, nil
+		}
+		if request == nil {
+			return "", errors.New("supplied Scheduler OIDC token expired; enable OIDC to refresh it")
+		}
+		next, err := request(ctx)
+		if err != nil {
+			if token == initial && initial != "" {
+				if expires.IsZero() || time.Now().Before(expires) {
+					debug.Printf("Pool token refresh unavailable; using supplied token until expiry")
+					return token, nil
+				}
+				return "", fmt.Errorf("supplied Scheduler OIDC token expired and agent refresh failed: %w", err)
+			}
+			return "", err
+		}
+		if next == "" {
+			return "", errors.New("agent returned an empty Scheduler OIDC token")
+		}
+		token = next
+		// Refresh halfway through the requested lifetime; never serve a stale token
+		// when refresh fails. A zero lifetime disables caching, not authentication.
+		refresh = time.Now().Add(lifetime / 2)
+		expires = jwtExpiration(next)
+		if !expires.IsZero() && !time.Now().Before(expires) {
+			return "", errors.New("agent returned an expired Scheduler OIDC token")
+		}
+		if !expires.IsZero() && refresh.After(time.Now().Add(time.Until(expires)/2)) {
+			refresh = time.Now().Add(time.Until(expires) / 2)
+		}
+		return token, nil
+	}
+}

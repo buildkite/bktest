@@ -1,0 +1,49 @@
+package api
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+
+	"github.com/buildkite/bktest/v3/internal/config"
+)
+
+type FilterTestsParams struct {
+	Files          []TestPlanFile    `json:"files"`
+	Env            config.EnvPayload `json:"env"`
+	MaxParallelism int               `json:"max_parallelism,omitempty"`
+	TargetTime     float64           `json:"target_time,omitempty"`
+}
+
+type FilteredTest struct {
+	Path string `json:"path"`
+}
+
+type FilteredTestResponse struct {
+	Tests []FilteredTest `json:"tests"`
+}
+
+// FilterTests fetches test files from the server. It returns a list of test files that
+// need to be split by example.
+//
+// Currently, it only fetches tests file that are slow and test files that have tests
+// marked for skipping.
+//
+// The splitByExample flag is passed through to the server, which is false will only
+// return test files that contain skipped tests, while true will also return slow test
+// files.
+func (c Client) FilterTests(ctx context.Context, suiteSlug string, params FilterTestsParams) ([]FilteredTest, error) {
+	url := fmt.Sprintf("%s/v2/analytics/organizations/%s/suites/%s/test_plan/filter_tests", c.ServerBaseURL, c.OrganizationSlug, suiteSlug)
+
+	var response FilteredTestResponse
+	_, err := c.doJSONWithRetry(ctx, httpRequest{
+		Method: http.MethodPost,
+		URL:    url,
+		Body:   params,
+	}, &response)
+	if err != nil {
+		return []FilteredTest{}, err
+	}
+
+	return response.Tests, nil
+}
