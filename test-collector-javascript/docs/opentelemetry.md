@@ -54,7 +54,7 @@ With Yarn Plug'n'Play, declare these packages in the root workspace.
 Use Jest 29 or 30 with `jest-circus`.
 
 1. [Install the collector and SDK](#install).
-2. Enable the reporter and runtime in every project:
+2. Enable the reporter in the root config and the runtime in every project:
 
    ```js
    // jest.config.js
