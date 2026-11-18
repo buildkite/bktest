@@ -1,0 +1,163 @@
+version: 2
+project_name: test-engine-client
+
+release:
+  name_template: Test Engine Client v{{.Version}}
+  draft: false
+  prerelease: auto
+  make_latest: "{{not .Prerelease}}"
+  mode: replace
+  # The release pipeline tags the commit locally but never pushes the tag. When
+  # GoReleaser publishes the release, GitHub creates the missing tag at
+  # target_commitish, which defaults to the repo's default branch (main). That
+  # puts the tag on the wrong commit when releasing from a vX.Y.x branch, so pin
+  # it to the checked-out commit where the release was actually built.
+  target_commitish: '{{ .Commit }}'
+
+changelog:
+  use: github-native
+  
+archives:
+  - id: binaries
+    formats: [binary]
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: "-X 'github.com/buildkite/test-engine-client/v3/internal/version.Version=v{{ .Version }}'"
+    binary: bktec
+
+checksum:
+  name_template: "bktec_{{ .Version }}_checksums.txt"
+
+brews:
+  - name: bktec
+    description: "Buildkite Test Engine Client"
+    homepage: "https://github.com/buildkite/test-engine-client"
+    skip_upload: auto
+    directory: Formula
+    test: |
+      version_output = shell_output("bktec --version")
+      assert_match "v#{version}\n", version_output
+    repository:
+      owner: buildkite
+      name: homebrew-buildkite
+      branch: master
+
+git:
+  ignore_tags:
+    - '{{ envOrDefault "GORELEASER_IGNORE_TAG" ""}}'
+
+dockers:
+  - image_templates:
+      - "packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client:v{{ .Version }}-amd64"
+    dockerfile: "packaging/Dockerfile"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+  - image_templates:
+      - "packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client:v{{ .Version }}-arm64"
+    goarch: arm64
+    dockerfile: "packaging/Dockerfile"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+  - image_templates:
+      - "buildkite/test-engine-client:v{{ .Version }}-amd64"
+    # skip pushing image to Dockerhub if it's a prerelease
+    skip_push: auto
+    dockerfile: "packaging/Dockerfile"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+  - image_templates:
+      - "buildkite/test-engine-client:v{{ .Version }}-arm64"
+    # skip pushing image to Dockerhub if it's a prerelease
+    skip_push: auto
+    goarch: arm64
+    dockerfile: "packaging/Dockerfile"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+  - image_templates:
+      - "public.ecr.aws/buildkite/test-engine-client:v{{ .Version }}-amd64"
+    # skip pushing image to AWS ECR if it's a prerelease
+    skip_push: auto
+    dockerfile: "packaging/Dockerfile"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+  - image_templates:
+      - "public.ecr.aws/buildkite/test-engine-client:v{{ .Version }}-arm64"
+    # skip pushing image to AWS ECR if it's a prerelease
+    skip_push: auto
+    goarch: arm64
+    dockerfile: "packaging/Dockerfile"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+docker_manifests:
+  - name_template: "packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client:v{{ .Version }}"
+    image_templates:
+      - "packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client:v{{ .Version }}-amd64"
+      - "packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client:v{{ .Version }}-arm64" 
+  - name_template: "packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client:latest"
+    image_templates:
+      - "packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client:v{{ .Version }}-amd64"
+      - "packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client:v{{ .Version }}-arm64"
+  - name_template: "buildkite/test-engine-client:v{{ .Version }}"
+    image_templates:
+      - "buildkite/test-engine-client:v{{ .Version }}-amd64"
+      - "buildkite/test-engine-client:v{{ .Version }}-arm64"
+    # skip pushing manifest to Dockerhub if it's a prerelease
+    skip_push: auto
+  - name_template: "buildkite/test-engine-client:latest"
+    image_templates:
+      - "buildkite/test-engine-client:v{{ .Version }}-amd64"
+      - "buildkite/test-engine-client:v{{ .Version }}-arm64"
+    # skip pushing manifest to Dockerhub if it's a prerelease
+    skip_push: auto
+  - name_template: "public.ecr.aws/buildkite/test-engine-client:v{{ .Version }}"
+    image_templates:
+      - "public.ecr.aws/buildkite/test-engine-client:v{{ .Version }}-amd64"
+      - "public.ecr.aws/buildkite/test-engine-client:v{{ .Version }}-arm64"
+    # skip pushing manifest to AWS ECR if it's a prerelease
+    skip_push: auto
+  - name_template: "public.ecr.aws/buildkite/test-engine-client:latest"
+    image_templates:
+      - "public.ecr.aws/buildkite/test-engine-client:v{{ .Version }}-amd64"
+      - "public.ecr.aws/buildkite/test-engine-client:v{{ .Version }}-arm64"
+    # skip pushing manifest to AWS ECR if it's a prerelease
+    skip_push: auto
+
+nfpms:
+  - vendor: Buildkite
+    id: linux-pkg
+    package_name: bktec
+    homepage: https://github.com/buildkite/test-engine-client
+    maintainer: Buildkite <support@buildkite.com>
+    description: Buildkite Test Engine Client
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    provides:
+      - bktec
+
+publishers:
+  - name: buildkite-packages
+    disable: "{{if .Prerelease}}true{{end}}"
+    cmd: .buildkite/steps/upload-linux-packages.sh {{ .ArtifactPath }}
+    ids:
+      - linux-pkg
+    env:
+      - BUILDKITE_JOB_ID={{ .Env.BUILDKITE_JOB_ID }}
+      - BUILDKITE_AGENT_ACCESS_TOKEN={{ .Env.BUILDKITE_AGENT_ACCESS_TOKEN }}
+      - BUILDKITE_AGENT_JOB_API_SOCKET={{ .Env.BUILDKITE_AGENT_JOB_API_SOCKET }}
+      - BUILDKITE_AGENT_JOB_API_TOKEN={{ .Env.BUILDKITE_AGENT_JOB_API_TOKEN }}
+  - name: stage-buildkite-files
+    # Deliberately stage only GoReleaser's uploadable binaries and checksum.
+    # GoReleaser remains the source of truth for target selection; the staging
+    # helper renames copies for Buildkite's Files registry so GitHub release
+    # asset names stay exactly as existing installers expect. The network
+    # publication happens in a separate, retryable pipeline step.
+    cmd: .buildkite/steps/stage-release-file.sh {{ .ArtifactPath }} {{ .ArtifactName }} {{ .Version }}
+    ids:
+      - binaries
+    checksum: true

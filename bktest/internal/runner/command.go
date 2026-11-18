@@ -1,0 +1,125 @@
+package runner
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"os/signal"
+	"strings"
+	"syscall"
+
+	"github.com/buildkite/test-engine-client/v3/internal/plan"
+)
+
+func BuildCommand(runner TestRunner, testCases []plan.TestCase, retry bool) (*exec.Cmd, error) {
+	commandName, commandArgs, err := runner.CommandNameAndArgs(testCases, retry)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build command: %w", err)
+	}
+
+	cmd := exec.Command(commandName, commandArgs...)
+
+	overrides := map[string]string{
+		"BUILDKITE_ANALYTICS_TOKEN": runner.UploadToken(),
+	}
+	if provider, ok := runner.(interface{ testProcessEnvironment() map[string]string }); ok {
+		for key, value := range provider.testProcessEnvironment() {
+			overrides[key] = value
+		}
+	}
+	cmd.Env = environmentWithOverrides(os.Environ(), overrides)
+
+	return cmd, nil
+}
+
+func environmentWithOverrides(environment []string, overrides map[string]string) []string {
+	result := make([]string, 0, len(environment)+len(overrides))
+	for _, entry := range environment {
+		key, _, found := strings.Cut(entry, "=")
+		if _, overridden := overrides[key]; found && overridden {
+			continue
+		}
+		result = append(result, entry)
+	}
+	for key, value := range overrides {
+		result = append(result, fmt.Sprintf("%s=%s", key, value))
+	}
+	return result
+}
+
+// runAndForwardSignal runs the command and forwards termination signals received to the command.
+func runAndForwardSignal(cmd *exec.Cmd) error {
+	return runAndForwardSignalWithOutput(cmd, os.Stdout, os.Stderr)
+}
+
+func runAndForwardSignalWithOutput(cmd *exec.Cmd, stdout io.Writer, stderr io.Writer) error {
+	cmd.Stderr = stderr
+	cmd.Stdout = stdout
+
+	// Create a channel that will be closed when the command finishes.
+	finishCh := make(chan struct{})
+	defer close(finishCh)
+
+	fmt.Println(cmd.String())
+	fmt.Println("")
+
+	// Create another channel to receive the signals.
+	// Only listen for signals that ask the run to stop. Listening for every
+	// signal would also catch SIGPIPE, which the kernel raises when bktec
+	// writes to a closed connection, such as when it closes an API
+	// connection that was reset. bktec handles that write error itself,
+	// but forwarding SIGPIPE kills test commands that don't ignore it,
+	// such as shell scripts.
+	//
+	// Listen before starting the command, so a signal that arrives as the
+	// command starts is forwarded instead of stopping bktec. Skip signals
+	// that bktec was started ignoring, such as SIGHUP under nohup: listening
+	// would stop the command from inheriting them as ignored.
+	sigCh := make(chan os.Signal, 1)
+	for _, sig := range []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT} {
+		if !signal.Ignored(sig) {
+			signal.Notify(sigCh, sig)
+		}
+	}
+	defer signal.Stop(sigCh)
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	// Start a goroutine that waits for a signal or the command to finish.
+	go func() {
+		// Wait for a signal to be received or the command to finish.
+		// Because a message can come through both channels asynchronously,
+		// we use for loop to listen to both channels and select the one that has a message.
+		// Without for loop, only one case would be selected and the other would be ignored.
+		// If the signal is received first, the finishCh will never get processed and the goroutine will run forever.
+		for {
+			select {
+			case sig := <-sigCh:
+				// Ignore the error when sending the signal to the command.
+				_ = cmd.Process.Signal(sig)
+			case <-finishCh:
+				// When the command finishes, we return. The deferred
+				// signal.Stop has already stopped listening for signals.
+				return
+			}
+		}
+	}()
+
+	// Wait for the command to finish.
+	err := cmd.Wait()
+
+	if err != nil {
+		// If the command was signaled, return a ProcessProcessSignaledError.
+		if exitError, ok := err.(*exec.ExitError); ok {
+			if status, ok := exitError.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				return &ProcessSignaledError{Signal: status.Signal()}
+			}
+		}
+		return err
+	}
+
+	return nil
+}

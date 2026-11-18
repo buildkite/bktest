@@ -1,0 +1,376 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/buildkite/roko"
+	"github.com/buildkite/test-engine-client/v3/internal/debug"
+	"github.com/buildkite/test-engine-client/v3/internal/version"
+)
+
+// client is a client for the test plan API.
+// It contains the organization slug, server base URL, and an HTTP client.
+type Client struct {
+	OrganizationSlug string
+	ServerBaseURL    string
+	UploadBaseURL    string
+	httpClient       *http.Client
+}
+
+// ClientConfig is the configuration for the test plan API client.
+type ClientConfig struct {
+	AccessToken string
+	// TokenProvider supplies a bearer token per request so long-running pool
+	// workers can refresh suite-scoped OIDC tokens before they expire. When nil,
+	// existing callers continue using AccessToken unchanged.
+	TokenProvider    func(context.Context) (string, error)
+	UploadBaseURL    string
+	OrganizationSlug string
+	ServerBaseURL    string
+}
+
+// authTransport is a middleware for the HTTP client.
+type authTransport struct {
+	accessToken   string
+	tokenProvider func(context.Context) (string, error)
+}
+
+// RoundTrip adds the Authorization and User-Agent headers to all requests made
+// by the HTTP client. If Authorization is already set on the request it is left
+// unchanged, allowing callers to supply a different auth scheme (e.g. Token).
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("Authorization") == "" {
+		token := t.accessToken
+		if t.tokenProvider != nil {
+			var err error
+			token, err = t.tokenProvider(req.Context())
+			if err != nil {
+				return nil, err
+			}
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	req.Header.Set("User-Agent", fmt.Sprintf(
+		"Buildkite Test Engine Client/%s (%s/%s)",
+		version.Version, runtime.GOOS, runtime.GOARCH,
+	))
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// NewClient creates a new client for the test plan API with the given configuration.
+// It also creates an HTTP client with an authTransport middleware.
+func NewClient(cfg ClientConfig) *Client {
+	httpClient := &http.Client{
+		Transport: &authTransport{
+			accessToken:   cfg.AccessToken,
+			tokenProvider: cfg.TokenProvider,
+		},
+	}
+
+	return &Client{
+		OrganizationSlug: cfg.OrganizationSlug,
+		ServerBaseURL:    cfg.ServerBaseURL,
+		UploadBaseURL:    cfg.UploadBaseURL,
+		httpClient:       httpClient,
+	}
+}
+
+var (
+	retryTimeout = 130 * time.Second
+	initialDelay = 3000 * time.Millisecond
+)
+
+var ErrRetryTimeout = errors.New("request retry timeout")
+
+// RetryTimeoutError preserves the last error that caused a request to be
+// retried before the overall retry timeout elapsed.
+type RetryTimeoutError struct {
+	LastError error
+}
+
+func (e *RetryTimeoutError) Error() string {
+	return fmt.Sprintf("%s: %v", ErrRetryTimeout, e.LastError)
+}
+
+func (e *RetryTimeoutError) Is(target error) bool {
+	return target == ErrRetryTimeout
+}
+
+func (e *RetryTimeoutError) Unwrap() error {
+	return e.LastError
+}
+
+type BillingError struct {
+	Message string
+}
+
+func (e *BillingError) Error() string {
+	return e.Message
+}
+
+type AuthError struct {
+	Message string
+}
+
+func (e *AuthError) Error() string {
+	return e.Message
+}
+
+type ForbiddenError struct {
+	Message string
+}
+
+func (e *ForbiddenError) Error() string {
+	return e.Message
+}
+
+type NotFoundError struct {
+	Message string
+}
+
+func (e *NotFoundError) Error() string {
+	return e.Message
+}
+
+type BadRequestError struct {
+	Message string
+}
+
+func (e *BadRequestError) Error() string {
+	return e.Message
+}
+
+type UnprocessableEntityError struct {
+	Message string
+}
+
+func (e *UnprocessableEntityError) Error() string {
+	return e.Message
+}
+
+type responseError struct {
+	Message string `json:"message"`
+}
+
+func (e *responseError) Error() string {
+	return e.Message
+}
+
+type httpRequest struct {
+	Method string
+	URL    string
+	Body   any
+}
+
+// doWithRetry runs the request built by newRequest with retries. It holds the
+// shared retry mechanics used by doJSONWithRetry and UploadTestResults.
+//
+// The request is retried when the server returns 429, 409, or 5xx, or when there
+// is a network error. retryTimeout caps the total time spent across all attempts,
+// and perAttemptTimeout caps each individual attempt. After exhausting the retry
+// timeout, the function returns an error matching ErrRetryTimeout that preserves
+// the last retryable error. newRequest builds a fresh request for each attempt
+// (so a body can be re-sent on retry).
+//
+// On a response that is not retried, doWithRetry returns it with a nil error
+// and the caller is responsible for reading and closing the response body. When
+// it returns an error, any response body has already been closed.
+func (c *Client) doWithRetry(
+	ctx context.Context,
+	perAttemptTimeout time.Duration,
+	retryTimeout time.Duration,
+	newRequest func(ctx context.Context) (*http.Request, error),
+) (*http.Response, error) {
+	r := roko.NewRetrier(
+		roko.TryForever(),
+		roko.WithStrategy(roko.ExponentialSubsecond(initialDelay)),
+		roko.WithJitter(),
+	)
+
+	// retryContext is the total budget across all attempts; it's checked between
+	// retries, not while a single attempt is in flight (that's perAttemptTimeout).
+	retryContext, cancelRetryContext := context.WithTimeout(ctx, retryTimeout)
+	defer cancelRetryContext()
+
+	var lastRetryError error
+
+	// retry loop
+	resp, err := roko.DoFunc(retryContext, r, func(r *roko.Retrier) (*http.Response, error) {
+		if r.AttemptCount() > 0 {
+			fmt.Fprintf(os.Stderr, "bktec: Retrying API request (attempt %d)\n", r.AttemptCount()+1)
+		}
+
+		req, err := newRequest(ctx)
+		if err != nil {
+			r.Break()
+			return nil, err
+		}
+
+		// Client.Timeout bounds each attempt, including reading the response body.
+		// Go keeps the timer running after Do returns and cleans it up when the body
+		// is closed, so the caller can safely read the returned response's body.
+		attemptClient := *c.httpClient
+		attemptClient.Timeout = perAttemptTimeout
+		resp, err := attemptClient.Do(req)
+
+		// If we get an error before getting a response,
+		// which means there is a network error (e.g. protocol error, timeout),
+		// we should return and retry.
+		if err != nil {
+			lastRetryError = err
+			printRetryError(err)
+			return nil, err
+		}
+
+		debug.Printf("Response code %d", resp.StatusCode)
+
+		// If we get a 429, we should return and retry after the rate limit resets.
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if rateLimitReset, err := strconv.Atoi(resp.Header.Get("RateLimit-Reset")); err == nil {
+				r.SetNextInterval(time.Duration(rateLimitReset) * time.Second)
+			}
+			drainAndCloseBody(resp)
+			lastRetryError = fmt.Errorf("response code: 429")
+			printRetryError(lastRetryError)
+			return resp, lastRetryError
+		}
+
+		// If we get a 409, we aren't the first client to create the plan so return
+		// and retry
+		if resp.StatusCode == http.StatusConflict {
+			drainAndCloseBody(resp)
+			lastRetryError = fmt.Errorf("response code: %d", resp.StatusCode)
+			printRetryError(lastRetryError)
+			return resp, lastRetryError
+		}
+
+		// If we get a 5xx, we should return and retry
+		if resp.StatusCode >= 500 {
+			drainAndCloseBody(resp)
+			lastRetryError = fmt.Errorf("response code: %d", resp.StatusCode)
+			printRetryError(lastRetryError)
+			return resp, lastRetryError
+		}
+
+		// Other than above cases, we stop retrying and let the caller handle the
+		// response.
+		r.Break()
+		return resp, nil
+	})
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		if lastRetryError != nil {
+			return resp, &RetryTimeoutError{LastError: lastRetryError}
+		}
+		return resp, ErrRetryTimeout
+	}
+
+	return resp, err
+}
+
+func printRetryError(err error) {
+	fmt.Fprintf(os.Stderr, "bktec: API request failed: %v\n", err)
+}
+
+// drainAndCloseBody reads resp.Body to the end and closes it. An HTTP request
+// reuses an existing network connection only if the previous response body was
+// fully read and closed, so draining lets the next retry reuse the connection
+// instead of opening a new one. Errors are ignored: draining is best-effort, and
+// a failed drain just means the connection won't be reused.
+func drainAndCloseBody(resp *http.Response) {
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+}
+
+// doJSONWithRetry sends a JSON HTTP request via doWithRetry.
+// The request body (if any) is JSON encoded with a Content-Type of
+// application/json, and a successful API response (status code 200) is JSON
+// decoded and stored in the value pointed to by v. A non-200 response is
+// returned as a typed error.
+// For non-JSON requests (e.g. multipart uploads), use doWithRetry directly.
+// See doWithRetry for the retry behavior.
+func (c *Client) doJSONWithRetry(ctx context.Context, reqOptions httpRequest, v interface{}) (*http.Response, error) {
+	debug.Printf("Sending request %s %s", reqOptions.Method, reqOptions.URL)
+
+	// Each request times out after 15 seconds, chosen to provide some
+	// headroom on top of the goal p99 time to fetch of 10s.
+	perAttemptTimeout := 15 * time.Second
+	newRequest := func(reqContext context.Context) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(reqContext, reqOptions.Method, reqOptions.URL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("creating request: %w", err)
+		}
+
+		if reqOptions.Method != http.MethodGet && reqOptions.Body != nil {
+			// add body to request
+			reqBody, err := json.Marshal(reqOptions.Body)
+			if err != nil {
+				return nil, fmt.Errorf("converting body to json: %w", err)
+			}
+			req.Body = io.NopCloser(bytes.NewReader(reqBody))
+		}
+
+		req.Header.Add("Content-Type", "application/json")
+		return req, nil
+	}
+
+	resp, err := c.doWithRetry(ctx, perAttemptTimeout, retryTimeout, newRequest)
+	if err != nil {
+		return resp, err
+	}
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var respError responseError
+		err = json.Unmarshal(responseBody, &respError)
+		if err != nil {
+			return resp, fmt.Errorf("parsing response: %w", err)
+		}
+
+		// 5xx and 429 are handled by doWithRetry and trigger retries; here we
+		// only classify 4xx responses into typed errors.
+		switch resp.StatusCode {
+		case http.StatusUnauthorized:
+			return resp, &AuthError{Message: respError.Message}
+		case http.StatusForbidden:
+			if strings.HasPrefix(respError.Message, "Billing Error") {
+				return resp, &BillingError{Message: respError.Message}
+			}
+			return resp, &ForbiddenError{Message: respError.Message}
+		case http.StatusNotFound:
+			return resp, &NotFoundError{Message: respError.Message}
+		case http.StatusBadRequest:
+			return resp, &BadRequestError{Message: respError.Message}
+		case http.StatusUnprocessableEntity:
+			return resp, &UnprocessableEntityError{Message: respError.Message}
+		default:
+			return resp, &respError
+		}
+	}
+
+	// parse response
+	if v != nil && len(responseBody) > 0 {
+		err = json.Unmarshal(responseBody, v)
+		if err != nil {
+			return nil, fmt.Errorf("parsing response: %w", err)
+		}
+	}
+
+	return resp, nil
+}

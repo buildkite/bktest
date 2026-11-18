@@ -1,0 +1,164 @@
+package config
+
+import "time"
+
+// Config is the internal representation of the complete test engine client configuration.
+//
+// Config is never serialized to the wire: every field is tagged json:"-". The
+// data sent to the API in the "env" request field is represented by the
+// separate EnvPayload type and built via Config.EnvPayload. This keeps internal
+// configuration decoupled from the API contract, so adding a field here does not
+// cause it to be sent to the API unless it is also added to EnvPayload.
+type Config struct {
+	// AccessToken is the access token for the API.
+	AccessToken string `json:"-"`
+	// PromiseFailure, when true, makes bktec declare an early failure via the
+	// `buildkite-agent job promise-failure` CLI once retries are exhausted and
+	// hard failures remain.
+	PromiseFailure bool `json:"-"`
+	// UploadBaseURL is the base URL for the Test Engine analytics API.
+	UploadBaseURL string `json:"-"`
+	// Branch is the string value of the git branch name, used by Buildkite only.
+	Branch                string `json:"-"`
+	BuildID               string `json:"-"`
+	BuildkiteAgentCommand string `json:"-"`
+	// CollectGitMetadata controls git metadata auto-collection:
+	//   - nil (flag unset): collect if SelectionStrategy is set
+	//   - true: always collect, with or without a strategy
+	//   - false: never collect, even with a strategy
+	// See ShouldCollectGitMetadata.
+	CollectGitMetadata *bool `json:"-"`
+	// Concurrency is the number of concurrent git operations for diff collection (default 10).
+	Concurrency int `json:"-"`
+	// Days is the lookback window in days for the commit list API (1-90, default 90).
+	Days int `json:"-"`
+	// Enable debug output
+	DebugEnabled bool `json:"-"`
+	// FailOnNoTests controls failing when there are no tests to run:
+	//   - nil (flag unset): fail only when a manual selection matches no tests
+	//   - true: also fail when no tests are assigned to this node
+	//   - false: never fail, even when a manual selection matches no tests
+	FailOnNoTests *bool `json:"-"`
+	// Identifier is the identifier of the build.
+	Identifier string `json:"-"`
+	JobID      string `json:"-"`
+	// JobRetryCount is the count of the number of times the job has been retried.
+	JobRetryCount int `json:"-"`
+	// LocationPrefix is prepended to test file paths when requesting a test plan.
+	// Use this when the test collector is configured to report files with a path prefix,
+	// so the test plan API can correctly match and bin-pack them across nodes.
+	LocationPrefix string `json:"-"`
+	// MaxParallelism is the maximum parallelism when calculating parallelism dynamically.
+	MaxParallelism int `json:"-"`
+	// MaxRetries is the maximum number of retries for a failed test.
+	MaxRetries int `json:"-"`
+	// Metadata is additional key/value data sent to the test plan API.
+	Metadata map[string]string `json:"-"`
+	// Node index is index of the current node.
+	NodeIndex int `json:"-"`
+	// Enable OIDC token generation
+	OIDC bool `json:"-"`
+	// Lifetime of OIDC tokens
+	OIDCLifetime time.Duration `json:"-"`
+	// OTLPRelay enables the local OTLP/HTTP trace relay for the test process.
+	OTLPRelay         bool `json:"-"`
+	OTLPRelayBatching bool `json:"-"`
+	// OTLPRelayUpstreamEndpoint is the Buildkite OTLP/HTTP traces endpoint.
+	OTLPRelayUpstreamEndpoint string `json:"-"`
+	// OrganizationSlug is the slug of the organization.
+	OrganizationSlug string `json:"-"`
+	// Pool identity is shared across workers and independent of local retries.
+	PipelineSlug         string `json:"-"`
+	PoolID               string `json:"-"`
+	PoolKey              string `json:"-"`
+	PoolLeaseMaxAttempts int    `json:"-"`
+	PoolRetryCount       int    `json:"-"`
+	// PoolLeaseCost is --pool-lease-cost as given, <dimension>=<budget>.
+	// PoolLeaseDurationMS is its deprecated duration_p50_ms alias. Validation
+	// parses either into PoolLeaseCosts, which pool planning sends.
+	PoolLeaseCost       string         `json:"-"`
+	PoolLeaseDurationMS int            `json:"-"`
+	PoolLeaseCosts      map[string]int `json:"-"`
+	// Output is the local file path for the export tarball. If set, skip S3 upload.
+	Output string `json:"-"`
+	// Parallelism is the number of parallel tasks to run.
+	Parallelism int `json:"-"`
+	// PersistentRunner is set by pool exec, where a persistent runner such as
+	// buildkite-pytest runs the tests instead of the test commands.
+	PersistentRunner bool `json:"-"`
+	// PlanOut is the full test plan output path for run and plan. Only plan
+	// supports "-" for stdout. Run marks local fallback plans with fallback: true.
+	PlanOut string `json:"-"`
+	// Remote is the git remote name for fetching missing commits and detecting default branch (default "origin").
+	Remote string `json:"-"`
+	// ResultPath is the path to the result file.
+	ResultPath string `json:"-"`
+	// RetryCommand is the command to run the retry tests.
+	RetryCommand string `json:"-"`
+	// RetryForMutedTest indicates whether a failed muted test should be retried.
+	// This is default to true because we want more signal for our flaky detection system.
+	RetryForMutedTest bool `json:"-"`
+	// SelectionParams are additional key/value parameters for the strategy.
+	SelectionParams map[string]string `json:"-"`
+	// SelectionStrategy is the selection strategy sent to the test plan API.
+	SelectionStrategy string `json:"-"`
+	// ServerBaseURL is the base URL of the test plan server.
+	ServerBaseURL string `json:"-"`
+	// SkipDiffs omits git_diff and git_diff_raw from the export to reduce upload size.
+	SkipDiffs bool `json:"-"`
+	// UploadFile is the path to a previously generated tarball for the --upload flag of backfill-commit-metadata.
+	UploadFile string `json:"-"`
+	// UploadResults enables uploading test results to the Test Engine analytics API after each run.
+	UploadResults bool `json:"-"`
+	// UploadTags are key/value tags attached to the upload when sending test results.
+	UploadTags map[string]string `json:"-"`
+	// UploadToken is the token used by test collectors. From `BUILDKITE_ANALYTICS_TOKEN` if present, otherwise generated by `buildkite-agent oidc request-token`.
+	UploadToken string `json:"-"`
+	// UploadTokenIsOIDC is true when UploadToken is a suite-scoped OIDC token
+	// minted by `buildkite-agent oidc request-token` (rather than a legacy
+	// suite token from BUILDKITE_ANALYTICS_TOKEN). Such a token can seed the
+	// OTLP relay's upstream credential, which uses the same audience.
+	UploadTokenIsOIDC bool `json:"-"`
+	// File path containing the list of selectors to run. If not set, `bktec` will rely on each runner implementation of `DiscoverTestTargets`.
+	SelectorListPath string `json:"-"`
+	// SplitByExample is the flag to enable split the test by example.
+	SplitByExample bool   `json:"-"`
+	StepID         string `json:"-"`
+	// SuiteSlug is the slug of the suite.
+	SuiteSlug string `json:"-"`
+	// TagFilters filters test examples by execution tags.
+	TagFilters string `json:"-"`
+	// TargetTime is the target time in seconds for the test plan.
+	TargetTime time.Duration `json:"-"`
+	// TestCommand is the command to run the tests.
+	TestCommand string `json:"-"`
+	// TestFileExcludePattern is the pattern to exclude the test files.
+	TestFileExcludePattern string `json:"-"`
+	// TestFilePattern is the pattern to match the test files.
+	TestFilePattern string `json:"-"`
+	// TestRunner is the name of the runner.
+	TestRunner string `json:"-"`
+	// TestProcessEnv contains trusted environment overrides added only to test
+	// runner subprocesses. It is populated after validation when a local service
+	// such as the OTLP relay starts.
+	TestProcessEnv map[string]string `json:"-"`
+
+	// Set to true if AccessToken was unset and an OIDC token was generated instead
+	accessTokenIsOIDC bool
+	// errs is a map of environment variables name and the validation errors associated with them.
+	errs InvalidConfigError
+}
+
+func New() Config {
+	return Config{errs: InvalidConfigError{}}
+}
+
+// ShouldCollectGitMetadata reports whether git metadata should be
+// auto-collected for a plan request. An explicit CollectGitMetadata wins;
+// otherwise collection follows whether a selection strategy is set.
+func (c *Config) ShouldCollectGitMetadata() bool {
+	if c.CollectGitMetadata != nil {
+		return *c.CollectGitMetadata
+	}
+	return c.SelectionStrategy != ""
+}

@@ -1,0 +1,30 @@
+[
+  {
+    "scope": "tests/happy_test.bats",
+    "name": "happy",
+    "file_name": "tests/happy_test.bats",
+    "result": "passed",
+    "failure_reason": "",
+    "failure_expanded": [],
+    "history": {
+      "start_at": 347611.724809,
+      "end_at": 347612.451041,
+      "duration": 0.726232000044547,
+      "children": []
+    }
+  },
+  {
+    "scope": "tests/failed_test.bats",
+    "name": "failed",
+    "file_name": "tests/failed_test.bats",
+    "result": "failed",
+    "failure_reason": "`[ \"$status\" -eq 0 ]' failed",
+    "failure_expanded": [],
+    "history": {
+      "start_at": 347611.724809,
+      "end_at": 347612.451041,
+      "duration": 0.726232000044547,
+      "children": []
+    }
+  }
+]

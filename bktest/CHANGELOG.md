@@ -1,0 +1,269 @@
+# Changelog
+## Unreleased
+- Add `bktec pool run` for running tests from a [Test Scheduler pool](./docs/pool-run.md). It runs leases in a persistent runner given after `--`, or otherwise starts the test command for each lease. `bktec pool exec` and `bktec pool consume` are deprecated; use `bktec pool run` instead.
+- Add `--pool-retry-count` to retry failed or errored tests through Test Scheduler, rerunning the whole entry. See [pool retries](./docs/pool-run.md#retries-and-results).
+- Fix Test Scheduler jobs failing because of unrelated pool failures or failed attempts that another worker successfully retried. Jobs now fail only when they contributed to a terminal test failure. Requires Test Scheduler support on the server.
+- Remove automatic job reruns after a Test Scheduler pool finishes. Rebuild to rerun failed tests; in-job retries with `--local-retry-count` are unchanged.
+
+## 3.5.0 - 2026-11-02
+- Add opt-in [OTLP relay batching](./README.md#batch-relay-requests) to deliver fast suites with fewer uploads, with per-stream summary statistics. Requires receiver batch support; older receivers fall back to individual requests.
+- Keep throttled child requests from blocking test-result uploads, and limit children to half the relay's shared queue memory.
+- Fix the OTLP relay continuing to retry uploads after its shutdown drain deadline, and warn when queued test results are dropped at that deadline.
+
+## 3.4.2 - 2026-10-29
+- Fix Vitest retries to match exact failed test names in Vitest 4 and 5, and keep the run failing when a retry skips or omits a failed test instead of passing it.
+- Support Test Scheduler acknowledging heartbeats after a pool is consumed, so a heartbeat racing successful final completion does not fail the job. Requires Test Scheduler support on the server.
+
+## 3.4.1 - 2026-10-23
+- Show why Buildkite refused [OTLP relay](./README.md#relay-opentelemetry-traces) requests, with refusal counts by stream and a warning when test results were not uploaded or may be missing. Limit repeated diagnostics during the run.
+- Fix test commands that don't ignore SIGPIPE, such as shell wrapper scripts, sometimes being killed with "broken pipe" (exit status 141) during `bktec run` after a network reset. bktec now forwards only SIGINT, SIGTERM, SIGHUP and SIGQUIT to the test command.
+
+## 3.4.0 - 2026-10-22
+- Fix `bktec run` passing after a Playwright retry when other tests never ran because of an earlier failure, such as in a [serial group](./docs/playwright.md#automatically-retry-failed-tests). List these tests as failed to run, separately from intentional skips.
+- Add `bktec pool consume` for running Jest, Playwright and pytest tests from a [Test Scheduler pool](./docs/pool-consume.md), starting a new test runner command for each lease. `bktec pool plan` can now plan Jest, Playwright and pytest pools. Requires Test Scheduler support on the server.
+- Fix `bktec run` not running the other Playwright test files when one fails to load. A Jest or Playwright file that fails to load still fails the job, but no longer stops failed tests in other files from being retried.
+- Support pytest in [`bktec pool exec`](./docs/pytest.md#run-tests-in-one-pytest-process-with-bktec-pool-exec), which runs all of a worker's leases in one pytest process with `buildkite-pytest`. Requires a `buildkite-test-collector` release that includes `buildkite-pytest`.
+- Fix `bktec pool exec` taking a lease before its persistent runner started. A runner that never started held its tests from other workers until the startup timeout; `pool exec` now requests leases only once the runner connects.
+- Change the default `--runner-startup-timeout` of `bktec pool exec` from 5 minutes to 1 minute, so a runner that doesn't start fails the job sooner. Set it higher if your runner takes longer to boot.
+- Fix Jest retries in `bktec run` also running tests whose names contain a failed test's name, and never rerunning failed tests outside a `describe` block.
+- Fix `bktec run` reporting Jest tests that passed on the first run as skipped after a retry.
+- `bktec pool plan` and `bktec pool exec` now [fall back to a local split](./docs/pool-exec.md#fallback-when-test-scheduler-is-unavailable) when Test Scheduler is unavailable, fails to plan the pool, or doesn't finish planning within 130 seconds, instead of failing. Like `bktec run`, each `pool exec` job runs its share of the tests across `BUILDKITE_PARALLEL_JOB_COUNT` jobs.
+- Add `--pool-lease-cost <dimension>=<budget>` to choose how pool leases are budgeted, such as `duration_p50_ms=100000` for median test durations. Lease prefetching now also works for pools budgeted by p50 durations. See the [pool options](./docs/pool-exec.md#options). Requires Test Scheduler support on the server.
+- Deprecate `--pool-lease-duration-ms`. It now budgets median (p50) durations instead of p90, matching the Test Scheduler default; use `--pool-lease-cost duration_p90_ms=<ms>` to keep p90 budgets.
+- Retry `bktec pool exec` lease requests after network errors and `5xx` responses instead of failing the job, without leasing the same tests twice. Requires Test Scheduler support on the server.
+- Fix the [OTLP relay](./README.md#relay-opentelemetry-traces) dropping `Buildkite-Tests-Span-Stream`. The relay now forwards the header so Buildkite can distinguish test results from child spans and apply plan limits to child spans.
+
+## 3.3.1 - 2026-10-21
+- Fix trust in compromised eMudhra certificate authorities (CVE-2026-111943) by building with Go 1.27.3 and updating the Docker images' CA certificates. Upgrade bktec to receive the mitigation.
+
+## 3.3.0 - 2026-10-08
+- [Manual test selection](./README.md#test-selection) can read its selectors from `BUILDKITE_TEST_ENGINE_SELECTION_SELECTORS` instead of `--selection-param selectors=...`.
+
+## 3.2.1 - 2026-10-07
+- [Manual test selection](./README.md#test-selection) now takes the tests to run as `--selection-param selectors=...`. `files=` still works.
+- Change `bktec run` and `bktec plan` to fail when a [manual selection](./README.md#test-selection) matches none of the listed selectors, instead of warning and passing. Set `--fail-on-no-tests=false` to keep the old behaviour.
+- Fix retried `bktec pool exec` jobs passing without running tests when their pool had already finished with failures. Such retries now fail; retries of jobs whose pool finished without failures, such as after a lost agent, still pass.
+- Show planning details and lease activity in `bktec pool plan` and `bktec pool exec` output, like `bktec plan` and `bktec run` do, instead of printing almost nothing until the run ends.
+
+## 3.2.0 - 2026-10-02
+- Add manual [test selection](./README.md#test-selection): `--selection-strategy manual --selection-param files=<newline-separated test paths>` runs only the listed tests. List paths as bktec discovers them, without the location prefix. The selection flags, `--collect-git-metadata`, `--remote` and `--metadata` are now always available on `run`, `plan` and `pool` and shown in `--help`. `BKTEC_PREVIEW_SELECTION` no longer has any effect, so an existing `BUILDKITE_TEST_ENGINE_SELECTION_STRATEGY` is now sent instead of ignored.
+- When a selection matches no tests, `bktec run` and `bktec plan` warn and run nothing instead of falling back to the full suite. `bktec run` jobs pass unless `--fail-on-no-tests` is set; `bktec plan --pipeline-upload` uploads no steps. Error plans still fall back.
+- Allow opting out of automatic git metadata collection with `--collect-git-metadata=false` (env: `BUILDKITE_TEST_ENGINE_COLLECT_GIT_METADATA=false`). Collection stays on by default whenever a selection strategy is set. `bktec run` now honours the flag too.
+- Add `bktec pool plan` and `bktec pool exec` for running tests from a [Test Scheduler pool](./docs/pool-exec.md). Requires Test Scheduler support on the server.
+
+## 3.1.0 - 2026-09-24
+- Add opt-in [OTLP/HTTP trace relay](./README.md#relay-opentelemetry-traces) for `bktec run` via `--otlp-relay` (env: `BUILDKITE_TESTS_OTLP_RELAY`). Configure the test process to export traces to a local endpoint and forward them to Buildkite with OIDC authentication, background retries, and a bounded shutdown drain. Report forwarded and dropped requests and bytes, plus request-size and upstream-latency distributions.
+- Keep tests running when minting a collector upload token fails transiently: warn and skip result uploads without a token, while the OTLP relay retries credentials in the background. Explicit OIDC refusals still fail validation; failures obtaining the Test Engine API access token are unchanged.
+- Add `bktec run --plan-out <path>` (env: `BUILDKITE_TEST_ENGINE_PLAN_OUT`) to save the full cached or freshly created API plan before running tests, retaining selection and server-only fields without extra requests. Local fallback output includes the actual tasks and `fallback: true`. Parent directories are created; write failures stop the run.
+- Explain requested selection and returned plans in one concise planning stderr group for `bktec plan` and `run`, including test selector counts, compute share, timing coverage, and binding node limits when metadata is available. Omit repeated selection parameters and routine create-response labels. Replace the ASCII banner with a version line and move the run split summary from stdout to stderr; JSON and raw plan output are unchanged.
+
+## 3.0.0 - 2026-07-31
+- ⚠️ **BREAKING:** Selector-based splitting now replaces file-based splitting for supported runners. The deprecated `--selector-splitting` flag and `BUILDKITE_TEST_ENGINE_SELECTOR_SPLITTING` environment variable are still accepted for upgrade compatibility, but their values no longer affect behavior. Existing bktec v2 releases continue to send file-based requests and remain compatible with file-based splitting; remain on v2 if file-based requests are required. See [Migrating from bktec v2 to v3](./docs/migrating-to-v3.md).
+- The Go module path is now `github.com/buildkite/test-engine-client/v3`.
+
+## 2.11.0 - 2026-07-28
+- Enable skipped-test filtering for [pytest](./docs/pytest.md). Pytest already supported split-by-example; skip uses the same example-level path (matching RSpec and Cucumber). Playwright remains without skip until project-scoped selectors exist, because the same file:line path can run across multiple projects.
+- Default static parallelism to 1 when `BUILDKITE_PARALLEL_JOB_COUNT` is unset, matching Buildkite's serial command-step behaviour. Explicit `--parallelism` / env values are unchanged.
+- Surface API request failures during retries: print transport errors (for example TLS certificate verification failures) on each attempt, announce retries, and keep the underlying cause when the retry budget expires instead of only a generic timeout.
+- Improve invalid configuration errors by prefixing them with `bktec <subcommand>: invalid configuration:` so failures are attributable when bktec is wrapped by plugins or other tooling.
+- Internal: consolidate file- vs selector-based test plan request construction and target processing (no intended wire-format change).
+
+## 2.10.0 - 2026-07-17
+- Expand experimental selector-based test splitting (introduced in 2.9.0 via `--selector-splitting`) beyond RSpec, custom, and Go. Jest, Playwright, Cypress, Cucumber, Pytest, and Vitest now support it, where a selector is a file. Slow files can still be split by example alongside selector splitting (Playwright, Pytest), skipped-test filtering is honored (RSpec, Cucumber), and tag filters are honored (Pytest). The custom runner falls back to file-pattern collection when `--selector-splitting` is set without `--selector-file`, instead of erroring. The configured location prefix is now sent on selector-split requests so selector timing history is scoped correctly in monorepos. bktec also warns when a multi-node selector split has no historical timings and falls back to default durations.
+- Add first-class support for the [Vitest](./docs/vitest.md) test runner (`BUILDKITE_TEST_ENGINE_TEST_RUNNER=vitest`), including test splitting by file, automatic retries, and muting. Vitest's JSON reporter is Jest-compatible, so results are parsed with the shared Jest report parser.
+- Automatically collect git commit metadata on `bktec run` when `--selection-strategy` is set, matching `bktec plan`. Ordered selection can run straight from `bktec run` without a separate `plan` step. Preview; gated behind `BKTEC_PREVIEW_SELECTION`.
+- Stamp `organization_uuid` and `suite_uuid` into backfill tarball metadata (metadata schema bumped to version 2). The UUIDs come from the presigned upload response, or from a suite lookup when writing locally with `--output`. Preview; gated behind `BKTEC_PREVIEW_SELECTION`.
+- Send `target_time` and `max_parallelism` on the `filter_tests` request so slow-file detection during `bktec plan` uses the run's real dynamic parallelism instead of 1. Previously slow-file filtering ran before parallelism was known, so almost nothing was flagged as slow. Requires the matching server-side `filter_tests` change.
+- Fix test summary percentages so small non-zero values are no longer shown as `0%`. Percentages now round to one decimal place when needed, with `<0.1%` and `>99.9%` labels at the boundaries.
+- **Breaking:** Remove the `pytest-pants` runner. It had zero real usage over the last 3 months. Use the `custom` runner instead, which now supports selector-based test splitting (see `--selector-splitting` in 2.9.0).
+- **Breaking:** Remove the `nunit` runner. It saw almost no real usage, and had known issues splitting tests by file (result path handling, and class name collisions across namespaces).
+
+## 2.9.0 - 2026-07-06
+- Add experimental selector-based test splitting for supported non-file runners (RSpec, custom runner, Go) via `--selector-splitting` and `--selector-file` (env: `BUILDKITE_TEST_ENGINE_SELECTOR_FILE`), splitting by runnable selector rather than by file. `--selector-file` must be used alongside `--selector-splitting`.
+- Add `--plan-out` to `bktec plan` to write the server's full test plan (tasks, per-node breakdown, muted and skipped tests, timing metadata) to `-` for stdout or a file path, without running the tests. `--json`, `--plan-out` and `--pipeline-upload` are mutually exclusive.
+- Add `--plan-identifier` (env: `BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER`) to `bktec plan`. It sets the plan's server-side cache key and lets `plan` run off-agent without `BUILDKITE_BUILD_ID`/`BUILDKITE_STEP_ID`. Previously only available on `bktec run`.
+- Add `--promise-failure` (env: `BUILDKITE_TEST_ENGINE_PROMISE_FAILURE`, opt-in) to `bktec run`. Once retries are exhausted and hard (non-muted) failures remain, bktec declares an early failure via `buildkite-agent job promise-failure`, letting a build cascade to failing before the job exits. Best-effort: it never changes the run's real exit status.
+- Add a Go JSONL output mode to the `gotest` runner. When the test command uses `gotestsum --jsonfile` or `go test -json`, bktec reads the Go JSON event stream to drive retries and status, and uploads it in the `go-jsonl` format when `BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS=true`. The default JUnit XML flow is unchanged.
+- Change the pytest-pants runner to pick its output format from the test command: `--junit-xml` uses JUnit XML, `--json` uses `buildkite-test-collector`'s JSON output. The collector is now optional for pytest-pants; running with neither flag exits with a clear error.
+- `bktec plan` no longer requires `BUILDKITE_TEST_ENGINE_RESULT_PATH` (`--result-path`), which is only used when running tests. `bktec run` still requires it for runners that read a result file.
+- Skip Go packages with no tests when splitting, so the plan only bin-packs packages that contain tests.
+- At parallelism 1 the split summary now prints only the case count, since the server no longer emits the `known_timings_ratio` the timing breakdown was derived from.
+- Reject a parallelism of 0 in `bktec plan`, and resolve the API-unreachable fallback plan's parallelism as `bktec run` does (`--max-parallelism` -> `--parallelism` -> `BUILDKITE_PARALLEL_JOB_COUNT`). Previously an unset `--max-parallelism` silently skipped the suite: `--pipeline-upload` uploaded nothing and `--json` emitted "0".
+- Treat pytest collection errors reported by `buildkite-test-collector` as terminal, preserving their file-only node IDs when recording JSON results. Previously bktec built invalid retry selectors like `::tests/test_broken.py` and wasted a retry on a failure that rerunning cannot fix.
+
+## 2.8.1 - 2026-06-16
+- Treat Go test build failures (`FAIL <pkg> [build failed]`) as terminal: bktec no longer retries when a package fails to compile, and exits non-zero with the failing package named in the report. Previously the build failure was recorded as a retryable "TestMain" failure that was silently dropped from the retry command, so a flaky test passing on retry could make the job pass despite the compile error.
+- Stop retrying when a run reports an error outside of the tests (e.g. RSpec errors outside of examples, Jest runtime errors, Playwright report errors) even when retryable failed tests are also present. Retrying cannot fix such errors, and the passing retry could previously mask them.
+
+## 2.8.0 - 2026-06-05
+- Add `--tag` flag and `BUILDKITE_TEST_ENGINE_TAGS` env var to `bktec run` to tag the run when uploading to Test Engine. Tags are `key=value` pairs and can be repeated.
+
+## 2.7.0 - 2026-05-29
+- Upload test results to the Test Engine Upload API after each run, replacing the need to install `buildkite-test-collector` alongside `bktec`. Opt-in via `BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS`; disabled by default to avoid double-uploading for customers already running the collector.
+- Change the Pytest runner default output to JUnit XML when `buildkite-test-collector` is not installed. When the plugin is present, the existing Test Engine JSON output and `--tag-filters` behaviour are unchanged. Using `--tag-filters` without the plugin now exits with a clear error.
+- Handle `<error>` elements in JUnit XML test reports as failures. Previously, tests that errored during setup/teardown or raised uncaught exceptions were misclassified as passed and were never retried.
+- Extend the OIDC token fallback added in 2.6.0 to cover `bktec tools backfill-commit-metadata`. When `BUILDKITE_TEST_ENGINE_API_ACCESS_TOKEN` is blank, the backfill subcommand now mints a token via `buildkite-agent oidc request-token` instead of failing config validation.
+- Include the working directory (`cwd`) in the `run_env` field of uploaded test results when running inside Buildkite, so the receiving side can resolve absolute file paths emitted by runners like Jest back to repo-relative paths.
+- Custom runner now accepts both Test Engine JSON (default) and JUnit XML result files. Set `BUILDKITE_TEST_ENGINE_RESULT_PATH` to a path ending in `.xml` to use JUnit XML; any other extension uses Test Engine JSON.
+
+## 2.6.0 - 2026-05-20
+- Generate OIDC tokens using `buildkite-agent` when either `BUILDKITE_TEST_ENGINE_API_ACCESS_TOKEN` or `BUILDKITE_ANALYTIC_TOKEN` are not provided.
+- Fix `bktec plan` so it honors `BUILDKITE_PARALLEL_JOB_COUNT` (and the `--parallelism` flag). Previously the value was dropped before being sent to the `filter_tests` API, which caused split-by-example to never identify slow files when planning.
+
+## 2.5.1 - 2026-05-15
+- `bktec tools backfill-commit-metadata` accepts OIDC tokens from `buildkite-agent oidc request-token`. Preview; gated behind `BKTEC_PREVIEW_SELECTION`.
+- **Breaking (Go module consumers):** module path is now `github.com/buildkite/test-engine-client/v2`. Earlier v2.x tags lacked the [required `/v2` suffix](https://go.dev/ref/mod#major-version-suffixes) and were unfetchable via `go get`/`go tool`. Update imports to include `/v2` and pin to v2.5.1+.
+
+## 2.5.0 - 2026-05-11
+- Add split-by-example support for [Playwright](./docs/playwright.md), allowing slow test files to be split across parallel jobs by individual test case rather than by file.
+- **Breaking (preview feature):** `bktec tools backfill-commit-metadata` now calls the suite-scoped commit-metadata backfill presigned-upload endpoint (`POST /v2/analytics/organizations/:org/suites/:suite/commit-metadata-backfill/presigned-upload`) instead of the org-scoped one. `--suite-slug` (or `BUILDKITE_TEST_ENGINE_SUITE_SLUG`) is now required for `--upload` as well as for collection. The legacy org-scoped endpoint is being removed in a follow-up server release. This is a preview feature gated behind `BKTEC_PREVIEW_SELECTION`.
+- Replace the generic test plan fallback warning with differentiated failure messages so operators can distinguish between API errors, timeouts, and other failure modes when bktec falls back to a local plan.
+- Print the split summary (file count, parallelism, slow-file detection) to stderr from both `plan` and `run` so the information is visible without polluting stdout consumers.
+- Treat `none`, `off`, and `false` as empty values in `--selection-*` flags and `BUILDKITE_TEST_ENGINE_SELECTION_*` env vars, making it easier to disable selection params from CI without unsetting variables. Preview; gated behind `BKTEC_PREVIEW_SELECTION`.
+- Remove Pact contract testing for the Test Engine API. Consumer tests now use plain `httptest` fixtures (no behaviour change for users); the `internal/api/pacts/` directory, `pact-go` dependency, and `bin/{publish-pact,release-pact-version,pact-record-support-ended}` scripts have been deleted.
+
+## 2.4.0 - 2026-04-17
+- Add `bktec tools backfill-commit-metadata` subcommand to collect and upload historical git commit metadata to the Test Engine API, so test selection has the signal it needs for repositories that pre-date bktec rollout. Preview; gated behind `BKTEC_PREVIEW_SELECTION`.
+- Automatically collect git commit metadata on `bktec plan` when `--selection-strategy` is set. Commit info, diff stats, and context fields are sent with the plan request so test selection has the signal it needs without the caller shelling out to git. Preview; gated behind `BKTEC_PREVIEW_SELECTION`.
+- Add `--collect-git-metadata` flag (env: `BUILDKITE_TEST_ENGINE_COLLECT_GIT_METADATA`) to `bktec plan` so pipelines can opt in to git metadata collection without using test selection. Preview; gated behind `BKTEC_PREVIEW_SELECTION`.
+- Add `--remote` flag (env: `BUILDKITE_TEST_ENGINE_REMOTE`, default `origin`) to `bktec plan` to control which git remote is used for base-branch detection.
+
+## 2.3.2 - 2026-04-02
+- Add built-in NUnit test runner for .NET test splitting
+
+## 2.3.1 - 2026-04-01
+- Add Windows (amd64, arm64) binary builds to releases.
+
+## 2.3.0 - 2026-03-16
+- Add support for test file location prefix for [RSpec](./docs/rspec.md#location-prefix), [Jest](./docs/jest.md#location-prefix), and [Playwright](./docs/playwright.md#location-prefix).
+- Improve test runner error handling. Exit codes are now propagated by default, except when the runner exits with code 1 and all failures are from muted tests.
+- Skip pipeline upload when dynamic parallelism returns 0.
+
+## 2.2.0 - 2026-02-27
+- Add preview test selection flags to `plan` and `run`, including repeatable `key=value` CLI handling without JSON-in-env encoding. These may not be supported by the API yet.
+
+## 2.1.3 - 2026-02-24
+- Run Jest with `--runTestsByPath` by default so that file path arguments are treated as literal paths instead of regex patterns.
+
+## 2.1.2 - 2026-02-11
+- Improve RSpec error handling to properly report errors when RSpec exits with a non-zero status code but has no test failures.
+
+## 2.1.1 - 2026-02-02
+- Fix an issue where the custom test command specified via the `BUILDKITE_TEST_ENGINE_TEST_CMD` environment variable or `--test-command` command-line flag was not being used.
+
+## 2.1.0 - 2026-01-30
+- Add custom test runner to support any test framework by specifying the command to run tests.
+- Add support to split slow files for pytest.
+- Add `--tag-filters` option to filter tests by tags when using pytest.
+
+## 2.0.1 - 2025-12-10
+- Fix issue where CI job would pass when running bktec without subcommands.
+
+## 2.0.0 - 2025-12-02
+- ⚠️ **BREAKING** Running bktec without arguments is no longer supported. Build steps should be updated to call `bktec run` instead of `bktec`.
+- New `--files` flag to specify a list of test files to be run.
+- Support for [dynamic parallelism](https://buildkite.com/docs/test-engine/bktec/configuring#dynamic-parallelism).
+- `bktec` container images are now published to [AWS ECR Public Gallery](https://gallery.ecr.aws/buildkite/test-engine-client) in addition to existing distribution channels.
+
+## 1.6.1 - 2025-10-24
+- Improve compatibility with Vitest (unofficial support) by updating the `jest` runner to correctly handle file-level runtime errors.
+
+## 1.6.0 - 2025-06-19
+- Add support for the Cucumber test runner.
+
+## 1.5.0 - 2025-05-30
+- Add support for the Go test runner.
+- Change the retry behavior to automatically retry muted tests that fail. To disable this, set the `BUILDKITE_TEST_ENGINE_DISABLE_RETRY_FOR_MUTED_TEST` environment variable to `true`.
+
+## 1.4.0 - 2025-02-14
+- Support pytest.
+- Upgrade Go to 1.24.
+- Filter jest command with file paths on retries
+
+## 1.3.3 - 2025-02-14
+- Update server-side error handling.
+
+## 1.3.2 - 2025-01-20
+- Fix issue where a test incorrectly reported as "Passed on Retry".
+
+## 1.3.1 - 2025-01-10
+- Fix issue where non-RSpec runners would terminate when attempting to split by example, as splitting by example is only supported in RSpec.
+
+## 1.3.0 - 2024-12-20
+- Add skipped tests to the test report.
+- Add support for muted tests in job retry.
+- Add run statistic to the test plan metadata.
+
+## 1.2.1 - 2024-12-12
+- Fix issue where the run would pass despite errors outside of tests, such as syntax or runtime errors.
+
+## 1.2.0 - 2024-11-26
+- Add support for muting tests.
+- Fix issue with Cypress command by passing the list of test files separated by commas.
+
+## 1.1.0 - 2024-11-11
+- Experimental support for Cypress. See [Cypress usage guide](./docs/cypress.md).
+- Experimental support for Playwright. See [Playwright usage guide](./docs/playwright.md).
+- Update `BUILDKITE_TEST_ENGINE_TEST_CMD` and `BUILDKITE_TEST_ENGINE_RETRY_CMD` for Jest. See [Jest usage guide](./docs/jest.md).
+- Fix issue when retrying Jest tests with special characters
+- Remove `**/node_modules` from default value of `BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN`. Files inside `node_modules` will be ignore regardless the value of this environment variable.
+
+## 1.0.0 - 2024-09-23
+- ⚠️ **BREAKING** Rename all environment variables from `BUILDKITE_SPLITTER_*` to `BUILDKITE_TEST_ENGINE_*`. See [Migrating to 1.0.0](https://github.com/buildkite/test-splitter/tree/90b699918b11500336f8a0fce306da917fba7408?tab=readme-ov-file#migrating-to-100)
+- ⚠️ **BREAKING** Add the `BUILDKITE_TEST_ENGINE_TEST_RUNNER` as required environment variable.
+
+## 0.9.1 - 2024-09-16
+- Fix issue with split by example when shared examples are used in RSpec
+
+## 0.9.0 - 2024-09-11
+- ⚠️ **BREAKING** Add the `BUILDKITE_SPLITTER_RESULT_PATH` required environment variable. See [Migrating to 0.9.0](https://github.com/buildkite/test-splitter/tree/db4cab8cd6c82392553cd80481cf75e3888c2f4c?tab=readme-ov-file#migrating-to-090).
+- Experimental support for Jest by setting `BUILDKITE_SPLITTER_TEST_RUNNER` to `jest`.
+- Update the retry behavior to only retry failed tests.
+- Update split-by-example behavior to perform more work server-side.
+- Improve configuration error message.
+- Fix issue printing dry-run errors.
+- Fix issue with `BUILDKITE_STEP_ID` presence validation.
+
+## 0.8.1 - 2024-08-06
+- Add `BUILDKITE_BRANCH` env var for test plan experiments
+- Fix to zzglob library issue where files not matching the include pattern are in the test plan
+
+## 0.8.0 - 2024-07-26
+- Add support to customize the rspec retry command.
+- Fix issue with file globbing during the file discovery.
+
+## 0.7.3 - 2024-07-19
+- Improve handling when the runner terminates due to an OS-level signal.
+
+## 0.7.2 - 2024-07-03
+- Fix log statement newline issue.
+
+## 0.7.1 - 2024-07-02
+- Fix issue where `--version` would fail if no environment configured.
+- Prefix log statements with 'Buildkite Test Splitter'.
+
+## 0.7.0 - 2024-06-27
+- Remove the ability to override the test plan identifier via `BUILDKITE_SPLITTER_IDENTIFIER`.
+- Add support for orchestration page in Buildkite, by sending metadata after tests execution.
+
+## 0.6.2 - 2024-06-24
+- Fix issue where the client version is not set in the user agent.
+
+## 0.6.1 - 2024-06-21
+- Ignore request body when it is empty or when the request is a GET request.
+
+## 0.6.0 - 2024-06-21
+
+- ⚠️ **BREAKING** Remove support for the undocumented `--files` flag.
+- ⚠️ **BREAKING** Rename the `BUILDKITE_API_ACCESS_TOKEN` environment variable to `BUILDKITE_SPLITTER_API_ACCESS_TOKEN`.
+- Add support for split-by-example using the `BUILDKITE_SPLITTER_SPLIT_BY_EXAMPLE` environment variable.
+- Add support for more verbose debug logging using the `BUILDKITE_SPLITTER_DEBUG_ENABLED` environment variable.
+
+## 0.5.1
+- Add a new line to each error log.
+
+## 0.5.0
+- ⚠️ **BREAKING** Rename `BUILDKITE_TEST_SPLITTER_CMD` to `BUILDKITE_SPLITTER_TEST_CMD`.
+- ⚠️ **BREAKING** Change the authentication mechanism to use Buildkite API access token. See [Migrating to 0.5.0](https://github.com/buildkite/test-splitter/tree/cdbbe348a0eb10bb6ca3211f2c5cd870f0dadfdd?tab=readme-ov-file#migrating-from-040).
+- Add support for automatically retrying failed tests using `BUILDKITE_SPLITTER_RETRY_COUNT`.
+- Add `--version` flag to aid in debugging.

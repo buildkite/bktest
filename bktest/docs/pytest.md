@@ -1,0 +1,143 @@
+# Using bktec with pytest
+Set the `BUILDKITE_TEST_ENGINE_TEST_RUNNER` environment variable to `pytest` to use bktec with pytest.
+
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_RUNNER=pytest
+bktec run
+```
+
+bktec works with pytest in two modes depending on whether [Buildkite Test Collector for pytest](https://buildkite.com/docs/test-engine/python-collectors#pytest-collector) is installed:
+
+- **With `buildkite-test-collector`** (recommended): bktec uses the collector's JSON output for richer test result data and supports `--tag-filters`.
+- **Without `buildkite-test-collector`**: bktec falls back to JUnit XML output. This is sufficient for basic parallelisation and retry, but `--tag-filters` is not available.
+
+bktec logs which mode it is using on startup.
+
+## Configure test command
+By default, bktec runs pytest with one of the following commands depending on which mode is active:
+
+**With `buildkite-test-collector`:**
+```sh
+pytest {{testExamples}} --json={{resultPath}}
+```
+
+**Without `buildkite-test-collector` (JUnit fallback):**
+```sh
+pytest {{testExamples}} --junit-xml={{resultPath}}
+```
+
+In both commands, `{{testExamples}}` is replaced by bktec with the list of test files or tests to run, and `{{resultPath}}` is replaced with a unique temporary path created by bktec. You can customize this command using the `BUILDKITE_TEST_ENGINE_TEST_CMD` environment variable.
+
+To customize the test command, set the following environment variable:
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_CMD="pytest --cache-clear --json={{resultPath}} {{testExamples}}"
+```
+
+> [!IMPORTANT]
+> bktec determines the output format by detecting `--junit-xml` or `--json=` in your test command, so the flag you include controls which parser is used — regardless of whether `buildkite-test-collector` is installed. Make sure your command includes exactly one of these flags so bktec can read the results for retries and verification. If neither flag is present, bktec falls back to the collector-based default.
+
+## Filter test files
+By default, bktec runs test files that match the `**/{*_test,test_*}.py` pattern. You can customize this pattern using the `BUILDKITE_TEST_ENGINE_TEST_FILE_PATTERN` environment variable. For instance, to configure bktec to only run test files inside the `tests` directory, use:
+
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_FILE_PATTERN="tests/**/{*_test,test_*}.py"
+```
+
+Additionally, you can exclude specific files or directories that match a certain pattern using the `BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN` environment variable. For example, to exclude test files inside the `tests/api` directory, use:
+
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN=tests/api
+```
+
+You can also use both `BUILDKITE_TEST_ENGINE_TEST_FILE_PATTERN` and `BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN` simultaneously. For example, to run all test files inside the `tests/` directory, except those inside `tests/api`, use:
+
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_FILE_PATTERN="**/{*_test,test_*}.py"
+export BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN=tests/api
+```
+
+> [!TIP]
+> This option accepts the pattern syntax supported by the [zzglob](https://github.com/DrJosh9000/zzglob?tab=readme-ov-file#pattern-syntax) library.
+
+## Filter test by tags
+
+> [!NOTE]
+> Tag filtering requires `buildkite-test-collector` to be installed. bktec will exit with an error if `--tag-filters` is used without it.
+
+You can filter tests to run based on `execution_tag` markers using the `BUILDKITE_TEST_ENGINE_TAG_FILTERS` environment variable or `--tag-filters` CLI option. 
+
+```py
+import pytest
+
+@pytest.mark.execution_tag('gpu_allocation', '2')
+def test_my_test():
+    ...
+```
+
+To run tests tagged with `gpu_allocation` of `2`:
+
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_RUNNER=pytest
+export BUILDKITE_TEST_ENGINE_TAG_FILTERS="gpu_allocation:2"
+bktec run
+```
+
+> [!NOTE]
+> `execution_tag` is a custom marker added by Buildkite Test Collector for pytest. You can add multiple tags to a test, however the tag filters only support single `key:value` pairs.
+
+Tag filtering isn't supported for [Test Scheduler pools](#run-tests-from-a-test-scheduler-pool). bktec exits with an error if `--tag-filters` is set when it plans a pool.
+
+## Selector-based test splitting
+
+pytest uses [selector-based test splitting](../README.md#selector-based-test-splitting) by default. Each test file path discovered with pytest's default `**/{*_test,test_*}.py` pattern becomes a selector. You can customize which files are discovered with `BUILDKITE_TEST_ENGINE_TEST_FILE_PATTERN` and `BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN`; the `{{testExamples}}` command placeholder works as before.
+
+> [!NOTE]
+> If you upload results with [Buildkite Test Collector for pytest](https://buildkite.com/docs/test-engine/python-collectors#pytest-collector), we recommend updating to `buildkite-test-collector` v1.6.0 or later so selectors are attributed directly. Older versions can still upload results, and Test Engine [attempts to match selectors using the file path](../README.md#how-selectors-are-matched). If no history matches, Test Engine uses default duration estimates and bktec prints a warning. Updating matters most if you use a location prefix, since the fallback only handles the prefix on a best-effort basis.
+
+## Automatically retry failed tests
+You can configure bktec to automatically retry failed tests using the `BUILDKITE_TEST_ENGINE_RETRY_COUNT` environment variable. When this variable is set to a number greater than `0`, bktec will retry each failed test up to the specified number of times, using either the default test command or the command specified in `BUILDKITE_TEST_ENGINE_TEST_CMD`.
+
+To enable automatic retry, set the following environment variable:
+```sh
+export BUILDKITE_TEST_ENGINE_RETRY_COUNT=2
+```
+
+## Run tests from a Test Scheduler pool
+To run pytest tests from a Test Scheduler pool, use [`bktec pool run`](./pool-run.md). It runs pytest once for each lease, or [every lease in one pytest process](#run-tests-in-one-pytest-process-with-bktec-pool-run) when you pass `buildkite-pytest` after `--`.
+
+Without a command after `--`, `bktec pool run` uses the test command configured above, and runs pytest once for each lease.
+
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_RUNNER=pytest
+
+bktec pool run --suite-slug my-suite --local-retry-count 1
+```
+
+For each lease, bktec runs the test command with the lease's test files, or the node IDs of its tests. Like with `bktec run`, the command must include `--json=` or `--junit-xml`, and the result path defaults to a temporary file.
+
+Each command starts a new pytest session, so every lease pays pytest's startup cost, such as collecting tests and running `conftest.py` and session-scoped fixtures. For suites with expensive setup, we recommend [running every lease in one pytest process](#run-tests-in-one-pytest-process-with-bktec-pool-run) once it's available.
+
+With `--local-retry-count`, bktec reruns a lease's failed tests by node ID with the retry command, which defaults to the test command.
+
+pytest options that stop at a failure, such as `-x`, `--maxfail`, `--stepwise` and `--stepwise-skip`, aren't supported. Each worker stops only its own lease while the others keep running the pool, and pytest doesn't report the tests it didn't run. bktec rejects these options in the test and retry commands, but can't see them in pytest's configuration, such as `addopts`, so don't set them there either.
+
+Run bktec from pytest's rootdir. pytest reports tests relative to its rootdir, and bktec matches them to the leased files, which are relative to the working directory. If a reported test doesn't match a leased file, all of the lease's tests are reported as errored.
+
+### Pool results
+
+A lease's tests are reported as passed or failed from the pytest report. All of a lease's tests are reported as errored when the command doesn't write a usable report, when a test file fails to collect, which stops pytest from running any tests, or when pytest exits for any reason other than failed tests, such as when it's interrupted or collects no tests.
+
+### Run tests in one pytest process with `bktec pool run`
+
+> [!NOTE]
+> Running pytest in one process requires the `buildkite-pytest` persistent runner, which will ship in a future `buildkite-test-collector` release. It isn't available yet.
+
+With `buildkite-pytest` after `--`, [`bktec pool run`](./pool-run.md#run-tests-in-one-persistent-runner) starts pytest once through `buildkite-pytest` and runs each of the worker's leases in that process, so the worker pays pytest's startup cost once instead of for each lease. Pass any pytest options after `buildkite-pytest`:
+
+```sh
+bktec pool run --suite-slug my-suite --test-runner pytest --local-retry-count 1 -- buildkite-pytest
+```
+
+`BUILDKITE_TEST_ENGINE_TEST_CMD` and `BUILDKITE_TEST_ENGINE_RETRY_CMD` don't apply, and bktec doesn't upload results; `buildkite-test-collector` uploads them from the pytest process. `buildkite-pytest` reports tests in the collector's JSON format, so `pool run` rejects test commands with `--junit-xml`. If you create the pool with `bktec pool plan` instead, run it where `buildkite-test-collector` is installed and without `--junit-xml` in the test command, so it plans tests the same way. As when running pytest for each lease, run bktec from pytest's rootdir, and don't use pytest options that stop at a failure.
+
+`buildkite-pytest` keeps running a lease's other files when one fails to collect, so only that file's attempt errors.

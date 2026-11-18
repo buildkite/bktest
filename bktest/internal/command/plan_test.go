@@ -1,0 +1,1567 @@
+package command
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/buildkite/test-engine-client/v3/internal/api"
+	"github.com/buildkite/test-engine-client/v3/internal/config"
+	"github.com/buildkite/test-engine-client/v3/internal/debug"
+	"github.com/buildkite/test-engine-client/v3/internal/git"
+	"github.com/buildkite/test-engine-client/v3/internal/plan"
+	"github.com/buildkite/test-engine-client/v3/internal/runner"
+	"github.com/buildkite/test-engine-client/v3/internal/version"
+	"github.com/google/go-cmp/cmp"
+)
+
+func TestPrintPlanningSummaryConcise(t *testing.T) {
+	var p plan.TestPlan
+	if err := json.Unmarshal([]byte(`{"parallelism":4,"settings":{"target_time":10,"max_parallelism":4},"selection":{"applied":true,"strategy":"xgboost","candidate_count":100,"selected_count":40,"duration_proportion_cutoff":0.5,"duration_estimates":{"estimator":"mean_with_candidate_median_fallbacks_v1","candidate_total_duration_ms":120000,"selected_total_duration_ms":60000,"candidate_timing_coverage":1}},"sizing":{"method":"timing","target_time_source":"explicit","target_time_ms":10000,"target_time_estimator":"mean_with_fallbacks_v1","estimated_required_parallelism":6,"runnable_units":40,"max_parallelism_binding":true,"runnable_units_binding":false,"estimator":"p90_with_median_fallbacks_v1","estimated_max_task_duration_ms":18000},"timing_metadata":{"selector":{"median_duration":1800,"default_duration":1000}}}`), &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Tasks = make(map[string]*plan.Task)
+	for n := range 4 {
+		task := &plan.Task{NodeNumber: n}
+		for range 10 {
+			task.Tests = append(task.Tests, plan.TestCase{Format: plan.TestCaseFormatSelector, TimingSampleSize: 10})
+		}
+		p.Tasks[strconv.Itoa(n)] = task
+	}
+	cfg := &config.Config{SelectionStrategy: "xgboost", SelectionParams: map[string]string{"duration_proportion_cutoff": "0.5"}, TargetTime: 10 * time.Second, MaxParallelism: 4}
+	var buf bytes.Buffer
+	printPlanningRequest(&buf, cfg)
+	printPlanningSummary(&buf, p, sourceCreateResponse, cfg)
+	want, err := os.ReadFile("testdata/planning-summary.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(strings.Replace(string(want), "bktec dev", "bktec "+version.Version, 1), buf.String()); diff != "" {
+		t.Fatalf("approved example mismatch (-want +got):\n%s", diff)
+	}
+	// Comparison never assigns this invocation's strategy to the returned plan.
+	// A disabled request must not hide a same-valued returned cutoff either.
+	for _, strategy := range []string{"manual", "off"} {
+		cfg.SelectionStrategy = strategy
+		if strategy == "manual" {
+			cfg.SelectionParams["duration_proportion_cutoff"] = "0.9"
+		} else {
+			cfg.SelectionParams["duration_proportion_cutoff"] = "0.5"
+		}
+		buf.Reset()
+		printPlanningSummary(&buf, p, "fetched existing plan", cfg)
+		for _, want := range []string{"Using existing plan", "Applied strategy: xgboost", "Returned parameter: duration_proportion_cutoff = 0.5"} {
+			if !strings.Contains(buf.String(), want) {
+				t.Errorf("missing %q:\n%s", want, &buf)
+			}
+		}
+	}
+}
+
+func TestPlanningReturnedStrategyDoesNotUseInvocation(t *testing.T) {
+	for _, tt := range []struct{ body, want string }{
+		{`{"selection":{"applied":true,"strategy":"future_strategy"}}`, "Applied strategy: future_strategy"},
+		{`{"selection":{"applied":true,"strategy":""}}`, "Applied (strategy unavailable)"},
+		{`{"selection":{"applied":true}}`, "Applied (strategy unavailable)"},
+		{`{}`, "No selection metadata returned"},
+	} {
+		var p plan.TestPlan
+		if err := json.Unmarshal([]byte(tt.body), &p); err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		printPlanningSummary(&buf, p, "fetched existing plan", &config.Config{SelectionStrategy: "xgboost"})
+		if !strings.Contains(buf.String(), tt.want) || strings.Contains(buf.String(), "xgboost") {
+			t.Fatalf("returned strategy changed by invocation: %s", &buf)
+		}
+	}
+}
+
+func TestPlanJSON(t *testing.T) {
+	svr := getHttptestServer()
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// By default command.Run writes to os.Stdout.
+	// Replace with a string buffer here so we can test the command output.
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	// This is the method under test
+	getStderr := captureStderr(t)
+	err := Plan(ctx, cfg, "", PlanOutputJSON, "")
+	stderr := getStderr()
+	if err != nil {
+		t.Errorf("command.Plan(...) error = %v", err)
+	}
+	for _, want := range []string{"+++ Buildkite Test Engine Client: Planning\nbktec ", "\n\nRequested\n", "Selection: none requested", "No selection metadata returned", "\n\nSplit summary"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q:\n%s", want, stderr)
+		}
+	}
+	if strings.Count(stderr, "+++ ") != 1 || strings.Contains(stderr, "\n\n\n") || strings.Contains(stderr, "Plan source:") || strings.Contains(stderr, "Using existing plan") {
+		t.Errorf("redundant planning group/whitespace:\n%s", stderr)
+	}
+
+	want := `{"BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER":"facecafe","BUILDKITE_TEST_ENGINE_PARALLELISM":"42"}
+`
+	got := buf.String()
+
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("command.Plan(...) diff = %s", diff)
+	}
+}
+
+func TestPlanPlanOut(t *testing.T) {
+	// The server's exact response body, including a field the client struct
+	// does not model (server_only), to prove --plan-out passes the response
+	// through unmodified rather than re-marshalling a struct.
+	serverBody := `{"identifier":"facecafe","parallelism":1,"experiment":"","tasks":{"0":{"node_number":0,"tests":[{"path":"testdata/rspec/spec/fruits/apple_spec.rb"}]}},"selection":{"applied":true,"strategy":"manual","candidate_count":10,"selected_count":1,"count_cutoff":1,"duration_estimates":{"estimator":"mean_with_candidate_median_fallbacks_v1","candidate_total_duration_ms":14000,"selected_total_duration_ms":5000,"candidate_timing_coverage":0.5},"scores":[{"prediction_score":0.7}]},"settings":{"target_time":120,"max_parallelism":42},"sizing":{"method":"insufficient_history","runnable_units":1,"max_parallelism_binding":false,"runnable_units_binding":true},"duration_estimates":{"estimator":"mean_with_fallbacks_v1","total_duration_ms":3000,"max_task_duration_ms":3000},"server_only":"kept"}`
+
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		switch r.URL.Path {
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan/filter_tests":
+			json.NewEncoder(w).Encode(api.FilteredTestResponse{})
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan":
+			w.Write([]byte(serverBody))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+	cfg.PlanOut = "-"
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	// This is the method under test
+	getStderr := captureStderr(t)
+	if err := Plan(ctx, cfg, "", PlanOutputPlanOut, ""); err != nil {
+		t.Errorf("command.Plan(...) error = %v", err)
+	}
+	stderr := getStderr()
+	for _, want := range []string{"Applied strategy: manual", "Selected: 1 of 10 test selectors (10%)", "Returned parameter: count_cutoff = 1", "Node limit: 42 (not independently binding)", "Estimated compute: 5s of 14s (35.7%)\n  Candidate timing coverage: 50%", "insufficient timing history; target not used", "Estimated longest node: unavailable"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q:\n%s", want, stderr)
+		}
+	}
+	if strings.Contains(stderr, "prediction_score") {
+		t.Errorf("scores must not appear in normal diagnostics: %s", stderr)
+	}
+
+	// stdout is the server's exact response, only re-indented. Comparing the
+	// compacted output against the compacted server body proves no field was
+	// added, dropped, or renamed.
+	var gotCompact bytes.Buffer
+	if err := json.Compact(&gotCompact, buf.Bytes()); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if gotCompact.String() != serverBody {
+		t.Errorf("--plan-out output was modified.\n got: %s\nwant: %s", gotCompact.String(), serverBody)
+	}
+
+	// Output should be indented, not compact.
+	if !strings.Contains(buf.String(), "\n  \"identifier\"") {
+		t.Errorf("expected indented JSON output, got:\n%s", buf.String())
+	}
+}
+
+// --plan-out with a file path writes the plan to that file rather than stdout.
+func TestPlanPlanOut_WritesToFile(t *testing.T) {
+	serverBody := `{"identifier":"facecafe","parallelism":42,"tasks":{"0":{"node_number":0,"tests":[{"path":"a_spec.rb"}]}}}`
+
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		switch r.URL.Path {
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan/filter_tests":
+			json.NewEncoder(w).Encode(api.FilteredTestResponse{})
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan":
+			w.Write([]byte(serverBody))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer svr.Close()
+
+	outPath := filepath.Join(t.TempDir(), "plan.json")
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+	cfg.PlanOut = outPath
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	// planWriter (stdout) must stay empty; the plan goes to the file.
+	var stdout bytes.Buffer
+	setPlanWriter(t, &stdout)
+
+	if err := Plan(context.Background(), cfg, "", PlanOutputPlanOut, ""); err != nil {
+		t.Errorf("command.Plan(...) error = %v", err)
+	}
+
+	if stdout.Len() != 0 {
+		t.Errorf("expected no stdout output when writing to a file, got: %s", stdout.String())
+	}
+
+	contents, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("reading --plan-out file: %v", err)
+	}
+
+	var gotCompact bytes.Buffer
+	if err := json.Compact(&gotCompact, contents); err != nil {
+		t.Fatalf("file is not valid JSON: %v\ncontents: %s", err, contents)
+	}
+	if gotCompact.String() != serverBody {
+		t.Errorf("--plan-out file was modified.\n got: %s\nwant: %s", gotCompact.String(), serverBody)
+	}
+}
+
+func TestPlanPlanOut_Parallelism0(t *testing.T) {
+	svr := getZeroParallelismServer()
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+	cfg.PlanOut = "-"
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	getStderr := captureStderr(t)
+
+	// This is the method under test
+	planErr := Plan(ctx, cfg, "", PlanOutputPlanOut, "")
+
+	stderrOutput := getStderr()
+
+	if planErr != nil {
+		t.Errorf("command.Plan(...) error = %v", planErr)
+	}
+
+	// The server plan is emitted verbatim, even at parallelism 0: the
+	// identifier, parallelism, and the (empty) task breakdown are passed
+	// through. --plan-out does not substitute a fallback for a well-formed
+	// server response.
+	var got plan.TestPlan
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+
+	want := plan.TestPlan{
+		Identifier:  "facecafe",
+		Parallelism: 0,
+		Tasks:       map[string]*plan.Task{},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("emitted plan diff (-want +got):\n%s", diff)
+	}
+
+	// The parallelism warning is written to stderr.
+	if !strings.Contains(stderrOutput, "Parallelism is 0") {
+		t.Errorf("expected stderr to contain parallelism warning, got: %s", stderrOutput)
+	}
+}
+
+func TestPlanPipelineUpload(t *testing.T) {
+	svr := getHttptestServer()
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// By default command.Run writes to os.Stdout.
+	// Replace with a string buffer here so we can test the command output.
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	// Set a dummy command and args to run instead of `buildkite-agent pipeline upload`
+	setPipelineUploadCommand(t, "echo", "called", "with")
+
+	// This is the method under test
+	err := Plan(ctx, cfg, "", PlanOutputPipelineUpload, "testtemplate.yml")
+	if err != nil {
+		t.Errorf("command.Plan(...) error = %v", err)
+	}
+
+	want := `Executing buildkite-agent pipeline upload with BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER=facecafe BUILDKITE_TEST_ENGINE_PARALLELISM=42
+called with testtemplate.yml
+`
+	got := buf.String()
+
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("command.Plan(...) diff = %s", diff)
+	}
+}
+
+// An off-agent `bktec plan` supplies --plan-identifier instead of
+// BUILDKITE_BUILD_ID/BUILDKITE_STEP_ID. The identifier must flow through to the
+// test_plan create request as the `identifier` param (the server cache key).
+func TestPlan_PlanIdentifierFlowsToRequestParam(t *testing.T) {
+	var requestBody []byte
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		enc := json.NewEncoder(w)
+
+		switch r.URL.Path {
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan/filter_tests":
+			enc.Encode(api.FilteredTestResponse{})
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan":
+			requestBody, _ = io.ReadAll(r.Body)
+			enc.Encode(plan.TestPlan{
+				Identifier:  "01919f1e-0000-7000-8000-000000000000",
+				Parallelism: 42,
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+	// An off-agent run has no build/step; identity comes from the identifier.
+	cfg.BuildID = ""
+	cfg.StepID = ""
+	cfg.Identifier = "01919f1e-0000-7000-8000-000000000000"
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Fatalf("ValidateForPlan() error = %v", err)
+	}
+
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	if err := Plan(ctx, cfg, "", PlanOutputJSON, ""); err != nil {
+		t.Fatalf("command.Plan(...) error = %v", err)
+	}
+
+	var params map[string]any
+	if err := json.Unmarshal(requestBody, &params); err != nil {
+		t.Fatalf("failed to unmarshal request body %q: %v", requestBody, err)
+	}
+
+	if got, want := params["identifier"], "01919f1e-0000-7000-8000-000000000000"; got != want {
+		t.Errorf("request identifier = %v, want %v", got, want)
+	}
+}
+
+// Supplying an identifier lets `ValidateForPlan` skip the BUILDKITE_BUILD_ID /
+// BUILDKITE_STEP_ID blank guards, so an off-agent run needn't fake build env vars.
+func TestValidateForPlan_PlanIdentifierSkipsBuildStepGuards(t *testing.T) {
+	cfg := getConfig()
+	cfg.BuildID = ""
+	cfg.StepID = ""
+	cfg.Identifier = "01919f1e-0000-7000-8000-000000000000"
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Fatalf("ValidateForPlan() with --plan-identifier and no BUILD_ID/STEP_ID error = %v", err)
+	}
+
+	if cfg.Identifier != "01919f1e-0000-7000-8000-000000000000" {
+		t.Errorf("cfg.Identifier = %q, want it preserved (not overwritten with BUILD_ID/STEP_ID)", cfg.Identifier)
+	}
+}
+
+// A supplied identifier takes precedence over BUILDKITE_BUILD_ID/BUILDKITE_STEP_ID:
+// when both are set, the identifier is kept rather than overwritten with the
+// "<build>/<step>" composite.
+func TestValidateForPlan_PlanIdentifierTakesPrecedenceOverBuildStep(t *testing.T) {
+	cfg := getConfig()
+	cfg.BuildID = "123"
+	cfg.StepID = "789"
+	cfg.Identifier = "01919f1e-0000-7000-8000-000000000000"
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Fatalf("ValidateForPlan() error = %v", err)
+	}
+
+	if cfg.Identifier != "01919f1e-0000-7000-8000-000000000000" {
+		t.Errorf("cfg.Identifier = %q, want the supplied identifier to win over %q", cfg.Identifier, "123/789")
+	}
+}
+
+// Without an identifier but with BUILD_ID/STEP_ID, the identifier defaults to
+// the "<build>/<step>" composite.
+func TestValidateForPlan_IdentifierDefaultsToBuildStepWhenUnset(t *testing.T) {
+	cfg := getConfig()
+	cfg.BuildID = "123"
+	cfg.StepID = "789"
+	cfg.Identifier = ""
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Fatalf("ValidateForPlan() error = %v", err)
+	}
+
+	if cfg.Identifier != "123/789" {
+		t.Errorf("cfg.Identifier = %q, want %q", cfg.Identifier, "123/789")
+	}
+}
+
+// Without an identifier and without BUILD_ID/STEP_ID, validation must still fail.
+func TestValidateForPlan_RequiresBuildStepWhenNoPlanIdentifier(t *testing.T) {
+	cfg := getConfig()
+	cfg.BuildID = ""
+	cfg.StepID = ""
+	cfg.Identifier = ""
+
+	err := cfg.ValidateForPlan()
+	if err == nil {
+		t.Fatal("ValidateForPlan() error = nil, want errors for blank BUILDKITE_BUILD_ID/BUILDKITE_STEP_ID")
+	}
+	if !strings.Contains(err.Error(), "BUILDKITE_BUILD_ID") || !strings.Contains(err.Error(), "BUILDKITE_STEP_ID") {
+		t.Errorf("ValidateForPlan() error = %v, want it to mention BUILDKITE_BUILD_ID and BUILDKITE_STEP_ID", err)
+	}
+}
+
+func TestPlanJSON_BillingError(t *testing.T) {
+	// mock server to return 403 with a billing error
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message": "Billing Error: please update your plan"}`, http.StatusForbidden)
+	}))
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.Identifier = "hello"
+	cfg.MaxParallelism = 123
+	cfg.ServerBaseURL = svr.URL
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// By default command.Run writes to os.Stdout.
+	// Replace with a string buffer here so we can test the command output.
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	// This is the method under test
+	err := Plan(ctx, cfg, "", PlanOutputJSON, "")
+	if err != nil {
+		t.Errorf("command.Plan(...) error = %v", err)
+	}
+
+	want := `{"BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER":"hello","BUILDKITE_TEST_ENGINE_PARALLELISM":"123"}
+`
+	got := buf.String()
+
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("command.Plan(...) diff = %s", diff)
+	}
+}
+
+func TestPlanJSON_InternalServerError(t *testing.T) {
+	// mock server to return 500 Internal Server Error
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}))
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.Identifier = "hello"
+	cfg.MaxParallelism = 123
+	cfg.ServerBaseURL = svr.URL
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	// set the fetch timeout to 1 second so we don't wait too long
+	ctx := context.Background()
+	fetchCtx, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
+	defer cancel()
+
+	// By default command.Run writes to os.Stdout.
+	// Replace with a string buffer here so we can test the command output.
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	// This is the method under test
+	// Expecting it to return an error due to server TestPlan_InternalServerError(
+	err := Plan(fetchCtx, cfg, "", PlanOutputJSON, "")
+	if err != nil {
+		t.Errorf("command.Plan(...) error = %v", err)
+	}
+
+	want := `{"BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER":"hello","BUILDKITE_TEST_ENGINE_PARALLELISM":"123"}
+`
+	got := buf.String()
+
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("command.Plan(...) diff = %s", diff)
+	}
+}
+
+func TestPlanJSON_ErrorPlanFallback(t *testing.T) {
+	svr := getErrorPlanServer()
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+	// Identifier and MaxParallelism seed the locally-computed fallback plan.
+	cfg.Identifier = "local-id"
+	cfg.MaxParallelism = 7
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	getStderr := captureStderr(t)
+
+	// This is the method under test
+	planErr := Plan(ctx, cfg, "", PlanOutputJSON, "")
+
+	stderrOutput := getStderr()
+	assertTasklessFallbackSummary(t, stderrOutput)
+
+	// Verify command exits successfully
+	if planErr != nil {
+		t.Errorf("command.Plan(...) error = %v", planErr)
+	}
+
+	// The server's error plan (empty tasks) is replaced by the local fallback,
+	// so the emitted identifier and parallelism come from cfg, not the server.
+	want := `{"BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER":"local-id","BUILDKITE_TEST_ENGINE_PARALLELISM":"7"}
+`
+	got := buf.String()
+
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("command.Plan(...) JSON output diff = %s", diff)
+	}
+
+	// Verify the error-plan warning was logged to stderr.
+	if !strings.Contains(stderrOutput, "Falling back to non-intelligent splitting") {
+		t.Errorf("expected stderr to contain error-plan warning, got: %s", stderrOutput)
+	}
+}
+
+func TestPlanPipelineUpload_ErrorPlanFallback(t *testing.T) {
+	svr := getErrorPlanServer()
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+	cfg.Identifier = "local-id"
+	cfg.MaxParallelism = 7
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	setPipelineUploadCommand(t, "echo", "called with")
+
+	getStderr := captureStderr(t)
+
+	// This is the method under test
+	planErr := Plan(ctx, cfg, "", PlanOutputPipelineUpload, "testtemplate.yml")
+
+	stderrOutput := getStderr()
+	assertTasklessFallbackSummary(t, stderrOutput)
+
+	if planErr != nil {
+		t.Errorf("command.Plan(...) error = %v", planErr)
+	}
+
+	// The fallback plan has non-zero parallelism, so pipeline upload runs with
+	// the fallback identifier and parallelism.
+	want := `Executing buildkite-agent pipeline upload with BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER=local-id BUILDKITE_TEST_ENGINE_PARALLELISM=7
+called with testtemplate.yml
+`
+	got := buf.String()
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("command.Plan(...) diff = %s", diff)
+	}
+
+	// Verify the error-plan warning was logged to stderr.
+	if !strings.Contains(stderrOutput, "Falling back to non-intelligent splitting") {
+		t.Errorf("expected stderr to contain error-plan warning, got: %s", stderrOutput)
+	}
+}
+
+// Plan()'s parallelism-0 guard must not run buildkite-agent for a
+// --pipeline-upload plan with parallelism 0. ValidateForPlan now rejects the
+// both-unset config that produces this fallback, so the guard is defence in
+// depth; this drives it directly by leaving both parallelism sources at 0 and
+// skipping validation.
+func TestPlanPipelineUpload_Parallelism0(t *testing.T) {
+	svr := getErrorPlanServer()
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+	cfg.Identifier = "local-id"
+	// Both MaxParallelism and Parallelism 0, so the fallback plan has
+	// parallelism 0.
+	cfg.Parallelism = 0
+
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	// Fail loudly if pipeline upload is executed despite parallelism 0.
+	setPipelineUploadCommand(t, "echo", "SHOULD_NOT_RUN")
+
+	getStderr := captureStderr(t)
+
+	// This is the method under test
+	planErr := Plan(ctx, cfg, "", PlanOutputPipelineUpload, "testtemplate.yml")
+
+	stderrOutput := getStderr()
+
+	if planErr != nil {
+		t.Errorf("command.Plan(...) error = %v", planErr)
+	}
+
+	// Nothing is written to stdout: pipeline upload does not run.
+	if got := buf.String(); got != "" {
+		t.Errorf("expected no pipeline upload output, got: %s", got)
+	}
+
+	// Verify the parallelism-0 warning was logged to stderr.
+	if !strings.Contains(stderrOutput, "Parallelism is 0") {
+		t.Errorf("expected stderr to contain parallelism-0 warning, got: %s", stderrOutput)
+	}
+}
+
+// When --max-parallelism is unset but BUILDKITE_PARALLEL_JOB_COUNT
+// (cfg.Parallelism) is set, the fallback plan falls back to the static
+// parallelism, so the suite runs un-optimised rather than being skipped.
+func TestPlanPipelineUpload_FallbackToStaticParallelism(t *testing.T) {
+	svr := getErrorPlanServer()
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+	cfg.Identifier = "local-id"
+	// MaxParallelism left at 0; Parallelism (BUILDKITE_PARALLEL_JOB_COUNT) is 3.
+	cfg.Parallelism = 3
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	ctx := context.Background()
+
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	setPipelineUploadCommand(t, "echo", "called with")
+
+	planErr := Plan(ctx, cfg, "", PlanOutputPipelineUpload, "testtemplate.yml")
+	if planErr != nil {
+		t.Errorf("command.Plan(...) error = %v", planErr)
+	}
+
+	// The fallback uses the static parallelism (3), so pipeline upload runs.
+	want := `Executing buildkite-agent pipeline upload with BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER=local-id BUILDKITE_TEST_ENGINE_PARALLELISM=3
+called with testtemplate.yml
+`
+	if diff := cmp.Diff(want, buf.String()); diff != "" {
+		t.Errorf("command.Plan(...) diff = %s", diff)
+	}
+}
+
+func TestPlanPipelineUpload_InternalServerError(t *testing.T) {
+	// mock server to return 500 Internal Server Error
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}))
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.Identifier = "hello"
+	cfg.MaxParallelism = 123
+	cfg.ServerBaseURL = svr.URL
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	// set the fetch timeout to 1 second so we don't wait too long
+	ctx := context.Background()
+	fetchCtx, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
+	defer cancel()
+
+	// By default command.Run writes to os.Stdout.
+	// Replace with a string buffer here so we can test the command output.
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	// Set a dummy command and args to run instead of `buildkite-agent pipeline upload`
+	setPipelineUploadCommand(t, "echo", "called", "with")
+
+	// This is the method under test
+	err := Plan(fetchCtx, cfg, "", PlanOutputPipelineUpload, "testtemplate.yml")
+	if err != nil {
+		t.Errorf("command.Plan(...) error = %v", err)
+	}
+
+	want := `Executing buildkite-agent pipeline upload with BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER=hello BUILDKITE_TEST_ENGINE_PARALLELISM=123
+called with testtemplate.yml
+`
+	got := buf.String()
+
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("command.Plan(...) diff = %s", diff)
+	}
+}
+
+func getZeroParallelismServer() *httptest.Server {
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message": "Not found"}`))
+			return
+		}
+
+		enc := json.NewEncoder(w)
+
+		switch r.URL.Path {
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan/filter_tests":
+			filteredTests := api.FilteredTestResponse{}
+			enc.Encode(filteredTests)
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan":
+			// A realistic zero-parallelism plan: no nodes means no tasks. This
+			// is a well-formed server response, distinct from an error plan.
+			testPlan := plan.TestPlan{
+				Identifier:  "facecafe",
+				Parallelism: 0,
+				Tasks:       map[string]*plan.Task{},
+			}
+			enc.Encode(testPlan)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message": "Not found"}`))
+		}
+	}))
+	return svr
+}
+
+// getErrorPlanServer returns an "error plan": a 200 response whose task list is
+// empty (`{"tasks": {}}`). The --json and --pipeline-upload paths treat this as
+// a signal to substitute a locally-computed fallback plan.
+func getErrorPlanServer() *httptest.Server {
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message": "Not found"}`))
+			return
+		}
+
+		enc := json.NewEncoder(w)
+
+		switch r.URL.Path {
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan/filter_tests":
+			filteredTests := api.FilteredTestResponse{}
+			enc.Encode(filteredTests)
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan":
+			testPlan := plan.TestPlan{
+				Identifier:  "facecafe",
+				Parallelism: 4,
+				Tasks:       map[string]*plan.Task{},
+			}
+			enc.Encode(testPlan)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message": "Not found"}`))
+		}
+	}))
+	return svr
+}
+
+func getHttptestServer() *httptest.Server {
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message": "Not found"}`))
+			return
+		}
+
+		enc := json.NewEncoder(w)
+
+		switch r.URL.Path {
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan/filter_tests":
+			filteredTests := api.FilteredTestResponse{}
+			enc.Encode(filteredTests)
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan":
+			testPlan := plan.TestPlan{
+				Identifier:  "facecafe",
+				Parallelism: 42,
+				Tasks: map[string]*plan.Task{
+					"0": {NodeNumber: 0, Tests: []plan.TestCase{{Path: "testdata/rspec/spec/fruits/apple_spec.rb"}}},
+				},
+			}
+			enc.Encode(testPlan)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	return svr
+}
+
+func getConfig() *config.Config {
+	cfg := config.New()
+
+	cfg.Branch = "tet-123-add-branch-name"
+	cfg.BuildID = "123"
+	cfg.StepID = "789"
+	cfg.OrganizationSlug = "buildkite"
+	cfg.NodeIndex = 0
+	cfg.Parallelism = 3
+	cfg.AccessToken = "asdf1234"
+	cfg.SuiteSlug = "rspec"
+	cfg.TestRunner = "rspec"
+	cfg.DebugEnabled = true
+	cfg.TestFilePattern = "testdata/rspec/spec/**/*_spec.rb"
+
+	return &cfg
+}
+
+func setPlanWriter(t *testing.T, w io.Writer) {
+	t.Helper()
+	origWriter := planWriter
+	planWriter = w
+
+	t.Cleanup(func() {
+		planWriter = origWriter
+	})
+}
+
+func setPipelineUploadCommand(t *testing.T, cmd string, args ...string) {
+	t.Helper()
+	origCommand := pipelineUploadCommand
+	origArgs := pipelineUploadArgs
+
+	pipelineUploadCommand = cmd
+	pipelineUploadArgs = args
+
+	t.Cleanup(func() {
+		pipelineUploadCommand = origCommand
+		pipelineUploadArgs = origArgs
+	})
+}
+
+// captureStderr redirects os.Stderr to a pipe and returns a function that,
+// when called, closes the write end and returns everything written to stderr.
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error = %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = orig
+	})
+	return func() string {
+		w.Close()
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		r.Close()
+		return buf.String()
+	}
+}
+
+// setDebugEnabled enables debug mode and directs debug output to the given writer.
+// It restores the original state on test cleanup.
+func setDebugEnabled(t *testing.T, w io.Writer) {
+	t.Helper()
+	origEnabled := debug.Enabled
+	debug.SetDebug(true)
+	debug.SetOutput(w)
+
+	t.Cleanup(func() {
+		debug.SetDebug(origEnabled)
+		debug.SetOutput(os.Stdout) // default output
+	})
+}
+
+// TestGitMetadataCollectionGate checks that plan, run (cache miss) and pool
+// all apply the same --collect-git-metadata rule, and that --metadata is sent
+// whether or not auto-collection runs.
+func TestGitMetadataCollectionGate(t *testing.T) {
+	collectingGit := &git.FakeGitRunner{Responses: map[string]string{
+		"rev-parse --git-dir":                           ".git\n",
+		"symbolic-ref --short refs/remotes/origin/HEAD": "origin/main\n",
+		"merge-base origin/main HEAD":                   "abc123\n",
+		"branch --show-current":                         "my-feature\n",
+	}}
+
+	flows := map[string]func(t *testing.T, cfg *config.Config) error{
+		"plan": func(t *testing.T, cfg *config.Config) error {
+			setPlanWriter(t, io.Discard)
+			return Plan(context.Background(), cfg, "", PlanOutputJSON, "")
+		},
+		"run": func(t *testing.T, cfg *config.Config) error {
+			client := api.NewClient(api.ClientConfig{ServerBaseURL: cfg.ServerBaseURL, OrganizationSlug: cfg.OrganizationSlug})
+			_, _, err := fetchOrCreateTestPlan(context.Background(), client, cfg, []string{"apple"}, runner.Rspec{})
+			return err
+		},
+		"pool": func(t *testing.T, cfg *config.Config) error {
+			cfg.PipelineSlug, cfg.PoolKey = "pipeline", "rspec"
+			client := api.NewClient(api.ClientConfig{ServerBaseURL: cfg.ServerBaseURL, OrganizationSlug: cfg.OrganizationSlug})
+			_, err := ResolvePool(context.Background(), cfg, "", client, false)
+			return err
+		},
+	}
+
+	for _, tc := range []struct {
+		name     string
+		strategy string
+		collect  *bool
+		metadata map[string]string
+		collects bool
+	}{
+		{name: "strategy set, flag unset", strategy: "manual", collects: true},
+		{name: "strategy set, opted out", strategy: "manual", collect: new(false)},
+		{name: "no strategy, opted in", collect: new(true), collects: true},
+		{name: "no strategy, flag unset"},
+		{name: "opted out keeps --metadata", strategy: "manual", collect: new(false), metadata: map[string]string{"foo": "bar"}},
+		{name: "collected merges --metadata", strategy: "manual", metadata: map[string]string{"foo": "bar"}, collects: true},
+	} {
+		for flow, invoke := range flows {
+			t.Run(flow+"/"+tc.name, func(t *testing.T) {
+				if tc.collects {
+					withGitRunner(t, collectingGit)
+				} else {
+					withGitRunner(t, &failingGitRunner{t: t})
+				}
+
+				var body []byte
+				svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch {
+					case strings.HasSuffix(r.URL.Path, "/filter_tests"):
+						io.WriteString(w, `{"tests":[]}`)
+					case strings.HasSuffix(r.URL.Path, "/pools/plan"):
+						var req struct {
+							Plan json.RawMessage `json:"plan"`
+						}
+						_ = json.NewDecoder(r.Body).Decode(&req)
+						body = req.Plan
+						w.WriteHeader(http.StatusAccepted)
+						io.WriteString(w, `{"id":"pool-1","state":"planning"}`)
+					case r.Method == http.MethodGet:
+						w.WriteHeader(http.StatusNotFound)
+						io.WriteString(w, `{"message":"Not Found"}`)
+					default:
+						body, _ = io.ReadAll(r.Body)
+						io.WriteString(w, `{"identifier":"x","parallelism":1,"tasks":{"0":{"node_number":0,"tests":[{"path":"apple","format":"file"}]}}}`)
+					}
+				}))
+				defer svr.Close()
+
+				cfg := getConfig()
+				cfg.ServerBaseURL = svr.URL
+				cfg.Remote = "origin"
+				cfg.SelectionStrategy = tc.strategy
+				cfg.CollectGitMetadata = tc.collect
+				cfg.Metadata = maps.Clone(tc.metadata)
+
+				if err := invoke(t, cfg); err != nil {
+					t.Fatalf("%s error = %v", flow, err)
+				}
+
+				metadata := requestMetadata(t, body)
+				if tc.collects {
+					if metadata["branch"] != "my-feature" {
+						t.Errorf("expected auto-collected metadata, got %v", metadata)
+					}
+					for k, v := range tc.metadata {
+						if metadata[k] != v {
+							t.Errorf("metadata[%q] = %v, want %q", k, metadata[k], v)
+						}
+					}
+					return
+				}
+				var want map[string]any
+				for k, v := range tc.metadata {
+					if want == nil {
+						want = map[string]any{}
+					}
+					want[k] = v
+				}
+				if diff := cmp.Diff(want, metadata); diff != "" {
+					t.Errorf("request metadata diff (-want +got):\n%s", diff)
+				}
+			})
+		}
+	}
+}
+
+func TestPlanJSON_DebugLogging(t *testing.T) {
+	svr := getHttptestServer()
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Capture stdout (plan data)
+	var stdoutBuf bytes.Buffer
+	setPlanWriter(t, &stdoutBuf)
+
+	getStderr := captureStderr(t)
+
+	// Enable debug and direct debug output to stderr (same as main.go does)
+	setDebugEnabled(t, os.Stderr)
+
+	// This is the method under test
+	planErr := Plan(ctx, cfg, "", PlanOutputJSON, "")
+
+	stderrOutput := getStderr()
+
+	if planErr != nil {
+		t.Errorf("command.Plan(...) error = %v", planErr)
+	}
+
+	stdoutOutput := stdoutBuf.String()
+
+	// Verify debug output includes message before API call
+	if !strings.Contains(stderrOutput, "Creating test plan via API") {
+		t.Errorf("expected stderr to contain 'Creating test plan via API', got: %s", stderrOutput)
+	}
+
+	// Verify debug output includes the returned plan identifier and parallelism
+	if !strings.Contains(stderrOutput, `"facecafe"`) {
+		t.Errorf("expected stderr to contain plan identifier 'facecafe', got: %s", stderrOutput)
+	}
+	if !strings.Contains(stderrOutput, "Parallelism: 42") {
+		t.Errorf("expected stderr to contain 'Parallelism: 42', got: %s", stderrOutput)
+	}
+
+	// Verify debug output indicates this is NOT a fallback plan
+	if !strings.Contains(stderrOutput, "Test plan created.") {
+		t.Errorf("expected stderr to contain 'Test plan created.', got: %s", stderrOutput)
+	}
+
+	// Verify debug output is NOT in stdout
+	if strings.Contains(stdoutOutput, "DEBUG") {
+		t.Errorf("debug output should not appear in stdout, got: %s", stdoutOutput)
+	}
+	if strings.Contains(stdoutOutput, "Creating test plan via API") {
+		t.Errorf("debug output should not appear in stdout, got: %s", stdoutOutput)
+	}
+}
+
+func TestPlanJSON_DebugLogging_Fallback(t *testing.T) {
+	// Mock server to return 500 Internal Server Error (triggers retry timeout and fallback)
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}))
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.Identifier = "hello"
+	cfg.MaxParallelism = 10
+	cfg.ServerBaseURL = svr.URL
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	// Short timeout to trigger fallback quickly
+	ctx := context.Background()
+	fetchCtx, cancel := context.WithTimeout(ctx, 1*time.Millisecond)
+	defer cancel()
+
+	// Capture stdout (plan data)
+	var stdoutBuf bytes.Buffer
+	setPlanWriter(t, &stdoutBuf)
+
+	getStderr := captureStderr(t)
+
+	// Enable debug and direct debug output to stderr
+	setDebugEnabled(t, os.Stderr)
+
+	// This is the method under test
+	planErr := Plan(fetchCtx, cfg, "", PlanOutputJSON, "")
+
+	stderrOutput := getStderr()
+
+	if planErr != nil {
+		t.Errorf("command.Plan(...) error = %v", planErr)
+	}
+
+	stdoutOutput := stdoutBuf.String()
+
+	// Verify debug output includes message before API call
+	if !strings.Contains(stderrOutput, "Creating test plan via API") {
+		t.Errorf("expected stderr to contain 'Creating test plan via API', got: %s", stderrOutput)
+	}
+
+	// Verify debug output indicates fallback plan was used
+	if !strings.Contains(stderrOutput, "Using fallback plan.") {
+		t.Errorf("expected stderr to contain 'Using fallback plan.', got: %s", stderrOutput)
+	}
+
+	// Verify debug output includes the fallback plan identifier and parallelism
+	if !strings.Contains(stderrOutput, `"hello"`) {
+		t.Errorf("expected stderr to contain fallback plan identifier 'hello', got: %s", stderrOutput)
+	}
+	if !strings.Contains(stderrOutput, "Parallelism: 10") {
+		t.Errorf("expected stderr to contain 'Parallelism: 10', got: %s", stderrOutput)
+	}
+
+	// Verify debug output is NOT in stdout
+	if strings.Contains(stdoutOutput, "DEBUG") {
+		t.Errorf("debug output should not appear in stdout, got: %s", stdoutOutput)
+	}
+}
+
+// When the server cannot be reached (here, a retry timeout), --plan-out has
+// nothing to pass through, so it emits a locally-computed fallback plan on
+// stdout and warns on stderr that it is not a server plan.
+func TestPlanPlanOut_FallbackWarnsOnStderr(t *testing.T) {
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}))
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.Identifier = "hello"
+	cfg.MaxParallelism = 10
+	cfg.ServerBaseURL = svr.URL
+	cfg.PlanOut = "-"
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	// Short timeout to trigger fallback quickly
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	getStderr := captureStderr(t)
+
+	// This is the method under test
+	planErr := Plan(fetchCtx, cfg, "", PlanOutputPlanOut, "")
+
+	stderrOutput := getStderr()
+	assertTasklessFallbackSummary(t, stderrOutput)
+
+	if planErr != nil {
+		t.Errorf("command.Plan(...) error = %v", planErr)
+	}
+
+	// The fallback plan is still emitted as valid JSON on stdout, carrying the
+	// identifier and parallelism, without the client-internal Fallback field
+	// leaking.
+	var got plan.TestPlan
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if strings.Contains(strings.ToLower(buf.String()), "fallback") {
+		t.Errorf("--plan-out output leaked the Fallback field:\n%s", buf.String())
+	}
+	if got.Identifier != "hello" {
+		t.Errorf("fallback plan Identifier = %q, want %q", got.Identifier, "hello")
+	}
+	if got.Parallelism != 10 {
+		t.Errorf("fallback plan Parallelism = %d, want 10 (from --max-parallelism)", got.Parallelism)
+	}
+
+	// The fallback caveat is written to stderr.
+	if !strings.Contains(stderrOutput, "locally-computed fallback plan") {
+		t.Errorf("expected stderr to contain the fallback caveat, got: %s", stderrOutput)
+	}
+}
+
+func assertTasklessFallbackSummary(t *testing.T, stderr string) {
+	t.Helper()
+	for _, want := range []string{"Not determined: taskless fallback placeholder.", "no test allocation computed."} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("missing %q:\n%s", want, stderr)
+		}
+	}
+	for _, unwanted := range []string{"full locally discovered suite", "  Local non-intelligent split;"} {
+		if strings.Contains(stderr, unwanted) {
+			t.Errorf("placeholder claims computed split %q:\n%s", unwanted, stderr)
+		}
+	}
+}
+
+// When --max-parallelism is unset, the --plan-out local fallback falls back to
+// the static BUILDKITE_PARALLEL_JOB_COUNT (cfg.Parallelism).
+func TestPlanPlanOut_FallbackToStaticParallelism(t *testing.T) {
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}))
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.Identifier = "hello"
+	// MaxParallelism left at 0; Parallelism (BUILDKITE_PARALLEL_JOB_COUNT) is 3.
+	cfg.Parallelism = 3
+	cfg.ServerBaseURL = svr.URL
+	cfg.PlanOut = "-"
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+	captureStderr(t)
+
+	planErr := Plan(fetchCtx, cfg, "", PlanOutputPlanOut, "")
+	if planErr != nil {
+		t.Errorf("command.Plan(...) error = %v", planErr)
+	}
+
+	var got plan.TestPlan
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if got.Parallelism != 3 {
+		t.Errorf("fallback plan Parallelism = %d, want 3 (from BUILDKITE_PARALLEL_JOB_COUNT)", got.Parallelism)
+	}
+}
+
+// When the server returns an error plan (`{"tasks": {}}`), --plan-out passes
+// it through verbatim rather than substituting a local fallback, so the output
+// reflects the server's actual response. It is not marked as a local fallback.
+func TestPlanPlanOut_ServerErrorPlanPassedThrough(t *testing.T) {
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		enc := json.NewEncoder(w)
+		switch r.URL.Path {
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan/filter_tests":
+			enc.Encode(api.FilteredTestResponse{})
+		case "/v2/analytics/organizations/buildkite/suites/rspec/test_plan":
+			// Error plan: empty task map.
+			enc.Encode(plan.TestPlan{Identifier: "facecafe", Parallelism: 0, Tasks: map[string]*plan.Task{}})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+	cfg.PlanOut = "-"
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	getStderr := captureStderr(t)
+
+	planErr := Plan(context.Background(), cfg, "", PlanOutputPlanOut, "")
+
+	stderrOutput := getStderr()
+
+	if planErr != nil {
+		t.Errorf("command.Plan(...) error = %v", planErr)
+	}
+
+	var got plan.TestPlan
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+
+	// The server's error plan is passed through: empty tasks, server identifier,
+	// no locally-distributed task map.
+	if len(got.Tasks) != 0 {
+		t.Errorf("expected empty tasks passed through from server, got: %s", buf.String())
+	}
+	if got.Identifier != "facecafe" {
+		t.Errorf("expected server identifier %q, got %q", "facecafe", got.Identifier)
+	}
+
+	// The empty-plan warning is written to stderr...
+	if !strings.Contains(stderrOutput, "returned an empty plan") {
+		t.Errorf("expected stderr to contain the empty-plan warning, got: %s", stderrOutput)
+	}
+	// ...but it is NOT presented as a locally-computed fallback, nor does it
+	// claim a fallback to non-intelligent splitting, since the server's plan is
+	// what gets emitted.
+	if strings.Contains(stderrOutput, "locally-computed fallback plan") {
+		t.Errorf("server error plan should not be reported as a local fallback, got: %s", stderrOutput)
+	}
+	if strings.Contains(stderrOutput, "Falling back to non-intelligent splitting") {
+		t.Errorf("server error plan should not claim a fallback to non-intelligent splitting, got: %s", stderrOutput)
+	}
+}
+
+// A selection that matched no tests returns empty tasks like an error plan, but
+// its selection metadata marks it as a real result: plan emits the server's
+// zero parallelism instead of a local fallback.
+func TestPlan_ZeroMatchSelection(t *testing.T) {
+	const response = `{"identifier":"facecafe","parallelism":0,"tasks":{},"selection":{"applied":true,"strategy":"manual","candidate_count":4,"selected_count":0}}`
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/filter_tests") {
+			json.NewEncoder(w).Encode(api.FilteredTestResponse{})
+			return
+		}
+		w.Write([]byte(response))
+	}))
+	defer svr.Close()
+
+	for _, tc := range []struct {
+		name   string
+		format PlanOutput
+		want   string
+	}{
+		{"json", PlanOutputJSON, `{"BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER":"facecafe","BUILDKITE_TEST_ENGINE_PARALLELISM":"0"}` + "\n"},
+		{"plan-out", PlanOutputPlanOut, response},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := getConfig()
+			cfg.ServerBaseURL = svr.URL
+			cfg.Identifier = "local-id"
+			cfg.MaxParallelism = 7
+			if tc.format == PlanOutputPlanOut {
+				cfg.PlanOut = "-"
+			}
+			if err := cfg.ValidateForPlan(); err != nil {
+				t.Fatalf("Invalid config: %v", err)
+			}
+
+			var buf bytes.Buffer
+			setPlanWriter(t, &buf)
+			getStderr := captureStderr(t)
+
+			if err := Plan(context.Background(), cfg, "", tc.format, ""); err != nil {
+				t.Fatalf("command.Plan(...) error = %v", err)
+			}
+			stderr := getStderr()
+
+			got := buf.String()
+			if tc.format == PlanOutputPlanOut {
+				var indented bytes.Buffer
+				json.Indent(&indented, []byte(tc.want), "", "  ")
+				tc.want = indented.String() + "\n"
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("command.Plan(...) output diff = %s", diff)
+			}
+			for _, unwanted := range []string{"Falling back to non-intelligent splitting", "returned an empty plan"} {
+				if strings.Contains(stderr, unwanted) {
+					t.Errorf("stderr contains %q: %s", unwanted, stderr)
+				}
+			}
+			for _, wanted := range []string{
+				"Parallelism is 0, there is nothing to run.",
+				"Selection matched none of the 4 candidate test selectors, so there are no tests to run.",
+				"Check that the selectors passed with --selection-param match",
+			} {
+				if !strings.Contains(stderr, wanted) {
+					t.Errorf("stderr missing %q: %s", wanted, stderr)
+				}
+			}
+		})
+	}
+}
+
+// A manual selection that lists files but matches none fails plan, unless
+// --fail-on-no-tests=false opts out. --plan-out still emits the plan first.
+func TestPlan_ZeroMatchManualSelectionFails(t *testing.T) {
+	const response = `{"identifier":"facecafe","parallelism":0,"tasks":{},"selection":{"applied":true,"strategy":"manual","candidate_count":4,"selected_count":0}}`
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(response))
+	}))
+	defer svr.Close()
+
+	for _, tc := range []struct {
+		name          string
+		format        PlanOutput
+		failOnNoTests *bool
+		wantErr       bool
+		wantOutput    bool
+	}{
+		{name: "json", format: PlanOutputJSON, wantErr: true},
+		{name: "pipeline-upload", format: PlanOutputPipelineUpload, wantErr: true},
+		{name: "plan-out", format: PlanOutputPlanOut, wantErr: true, wantOutput: true},
+		{name: "json, opted out", format: PlanOutputJSON, failOnNoTests: new(false), wantOutput: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := getConfig()
+			cfg.ServerBaseURL = svr.URL
+			cfg.SelectionStrategy = "manual"
+			cfg.SelectionParams = map[string]string{"selectors": "spec/a_spec.rb"}
+			cfg.CollectGitMetadata = new(false)
+			cfg.FailOnNoTests = tc.failOnNoTests
+			if tc.format == PlanOutputPlanOut {
+				cfg.PlanOut = "-"
+			}
+
+			var buf bytes.Buffer
+			setPlanWriter(t, &buf)
+			captureStderr(t)
+
+			err := Plan(context.Background(), cfg, "", tc.format, "")
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "(1 listed) matched a test") {
+					t.Errorf("command.Plan(...) error = %v, want manual zero-match error", err)
+				}
+			} else if err != nil {
+				t.Errorf("command.Plan(...) error = %v", err)
+			}
+			if got := buf.Len() > 0; got != tc.wantOutput {
+				t.Errorf("command.Plan(...) wrote output = %v, want %v: %q", got, tc.wantOutput, buf.String())
+			}
+		})
+	}
+}
+
+func TestPrintSelectedNothingWarning(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		selection string
+		want      string
+	}{
+		{"zero match", `{"applied":true,"strategy":"xgboost","candidate_count":4,"selected_count":0}`, "Selection matched none of the 4 candidate test selectors"},
+		{"missing candidate count", `{"applied":true,"selected_count":0}`, "Selection matched no tests, so there are no tests to run."},
+		{"not applied", `{"applied":false,"candidate_count":4,"selected_count":0}`, ""},
+		{"some selected", `{"applied":true,"candidate_count":4,"selected_count":1}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := plan.TestPlan{Tasks: map[string]*plan.Task{}}
+			if err := json.Unmarshal([]byte(tc.selection), &p.Selection); err != nil {
+				t.Fatal(err)
+			}
+			var buf bytes.Buffer
+			printPlanningSummary(&buf, p, sourceCreateResponse, &config.Config{})
+			got := buf.String()
+			if tc.want == "" {
+				if strings.Contains(got, "Selection matched") {
+					t.Errorf("unexpected zero-match warning: %s", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("missing %q: %s", tc.want, got)
+			}
+			// The path hint only applies to manual selection.
+			if strings.Contains(got, "--selection-param") {
+				t.Errorf("unexpected manual hint: %s", got)
+			}
+		})
+	}
+}
+
+// A fatal API error (here, 401 Unauthorized) is returned rather than swallowed:
+// --plan-out exits with an error and emits nothing on stdout, instead of
+// falling back to a local plan.
+func TestPlanPlanOut_FatalErrorReturnsNoOutput(t *testing.T) {
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"message": "Invalid access token"}`))
+	}))
+	defer svr.Close()
+
+	cfg := getConfig()
+	cfg.ServerBaseURL = svr.URL
+	cfg.PlanOut = "-"
+
+	if err := cfg.ValidateForPlan(); err != nil {
+		t.Errorf("Invalid config: %v", err)
+	}
+
+	var buf bytes.Buffer
+	setPlanWriter(t, &buf)
+
+	planErr := Plan(context.Background(), cfg, "", PlanOutputPlanOut, "")
+
+	// A fatal error is propagated (non-nil), so main exits non-zero.
+	if planErr == nil {
+		t.Error("expected a fatal error for a 401 response, got nil")
+	}
+
+	// Nothing is written to stdout: no plan, no fallback.
+	if buf.Len() != 0 {
+		t.Errorf("expected no stdout output on fatal error, got: %s", buf.String())
+	}
+}

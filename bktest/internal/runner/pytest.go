@@ -1,0 +1,568 @@
+package runner
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/buildkite/test-engine-client/v3/internal/debug"
+	"github.com/buildkite/test-engine-client/v3/internal/plan"
+	"github.com/kballard/go-shellquote"
+	"golang.org/x/mod/semver"
+)
+
+type Pytest struct {
+	RunnerConfig
+	useJUnit bool
+}
+
+func (p Pytest) Name() string {
+	return "pytest"
+}
+
+func NewPytest(c RunnerConfig) Pytest {
+	// buildkite-pytest, pool exec's persistent runner, is part of
+	// buildkite-test-collector and reports its JSON, whether or not bktec's
+	// python can import it.
+	pluginInstalled := c.persistentRunner || checkPythonPackageInstalled("buildkite_test_collector") // python import only uses underscore
+
+	useJUnit := !pluginInstalled
+
+	if pluginInstalled {
+		// Ensure buildkite-test-collector version is >1.2.0 for --tag-filters support
+		if c.TagFilters != "" {
+			if err := checkBuildkiteTestCollectorVersion("1.2.0"); err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				fmt.Fprintln(os.Stderr, "Please upgrade with: pip install --upgrade buildkite-test-collector")
+				os.Exit(1)
+			}
+		}
+		if c.TestCommand == "" {
+			c.TestCommand = "pytest {{testExamples}} --json={{resultPath}}"
+		}
+		if c.ResultPath == "" {
+			c.ResultPath = getRandomTempFilename("pytest-results.json")
+		}
+	} else {
+		if c.TagFilters != "" {
+			fmt.Fprintln(os.Stderr, "Error: --tag-filters requires the 'buildkite-test-collector' package.")
+			fmt.Fprintln(os.Stderr, "Please install it with: pip install buildkite-test-collector.")
+			os.Exit(1)
+		}
+		if c.TestCommand == "" {
+			c.TestCommand = "pytest {{testExamples}} --junit-xml={{resultPath}}"
+		}
+		if c.ResultPath == "" {
+			c.ResultPath = getRandomTempFilename("pytest-results.xml")
+		}
+	}
+
+	// Detect output format from the result flag in the command, so a custom command
+	// with --junit-xml works even when buildkite-test-collector is installed (and vice versa).
+	if strings.Contains(c.TestCommand, "--junit-xml") {
+		useJUnit = true
+	} else if strings.Contains(c.TestCommand, "--json=") {
+		if !pluginInstalled {
+			fmt.Fprintln(os.Stderr, "Error: --json requires the 'buildkite-test-collector' package to be installed.")
+			fmt.Fprintln(os.Stderr, "Please install it with: pip install buildkite-test-collector.")
+			os.Exit(1)
+		}
+		useJUnit = false
+	}
+
+	if useJUnit {
+		fmt.Fprintln(os.Stderr, "Buildkite Test Engine Client: Using JUnit XML output for pytest results.")
+	} else {
+		fmt.Fprintln(os.Stderr, "Buildkite Test Engine Client: Using JSON output for pytest results.")
+	}
+
+	if c.TestFilePattern == "" {
+		c.TestFilePattern = "**/{*_test,test_*}.py"
+	}
+
+	if c.RetryTestCommand == "" {
+		c.RetryTestCommand = c.TestCommand
+	}
+
+	return Pytest{
+		RunnerConfig: c,
+		useJUnit:     useJUnit,
+	}
+}
+
+func (p Pytest) ResultFormat() string {
+	if p.useJUnit {
+		return "junit"
+	}
+	return ""
+}
+
+func (p Pytest) SupportedFeatures() SupportedFeatures {
+	return SupportedFeatures{
+		SplitByFile:     true,
+		SplitByExample:  true,
+		FilterTestFiles: true,
+		FilterTestByTag: true,
+		AutoRetry:       true,
+		Mute:            true,
+		Skip:            true,
+		SplitBySelector: true,
+	}
+}
+
+func (p Pytest) Run(result *RunResult, testCases []plan.TestCase, retry bool) error {
+	cmd, err := BuildCommand(p, testCases, retry)
+	if err != nil {
+		return err
+	}
+
+	cmdErr := runAndForwardSignal(cmd)
+	parseExit2JSON := false
+
+	// Only rescue exit code 1 because it indicates a test failures.
+	// Ref: https://docs.pytest.org/en/7.1.x/reference/exit-codes.html
+	if exitError := new(exec.ExitError); errors.As(cmdErr, &exitError) && exitError.ExitCode() != 1 {
+		// pytest exits 2 for collection errors, and buildkite-test-collector can
+		// still write tagged JSON results for those errors.
+		if p.useJUnit || exitError.ExitCode() != 2 {
+			return cmdErr
+		}
+		parseExit2JSON = true
+	}
+
+	var parseErr error
+	if p.useJUnit {
+		parseErr = p.runParseJUnit(result)
+	} else {
+		parseErr = p.runParseJSON(result)
+	}
+	if parseErr != nil {
+		fmt.Printf("Buildkite Test Engine Client: Failed to read test output, failed tests will not be retried: %v\n", parseErr)
+	}
+	if parseExit2JSON && result.Status() != RunStatusError {
+		result.error = cmdErr
+	}
+
+	return cmdErr
+}
+
+func (p Pytest) runParseJSON(result *RunResult) error {
+	tests, parseErr := parseTestEngineTestResult(p.ResultPath)
+	if parseErr != nil {
+		return parseErr
+	}
+
+	for _, test := range tests {
+		recordPytestJSONTestResult(result, test)
+	}
+
+	return nil
+}
+
+const pytestCollectionErrorTag = "test.pytest_collection_error"
+
+func recordPytestJSONTestResult(result *RunResult, test TestEngineTest) {
+	path := pytestPathFromTestEngineResult(test.Scope, test.Name)
+
+	result.RecordTestResult(plan.TestCase{
+		Identifier: test.ID,
+		Format:     plan.TestCaseFormatExample,
+		Scope:      test.Scope,
+		Name:       test.Name,
+		// pytest can execute individual tests using node IDs, which are filenames,
+		// class names (if any), and functions separated by `::`.
+		// Ref: https://docs.pytest.org/en/6.2.x/usage.html#nodeids
+		Path: path,
+	}, test.Result)
+
+	if test.Tags[pytestCollectionErrorTag] == "true" {
+		result.error = fmt.Errorf("pytest collection failed: %s", path)
+	}
+}
+
+func pytestPathFromTestEngineResult(scope, name string) string {
+	if scope == "" {
+		return name
+	}
+
+	return fmt.Sprintf("%s::%s", scope, name)
+}
+
+// parsePytestJSONBatchReport handles the buildkite-test-collector JSON report
+// of one pytest command run by bktec pool consume.
+func parsePytestJSONBatchReport(data []byte) (ParsedReport, error) {
+	var tests *[]TestEngineTest
+	if err := json.Unmarshal(data, &tests); err != nil {
+		return ParsedReport{}, fmt.Errorf("invalid pytest JSON report: %w", err)
+	}
+	if tests == nil {
+		return ParsedReport{}, fmt.Errorf("invalid pytest JSON report: not a list of tests")
+	}
+	var parsed ParsedReport
+	seen := map[string]int{}
+	for _, test := range *tests {
+		// A file that fails to collect has no tests to report, so its attempt
+		// errors. Other files keep their results: buildkite-pytest and
+		// --continue-on-collection-errors run them anyway, and pool consume
+		// already errors the batch when pytest stops at a collection error.
+		if test.Tags[pytestCollectionErrorTag] == "true" {
+			// An error outside a leased file, such as a package directory's
+			// conftest.py, matches no dispatched file and errors the batch.
+			file, _, _ := strings.Cut(pytestPathFromTestEngineResult(test.Scope, test.Name), "::")
+			if !slices.Contains(parsed.ErroredFiles, file) {
+				parsed.ErroredFiles = append(parsed.ErroredFiles, file)
+			}
+			continue
+		}
+		path := pytestPathFromTestEngineResult(test.Scope, test.Name)
+		if err := addPytestBatchTest(&parsed, seen, plan.TestCase{Scope: test.Scope, Name: test.Name, Path: path}, test.Result); err != nil {
+			return ParsedReport{}, err
+		}
+	}
+	return parsed, nil
+}
+
+// parsePytestJUnitBatchReport handles the JUnit XML report of one pytest
+// command run by bktec pool consume.
+func parsePytestJUnitBatchReport(data []byte) (ParsedReport, error) {
+	tests, err := parseJUnitXML(data)
+	if err != nil {
+		return ParsedReport{}, fmt.Errorf("invalid pytest JUnit XML report: %w", err)
+	}
+	var parsed ParsedReport
+	seen := map[string]int{}
+	for _, test := range tests {
+		// pytest reports collection errors and module-level skips without a
+		// classname. Neither is a test.
+		if test.Classname == "" {
+			if test.Result != TestStatusSkipped {
+				parsed.ErrorsOutsideTests = true
+			}
+			continue
+		}
+		// Scope is the raw classname, as in runParseJUnit.
+		path := pytestNodeIDFromJUnit(test.Classname, test.Name)
+		if err := addPytestBatchTest(&parsed, seen, plan.TestCase{Scope: test.Classname, Name: test.Name, Path: path}, test.Result); err != nil {
+			return ParsedReport{}, err
+		}
+	}
+	return parsed, nil
+}
+
+// addPytestBatchTest reports a test by its node ID, which pytest reports
+// relative to its rootdir, and matches it to the leased file in the node ID.
+// pytest can report a test twice, such as when it fails and its teardown
+// errors, so the test is reported once: failed if any report failed.
+func addPytestBatchTest(parsed *ParsedReport, seen map[string]int, test plan.TestCase, status TestStatus) error {
+	switch status {
+	case TestStatusPassed, TestStatusFailed, TestStatusSkipped:
+	default:
+		return fmt.Errorf("unknown pytest test status %q", status)
+	}
+	file, _, _ := strings.Cut(test.Path, "::")
+	if file == "" || test.Name == "" {
+		return fmt.Errorf("pytest test %q has no file or name", test.Path)
+	}
+	if i, ok := seen[test.Path]; ok {
+		if status == TestStatusFailed || parsed.Tests[i].Status == TestStatusSkipped {
+			parsed.Tests[i].Status = status
+		}
+		return nil
+	}
+	test.Identifier = test.Path
+	seen[test.Path] = len(parsed.Tests)
+	parsed.Tests = append(parsed.Tests, ReportedTest{TestCase: test, Status: status, Selector: file})
+	return nil
+}
+
+func (p Pytest) runParseJUnit(result *RunResult) error {
+	tests, parseErr := loadAndParseJUnitXML(p.ResultPath)
+	if parseErr != nil {
+		return parseErr
+	}
+
+	for _, test := range tests {
+		path := pytestNodeIDFromJUnit(test.Classname, test.Name)
+		result.RecordTestResult(plan.TestCase{
+			Identifier: path,
+			Format:     plan.TestCaseFormatExample,
+			// JUnit XML ingestion set Scope to the raw classname
+			Scope: test.Classname,
+			Name:  test.Name,
+			Path:  path,
+		}, test.Result)
+	}
+
+	return nil
+}
+
+// pytestNodeIDFromJUnit reconstructs a pytest node ID (scope and path) from a JUnit XML
+// classname and test name. pytest encodes the module path in the classname using dots as
+// separators, with any class names appended after the module.
+//
+// Examples:
+//
+//	classname="test_sample",                          name="test_happy"   → scope="test_sample.py",                          path="test_sample.py::test_happy"
+//	classname="tests.test_sample",                    name="test_happy"   → scope="tests/test_sample.py",                    path="tests/test_sample.py::test_happy"
+//	classname="tests.test_auth.TestLogin",            name="test_success" → scope="tests/test_auth.py::TestLogin",           path="tests/test_auth.py::TestLogin::test_success"
+//	classname="tests.MyTest.test_subtract.TestClass", name="test_positive"→ scope="tests/MyTest/test_subtract.py::TestClass",path="tests/MyTest/test_subtract.py::TestClass::test_positive"
+//	classname="tests.MyTest.test_add",                name="test_add"     → scope="tests/MyTest/test_add.py",                path="tests/MyTest/test_add.py::test_add"
+func pytestNodeIDFromJUnit(classname, name string) (path string) {
+	if classname == "" {
+		return name
+	}
+
+	parts := strings.Split(classname, ".")
+
+	// Identify the module (test file) as the last component that matches pytest's test file
+	// naming convention (test_* or *_test). This correctly handles uppercase package directories
+	// such as tests.MyTest.test_foo.TestClass, where MyTest is a directory, not a class.
+	// If no such component is found (non-standard naming), fall back to stopping at the first
+	// CamelCase component.
+	moduleEnd := -1
+	for i, p := range parts {
+		if strings.HasPrefix(p, "test_") || strings.HasSuffix(p, "_test") {
+			moduleEnd = i + 1
+		}
+	}
+
+	if moduleEnd == -1 {
+		moduleEnd = len(parts)
+		for i, p := range parts {
+			if len(p) > 0 && p[0] >= 'A' && p[0] <= 'Z' {
+				moduleEnd = i
+				break
+			}
+		}
+	}
+
+	modulePath := strings.Join(parts[:moduleEnd], "/") + ".py"
+	classParts := parts[moduleEnd:]
+
+	if len(classParts) == 0 {
+		path = modulePath + "::" + name
+	} else {
+		classPath := strings.Join(classParts, "::")
+		path = modulePath + "::" + classPath + "::" + name
+	}
+	return
+}
+
+func (p Pytest) DiscoverTestTargets() ([]string, error) {
+	debug.Println("Discovering test files with include pattern:", p.TestFilePattern, "exclude pattern:", p.TestFileExcludePattern)
+	files, err := discoverTestFiles(p.TestFilePattern, p.TestFileExcludePattern)
+	debug.Println("Discovered", len(files), "files")
+
+	if err != nil {
+		return nil, err
+	}
+
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no files found with pattern %q and exclude pattern %q", p.TestFilePattern, p.TestFileExcludePattern)
+	}
+
+	return files, nil
+}
+
+// GetExamples returns an array of test examples within the given files.
+// It uses `pytest --collect-only -q` to enumerate individual tests.
+//
+// --tag-filters can be used to filter tests by markers if specified.
+// e.g. --tag-fitlers team:frontend matches markers:
+// with @pytest.mark.execution_tag('team', 'frontend')
+//
+// The --tag-filters feature also assumes Python Test Collector plugin
+// version >1.2.0 is installed.
+func (p Pytest) GetExamples(files []string) ([]plan.TestCase, error) {
+	if len(files) == 0 {
+		return []plan.TestCase{}, nil
+	}
+
+	args := []string{"--collect-only", "-q"}
+	if p.TagFilters != "" {
+		args = append(args, "--tag-filters", p.TagFilters)
+	}
+	args = append(args, files...)
+	cmd := exec.Command("pytest", args...)
+
+	output, err := cmd.Output()
+	if err != nil {
+		// Include stderr in error message for debugging
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("pytest collection failed: %s", exitErr.Stderr)
+		}
+		return nil, fmt.Errorf("pytest collection failed: %w", err)
+	}
+
+	return p.parsePytestCollectOutput(string(output))
+}
+
+// parsePytestCollectOutput parses the output of `pytest --collect-only -q`
+// and returns a list of test cases.
+//
+// Example output:
+//
+//	test_sample.py::test_happy
+//	test_auth.py::TestLogin::test_success
+//	test_auth.py::test_param[value1]
+//
+//	3 tests collected in 0.05s
+func (p Pytest) parsePytestCollectOutput(output string) ([]plan.TestCase, error) {
+	var testCases []plan.TestCase
+
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+
+		// Skip empty lines and summary lines (lines without ::)
+		if line == "" || !strings.Contains(line, "::") {
+			continue
+		}
+
+		// Parse node ID: "file.py::TestClass::test_method" or "file.py::test_func"
+		testCases = append(testCases, p.mapNodeIDToTestCase(line))
+	}
+
+	return testCases, nil
+}
+
+// mapNodeIDToTestCase converts a pytest node ID to a TestCase.
+// Node ID format: file_path::class::method or file_path::function
+// Must match the format used by buildkite-test-collector for pytest.
+// Scope is everything except the final component, Name is the last component.
+func (p Pytest) mapNodeIDToTestCase(nodeID string) plan.TestCase {
+	// Split on the last :: to get scope (everything before) and name (last component)
+	lastIdx := strings.LastIndex(nodeID, "::")
+	scope := ""
+	name := nodeID
+	if lastIdx != -1 {
+		scope = nodeID[:lastIdx]
+		name = nodeID[lastIdx+2:]
+	}
+
+	// There is difference between the scope reported by test-collector and native JUnit XML.
+	if p.useJUnit {
+		scope = collectorScopeToJunitScope(scope)
+	}
+
+	return plan.TestCase{
+		Identifier: nodeID,
+		Path:       nodeID,
+		Scope:      scope,
+		Name:       name,
+		Format:     plan.TestCaseFormatExample,
+	}
+}
+
+// collectorScopeToJunitScope converts a pytest scope (from test-collector) to a JUnit scope (from JUnit XML).
+// test-collector reports the scope as the file path (e.g. tests/test_auth.py::TestLogin),
+// while JUnit XML reports the scope as the raw classname (e.g. tests.test_auth.TestLogin).
+// Strip the `.py` extension from the file path, then replace `::` and `/` with `.`.
+// The file path is always the part before the first `::`, so we only trim the suffix on
+// that part. Doing so avoids mangling a directory that happens to end in `.py`.
+// Example:
+//
+//	test_sample.py -> test_sample
+//	tests/test_auth.py::TestLogin -> tests.test_auth.TestLogin
+//	tests/MyTest/test_subtract.py::TestClass -> tests.MyTest.test_subtract.TestClass
+//	tests/test_auth.py::TestOuter::TestInner -> tests.test_auth.TestOuter.TestInner
+//	tests/pkg.py/test_auth.py::TestLogin -> tests.pkg.py.test_auth.TestLogin
+func collectorScopeToJunitScope(scope string) string {
+	path, rest, hasClass := strings.Cut(scope, "::")
+	path = strings.TrimSuffix(path, ".py")
+	if hasClass {
+		path = path + "::" + rest
+	}
+
+	classname := strings.ReplaceAll(path, "::", ".")
+	classname = strings.ReplaceAll(classname, "/", ".")
+
+	return classname
+}
+
+func (p Pytest) CommandNameAndArgs(testCases []plan.TestCase, retry bool) (string, []string, error) {
+	cmd := p.TestCommand
+	if retry {
+		cmd = p.RetryTestCommand
+	}
+
+	testPaths := pathsFromTestCases(testCases)
+
+	testExamples := shellquote.Join(testPaths...)
+
+	if strings.Contains(cmd, "{{testExamples}}") {
+		cmd = strings.Replace(cmd, "{{testExamples}}", testExamples, 1)
+	} else {
+		cmd = cmd + " " + testExamples
+	}
+
+	cmd = strings.Replace(cmd, "{{resultPath}}", p.ResultPath, 1)
+
+	args, err := shellquote.Split(cmd)
+	if err != nil {
+		return "", []string{}, err
+	}
+
+	return args[0], args[1:], nil
+}
+
+func getRandomTempFilename(filename string) string {
+	tempDir, err := os.MkdirTemp("", "bktec-pytest-*")
+	if err != nil {
+		panic(err)
+	}
+	return filepath.Join(tempDir, filename)
+}
+
+// getPythonPackageVersion retrieves the version of a Python package using importlib.metadata.
+// The pkgName should use hyphens (e.g., "buildkite-test-collector") as that's the package name in metadata.
+func getPythonPackageVersion(pkgName string) (string, error) {
+	pythonCmd := exec.Command("python", "-c", "import importlib.metadata, sys; print(importlib.metadata.version(sys.argv[1]))", pkgName)
+	output, err := pythonCmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("could not determine %s version: %w", pkgName, err)
+	}
+
+	return strings.TrimSpace(string(output)), nil
+}
+
+// checkBuildkiteTestCollectorVersion verifies that the installed buildkite-test-collector
+// version is greater than the specified required version.
+func checkBuildkiteTestCollectorVersion(requiredVersion string) error {
+	installedVersionStr, err := getPythonPackageVersion("buildkite-test-collector")
+	if err != nil {
+		return err
+	}
+
+	// semver package requires versions to be prefixed with "v"
+	installedVersionCanonical := "v" + installedVersionStr
+	requiredVersionCanonical := "v" + requiredVersion
+
+	if !semver.IsValid(installedVersionCanonical) {
+		return fmt.Errorf("could not parse installed buildkite-test-collector version %q", installedVersionStr)
+	}
+
+	if !semver.IsValid(requiredVersionCanonical) {
+		return fmt.Errorf("could not parse required version %q", requiredVersion)
+	}
+
+	// semver.Compare returns -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+	// We want installed > required, so compare should return 1
+	if semver.Compare(installedVersionCanonical, requiredVersionCanonical) <= 0 {
+		return fmt.Errorf("buildkite-test-collector version %s is installed, but version >%s is required for --tag-filters support", installedVersionStr, requiredVersion)
+	}
+
+	return nil
+}
+
+func checkPythonPackageInstalled(pkgName string) bool {
+	// This is the most reliable way I can find. Hopefully it should work regardless of if user uses pip, poetry or uv
+	pythonCmd := exec.Command("python", "-c", "import importlib.util, sys; print(importlib.util.find_spec(sys.argv[1]) is not None)", pkgName)
+	output, err := pythonCmd.Output()
+
+	return err == nil && strings.TrimSpace(string(output)) == "True"
+}

@@ -1,0 +1,172 @@
+package command
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/buildkite/test-engine-client/v3/internal/api"
+	"github.com/buildkite/test-engine-client/v3/internal/config"
+	"github.com/buildkite/test-engine-client/v3/internal/plan"
+)
+
+const fallbackExtra = "⚠️ Falling back to non-intelligent splitting. Your build may take longer than usual."
+
+// ANSI color codes. Disabled when NO_COLOR is set (https://no-color.org).
+var (
+	colorRed    = ansi("\033[31m")
+	colorYellow = ansi("\033[33m")
+	colorBold   = ansi("\033[1m")
+	colorReset  = ansi("\033[0m")
+)
+
+func ansi(code string) string {
+	if os.Getenv("NO_COLOR") != "" {
+		return ""
+	}
+	return code
+}
+
+// printWarning prints a warning and optional hints to w.
+func printWarning(w io.Writer, message string, hints ...string) {
+	fmt.Fprintf(w, "%s⚠️ %s%s\n", colorYellow+colorBold, message, colorReset)
+	for _, h := range hints {
+		fmt.Fprintln(w, colorYellow+h+colorReset)
+	}
+}
+
+// printWarn prints a recoverable warning to stderr followed by an optional hint
+// and the fallback notice.
+func printWarn(label, message string, hints ...string) {
+	printWarning(os.Stderr, label+": "+message, append(hints, fallbackExtra)...)
+}
+
+const sourceCreateResponse = ""
+
+func printPlanningSummary(w io.Writer, testPlan plan.TestPlan, source string, cfg *config.Config) {
+	fmt.Fprintln(w)
+	if testPlan.Fallback {
+		fmt.Fprint(w, "Using local fallback\n\n")
+	} else if source != sourceCreateResponse {
+		fmt.Fprint(w, "Using existing plan\n\n")
+	}
+	var requested map[string]string
+	if selection := buildSelectionParams(cfg.SelectionStrategy, cfg.SelectionParams); selection != nil {
+		requested = selection.Params
+	}
+	plan.PrintSelectionSummary(w, testPlan, requested)
+	fmt.Fprintln(w)
+	printSplitSummary(w, testPlan)
+	if testPlan.SelectedNothing() {
+		printSelectedNothingWarning(w, testPlan.Selection)
+	}
+}
+
+// printSelectedNothingWarning explains an applied selection that matched no
+// tests, which would otherwise read like a quiet success.
+func printSelectedNothingWarning(w io.Writer, s *plan.SelectionMetadata) {
+	message := "Selection matched no tests, so there are no tests to run."
+	if s.CandidateCount != nil {
+		message = fmt.Sprintf("Selection matched none of the %d candidate test selectors, so there are no tests to run.", *s.CandidateCount)
+	}
+	var hints []string
+	if s.Strategy != nil && *s.Strategy == "manual" {
+		hints = append(hints, "Check that the selectors passed with --selection-param match the selectors bktec discovers or reads from --selector-file, without any location prefix.")
+	}
+	printWarning(w, message, hints...)
+}
+
+// checkManualSelectionMatched fails a manual selection that listed selectors
+// but matched no tests, which usually means the selectors are wrong. An empty list has
+// nothing to match, and an explicit --fail-on-no-tests=false opts out.
+func checkManualSelectionMatched(cfg *config.Config, testPlan plan.TestPlan) error {
+	if !testPlan.SelectedNothing() || (cfg.FailOnNoTests != nil && !*cfg.FailOnNoTests) {
+		return nil
+	}
+	if s := testPlan.Selection; s.Strategy == nil || *s.Strategy != "manual" {
+		return nil
+	}
+	// files is the legacy key; the server rejects requests that send both.
+	listed := countManualSelectionEntries(cfg.SelectionParams["selectors"]) + countManualSelectionEntries(cfg.SelectionParams["files"])
+	if listed == 0 {
+		return nil
+	}
+	return fatal("No tests selected", fmt.Sprintf("none of the selectors passed with --selection-param (%d listed) matched a test. Set --fail-on-no-tests=false to pass without running tests", listed))
+}
+
+// printSplitSummary prints the plan summary and warns when a selector plan had
+// to use default durations because no selector timing history was available.
+func printSplitSummary(w io.Writer, testPlan plan.TestPlan) {
+	plan.PrintSplitSummary(w, testPlan)
+	if testPlan.HasNoSelectorTimingHistory() {
+		printWarning(
+			w,
+			"Selector splitting used default durations because no historical selector timings were found.",
+			"If these tests have not run before, run them once to record selector timings. Otherwise, update your collector and run them again:",
+			"  Ruby gem: buildkite-test_collector v2.14.0+",
+			"  JavaScript npm package: buildkite-test-collector v1.10.0+",
+		)
+	}
+}
+
+// fatal formats an unrecoverable error message with red bold styling.
+// When a is an error, it is wrapped so callers can use errors.Is/As.
+func fatal(label string, a any) error {
+	if e, ok := a.(error); ok {
+		return fmt.Errorf("%s❌ %s: %w%s", colorRed+colorBold, label, e, colorReset)
+	}
+	return fmt.Errorf("%s❌ %s: %v%s", colorRed+colorBold, label, a, colorReset)
+}
+
+// handleError classifies API errors and prints user-facing messages to stderr.
+// Returns nil for recoverable errors (caller should fall back to non-intelligent splitting),
+// or a fatal error with a formatted message for unrecoverable failures.
+func handleError(err error) error {
+	if errors.Is(err, api.ErrRetryTimeout) {
+		var timeoutError *api.RetryTimeoutError
+		if errors.As(err, &timeoutError) {
+			printWarn("Timeout", "Test Engine API timed out", "Last request error: "+timeoutError.LastError.Error())
+		} else {
+			printWarn("Timeout", "Test Engine API timed out")
+		}
+		return nil
+	}
+
+	if billingError := new(api.BillingError); errors.As(err, &billingError) {
+		printWarn("Billing Error", billingError.Message)
+		return nil
+	}
+
+	// 422 from the Test Engine API on plan endpoints indicates the API is
+	// administratively disabled for the org (ANALYTICS_DISABLE_API feature flag).
+	// Surface it as "Unavailable" since it's a temporary, server-side disable
+	// rather than a client-side validation problem.
+	if unprocessableError := new(api.UnprocessableEntityError); errors.As(err, &unprocessableError) {
+		printWarn("Unavailable", unprocessableError.Message)
+		return nil
+	}
+
+	if notFoundError := new(api.NotFoundError); errors.As(err, &notFoundError) {
+		printWarn("Not Found", notFoundError.Message, "Check BUILDKITE_ORGANIZATION_SLUG and BUILDKITE_TEST_ENGINE_SUITE_SLUG are correct.")
+		return nil
+	}
+
+	if authError := new(api.AuthError); errors.As(err, &authError) {
+		return fatal("Authentication Failed", authError.Message)
+	}
+
+	if forbiddenError := new(api.ForbiddenError); errors.As(err, &forbiddenError) {
+		return fatal("Access Denied", forbiddenError.Message)
+	}
+
+	if badRequestError := new(api.BadRequestError); errors.As(err, &badRequestError) {
+		return fatal("Invalid Request", badRequestError.Message)
+	}
+
+	return fatal("Unexpected error", err)
+}
+
+func warnErrorPlan() {
+	printWarn("Error Plan", "The Test Engine API failed to generate a plan.")
+}

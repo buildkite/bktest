@@ -1,0 +1,712 @@
+package command
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/buildkite/test-engine-client/v3/internal/api"
+	"github.com/buildkite/test-engine-client/v3/internal/config"
+	"github.com/buildkite/test-engine-client/v3/internal/debug"
+	"github.com/buildkite/test-engine-client/v3/internal/git"
+	"github.com/buildkite/test-engine-client/v3/internal/otlprelay"
+	"github.com/buildkite/test-engine-client/v3/internal/plan"
+	"github.com/buildkite/test-engine-client/v3/internal/runner"
+	"github.com/buildkite/test-engine-client/v3/internal/version"
+	"github.com/olekukonko/tablewriter"
+	"github.com/urfave/cli/v3"
+)
+
+// newGitRunner constructs the git runner used for metadata auto-collection.
+// Overridable in tests to inject a deterministic fake.
+var newGitRunner = func() git.GitRunner { return &git.ExecGitRunner{} }
+
+func Run(ctx context.Context, cfg *config.Config, testListFilename string) error {
+	printPlanningRequest(os.Stderr, cfg)
+
+	relay, err := startOTLPRelay(cfg)
+	if err != nil {
+		return err
+	}
+	drainRelay := func() {
+		if relay == nil {
+			return
+		}
+		drainCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		report := relay.Drain(drainCtx)
+		printOTLPRelayReport(os.Stdout, report)
+		relay = nil
+	}
+	defer drainRelay()
+
+	testRunner, err := runner.DetectRunner(cfg)
+	if err != nil {
+		return fmt.Errorf("unsupported value for BUILDKITE_TEST_ENGINE_TEST_RUNNER: %w", err)
+	}
+
+	testTargets, err := getTestTargets(cfg, testRunner, testListFilename)
+	if err != nil {
+		return err
+	}
+
+	// get plan
+	apiClient := api.NewClient(api.ClientConfig{
+		ServerBaseURL:    cfg.ServerBaseURL,
+		UploadBaseURL:    cfg.UploadBaseURL,
+		AccessToken:      cfg.AccessToken,
+		OrganizationSlug: cfg.OrganizationSlug,
+	})
+
+	testPlan, rawPlan, err := fetchOrCreateTestPlan(ctx, apiClient, cfg, testTargets, testRunner)
+	if err != nil {
+		return err
+	}
+
+	// Save the entire plan before applying node-specific location-prefix trims
+	// or retries. The raw response retains selection and other server-only fields.
+	if cfg.PlanOut != "" {
+		if err := writeRunPlan(cfg, testPlan, rawPlan); err != nil {
+			return err
+		}
+	}
+
+	if err := checkManualSelectionMatched(cfg, testPlan); err != nil {
+		return err
+	}
+
+	debug.Printf("My favourite ice cream is %s", testPlan.Experiment)
+
+	// get plan for this node
+	thisNodeTask := testPlan.Tasks[strconv.Itoa(cfg.NodeIndex)]
+	if thisNodeTask == nil {
+		// A selection that matched no tests can return no task for any node.
+		thisNodeTask = &plan.Task{NodeNumber: cfg.NodeIndex}
+	}
+
+	// File paths sent to the API for test plan creation include the location prefix to match Test Engine records.
+	// However, the test runner expects file paths without the prefix, so we need to remove it before running the tests.
+	locationPrefix := testRunner.LocationPrefix()
+	if locationPrefix != "" && !testPlan.Fallback {
+		if err := trimTaskLocationPrefix(thisNodeTask, locationPrefix); err != nil {
+			return err
+		}
+	}
+
+	// execute tests
+	var timeline []api.Timeline
+	failOnNoTests := cfg.FailOnNoTests != nil && *cfg.FailOnNoTests
+	runResult, runErr := runTestsWithRetry(ctx, apiClient, cfg, testRunner, &thisNodeTask.Tests, cfg.MaxRetries, testPlan.MutedTests, &timeline, cfg.RetryForMutedTest, failOnNoTests)
+
+	// Abort immediately and propagate the error if the process was terminated by a signal,
+	// since the test results may be unreliable and cannot be trusted.
+	if ProcessSignaledError := new(runner.ProcessSignaledError); errors.As(runErr, &ProcessSignaledError) {
+		logSignalAndExit(testRunner.Name(), ProcessSignaledError.Signal)
+	}
+	drainRelay()
+
+	// Retries are now exhausted. If hard (non-muted) failures remain and the
+	// opt-in flag is set, declare an early failure to the Buildkite Agent API so
+	// the build can cascade to failing before this job actually exits.
+	promiseFailureIfNeeded(ctx, cfg, runResult)
+
+	printReport(runResult, testPlan.SkippedTests, testRunner.Name())
+	if !testPlan.Fallback {
+		sendMetadata(ctx, apiClient, cfg, timeline, runResult.Statistics())
+	}
+
+	if exitError := new(exec.ExitError); errors.As(runErr, &exitError) {
+		// We can't definitively confirm the non-zero exit was caused by muted test failures,
+		// since runners like rspec or jest can exit with code 1 for non-test-failure reasons too.
+		// However, checking for exit code 1 alongside a passing report is a best-effort approximation
+		// to reduce the risk of incorrectly suppressing a real error.
+		if exitError.ExitCode() == 1 && runResult.OnlyMutedFailures() {
+			return nil
+		}
+		return fmt.Errorf("%s exited with error: %w", testRunner.Name(), runErr)
+	}
+
+	if runErr == nil && len(runResult.NotRunTests()) > 0 {
+		return cli.Exit("Some tests failed to run; see the report above.", 1)
+	}
+
+	return runErr
+}
+
+func startOTLPRelay(cfg *config.Config) (*otlprelay.Relay, error) {
+	if !cfg.OTLPRelay {
+		return nil, nil
+	}
+
+	runKey := os.Getenv("BUILDKITE_ANALYTICS_KEY")
+	if runKey == "" {
+		runKey = cfg.BuildID
+	}
+
+	// When the collector upload token is itself an OIDC token it was minted
+	// with the same suite audience the relay uses, so seed the relay with it
+	// instead of minting a second, identical token.
+	var initialToken string
+	if cfg.UploadTokenIsOIDC {
+		initialToken = cfg.UploadToken
+	}
+
+	relay, err := otlprelay.New(otlprelay.Config{
+		UpstreamEndpoint: cfg.OTLPRelayUpstreamEndpoint,
+		Batching:         cfg.OTLPRelayBatching,
+		RunKey:           runKey,
+		TokenLifetime:    cfg.OIDCLifetime,
+		CollectorToken:   cfg.UploadToken,
+		InitialToken:     initialToken,
+		TokenSource: func(ctx context.Context) (string, error) {
+			token, err := cfg.RequestOIDCToken(ctx)
+			// The Buildkite API positively refused (non-retryable 4xx); mark it
+			// terminal so the relay stops retrying. Anything else is transient.
+			if err != nil && errors.Is(err, config.ErrOIDCRefused) {
+				return "", fmt.Errorf("%w: %w", otlprelay.ErrTerminalCredential, err)
+			}
+			return token, err
+		},
+		Logf: func(format string, args ...any) {
+			fmt.Printf(format+"\n", args...)
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("start OTLP relay: %w", err)
+	}
+
+	cfg.TestProcessEnv = relay.Environment(os.Getenv("OTEL_RESOURCE_ATTRIBUTES"))
+	fmt.Printf("bktec OTLP relay: listening on %s\n", relay.Endpoint())
+	return relay, nil
+}
+
+func printOTLPRelayReport(w io.Writer, report otlprelay.Report) {
+	var uploads string
+	if report.Batching {
+		uploads = fmt.Sprintf(", %d upstream upload attempt(s)", report.UpstreamUploads)
+	}
+	fmt.Fprintf(w,
+		"bktec OTLP relay: %d request(s) (%s) forwarded%s, %d dropped permanently, %d dropped at drain deadline, %s dropped\n",
+		report.ForwardedRequests,
+		formatBytes(report.ForwardedBytes),
+		uploads,
+		report.DroppedPermanentRequests,
+		report.DroppedDeadlineRequests,
+		formatBytes(report.DroppedBytes),
+	)
+	if report.DroppedDeadlineTestRequests > 0 {
+		fmt.Fprintf(w, "TEST RESULTS MISSING: bktec OTLP relay dropped %d test-result request(s) still queued at the drain deadline. Those test executions were not uploaded to Buildkite Test Engine.\n",
+			report.DroppedDeadlineTestRequests)
+	}
+	if report.DroppedDeadlineUnlabelledRequests > 0 {
+		fmt.Fprintf(w, "TEST RESULTS MAY BE MISSING: bktec OTLP relay dropped %d unlabelled request(s) still queued at the drain deadline. These requests may have carried test results that were not uploaded to Buildkite Test Engine.\n",
+			report.DroppedDeadlineUnlabelledRequests)
+	}
+	if report.Batching {
+		for _, stream := range report.Streams {
+			fmt.Fprintf(w, "bktec OTLP relay: %s: %d requests in, %d uploads out (attempts), requests per upload: p50 %d, max %d; queue wait: p50 %s, max %s; drain time: %s\n",
+				stream.Stream, stream.RequestsIn, stream.UploadsOut,
+				stream.RequestsPerUpload.P50, stream.RequestsPerUpload.Max,
+				roundLatency(stream.QueueWait.P50), roundLatency(stream.QueueWait.Max), roundLatency(stream.DrainTime))
+		}
+	}
+	for _, refusal := range report.Refusals {
+		reason := fmt.Sprintf("HTTP %d", refusal.Status)
+		if refusal.Message != "" {
+			reason += ": " + refusal.Message
+		}
+		fmt.Fprintf(w, "bktec OTLP relay: Buildkite refused %d request(s) (%d test, %d child, %d unlabelled): %s\n",
+			refusal.Requests, refusal.TestRequests, refusal.ChildRequests, refusal.UnlabelledRequests, reason)
+		if refusal.TestRequests > 0 {
+			fmt.Fprintf(w, "TEST RESULTS MISSING: Buildkite refused %d test-result request(s): %s. Those test executions were not uploaded to Buildkite Test Engine.\n",
+				refusal.TestRequests, reason)
+		}
+		if refusal.UnlabelledRequests > 0 {
+			fmt.Fprintf(w, "TEST RESULTS MAY BE MISSING: Buildkite refused %d unlabelled request(s): %s. These requests may have carried test results that were not uploaded to Buildkite Test Engine.\n",
+				refusal.UnlabelledRequests, reason)
+		}
+	}
+	if report.ForwardedRequests == 0 {
+		return
+	}
+	size := report.ForwardedSize
+	fmt.Fprintf(w,
+		"bktec OTLP relay: request size: p50 %s, p90 %s, max %s\n",
+		formatBytes(size.P50), formatBytes(size.P90), formatBytes(size.Max),
+	)
+	latency := report.ForwardedLatency
+	fmt.Fprintf(w,
+		"bktec OTLP relay: upstream latency: p50 %s, p90 %s, max %s\n",
+		roundLatency(latency.P50), roundLatency(latency.P90), roundLatency(latency.Max),
+	)
+}
+
+// roundLatency trims durations for display, e.g. 45.123456ms -> 45.12ms.
+func roundLatency(d time.Duration) time.Duration {
+	return d.Round(10 * time.Microsecond)
+}
+
+// formatBytes renders a byte count in the most readable binary unit,
+// e.g. 512B, 4.7KiB, 2.3MiB.
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	value := float64(n)
+	suffixes := []string{"KiB", "MiB", "GiB", "TiB"}
+	for i, suffix := range suffixes {
+		value /= unit
+		if value < unit || i == len(suffixes)-1 {
+			return strings.TrimSuffix(fmt.Sprintf("%.1f", value), ".0") + suffix
+		}
+	}
+	panic("unreachable")
+}
+
+func trimTaskLocationPrefix(task *plan.Task, locationPrefix string) error {
+	for i, test := range task.Tests {
+		if test.Format == plan.TestCaseFormatSelector {
+			continue
+		}
+
+		path, err := trimFilePathPrefix(test.Path, locationPrefix)
+		if err != nil {
+			return fmt.Errorf("failed to trim path prefix: %w", err)
+		}
+		task.Tests[i].Path = path
+	}
+
+	return nil
+}
+
+// promisedExitStatus is the exit status bktec promises when hard failures
+// remain. bktec's own exit status is unchanged; this is only the early signal.
+const promisedExitStatus = 1
+
+// promiseFailureTimeout bounds the best-effort promise call so a slow or hung
+// agent can never stall job completion.
+const promiseFailureTimeout = 5 * time.Second
+
+// promiseFailureIfNeeded declares an early ("promised") failure via the
+// `buildkite-agent job promise-failure` CLI when the run finished with hard
+// (non-muted) failures after retries and the opt-in flag is enabled.
+//
+// This is the single point that knows both that retries are exhausted and which
+// failures are hard vs muted, so it's the only correct place to promise. Muted
+// failures are excluded by FailedTests(), so a muted-only run never promises.
+//
+// We shell out to the agent CLI (rather than calling the Agent API directly)
+// so it owns auth, retries, redaction, idempotency, and graceful degradation
+// when the early-failure feature isn't enabled for the org (it warns and exits
+// 0). It is best-effort: any error is logged and swallowed so a promise problem
+// never changes the test run's real exit status.
+func promiseFailureIfNeeded(ctx context.Context, cfg *config.Config, runResult runner.RunResult) {
+	declare, reason := promiseFailureDecision(cfg, runResult)
+	if !declare {
+		return
+	}
+
+	fmt.Printf("+++ Buildkite Test Engine Client: ⚠️  Declaring early failure: %d hard test failure(s) remain after retries\n", len(runResult.FailedTests()))
+
+	// Bound the call so a slow or hung agent can never stall job completion;
+	// this path is best-effort and must not hold up the real test run.
+	ctx, cancel := context.WithTimeout(ctx, promiseFailureTimeout)
+	defer cancel()
+
+	// The agent CLI exits 0 even for expected no-ops (e.g. the feature is
+	// disabled for the org, or the job isn't running), so a nil error here does
+	// not guarantee a promise was recorded. The agent prints its own outcome to
+	// stdout/stderr above, so we only note that the command completed rather
+	// than claiming an early failure was declared.
+	if err := makePromiseFailureCommand(ctx, cfg, promisedExitStatus, reason).Run(); err != nil {
+		fmt.Printf("Buildkite Test Engine Client: Warning: failed to run promise-failure command: %v\n", err)
+		return
+	}
+
+	fmt.Println("Buildkite Test Engine Client: promise-failure command completed (see agent output above for the result).")
+}
+
+// promiseFailureDecision encapsulates the gating logic: whether to declare an
+// early failure and, if so, the reason string to send. Kept separate so it can
+// be unit-tested without shelling out.
+func promiseFailureDecision(cfg *config.Config, runResult runner.RunResult) (declare bool, reason string) {
+	if !cfg.PromiseFailure {
+		return false, ""
+	}
+
+	failedCount := len(runResult.FailedTests())
+	if failedCount == 0 {
+		return false, ""
+	}
+
+	return true, fmt.Sprintf("test_failure (%d failed after retries)", failedCount)
+}
+
+// makePromiseFailureCommand builds the `buildkite-agent job promise-failure`
+// invocation. The CLI reads --job from BUILDKITE_JOB_ID and its auth from the
+// agent env vars, all inherited from the current process, so we pass neither.
+func makePromiseFailureCommand(ctx context.Context, cfg *config.Config, exitStatus int, reason string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, cfg.BuildkiteAgentCommand, "job", "promise-failure", strconv.Itoa(exitStatus), "--reason", reason) //nolint:gosec
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd
+}
+
+func printReport(runResult runner.RunResult, testsSkippedByTestEngine []plan.TestCase, runnerName string) {
+	status := runResult.Status()
+	if status == runner.RunStatusUnknown {
+		return
+	}
+
+	fmt.Println("+++ ========== Buildkite Test Engine Report  ==========")
+
+	switch status {
+	case runner.RunStatusPassed:
+		if len(runResult.FailedMutedTests()) > 0 {
+			fmt.Println("✅ Build passed. Some muted tests failed.")
+		} else {
+			fmt.Println("✅ All tests passed.")
+		}
+	case runner.RunStatusFailed:
+		if len(runResult.FailedTests()) == 0 && len(runResult.NotRunTests()) > 0 {
+			fmt.Println("❌ Some tests failed to run.")
+		} else {
+			fmt.Println("❌ Some tests failed.")
+		}
+	case runner.RunStatusError:
+		fmt.Printf("🚨 %s\n", runResult.Error())
+	}
+
+	// Print statistics
+	statistics := runResult.Statistics()
+	if statistics.Total > 0 {
+		fmt.Println("")
+		data := [][]string{
+			{"Passed", "first run", strconv.Itoa(statistics.PassedOnFirstRun)},
+			{"Passed", "on retry", strconv.Itoa(statistics.PassedOnRetry)},
+			{"Muted", "passed", strconv.Itoa(statistics.MutedPassed)},
+			{"Muted", "failed", strconv.Itoa(statistics.MutedFailed)},
+			{"Failed", "", strconv.Itoa(statistics.Failed)},
+			{"Skipped", "", strconv.Itoa(statistics.Skipped)},
+		}
+		if statistics.NotRun > 0 {
+			data = append(data, []string{"Failed to run", "", strconv.Itoa(statistics.NotRun)})
+		}
+		table := tablewriter.NewWriter(os.Stdout)
+		table.AppendBulk(data)
+		table.SetFooter([]string{"", "Total", strconv.Itoa(statistics.Total)})
+		table.SetFooterAlignment(tablewriter.ALIGN_RIGHT)
+		table.SetAutoMergeCellsByColumnIndex([]int{0, 1})
+		table.SetRowLine(true)
+		table.Render()
+
+		// Print muted and failed tests
+		mutedTests := runResult.MutedTests()
+		if len(mutedTests) > 0 {
+			fmt.Println("")
+			fmt.Println("+++ Muted Tests:")
+			for _, mutedTest := range runResult.MutedTests() {
+				fmt.Printf("- %s %s (%s)\n", mutedTest.Scope, mutedTest.Name, mutedTest.Status)
+			}
+		}
+
+		failedTests := runResult.FailedTests()
+		if len(failedTests) > 0 {
+			fmt.Println("")
+			fmt.Println("+++ Failed Tests:")
+			for _, failedTests := range runResult.FailedTests() {
+				fmt.Printf("- %s %s\n", failedTests.Scope, failedTests.Name)
+			}
+		}
+
+		if tests := runResult.NotRunTests(); len(tests) > 0 {
+			fmt.Println("")
+			fmt.Println("+++ Failed to run:")
+			fmt.Printf("%s skipped these tests even though they were expected to run:\n", runnerName)
+			for _, test := range tests {
+				fmt.Printf("- %s %s (%s)\n", test.Scope, test.Name, test.Path)
+			}
+		}
+
+		testsSkippedByRunner := runResult.SkippedTests()
+		if len(testsSkippedByRunner) > 0 {
+			fmt.Println("")
+			fmt.Printf("+++ Skipped by %s:\n", runnerName)
+			for _, skippedTest := range testsSkippedByRunner {
+				fmt.Printf("- %s %s\n", skippedTest.Scope, skippedTest.Name)
+			}
+		}
+
+		if len(testsSkippedByTestEngine) > 0 {
+			fmt.Println("")
+			fmt.Println("+++ Skipped by Test Engine:")
+			for _, skippedTest := range testsSkippedByTestEngine {
+				fmt.Printf("- %s %s\n", skippedTest.Scope, skippedTest.Name)
+			}
+		}
+	}
+
+	// Errored files have no tests, so they're listed even when no tests ran.
+	if erroredFiles := runResult.ErroredFiles(); len(erroredFiles) > 0 {
+		fmt.Println("")
+		fmt.Println("+++ Errored test files:")
+		for _, file := range erroredFiles {
+			fmt.Printf("- %s\n", file)
+		}
+	}
+	fmt.Println("===================================================")
+}
+
+func createTimestamp() string {
+	return time.Now().Format(time.RFC3339Nano)
+}
+
+func uploadResults(ctx context.Context, apiClient *api.Client, cfg *config.Config, testRunner runner.TestRunner) {
+	if !cfg.UploadResults || cfg.UploadToken == "" {
+		return
+	}
+	format := testRunner.ResultFormat()
+	if format == "" {
+		return
+	}
+	if _, err := os.Stat(testRunner.ResultFilePath()); err != nil {
+		return
+	}
+	fmt.Println("Buildkite Test Engine Client: Uploading test results to Test Engine")
+	if err := apiClient.UploadTestResults(ctx, cfg.UploadToken, testRunner.ResultFilePath(), format, cfg.TestRunner, testRunner.LocationPrefix(), cfg.UploadTags); err != nil {
+		fmt.Printf("Buildkite Test Engine Client: Failed to upload test results to Test Engine: %v\n", err)
+	}
+}
+
+func sendMetadata(ctx context.Context, apiClient *api.Client, cfg *config.Config, timeline []api.Timeline, statistics runner.RunStatistics) {
+	err := apiClient.PostTestPlanMetadata(ctx, cfg.SuiteSlug, cfg.Identifier, api.TestPlanMetadataParams{
+		Timeline:   timeline,
+		Env:        cfg.EnvPayload(),
+		Version:    version.Version,
+		Statistics: statistics,
+	})
+
+	// Error is suppressed because we don't want to fail the build if we can't send metadata.
+	if err != nil {
+		fmt.Printf("Failed to send metadata to Test Engine: %v\n", err)
+	}
+}
+
+// runTestsWithRetry can be considered the core of bktec.
+// It invoke testRunner, orchestrate retries.
+// It returns RunResult.
+//
+// For next reader, there is a small caveat with current implementation:
+// - testCases and timeline are both expected to be mutated.
+// - testCases in this case serve both as input and output -> we should probably change it.
+func runTestsWithRetry(ctx context.Context, apiClient *api.Client, cfg *config.Config, testRunner runner.TestRunner, testsCases *[]plan.TestCase, maxRetries int, mutedTests []plan.TestCase, timeline *[]api.Timeline, retryForMutedTest bool, failOnNoTests bool) (runner.RunResult, error) {
+	attemptCount := 0
+
+	// Create a new run result with muted tests to keep track of the results.
+	runResult := runner.NewRunResult(mutedTests)
+
+	// If there are no test cases to run, skip invoking the test runner
+	if len(*testsCases) == 0 {
+		if failOnNoTests {
+			return *runResult, fmt.Errorf("no tests assigned to this node")
+		}
+		fmt.Printf("+++ Buildkite Test Engine Client: No tests to run on this node\n")
+		return *runResult, nil
+	}
+
+	if cfg.UploadResults && cfg.UploadToken == "" {
+		fmt.Println("Buildkite Test Engine Client: Warning: upload-results is enabled but no upload token was provided. Test results will not be uploaded.")
+	}
+
+	// runErr is the error of the last test command. A run with errored test
+	// files keeps the last failed command's error, even if a retry passes.
+	var runErr error
+	for attemptCount <= maxRetries {
+		if attemptCount == 0 {
+			fmt.Printf("+++ Buildkite Test Engine Client: Running tests\n")
+			*timeline = append(*timeline, api.Timeline{
+				Event:     "test_start",
+				Timestamp: createTimestamp(),
+			})
+		} else {
+			fmt.Printf("+++ Buildkite Test Engine Client: ♻️ Attempt %d of %d to retry failing tests\n", attemptCount, maxRetries)
+			*timeline = append(*timeline, api.Timeline{
+				Event:     fmt.Sprintf("retry_%d_start", attemptCount),
+				Timestamp: createTimestamp(),
+			})
+		}
+
+		if err := testRunner.Run(runResult, *testsCases, attemptCount > 0); err != nil || runResult.Status() != runner.RunStatusError {
+			runErr = err
+		}
+
+		uploadResults(ctx, apiClient, cfg, testRunner)
+
+		if attemptCount == 0 {
+			*timeline = append(*timeline, api.Timeline{
+				Event:     "test_end",
+				Timestamp: createTimestamp(),
+			})
+		} else {
+			*timeline = append(*timeline, api.Timeline{
+				Event:     fmt.Sprintf("retry_%d_end", attemptCount),
+				Timestamp: createTimestamp(),
+			})
+		}
+
+		// An error outside of the tests (such as a Go compilation failure, or a
+		// runner crashing before running any tests) cannot be fixed by
+		// retrying the failed tests, so the run is terminal. Test files that
+		// failed to run, such as files that didn't load, still error the run,
+		// but the other files' failed tests are retried.
+		if !runResult.Retryable() {
+			return *runResult, runErr
+		}
+
+		// Don't retry if we've reached max retries.
+		if attemptCount == maxRetries {
+			return *runResult, runErr
+		}
+
+		failedTests := runResult.FailedTests()
+		failedMutedTests := runResult.FailedMutedTests()
+
+		shouldRetryForHardFailedTests := len(failedTests) > 0
+		shouldRetryForMutedTests := retryForMutedTest && len(failedMutedTests) > 0
+		shouldRetry := shouldRetryForHardFailedTests || shouldRetryForMutedTests
+
+		if shouldRetry {
+			*testsCases = failedTests
+
+			if shouldRetryForMutedTests {
+				*testsCases = append(*testsCases, failedMutedTests...)
+			}
+
+			attemptCount++
+		} else {
+			return *runResult, runErr
+		}
+	}
+
+	return *runResult, nil
+}
+
+func logSignalAndExit(name string, signal syscall.Signal) {
+	fmt.Printf("Buildkite Test Engine Client: %s was terminated with signal: %v\n", name, signal)
+
+	// Exit with 128 + signal number, the standard convention.
+	exitCode := 128 + int(signal)
+	os.Exit(exitCode)
+}
+
+// fetchOrCreateTestPlan fetches a test plan from the server, or creates a
+// fallback plan if the server is unavailable or returns an error plan.
+// The raw response is nil for a local fallback.
+func fetchOrCreateTestPlan(ctx context.Context, apiClient *api.Client, cfg *config.Config, testTargets []string, testRunner runner.TestRunner) (resolved plan.TestPlan, response json.RawMessage, resultErr error) {
+	source := "fetched existing plan"
+	defer func() {
+		if resultErr == nil {
+			printPlanningSummary(os.Stderr, resolved, source, cfg)
+		}
+	}()
+	debug.Println("Fetching test plan")
+
+	// Fetch the plan from the server's cache.
+	cachedPlan, raw, err := apiClient.FetchTestPlanRaw(ctx, cfg.SuiteSlug, cfg.Identifier, cfg.JobRetryCount)
+
+	if err != nil {
+		if handledErr := handleError(err); handledErr != nil {
+			return plan.TestPlan{}, nil, handledErr
+		}
+		return plan.CreateFallbackPlan(testTargets, cfg.Parallelism), nil, nil
+	}
+
+	if cachedPlan != nil {
+		// The server can return an "error" plan indicated by an empty task list (i.e. `{"tasks": {}}`).
+		// In this case, we should create a fallback plan. A selection that
+		// matched no tests is not an error: there is nothing to run.
+		if len(cachedPlan.Tasks) == 0 && !cachedPlan.SelectedNothing() {
+			warnErrorPlan()
+			return plan.CreateFallbackPlan(testTargets, cfg.Parallelism), nil, nil
+		}
+
+		debug.Printf("Test plan found. Identifier: %q", cfg.Identifier)
+		return *cachedPlan, raw, nil
+	}
+
+	debug.Println("No test plan found, creating a new plan")
+	source = sourceCreateResponse
+
+	autoCollectGitMetadata(ctx, cfg, newGitRunner())
+
+	// If the cache is empty, create a new plan.
+	params, err := createRequestParam(ctx, cfg, testTargets, *apiClient, testRunner)
+	if err != nil {
+		if handledErr := handleError(err); handledErr != nil {
+			return plan.TestPlan{}, nil, handledErr
+		}
+		return plan.CreateFallbackPlan(testTargets, cfg.Parallelism), nil, nil
+	}
+
+	debug.Println("Creating test plan")
+	testPlan, raw, err := apiClient.CreateTestPlanRaw(ctx, cfg.SuiteSlug, params)
+
+	if err != nil {
+		if handledErr := handleError(err); handledErr != nil {
+			return plan.TestPlan{}, nil, handledErr
+		}
+		return plan.CreateFallbackPlan(testTargets, cfg.Parallelism), nil, nil
+	}
+
+	// The server can return an "error" plan indicated by an empty task list (i.e. `{"tasks": {}}`).
+	// In this case, we should create a fallback plan. A selection that
+	// matched no tests is not an error: there is nothing to run.
+	if len(testPlan.Tasks) == 0 && !testPlan.SelectedNothing() {
+		warnErrorPlan()
+		return plan.CreateFallbackPlan(testTargets, cfg.Parallelism), nil, nil
+	}
+
+	debug.Printf("Test plan created. Identifier: %q", cfg.Identifier)
+	return testPlan, raw, nil
+}
+
+// writeRunPlan writes the server response, or the actual local fallback split.
+// Unlike plan --plan-out, this is file-only: stdout contains test runner output.
+func writeRunPlan(cfg *config.Config, testPlan plan.TestPlan, raw json.RawMessage) error {
+	if testPlan.Fallback {
+		var err error
+		raw, err = json.Marshal(struct {
+			Identifier  string                `json:"identifier"`
+			Parallelism int                   `json:"parallelism"`
+			Tasks       map[string]*plan.Task `json:"tasks"`
+			Fallback    bool                  `json:"fallback"`
+		}{cfg.Identifier, cfg.Parallelism, testPlan.Tasks, true})
+		if err != nil {
+			return fmt.Errorf("encoding --plan-out fallback: %w", err)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(cfg.PlanOut), 0o755); err != nil {
+		return fmt.Errorf("creating --plan-out parent directories for %q: %w", cfg.PlanOut, err)
+	}
+	f, err := os.Create(cfg.PlanOut)
+	if err != nil {
+		return fmt.Errorf("opening --plan-out file %q: %w", cfg.PlanOut, err)
+	}
+	writeErr := writeIndentedJSON(f, raw)
+	closeErr := f.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		return fmt.Errorf("writing --plan-out file %q: %w", cfg.PlanOut, err)
+	}
+	return nil
+}
