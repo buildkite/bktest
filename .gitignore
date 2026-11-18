@@ -42,6 +42,3 @@ internal/runner/testdata/cucumber/cucumber.json
 /bktec
 
 internal/runner/testdata/*/tmp/
-
-# Ignore env files for VScode debugging
-.vscode/.env
