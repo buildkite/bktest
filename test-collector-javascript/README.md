@@ -56,39 +56,10 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ];
     ```
 
-    Experimental OpenTelemetry submission sends test results as spans, with HTTP calls,
-    database queries and manual spans underneath. JSON uploads remain the default.
-
-    Jest, Vitest and Playwright support `@opentelemetry/sdk-trace` 2.9+ and 3.x.
-    SDK 3 requires Node.js 22.15+ and API 1.10+. The [OpenTelemetry setup](docs/opentelemetry.md#setup-1)
-    has package sets for both SDK lines and migration notes for `sdk-trace-base` users.
-
-    ```js
-    // jest.config.js
-    module.exports = {
-      reporters: [
-        "default",
-        ["buildkite-test-collector/jest/reporter", { otelEnabled: true }],
-      ],
-      runtime: "buildkite-test-collector/jest/runtime",
-      testLocationInResults: true,
-    };
-    ```
-
-    See the [OpenTelemetry guide](https://github.com/buildkite/bktest/blob/main/test-collector-javascript/docs/opentelemetry.md)
-    for required packages, billing and limits before enabling it.
-    Workers commit results locally; the parent batches and uploads them without a per-file network wait. OTel mode never falls back to JSON. Linux and macOS are supported; Windows is untested. SIGTERM gets a bounded drain; SIGKILL loses files not yet uploaded.
-    bktec's relay is optional, useful if you already use bktec or need an HTTP(S) proxy; see the guide (proxy behavior is code-checked, not tested).
-
     ### Vitest
 
     Supports Vitest 1–5. Vitest 5 requires Node.js 22.12+; the reporter
     configuration below is unchanged when upgrading from Vitest 4.
-
-    To see hooks, manual spans and HTTP/fetch calls under each test, use
-    experimental [OpenTelemetry mode](docs/opentelemetry.md#vitest).
-    It requires Vitest 4.0.11+ and extra setup. JSON uploads remain the default.
-    If you already use NodeSDK, Sentry or dd-trace, check the guide before enabling OTel.
 
     Update your [Vitest configuration](https://vitest.dev/config/):<br>
 
@@ -201,8 +172,6 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ],
     ```
 
-    For experimental OpenTelemetry submission, pass `{ otelEnabled: true }` to the reporter. See [OpenTelemetry submission](docs/opentelemetry.md#playwright) for dependencies and behavior.
-
     Prefer `BUILDKITE_ANALYTICS_TOKEN` (or `BUILDKITE_TESTS_OTLP_TOKEN` for OpenTelemetry) so the credential stays out of your Playwright configuration. The collector omits its `token` option from Playwright's JSON report, but does not redact other credentials in your configuration or test output. Redaction failures warn that reports may contain credentials, but do not prevent uploads.
 
     If you would like to pass in the API token using a custom environment variable, you can do so using the report options.
@@ -260,6 +229,14 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     git commit -am "Add Buildkite Test Engine"
     git push origin add-bk-test-engine
     ```
+
+## 🔭 OpenTelemetry (experimental)
+
+Jest, Vitest and Playwright can also send results as OpenTelemetry traces, with
+HTTP calls, database queries and your own spans under each test in Jest and
+Vitest, and steps in Playwright. JSON uploads stay the default.
+
+The [OpenTelemetry guide](docs/opentelemetry.md) covers setup, billing and limits.
 
 ## 📓 Notes
 
