@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Opt in to native XCTest selectors for timing-aware custom-runner splitting with `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY=class|method`, including inherited tests. Unset preserves existing file-based timing keys; explicit execution tags still take precedence.
+- Add opt-in XCTest selector tags for bktec custom-runner splitting (`BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY=class` or `method`). Unset keeps file-based timing history.
 
 ## 2.0.0-beta.4
 

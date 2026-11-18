@@ -54,7 +54,7 @@ final class TestObserver: NSObject, XCTestObservation {
   func testCaseWillStart(_ testCase: XCTestCase) {
     self.executionTags.withValue {
       var tags: [String: String] = [:]
-      // Preserve existing file-based timing keys unless native selectors are requested.
+      // Without this tag, Test Engine matches file-based timing history.
       if self.splitBy == "class" || self.splitBy == "method" {
         tags["test.selector.primary"] = XCTestCase.selector(of: testCase, splitByMethod: self.splitBy == "method")
       }

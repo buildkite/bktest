@@ -46,7 +46,6 @@ final class TestObserverTests: XCTestCase {
     observer.setTag(for: self, key: "before", value: "yes")
     observer.testCaseDidFinish(self)
 
-    // Tag set after finish should be ignored
     observer.setTag(for: self, key: "after", value: "should-not-appear")
 
     XCTAssertEqual(recordedTags.value.count, 1)

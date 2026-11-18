@@ -6,7 +6,6 @@ extension XCTestCase {
     "\(type(of: testCase))"
   }
 
-  /// The native runnable unit, using the concrete class for inherited tests.
   static func selector(of testCase: XCTestCase, splitByMethod: Bool) -> String {
     #if canImport(ObjectiveC)
     let runtimeClass = NSStringFromClass(type(of: testCase))
@@ -14,12 +13,11 @@ extension XCTestCase {
     let target = Bundle(for: type(of: testCase)).bundleURL.deletingPathExtension().lastPathComponent
     var selector = "\(target)/\(testClass)"
     if splitByMethod {
-      // Xcode enumerates Swift methods with (), but custom Objective-C and
-      // mangled nested class identifiers use the bare Objective-C selector.
+      // Objective-C and nested classes use bare method selectors in Xcode.
       selector += "/\(self.testName(of: testCase))\(runtimeClass.contains(".") ? "()" : "")"
     }
     #else
-    // swift-corelibs-xctest uses SwiftPM's Module.Class[/method] identifiers.
+    // SwiftPM uses Module.Class[/method], not Xcode's Target/Class[/method()].
     var selector = String(reflecting: type(of: testCase))
     if splitByMethod { selector += "/\(self.testName(of: testCase))" }
     #endif

@@ -296,30 +296,26 @@ The existing `tagExecution` API is unchanged. Execution tags are exported as
 
 ### Native XCTest selectors (Unreleased)
 
-Opt in to native selectors with `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY=class`
-or `method`. When unset, no selector tag is added, preserving existing
-file-based timing history. Switching from file selectors to native class or
-method selectors starts timing history afresh; run once to record those keys.
+Set `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY` to `class` or `method` to tag XCTest
+executions with `test.selector.primary` for bktec custom-runner splitting. No
+test code is required. When unset, no selector tag is added and file-based
+timing history is unchanged. Changing to class or method selectors starts new
+timing history; run the suite once to record it.
 
-In class mode the collector tags every XCTest execution with
-`test.selector.primary`. On Xcode this is the native `Target/Class` selector,
-using the executing test bundle and runtime class, including inherited methods
-and custom Objective-C names. No test superclass or setup hook is required.
-An explicit `tagExecution("test.selector.primary", "...")` overrides this default.
+Xcode class selectors are `Target/Class`. Method selectors add `/method()` for
+ordinary Swift classes or `/method` for Objective-C and nested classes.
+Inherited methods use the concrete subclass, and custom Objective-C names keep
+their runtime spelling. Linux SwiftPM uses `Module.Class[/method]`. Explicit
+`tagExecution("test.selector.primary", "...")` values override the automatic tag.
+These selectors do not support macOS `swift test --filter`.
 
-On Xcode, native class and method selectors require the test target's
-`PRODUCT_NAME = $(TARGET_NAME)` (Xcode's default). The collector derives the
-target prefix from the test bundle filename, while Xcode enumerates the target
-name (`BlueprintName`). Custom product names produce timing keys that do not
-match those selectors; the companion splitting example rejects this mismatch.
+Xcode requires `PRODUCT_NAME = $(TARGET_NAME)` (the default). The collector uses
+the test bundle filename for `Target`, so custom product names do not match
+Xcode's target identifiers. The companion splitting example rejects them.
 
-For method-level splitting, set `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY=method`
-for both native enumeration and the test runner. Map it through the Xcode test
-plan/scheme or forward it as `TEST_RUNNER_BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY`,
-like the collector's other variables. Tags then include the native method
-identifier (`Target/Class/method()` for ordinary Swift classes, bare method
-names for Objective-C/nested runtime identifiers). Discovery and tags must use
-the same granularity. On Linux, SwiftPM identifiers use `Module.Class[/method]`.
+Use the same split mode for discovery and execution. Pass the setting through
+your test plan or scheme, or set
+`TEST_RUNNER_BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY` when invoking `xcodebuild`.
 
 ## OpenTelemetry behavior and delivery
 
