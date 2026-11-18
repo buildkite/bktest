@@ -11,8 +11,12 @@ COPY --from=go /usr/local/go/ /usr/local/go/
 ENV PATH="/usr/local/go/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      bats build-essential git libgmp10 libyaml-0-2 \
+      build-essential git libgmp10 libyaml-0-2 \
     && rm -rf /var/lib/apt/lists/*
+# Bookworm's Bats 1.8.2 leaves an empty JUnit report for the failed-test fixture.
+RUN git clone --depth 1 --branch v1.14.0 https://github.com/bats-core/bats-core.git /tmp/bats-core \
+    && /tmp/bats-core/install.sh /usr/local \
+    && rm -rf /tmp/bats-core
 RUN gem install --no-document rspec cucumber base64 concurrent-ruby \
     && gem install --no-document bigdecimal -v 3.2.0
 # The Go runner fixtures execute gotestsum even though CI calls go test directly.
