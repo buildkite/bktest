@@ -362,6 +362,52 @@ const GRAPHQL = ['graphql.parse', 'graphql.validate', 'graphql.resolve message']
 const CLIENTS = ['pg.connect', 'pg.query:SELECT fixture', 'redis-connect', 'redis-SET', 'redis-GET']
 const ESM_TESTS = ['esm app', 'esm failure after I/O', 'ts app']
 
+;(supported ? test : test.skip)('a resolver without conditions support cannot leave package hooks breaking collection', async () => {
+  const result = await runFixture({
+    'package.json': JSON.stringify({ type: 'module', devDependencies: {
+      '@opentelemetry/instrumentation-express': '*', '@opentelemetry/instrumentation-http': '*',
+    } }),
+    // Model older Yarn PnP's rejection at the real CommonJS resolver boundary.
+    'resolver.cjs': `
+      const Module = require('node:module')
+      const resolve = Module._resolveFilename
+      Module._resolveFilename = function(request, parent, isMain, options) {
+        if (options?.conditions) throw new Error("Some options passed to require() aren't supported by PnP yet (conditions)")
+        return resolve.apply(this, arguments)
+      }
+    `,
+    'express.test.js': `
+      import { test, expect } from 'vitest'
+      import { createRequire } from 'node:module'
+      import { get } from 'node:http'
+      import { trace } from '@opentelemetry/api'
+      const express = createRequire(import.meta.url)('express')
+      test('Express still runs', async () => {
+        const app = express()
+        app.get('/route', (req, res) => res.end('ok'))
+        const server = app.listen(0, '127.0.0.1')
+        await new Promise(resolve => server.on('listening', resolve))
+        try {
+          const body = await new Promise((resolve, reject) => get('http://127.0.0.1:' + server.address().port + '/route', res => {
+            let body = ''
+            res.on('data', chunk => { body += chunk })
+            res.on('end', () => resolve(body))
+          }).on('error', reject))
+          expect(body).toBe('ok')
+          trace.getTracer('app').startSpan('manual').end()
+        } finally { await new Promise(resolve => server.close(resolve)) }
+      })
+    `,
+  }, {}, { NODE_OPTIONS: [process.env.NODE_OPTIONS, '--require', path.join(scratch, 'resolver.cjs')].filter(Boolean).join(' ') })
+  expect(result.code).toBe(0)
+  const spans = server.spans()
+  expect(spans.filter(s => s.name === 'test.execution').map(s => s.attributes['test.case.result.status'])).toEqual(['pass'])
+  expect(spans.some(s => s.name === 'manual')).toBe(true)
+  expect(spans.filter(s => s.kind === 2)).toHaveLength(1)
+  expect(spans.filter(s => s.kind === 3)).toHaveLength(1)
+  expect(result.stderr).not.toMatch(/Failed Suites|TEST RESULTS MISSING/)
+}, 30000)
+
 ;(supported ? test : test.skip).each(['forks', 'threads'])('package spans nest under CommonJS, ES module and TypeScript tests, and gaps warn (%s)', async pool => {
   const entryPaths = hooksEntryPaths()
   const result = await runPackages({ OTEL_TEST_POOL: pool, BUILDKITE_ANALYTICS_DEBUG_ENABLED: 'true' })
