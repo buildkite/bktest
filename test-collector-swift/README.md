@@ -307,6 +307,12 @@ using the executing test bundle and runtime class, including inherited methods
 and custom Objective-C names. No test superclass or setup hook is required.
 An explicit `tagExecution("test.selector.primary", "...")` overrides this default.
 
+On Xcode, native class and method selectors require the test target's
+`PRODUCT_NAME = $(TARGET_NAME)` (Xcode's default). The collector derives the
+target prefix from the test bundle filename, while Xcode enumerates the target
+name (`BlueprintName`). Custom product names produce timing keys that do not
+match those selectors; the companion splitting example rejects this mismatch.
+
 For method-level splitting, set `BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY=method`
 for both native enumeration and the test runner. Map it through the Xcode test
 plan/scheme or forward it as `TEST_RUNNER_BUILDKITE_TEST_ENGINE_XCTEST_SPLIT_BY`,
