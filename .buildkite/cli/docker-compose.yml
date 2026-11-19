@@ -9,8 +9,8 @@ services:
 
   stage:
     build:
-      context: .
-      dockerfile: Dockerfile.stage
+      context: ..
+      dockerfile: cli/Dockerfile.stage
     volumes:
       - ../..:/work
     working_dir: /work

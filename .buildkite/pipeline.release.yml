@@ -30,7 +30,7 @@ steps:
   # CLI release staging only. No publisher or release credentials are wired.
   - label: ":pipeline: bktest CLI release rehearsal"
     if: build.tag == null
-    if_changed: "{cmd/**,internal/**,go.mod,go.sum,packaging/**,.buildkite/pipeline.release.yml,.buildkite/pipeline.cli-release.yml,.buildkite/cli/**}"
+    if_changed: "{cmd/**,internal/**,go.mod,go.sum,packaging/**,.buildkite/pipeline.release.yml,.buildkite/pipeline.cli-release.yml,.buildkite/cli/**,.buildkite/steps/update-ca-certificates}"
     command: "[ ! -f go.mod ] || buildkite-agent pipeline upload .buildkite/pipeline.cli-release.yml"
 
   - label: ":pipeline: bktest CLI tag staging"

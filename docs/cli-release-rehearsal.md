@@ -19,7 +19,8 @@ python3 -B -m unittest discover -s packaging/cli -v
 
 The untagged build uses `3.0.0-rehearsal`. A tagged build requires an exact
 `v3` SemVer tag, a clean checkout, and the peeled tag commit equal to `HEAD`.
-The stager writes six CGO-disabled payloads once and then copies or packages
+The stager ignores ambient Go workspaces and builds the six CGO-disabled
+payloads using the checkout's module in read-only mode, then copies or packages
 them. The manifest records the version, source commit and SHA-256 inventory.
 Keep the stage for a retry: never rebuild a missing upload from a different
 checkout or reselect the version in the compatibility repository.
@@ -36,8 +37,12 @@ The staging job uploads only a Buildkite artifact (`dist/cli-release.tar`).
 For a local release simulation, `packaging/cli/rehearse.py` takes the stage, a
 fake destination directory, and explicit `--tag`, `--source` and `--approve`
 arguments. It cannot contact a registry. It reserves the version with the
-manifest, refuses mismatched bytes, and fills in missing files only. Both
-GitHub releases are simulated for prereleases; the stage still contains
+manifest, refuses mismatched bytes, and fills in missing files only. Resume is
+supported between completed file copies, not mid-copy. If a copy is interrupted,
+the simulator rejects the partial file as a hash conflict. Remove the confirmed
+partial file from the fake destination before retrying with the same stage. If
+the reservation manifest itself is partial, reset that fake version directory.
+Both GitHub releases are simulated for prereleases; the stage still contains
 Files and packages, but no prerelease registry publication is enabled. A
 pre-existing fake stable pointer is untouched, even with a staged Files archive.
 

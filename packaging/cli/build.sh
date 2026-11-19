@@ -10,6 +10,6 @@ if [[ "$os" == windows ]]; then
   ext=.exe
 fi
 
-CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -buildvcs=false \
+GOWORK=off CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -mod=readonly -trimpath -buildvcs=false \
   -ldflags "-X github.com/buildkite/bktest/v3/internal/version.Version=v$version" \
   -o "$out/bktest_${version}_${os}_${arch}${ext}" ./cmd/bktest
