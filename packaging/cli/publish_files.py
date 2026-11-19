@@ -59,7 +59,14 @@ class FilesDestination:
                 # Same multipart POST as publish-to-packages; no replace or channel API.
                 # An ambiguous failure stops this run. Resume by reading before any retry.
                 path = str(asset.path).replace("\\", "\\\\").replace('"', '\\"')
-                self._request(self.url, self.write_token, "--form", f'file=@"{path}"')
+                body, _ = self._request(self.url, self.write_token, "--form", f'file=@"{path}"')
+                try:
+                    receipt = json.loads(body)
+                    if (receipt["organization"]["slug"], receipt["registry"]["slug"],
+                            receipt["digests"]["sha256"]) != ("buildkite", "bktec", asset.sha256):
+                        raise ValueError("receipt identity or digest differs")
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ValueError(f"unverifiable Files upload receipt for {name}; re-preflight before retry") from error
 
     def _inventory(self, stage: Stage) -> dict[str, Asset]:
         if not re.fullmatch(rf"3\.{NUMBER}\.{NUMBER}", stage.version):

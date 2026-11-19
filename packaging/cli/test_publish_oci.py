@@ -13,8 +13,9 @@ from tempfile import TemporaryDirectory
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-from publish_oci import OCIDestination
+from publish_oci import EXISTING_REPOSITORIES, OCIDestination
 
 
 class OCIPublicationTest(unittest.TestCase):
@@ -81,6 +82,29 @@ class OCIPublicationTest(unittest.TestCase):
         self.stage.version = "3.7.0-rc.1"
         with self.assertRaisesRegex(ValueError, "requires an exact stable CLI version"):
             destination.preflight(self.stage)
+
+    def test_registry_specific_absence_does_not_adopt_ambiguous_failures(self):
+        _, ecr, packages = EXISTING_REPOSITORIES
+        tag = "v3.7.0"
+        missing = OSError(r'skopeo inspect failed: level=fatal msg="reading manifest: StatusCode: 404, \"\""')
+        for name, responses, expected in (
+            (ecr, [OSError('reading manifest: manifest unknown: Requested image not found"')], None),
+            (ecr, [OSError("reading manifest: name unknown")], OSError),
+            (packages, [missing, json.dumps({"Repository": packages, "Tags": ["v3.5.0"]}).encode()], None),
+            (packages, [missing, json.dumps({"Repository": packages, "Tags": [tag]}).encode()], ValueError),
+            (packages, [missing, json.dumps({"Repository": ecr, "Tags": ["v3.5.0"]}).encode()], ValueError),
+            (packages, [missing, OSError("error listing repository tags: 404")], OSError),
+            (packages, [OSError("reading manifest: unauthorized")], OSError),
+        ):
+            with self.subTest(name=name, responses=responses), patch("publish_oci._run", side_effect=responses) as run:
+                destination = OCIDestination(name, self.root, "", self.stage.archive_sha256)
+                if expected is None:
+                    self.assertIsNone(destination._remote_digest(f"{name}:{tag}"))
+                else:
+                    with self.assertRaises(expected):
+                        destination._remote_digest(f"{name}:{tag}")
+                if len(responses) == 2:
+                    run.assert_called_with("skopeo", "list-tags", f"docker://{name}")
 
     @unittest.skipUnless(all(shutil.which(tool) for tool in ("skopeo", "umoci", "docker-registry")),
                          "requires skopeo, umoci and a local Distribution registry")

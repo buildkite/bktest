@@ -94,7 +94,11 @@ class FilesAPI(BaseHTTPRequestHandler):
         if name not in (*BINARIES, CHECKSUM) or name in state.remote:
             return self.reply(409)
         state.remote[name] = part.get_payload(decode=True)
-        return self.reply(503 if state.fail_after_create == name else 200, b"{}")
+        receipt = {"organization": {"slug": "buildkite"}, "registry": {"slug": "bktec"},
+                   "digests": {"sha256": sha256(state.remote[name]).hexdigest()}}
+        if state.bad_receipt == name:
+            receipt["digests"]["sha256"] = "0" * 64
+        return self.reply(503 if state.fail_after_create == name else 200, json.dumps(receipt).encode())
 
 
 class FilesDestinationTest(unittest.TestCase):
@@ -106,6 +110,7 @@ class FilesDestinationTest(unittest.TestCase):
         self.downloads = {}
         self.posts = []
         self.fail_after_create = None
+        self.bad_receipt = None
         self.list_failure = None
         self.json_next = None
         server = ThreadingHTTPServer(("127.0.0.1", 0), partial(FilesAPI, self))
@@ -167,6 +172,13 @@ class FilesDestinationTest(unittest.TestCase):
                 self.json_next = link
                 self.destination.preflight(self.stage)
         self.assertEqual(self.posts, [])
+
+    def test_wrong_create_receipt_stops_before_next_upload(self):
+        self.bad_receipt = BINARIES[0]
+        with self.assertRaisesRegex(ValueError, "unverifiable Files upload receipt"):
+            self.destination.publish_missing(self.stage, self.destination.preflight(self.stage))
+        self.assertEqual(self.posts, [BINARIES[0]])
+        self.assertNotIn(BINARIES[0], self.destination.preflight(self.stage))
 
     def test_conflicting_or_unavailable_inventory_is_not_missing(self):
         missing = self.destination.preflight(self.stage)

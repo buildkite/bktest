@@ -148,6 +148,23 @@ class OCIDestination:
             # not auth, namespace, TLS or connectivity failures.
             if re.search(r': manifest unknown"?$', str(error)):
                 return None
+            tag = ref.removeprefix(self.name + ":")
+            if tag == ref or not re.fullmatch("v" + VERSION, tag):
+                raise
+            # ECR distinguishes a missing image from a missing repository.
+            if (self.name == EXISTING_REPOSITORIES[1] and
+                    re.search(r': manifest unknown: Requested image not found"?$', str(error))):
+                return None
+            # Packages also returns a bare 404 for an unknown repository. A
+            # successful exact-repository listing must corroborate absence.
+            if (self.name == EXISTING_REPOSITORIES[2] and
+                    str(error).endswith(r': StatusCode: 404, \"\""')):
+                listing = json.loads(_run("skopeo", "list-tags", f"docker://{self.name}"))
+                if (isinstance(listing, dict) and listing.get("Repository") == self.name
+                        and isinstance(tags := listing.get("Tags"), list) and tags
+                        and all(isinstance(item, str) and item for item in tags) and tag not in tags):
+                    return None
+                raise ValueError(f"cannot corroborate OCI tag absence from the repository listing: {ref}") from error
             raise
         return "sha256:" + hashlib.sha256(data).hexdigest()
 
