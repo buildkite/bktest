@@ -222,6 +222,8 @@ impl Payload {
                 name,
                 exec_time,
                 stdout,
+                message,
+                reason,
                 ..
             } => {
                 let data = self.data.get_mut(&name).unwrap();
@@ -233,7 +235,7 @@ impl Payload {
                 );
                 data.history.duration = Some(exec_time);
                 data.result = TestResult::Failed {
-                    failure_reason: stdout,
+                    failure_reason: stdout.or(message).or(reason),
                 }
             }
             TestEvent::Ignored { .. } => {}
@@ -245,7 +247,53 @@ impl Payload {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::input::parse_line;
     use rand::RngExt;
+    use serde_json::json;
+
+    #[test]
+    fn failed_events_preserve_failure_text() {
+        for (fields, expected) in [
+            (
+                r#", "message": "expected panic did not occur""#,
+                json!("expected panic did not occur"),
+            ),
+            (
+                r#", "reason": "time limit exceeded""#,
+                json!("time limit exceeded"),
+            ),
+            (
+                r#", "stdout": "captured output\n", "message": "explicit failure", "reason": "time limit exceeded""#,
+                json!("captured output\n"),
+            ),
+            ("", json!(null)),
+        ] {
+            let mut payload = Payload::new(RuntimeEnvironment::generic());
+            parse_line(
+                r#"{"type":"suite","event":"started","test_count":1}"#,
+                &mut payload,
+            );
+            parse_line(
+                r#"{"type":"test","event":"started","name":"tests::example"}"#,
+                &mut payload,
+            );
+            parse_line(
+                &format!(
+                    r#"{{"type":"test","event":"failed","name":"tests::example","exec_time":0.25{fields}}}"#
+                ),
+                &mut payload,
+            );
+
+            let serialized = serde_json::to_value(&payload).unwrap();
+            let result = &serialized["data"][0];
+            assert_eq!(result["result"], "failed", "extra fields: {fields}");
+            assert_eq!(
+                result.get("failure_reason"),
+                Some(&expected),
+                "extra fields: {fields}"
+            );
+        }
+    }
 
     #[test]
     fn batchify_works_as_expected() {

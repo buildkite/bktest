@@ -55,6 +55,8 @@ pub enum TestEvent {
         exec_time: f64,
         stdout: Option<String>,
         stderr: Option<String>,
+        message: Option<String>,
+        reason: Option<String>,
     },
     #[serde(rename = "ignored")]
     Ignored { name: String },
