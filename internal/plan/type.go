@@ -118,7 +118,6 @@ type Settings struct {
 type TestPlan struct {
 	Identifier   string           `json:"identifier"`
 	Parallelism  int              `json:"parallelism"`
-	Experiment   string           `json:"experiment"`
 	Tasks        map[string]*Task `json:"tasks"`
 	Fallback     bool
 	MutedTests   []TestCase         `json:"muted_tests,omitempty"`

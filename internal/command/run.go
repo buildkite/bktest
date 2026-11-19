@@ -84,8 +84,6 @@ func Run(ctx context.Context, cfg *config.Config, testListFilename string) error
 		return err
 	}
 
-	debug.Printf("My favourite ice cream is %s", testPlan.Experiment)
-
 	// get plan for this node
 	thisNodeTask := testPlan.Tasks[strconv.Itoa(cfg.NodeIndex)]
 	if thisNodeTask == nil {
