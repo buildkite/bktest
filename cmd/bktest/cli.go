@@ -1,0 +1,942 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/urfave/cli/v3"
+)
+
+func applyPlanRequestContext(cmd *cli.Command) error {
+	// An explicit false (flag or env var) opts out of auto-collection, so an
+	// unset flag must stay distinct from false.
+	cfg.CollectGitMetadata = nil
+	if cmd.IsSet(collectGitMetadataFlag.Name) {
+		collect := cmd.Bool(collectGitMetadataFlag.Name)
+		cfg.CollectGitMetadata = &collect
+	}
+	cfg.FailOnNoTests = nil
+	if cmd.IsSet(failOnNoTestsFlag.Name) {
+		fail := cmd.Bool(failOnNoTestsFlag.Name)
+		cfg.FailOnNoTests = &fail
+	}
+
+	selectionParams, err := parseKeyValueEntries(cmd.StringSlice("selection-param"), "selection parameter")
+	if err != nil {
+		return fmt.Errorf("invalid selection params: %w", err)
+	}
+
+	metadata, err := parseKeyValueEntries(cmd.StringSlice("metadata"), "metadata")
+	if err != nil {
+		return fmt.Errorf("invalid metadata: %w", err)
+	}
+
+	// Manual selection can take its selectors from an env var, so a step that
+	// sets the strategy by env var needs no --selection-param. A set but empty
+	// variable is an empty list, which selects no tests.
+	if cfg.SelectionStrategy == "manual" {
+		_, hasSelectors := selectionParams["selectors"]
+		_, hasFiles := selectionParams["files"]
+		if selectors, ok := os.LookupEnv(selectionSelectorsEnvVar); ok && !hasSelectors && !hasFiles {
+			selectionParams["selectors"] = selectors
+		}
+	}
+
+	cfg.SelectionParams = selectionParams
+	cfg.Metadata = metadata
+	return nil
+}
+
+// selectionSelectorsEnvVar holds newline-separated selectors for manual
+// selection. A --selection-param selectors= or files= entry takes precedence.
+const selectionSelectorsEnvVar = "BUILDKITE_TEST_ENGINE_SELECTION_SELECTORS"
+
+func parseKeyValueEntries(entries []string, fieldName string) (map[string]string, error) {
+	result := map[string]string{}
+
+	for _, entry := range entries {
+		splitAt := strings.Index(entry, "=")
+		if splitAt < 0 {
+			return nil, fmt.Errorf("%s %q must use key=value format", fieldName, entry)
+		}
+
+		key := entry[:splitAt]
+		if key == "" {
+			return nil, fmt.Errorf("%s %q has empty key", fieldName, entry)
+		}
+
+		result[key] = entry[splitAt+1:]
+	}
+
+	return result, nil
+}
+
+// Values from the Buildkite build environment
+var organizationSlugFlag = &cli.StringFlag{
+	Name:        "organization-slug",
+	Category:    "BUILD ENVIRONMENT",
+	Usage:       "Buildkite organization slug",
+	Sources:     cli.EnvVars("BUILDKITE_ORGANIZATION_SLUG"),
+	Destination: &cfg.OrganizationSlug,
+	Hidden:      true,
+}
+
+// backfillOrganizationSlugFlag is a non-hidden variant of organizationSlugFlag.
+// The backfill command is CLI-first (run manually outside CI), so the flag should
+// be discoverable in --help, unlike run/plan where the Buildkite agent
+// auto-populates BUILDKITE_ORGANIZATION_SLUG.
+var backfillOrganizationSlugFlag = &cli.StringFlag{
+	Name:        "organization-slug",
+	Category:    "TEST ENGINE",
+	Usage:       "Buildkite organization slug",
+	Sources:     cli.EnvVars("BUILDKITE_ORGANIZATION_SLUG"),
+	Destination: &cfg.OrganizationSlug,
+}
+
+var buildIDFlag = &cli.StringFlag{
+	Name:        "build-id",
+	Category:    "BUILD ENVIRONMENT",
+	Usage:       "Buildkite build id",
+	Sources:     cli.EnvVars("BUILDKITE_BUILD_ID"),
+	Destination: &cfg.BuildID,
+	Hidden:      true,
+}
+
+var jobIDFlag = &cli.StringFlag{
+	Name:        "job-id",
+	Category:    "BUILD ENVIRONMENT",
+	Usage:       "Buildkite job id",
+	Sources:     cli.EnvVars("BUILDKITE_JOB_ID"),
+	Destination: &cfg.JobID,
+	Hidden:      true,
+}
+
+var stepIDFlag = &cli.StringFlag{
+	Name:        "step-id",
+	Category:    "BUILD ENVIRONMENT",
+	Usage:       "Buildkite step id",
+	Sources:     cli.EnvVars("BUILDKITE_STEP_ID"),
+	Destination: &cfg.StepID,
+	Hidden:      true,
+}
+
+var branchFlag = &cli.StringFlag{
+	Name:        "branch",
+	Category:    "BUILD ENVIRONMENT",
+	Usage:       "Branch",
+	Sources:     cli.EnvVars("BUILDKITE_BRANCH"),
+	Destination: &cfg.Branch,
+	Hidden:      true,
+}
+
+var retryCountFlag = &cli.IntFlag{
+	Name:        "retry-count",
+	Category:    "BUILD ENVIRONMENT",
+	Usage:       "Retry count",
+	Sources:     cli.EnvVars("BUILDKITE_RETRY_COUNT"),
+	Destination: &cfg.JobRetryCount,
+	Hidden:      true,
+}
+
+var parallelJobFlag = &cli.IntFlag{
+	Name:        "parallel-job",
+	Category:    "BUILD ENVIRONMENT",
+	Usage:       "Parallel job",
+	Sources:     cli.EnvVars("BUILDKITE_PARALLEL_JOB"),
+	Destination: &cfg.NodeIndex,
+	Hidden:      true,
+}
+
+var parallelismFlag = &cli.IntFlag{
+	Name:        "parallelism",
+	Category:    "BUILD ENVIRONMENT",
+	Usage:       "Run the specified number of bktest processes in parallel",
+	Value:       1,
+	Sources:     cli.EnvVars("BUILDKITE_PARALLEL_JOB_COUNT"),
+	Destination: &cfg.Parallelism,
+}
+
+// Test Engine specific flags
+var accessTokenFlag = &cli.StringFlag{
+	Name:        "access-token",
+	Category:    "TEST ENGINE",
+	Usage:       "Buildkite API access token. If not set, an OIDC token will be generated using buildkite-agent",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_API_ACCESS_TOKEN"),
+	Destination: &cfg.AccessToken,
+}
+
+var uploadTokenFlag = &cli.StringFlag{
+	Name:        "upload-token",
+	Category:    "TEST ENGINE",
+	Usage:       "Buildkite collector upload token. If not set, an OIDC token will be generated using buildkite-agent",
+	Sources:     cli.EnvVars("BUILDKITE_ANALYTICS_TOKEN"),
+	Destination: &cfg.UploadToken,
+	Hidden:      true,
+}
+
+var oidcFlag = &cli.BoolWithInverseFlag{
+	Name:        "oidc",
+	Value:       true,
+	Category:    "TEST ENGINE",
+	Usage:       "When required tokens are missing, generate OIDC tokens using buildkite-agent",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_OIDC"),
+	Destination: &cfg.OIDC,
+}
+
+var oidcLifetimeFlag = &cli.DurationFlag{
+	Name:        "oidc-lifetime",
+	Value:       2 * time.Hour,
+	Category:    "TEST ENGINE",
+	Usage:       "Specify OIDC token lifetime",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_OIDC_LIFETIME"),
+	Destination: &cfg.OIDCLifetime,
+}
+
+var otlpRelayFlag = &cli.BoolFlag{
+	Name:        "otlp-relay",
+	Category:    "TEST ENGINE",
+	Usage:       "Relay OTLP/HTTP traces from the test process to Buildkite using OIDC authentication",
+	Sources:     cli.EnvVars("BUILDKITE_TESTS_OTLP_RELAY"),
+	Destination: &cfg.OTLPRelay,
+}
+
+var otlpRelayBatchingFlag = &cli.BoolFlag{
+	Name:        "otlp-relay-batching",
+	Category:    "TEST ENGINE",
+	Usage:       "Batch OTLP relay requests to reduce uploads (falls back to individual requests if unsupported)",
+	Sources:     cli.EnvVars("BUILDKITE_TESTS_OTLP_RELAY_BATCHING"),
+	Destination: &cfg.OTLPRelayBatching,
+}
+
+var otlpRelayUpstreamEndpointFlag = &cli.StringFlag{
+	Name:        "otlp-relay-upstream-endpoint",
+	Category:    "TEST ENGINE",
+	Usage:       "Upstream OTLP/HTTP traces endpoint",
+	Sources:     cli.EnvVars("BUILDKITE_TESTS_OTLP_RELAY_UPSTREAM_ENDPOINT"),
+	Value:       "https://tests-otlp.buildkite.com/v1/traces",
+	Destination: &cfg.OTLPRelayUpstreamEndpoint,
+	Hidden:      true,
+}
+
+var suiteSlugFlag = &cli.StringFlag{
+	Name:        "suite-slug",
+	Category:    "TEST ENGINE",
+	Usage:       "Buildkite suite slug",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_SUITE_SLUG"),
+	Destination: &cfg.SuiteSlug,
+}
+
+var selectionStrategyFlag = &cli.StringFlag{
+	Name:        "selection-strategy",
+	Category:    "TEST SELECTION",
+	Usage:       "Test selection strategy. Set to manual to run only the tests passed with --selection-param selectors=...",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_SELECTION_STRATEGY"),
+	Destination: &cfg.SelectionStrategy,
+}
+
+var selectionParamFlag = &cli.StringSliceFlag{
+	Name:     "selection-param",
+	Category: "TEST SELECTION",
+	Usage:    "Selection strategy parameter as key=value. For manual selection, pass selectors= followed by newline-separated test selectors, or set BUILDKITE_TEST_ENGINE_SELECTION_SELECTORS. Repeat for multiple entries.",
+}
+
+var metadataFlag = &cli.StringSliceFlag{
+	Name:     "metadata",
+	Category: "TEST SELECTION",
+	Usage:    "Additional metadata key=value sent with the plan request. Overrides auto-collected git metadata with the same key. Repeat for multiple entries.",
+}
+
+// nonEmptyEnvVar is an environment variable source that treats an empty value
+// as unset. urfave/cli marks a bool flag as set when its env var is present but
+// empty, which would make VAR="" read as an explicit false.
+type nonEmptyEnvVar string
+
+func (e nonEmptyEnvVar) Lookup() (string, bool) {
+	v := os.Getenv(string(e))
+	return v, v != ""
+}
+func (e nonEmptyEnvVar) IsFromEnv() bool  { return true }
+func (e nonEmptyEnvVar) Key() string      { return string(e) }
+func (e nonEmptyEnvVar) String() string   { return fmt.Sprintf("environment variable %q", string(e)) }
+func (e nonEmptyEnvVar) GoString() string { return fmt.Sprintf("nonEmptyEnvVar(%q)", string(e)) }
+
+// collectGitMetadataFlag is three-state: applyPlanRequestContext uses IsSet to
+// tell an explicit false apart from unset, so it has no Destination.
+var collectGitMetadataFlag = &cli.BoolFlag{
+	Name:     "collect-git-metadata",
+	Category: "TEST SELECTION",
+	Usage: "Send git metadata with the plan request: commit details, branch, Buildkite context and the full git diff against the base branch. " +
+		"On by default when --selection-strategy is set. Set to false to opt out",
+	Sources: cli.NewValueSourceChain(nonEmptyEnvVar("BUILDKITE_TEST_ENGINE_COLLECT_GIT_METADATA")),
+}
+
+var baseURLFlag = &cli.StringFlag{
+	Name:        "base-url",
+	Category:    "TEST ENGINE",
+	Usage:       "Buildkite API base URL",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_BASE_URL"),
+	Value:       "https://api.buildkite.com",
+	Destination: &cfg.ServerBaseURL,
+	Hidden:      true,
+}
+
+var uploadBaseURLFlag = &cli.StringFlag{
+	Name:        "upload-base-url",
+	Category:    "TEST ENGINE",
+	Usage:       "Test Engine upload API base URL",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_UPLOAD_BASE_URL"),
+	Value:       "https://analytics-api.buildkite.com",
+	Destination: &cfg.UploadBaseURL,
+	Hidden:      true,
+}
+
+var uploadResultsFlag = &cli.BoolFlag{
+	Name:        "upload-results",
+	Category:    "TEST ENGINE",
+	Usage:       "Upload test results to Test Engine after each run",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_UPLOAD_RESULTS"),
+	Destination: &cfg.UploadResults,
+}
+
+var uploadTagsFlag = &cli.StringSliceFlag{
+	Name:     "tag",
+	Category: "TEST ENGINE",
+	Usage:    "Additional key=value tags to attach to the upload. Repeat for multiple entries. When using the environment variable, separate multiple tags with commas.",
+	Sources:  cli.EnvVars("BUILDKITE_TEST_ENGINE_TAGS"),
+	Action: func(_ context.Context, _ *cli.Command, vals []string) error {
+		// DisableSliceFlagSeparator on the run command prevents the CLI library
+		// from splitting comma-separated env var values automatically, so we do
+		// it here to support BUILDKITE_TEST_ENGINE_TAGS="key1=val1,key2=val2".
+		var entries []string
+		for _, v := range vals {
+			entries = append(entries, strings.Split(v, ",")...)
+		}
+		tags, err := parseKeyValueEntries(entries, "upload tag")
+		if err != nil {
+			return fmt.Errorf("invalid upload tags: %w", err)
+		}
+		cfg.UploadTags = tags
+		return nil
+	},
+}
+
+// Test Runner specific flags
+var filesFlag = &cli.StringFlag{
+	Name:     "files",
+	Category: "TEST RUNNER",
+	Value:    "",
+	Usage:    "Override the default test file discovery by providing a path to a file containing a list of test files (one per line)",
+	Sources:  cli.EnvVars("BUILDKITE_TEST_ENGINE_FILES"),
+}
+
+var selectorsFlag = &cli.StringFlag{
+	Name:        "selector-file",
+	Category:    "TEST RUNNER",
+	Value:       "",
+	Usage:       "Path to a file containing a list of selectors to run (one per line)",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_SELECTOR_FILE"),
+	Destination: &cfg.SelectorListPath,
+}
+
+var tagFiltersFlag = &cli.StringFlag{
+	Name:        "tag-filters",
+	Category:    "TEST RUNNER",
+	Usage:       "Tag filters to apply when selecting tests to run (currently only Pytest is supported)",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_TAG_FILTERS"),
+	Destination: &cfg.TagFilters,
+}
+
+var testCommandFlag = &cli.StringFlag{
+	Name:        "test-command",
+	Category:    "TEST RUNNER",
+	Usage:       "Test command",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_TEST_CMD"),
+	Destination: &cfg.TestCommand,
+}
+
+var testFilePatternFlag = &cli.StringFlag{
+	Name:        "test-file-pattern",
+	Category:    "TEST RUNNER",
+	Usage:       "Test file pattern",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_TEST_FILE_PATTERN"),
+	Destination: &cfg.TestFilePattern,
+}
+
+var testFileExcludePatternFlag = &cli.StringFlag{
+	Name:        "test-file-exclude-pattern",
+	Category:    "TEST RUNNER",
+	Usage:       "Test file exclude pattern",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN"),
+	Destination: &cfg.TestFileExcludePattern,
+}
+
+var testRunnerFlag = &cli.StringFlag{
+	Name:        "test-runner",
+	Category:    "TEST RUNNER",
+	Usage:       "Test runner",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_TEST_RUNNER"),
+	Destination: &cfg.TestRunner,
+}
+
+var resultPathFlag = &cli.StringFlag{
+	Name:        "result-path",
+	Category:    "TEST RUNNER",
+	Usage:       "Path to the output file for the test runner",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_RESULT_PATH"),
+	Destination: &cfg.ResultPath,
+}
+
+var splitByExampleFlag = &cli.BoolFlag{
+	Name:        "split-by-example",
+	Category:    "TEST RUNNER",
+	Usage:       "Enable split by example (not supported by all test runners)",
+	Value:       false,
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_SPLIT_BY_EXAMPLE"),
+	Destination: &cfg.SplitByExample,
+}
+
+// selectorSplittingCompatibilityFlag preserves CLI and environment compatibility
+// for pipelines that explicitly enabled selector splitting before v3. Selector
+// splitting is unconditional in v3, so the parsed value is intentionally unused.
+var selectorSplittingCompatibilityFlag = &cli.BoolFlag{
+	Name:    "selector-splitting",
+	Usage:   "Deprecated; selector-based test splitting is always enabled",
+	Value:   true,
+	Sources: cli.EnvVars("BUILDKITE_TEST_ENGINE_SELECTOR_SPLITTING"),
+	Hidden:  true,
+}
+
+// failOnNoTestsFlag is three-state: applyPlanRequestContext uses IsSet to tell
+// an explicit false apart from unset, so it has no Destination.
+var failOnNoTestsFlag = &cli.BoolFlag{
+	Name:     "fail-on-no-tests",
+	Category: "TEST RUNNER",
+	Usage: "Exit with an error if no tests are assigned to this node. " +
+		"A manual selection that matches no tests fails unless this is set to false",
+	Sources: cli.NewValueSourceChain(nonEmptyEnvVar("BUILDKITE_TEST_ENGINE_FAIL_ON_NO_TESTS")),
+}
+
+var locationPrefixFlag = &cli.StringFlag{
+	Name:        "location-prefix",
+	Category:    "TEST RUNNER",
+	Usage:       "Prefix to prepend to test file paths when requesting a test plan, used to match the test files reported by the test collector",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_LOCATION_PREFIX", "BUILDKITE_ANALYTICS_LOCATION_PREFIX"),
+	Destination: &cfg.LocationPrefix,
+}
+
+// Test Runner Retry Flags
+var testEngineRetryCountFlag = &cli.IntFlag{
+	Name:        "test-engine-retry-count",
+	Category:    "TEST RUNNER RETRY",
+	Usage:       "Number of times to retry failing tests",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_RETRY_COUNT"),
+	Destination: &cfg.MaxRetries,
+}
+
+var disableRetryMutedFlag = &cli.BoolFlag{
+	Name:     "disable-retry-muted",
+	Category: "TEST RUNNER RETRY",
+	Usage:    "Disable retry for muted tests",
+	Value:    false,
+	Sources:  cli.EnvVars("BUILDKITE_TEST_ENGINE_DISABLE_RETRY_FOR_MUTED_TEST"),
+	Action: func(ctx context.Context, cmd *cli.Command, v bool) error {
+		// Note the config struct member is the logical opposite of the flag /
+		// env var, so we need to invert the bool here.
+		cfg.RetryForMutedTest = !v
+		return nil
+	},
+}
+
+var retryCommandFlag = &cli.StringFlag{
+	Name:        "retry-command",
+	Category:    "TEST RUNNER RETRY",
+	Usage:       "Command to run when retrying failed tests.",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_RETRY_CMD"),
+	Destination: &cfg.RetryCommand,
+}
+
+// Global Flags
+var versionFlag = &cli.BoolFlag{
+	Name:   "version",
+	Usage:  "print version information and exit",
+	Action: printVersion,
+}
+
+var debugFlag = &cli.BoolFlag{
+	Name:        "debug",
+	Usage:       "Enable debug output",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_DEBUG_ENABLED"),
+	Destination: &cfg.DebugEnabled,
+}
+
+var buildkiteAgentCommandFlag = &cli.StringFlag{
+	Name:        "buildkite-agent-command",
+	Value:       "buildkite-agent",
+	Destination: &cfg.BuildkiteAgentCommand,
+	Hidden:      true,
+}
+
+var promiseFailureFlag = &cli.BoolFlag{
+	Name:        "promise-failure",
+	Category:    "TEST ENGINE",
+	Usage:       "Declare an early failure via the `buildkite-agent job promise-failure` CLI once retries are exhausted and hard (non-muted) failures remain. Opt-in.",
+	Value:       false,
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_PROMISE_FAILURE"),
+	Destination: &cfg.PromiseFailure,
+}
+
+// `run` and `plan` command flags
+var planIdentifierFlag = &cli.StringFlag{
+	Name:        "plan-identifier",
+	Value:       "",
+	Usage:       "the identifier used as the plan's cache key. On 'run', consume a plan previously generated under this identifier. On 'plan', generate the plan under this identifier; distinct values produce distinct plans, a reused value returns the cached plan. Supplying it also lets 'plan' run off-agent without BUILDKITE_BUILD_ID/BUILDKITE_STEP_ID set",
+	Destination: &cfg.Identifier,
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER"),
+}
+
+var runPlanOutFlag = &cli.StringFlag{
+	Name:        "plan-out",
+	Usage:       "write the full test plan as JSON to file `PATH` before running tests, creating parent directories; local fallback plans include fallback: true. Write failures stop the run. Unlike 'plan --plan-out', '-' is a literal file path",
+	Destination: &cfg.PlanOut,
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_PLAN_OUT"),
+}
+
+// `plan` command flags
+var maxParallelismFlag = &cli.IntFlag{
+	Name:        "max-parallelism",
+	Value:       0,
+	Usage:       "instruct the test planner to calculate optimal parallelism for the build, not to exceed the provided value. When 0 this flag is ignored and the test plan parallelism will be derived from the BUILDKITE_PARALLEL_JOB_COUNT environment variable",
+	Destination: &cfg.MaxParallelism,
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_MAX_PARALLELISM"),
+}
+
+var targetTimeFlag = &cli.DurationFlag{
+	Name:        "target-time",
+	Value:       0,
+	Usage:       "the desired target time (e.g. 4m30s) for the entire test suite to complete. When 0 this flag is ignored and the test plan will not consider target time when deriving parallelism. Must be used in conjunction with --max-parallelism",
+	Destination: &cfg.TargetTime,
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_TARGET_TIME"),
+}
+
+var jsonFlag = &cli.BoolFlag{
+	Name:  "json",
+	Usage: "JSON format output",
+}
+
+var planOutFlag = &cli.StringFlag{
+	Name:        "plan-out",
+	Usage:       "write the full test plan (the server's test plan response, unmodified) to `PATH`, or `-` for stdout, without running the tests",
+	Destination: &cfg.PlanOut,
+}
+
+var pipelineUploadFlag = &cli.StringFlag{
+	Name:  "pipeline-upload",
+	Usage: "buildkite-agent pipeline upload will be executed with the provided `template.yml`. The additional enviroment variables BUILDKITE_TEST_ENGINE_PLAN_IDENTIFIER and BUILDKITE_TEST_ENGINE_PARALLELISM from the generated plan will be available to the template.",
+}
+
+// backfill-commit-metadata flags
+var skipDiffsFlag = &cli.BoolFlag{
+	Name:        "skip-diffs",
+	Category:    "BACKFILL",
+	Usage:       "Omit full git diffs from export to reduce upload size",
+	Value:       false,
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_SKIP_DIFFS"),
+	Destination: &cfg.SkipDiffs,
+}
+
+var outputFlag = &cli.StringFlag{
+	Name:        "output",
+	Category:    "BACKFILL",
+	Usage:       "Write tarball to a local file instead of uploading to Buildkite",
+	Destination: &cfg.Output,
+}
+
+var daysFlag = &cli.IntFlag{
+	Name:        "days",
+	Category:    "BACKFILL",
+	Usage:       "Number of days of commit history to export (1-90)",
+	Value:       90,
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_BACKFILL_DAYS"),
+	Destination: &cfg.Days,
+}
+
+var remoteFlag = &cli.StringFlag{
+	Name:        "remote",
+	Category:    "BACKFILL",
+	Usage:       "Git remote name for fetching missing commits and detecting default branch",
+	Value:       "origin",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_REMOTE", "BUILDKITE_TEST_ENGINE_BACKFILL_REMOTE"),
+	Destination: &cfg.Remote,
+}
+
+// planRemoteFlag is a selection-scoped variant of remoteFlag for the plan
+// command. It only reads BUILDKITE_TEST_ENGINE_REMOTE (not the backfill-
+// specific BUILDKITE_TEST_ENGINE_BACKFILL_REMOTE) to avoid the backfill
+// env var unexpectedly affecting plan behaviour.
+var planRemoteFlag = &cli.StringFlag{
+	Name:        "remote",
+	Category:    "TEST SELECTION",
+	Usage:       "Git remote used to detect the base branch for git metadata",
+	Value:       "origin",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_REMOTE"),
+	Destination: &cfg.Remote,
+}
+
+var concurrencyFlag = &cli.IntFlag{
+	Name:        "concurrency",
+	Category:    "BACKFILL",
+	Usage:       "Number of concurrent git operations for diff collection",
+	Value:       10,
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_BACKFILL_CONCURRENCY"),
+	Destination: &cfg.Concurrency,
+}
+
+func backfillCommitMetadataFlags() []cli.Flag {
+	return []cli.Flag{
+		backfillOrganizationSlugFlag,
+		accessTokenFlag,
+		suiteSlugFlag,
+		baseURLFlag,
+		skipDiffsFlag,
+		outputFlag,
+		uploadFlag,
+		daysFlag,
+		remoteFlag,
+		concurrencyFlag,
+		oidcFlag,
+		oidcLifetimeFlag,
+		buildkiteAgentCommandFlag,
+	}
+}
+
+var uploadFlag = &cli.StringFlag{
+	Name:        "upload",
+	Category:    "BACKFILL",
+	Usage:       "Upload a previously generated commit metadata tarball instead of collecting new data",
+	Destination: &cfg.UploadFile,
+}
+
+// Groupings common to multiple commands
+var buildEnvironmentFlags = []cli.Flag{
+	organizationSlugFlag,
+	buildIDFlag,
+	jobIDFlag,
+	stepIDFlag,
+	branchFlag,
+	retryCountFlag,
+	parallelJobFlag,
+}
+
+var testEngineFlags = []cli.Flag{
+	accessTokenFlag,
+	uploadTokenFlag,
+	uploadResultsFlag,
+	uploadTagsFlag,
+	suiteSlugFlag,
+	baseURLFlag,
+	uploadBaseURLFlag,
+	oidcFlag,
+	oidcLifetimeFlag,
+}
+
+var runnerEnvironmentFlags = []cli.Flag{
+	testCommandFlag,
+	testFilePatternFlag,
+	testFileExcludePatternFlag,
+	testRunnerFlag,
+	resultPathFlag,
+	splitByExampleFlag,
+	selectorSplittingCompatibilityFlag,
+	selectorsFlag,
+	locationPrefixFlag,
+	// Runner Retry Flags
+	disableRetryMutedFlag,
+	retryCommandFlag,
+	testEngineRetryCountFlag,
+	buildkiteAgentCommandFlag,
+}
+
+// selectionFlags are shared by every planning command.
+func selectionFlags() []cli.Flag {
+	return []cli.Flag{
+		selectionStrategyFlag,
+		selectionParamFlag,
+		metadataFlag,
+		planRemoteFlag,
+		collectGitMetadataFlag,
+	}
+}
+
+// freshFlag returns a shallow copy of a flag with a distinct backing struct, so
+// urfave/cli's per-flag parse state (hasBeenSet, applied, count, value) does not
+// leak between commands built from the same package-global flag definitions. The
+// copy keeps the shared Destination pointer, so parsed values still land in cfg.
+// urfave/cli v3 exposes no public reset for that state, so a fresh copy per
+// command is the mechanism, matching the library's own per-command flag pattern.
+// urfave/cli's own tests reset flags the same way, reassigning fresh flag
+// literals before re-running a command "since they are set previously":
+// https://github.com/urfave/cli/blob/4937c163f8e8bd88fdb06c4eab67cde61436c205/command_test.go#L3202
+func freshFlag(f cli.Flag) cli.Flag {
+	switch v := f.(type) {
+	case *cli.BoolFlag:
+		c := *v
+		return &c
+	case *cli.StringFlag:
+		c := *v
+		return &c
+	case *cli.IntFlag:
+		c := *v
+		return &c
+	case *cli.DurationFlag:
+		c := *v
+		return &c
+	case *cli.StringSliceFlag:
+		c := *v
+		return &c
+	case *cli.BoolWithInverseFlag:
+		c := *v
+		return &c
+	default:
+		// Unknown flag type: return the shared global as-is rather than dropping
+		// it, so the flag still registers and works. It is NOT isolated; its
+		// parse state can leak between commands until a case is added above.
+		// TestCommandFlagsAllReturnFreshInstances fails when an unhandled type
+		// reaches this branch, so the gap surfaces in CI rather than silently.
+		return f
+	}
+}
+
+func freshFlags(flags []cli.Flag) []cli.Flag {
+	out := make([]cli.Flag, len(flags))
+	for i, f := range flags {
+		out[i] = freshFlag(f)
+	}
+	return out
+}
+
+func runCommandFlags() []cli.Flag {
+	flags := []cli.Flag{
+		filesFlag,
+		tagFiltersFlag,
+		planIdentifierFlag,
+		runPlanOutFlag,
+	}
+	flags = append(flags, buildEnvironmentFlags...)
+	flags = append(flags, testEngineFlags...)
+	flags = append(flags, otlpRelayFlag, otlpRelayBatchingFlag, otlpRelayUpstreamEndpointFlag)
+	flags = append(flags, runnerEnvironmentFlags...)
+	flags = append(flags, parallelismFlag)
+	flags = append(flags, failOnNoTestsFlag)
+	flags = append(flags, promiseFailureFlag)
+	flags = append(flags, selectionFlags()...)
+	return freshFlags(flags)
+}
+
+func planCommandFlags() []cli.Flag {
+	// Some of these flags are not strictly required for planning,
+	// we will remove these in future iterations.
+	flags := []cli.Flag{
+		filesFlag,
+		tagFiltersFlag,
+		planIdentifierFlag,
+		// Dynamic Parallelism Flags
+		maxParallelismFlag,
+		targetTimeFlag,
+	}
+	flags = append(flags, buildEnvironmentFlags...)
+	flags = append(flags, testEngineFlags...)
+	flags = append(flags, runnerEnvironmentFlags...)
+	flags = append(flags, parallelismFlag)
+	flags = append(flags, failOnNoTestsFlag)
+	flags = append(flags, selectionFlags()...)
+	return freshFlags(flags)
+}
+
+var poolLeaseCostFlag = &cli.StringFlag{
+	Name: "pool-lease-cost", Usage: "Cost budget per lease as dimension=budget, such as duration_p50_ms=100000 (unset uses the server default)",
+	Sources: cli.EnvVars("BUILDKITE_TEST_ENGINE_POOL_LEASE_COST"), Destination: &cfg.PoolLeaseCost,
+}
+
+var poolLeaseDurationFlag = &cli.IntFlag{
+	Name: "pool-lease-duration-ms", Usage: "Deprecated: use --pool-lease-cost duration_p50_ms=<ms>",
+	Sources: cli.EnvVars("BUILDKITE_TEST_ENGINE_POOL_LEASE_DURATION_MS"), Destination: &cfg.PoolLeaseDurationMS,
+}
+
+var poolLeaseMaxAttemptsFlag = &cli.IntFlag{
+	Name: "pool-lease-max-attempts", Usage: "Maximum test attempts per lease (0 uses the server default; not local retries)",
+	Sources: cli.EnvVars("BUILDKITE_TEST_ENGINE_POOL_LEASE_MAX_ATTEMPTS"), Destination: &cfg.PoolLeaseMaxAttempts,
+}
+
+var poolRetryCountFlag = &cli.IntFlag{
+	Name: "pool-retry-count", Usage: "Additional Scheduler attempts per entry after failures or errors (0 disables pool retries)",
+	Sources: cli.EnvVars("BUILDKITE_TEST_ENGINE_POOL_RETRY_COUNT"), Destination: &cfg.PoolRetryCount,
+}
+
+func poolPlanCommandFlags() []cli.Flag {
+	flags := []cli.Flag{
+		filesFlag, tagFiltersFlag, accessTokenFlag, maxParallelismFlag, targetTimeFlag, poolLeaseCostFlag, poolLeaseDurationFlag, poolLeaseMaxAttemptsFlag, poolRetryCountFlag,
+		&cli.StringFlag{
+			Name: "pool-id", Usage: "Existing pool ID (only supported by pool run; pool plan rejects it)",
+			Sources: cli.EnvVars("BUILDKITE_TEST_ENGINE_POOL_ID"), Destination: &cfg.PoolID,
+		},
+		&cli.StringFlag{
+			Name: "pool-key", Usage: "Pool key within this build (defaults to BUILDKITE_STEP_ID)",
+			Sources: cli.EnvVars("BUILDKITE_TEST_ENGINE_POOL_KEY"), Destination: &cfg.PoolKey,
+		},
+		&cli.StringFlag{
+			Name: "pipeline-slug", Usage: "Buildkite pipeline slug",
+			Sources: cli.EnvVars("BUILDKITE_PIPELINE_SLUG"), Destination: &cfg.PipelineSlug,
+		},
+	}
+	flags = append(flags, buildEnvironmentFlags...)
+	// Only used to split tests locally when Test Scheduler is unavailable.
+	flags = append(flags, parallelismFlag)
+	flags = append(flags, suiteSlugFlag, baseURLFlag, oidcFlag, oidcLifetimeFlag)
+	flags = append(flags, runnerEnvironmentFlags...)
+	flags = append(flags, selectionFlags()...)
+	return freshFlags(flags)
+}
+
+var localRetryCountFlag = &cli.IntFlag{
+	Name: "local-retry-count", Usage: "Additional local example executions before completing the original Scheduler attempt",
+	Sources: cli.EnvVars("BUILDKITE_TEST_SCHEDULER_LOCAL_RETRY_COUNT"),
+}
+
+func poolExecCommandFlags() []cli.Flag {
+	flags := poolPlanCommandFlags()
+	return append(flags,
+		freshFlag(localRetryCountFlag),
+		&cli.DurationFlag{Name: "runner-startup-timeout", Value: time.Minute, Usage: "Persistent runner handshake timeout (Go duration, e.g. 1m)"},
+		&cli.DurationFlag{Name: "runner-batch-timeout", Value: 10 * time.Minute, Usage: "Persistent runner batch timeout including report submission"},
+		&cli.DurationFlag{Name: "runner-shutdown-timeout", Value: 90 * time.Second, Usage: "Runner exit and collector flush grace period"},
+	)
+}
+
+func poolConsumeCommandFlags() []cli.Flag {
+	flags := append(poolPlanCommandFlags(), localRetryCountFlag, uploadTokenFlag, uploadResultsFlag, uploadTagsFlag, uploadBaseURLFlag)
+	return freshFlags(flags)
+}
+
+func poolRunCommandFlags() []cli.Flag {
+	return append(poolExecCommandFlags(), freshFlags([]cli.Flag{uploadTokenFlag, uploadResultsFlag, uploadTagsFlag, uploadBaseURLFlag})...)
+}
+
+// Keep the legacy command name in diagnostics, not in help or version output.
+func diagnosticCommandName(cmd *cli.Command) string {
+	return "bktec" + strings.TrimPrefix(cmd.FullName(), cmd.Root().Name)
+}
+
+// deprecatedPoolCommand warns that a pool subcommand was replaced by pool run.
+func deprecatedPoolCommand(action cli.ActionFunc) cli.ActionFunc {
+	return func(ctx context.Context, cmd *cli.Command) error {
+		fmt.Fprintf(os.Stderr, "Warning: %s is deprecated; use bktec pool run instead\n", diagnosticCommandName(cmd))
+		return action(ctx, cmd)
+	}
+}
+
+var poolCommand = &cli.Command{
+	Name:  "pool",
+	Usage: "Run tests using Test Scheduler pools",
+	Commands: []*cli.Command{{
+		Name: "plan", Usage: "Fetch or create a pool, waiting for recommended parallelism when dynamic sizing is requested",
+		Action: poolPlan, DisableSliceFlagSeparator: true,
+		Flags: poolPlanCommandFlags(),
+		MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{{
+			Required: true, Category: "PLAN OUTPUT",
+			Flags: [][]cli.Flag{
+				{freshFlag(jsonFlag)},
+				{&cli.StringFlag{
+					Name:  "pipeline-upload",
+					Usage: "Upload `template.yml` with BUILDKITE_TEST_ENGINE_POOL_ID and, when dynamically sized, BUILDKITE_TEST_ENGINE_PARALLELISM available to the template",
+				}},
+			},
+		}},
+	}, {
+		Name:                      "run",
+		Usage:                     "Run Scheduler leases in one persistent runner given after --, or else with a new test command per lease",
+		ArgsUsage:                 "[-- <persistent-runner> [arguments...]]",
+		Action:                    poolRun,
+		DisableSliceFlagSeparator: true,
+		Flags:                     poolRunCommandFlags(),
+	}, {
+		Name:                      "exec",
+		Usage:                     "Deprecated: use pool run -- <persistent-runner>",
+		ArgsUsage:                 "-- <persistent-runner> [arguments...]",
+		Hidden:                    true,
+		Action:                    deprecatedPoolCommand(poolExec),
+		DisableSliceFlagSeparator: true,
+		Flags:                     poolExecCommandFlags(),
+	}, {
+		Name:                      "consume",
+		Usage:                     "Deprecated: use pool run",
+		Hidden:                    true,
+		Action:                    deprecatedPoolCommand(poolConsume),
+		DisableSliceFlagSeparator: true,
+		Flags:                     poolConsumeCommandFlags(),
+	}},
+}
+
+var cliCommand = &cli.Command{
+	Name:  "bktest",
+	Usage: "Buildkite Test Engine Client",
+	Flags: []cli.Flag{versionFlag, debugFlag},
+	Commands: []*cli.Command{
+		poolCommand,
+		{
+			Name:                      "run",
+			Usage:                     "Run tests",
+			Action:                    run,
+			DisableSliceFlagSeparator: true,
+			Flags:                     runCommandFlags(),
+		},
+		{
+			Name:                      "plan",
+			Usage:                     "Generate test plan without running tests",
+			Action:                    plan,
+			DisableSliceFlagSeparator: true,
+			Flags:                     planCommandFlags(),
+			MutuallyExclusiveFlags: []cli.MutuallyExclusiveFlags{
+				{
+					Required: true,
+					Category: "PLAN OUTPUT",
+					Flags: [][]cli.Flag{
+						{freshFlag(jsonFlag)},
+						{freshFlag(planOutFlag)},
+						{freshFlag(pipelineUploadFlag)},
+					},
+				},
+			},
+		},
+		{
+			Name:   "tools",
+			Usage:  "Utility tools",
+			Hidden: true,
+			Commands: []*cli.Command{
+				{
+					Name:   "backfill-commit-metadata",
+					Usage:  "Collect historical git commit metadata and upload to Buildkite",
+					Action: backfillCommitMetadata,
+					Flags:  backfillCommitMetadataFlags(),
+				},
+			},
+		},
+	},
+	Action: func(ctx context.Context, cmd *cli.Command) error {
+		err := cli.ShowRootCommandHelp(cmd)
+		// This is unlikely to ever error, but if it does, we want to know.
+		if err != nil {
+			return cli.Exit(fmt.Sprintf("failed to show help: %v", err), 16)
+		}
+
+		fmt.Println("")
+
+		if cmd.NArg() > 0 {
+			return cli.Exit(fmt.Sprintf("invalid command: %q", cmd.Args().Get(0)), 16)
+		}
+
+		return cli.Exit("command is required", 16)
+	},
+}

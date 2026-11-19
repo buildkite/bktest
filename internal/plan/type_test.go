@@ -1,0 +1,260 @@
+package plan
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+)
+
+func TestTestPlan_UnmarshalWithTimingMetadata(t *testing.T) {
+	raw := `{
+		"identifier": "abc",
+		"parallelism": 2,
+		"tasks": {
+			"0": {
+				"node_number": 0,
+				"tests": [
+					{"path": "a_spec.rb", "estimated_duration": 1500, "timing_sample_size": 7},
+					{"path": "b_spec.rb", "estimated_duration": 1000, "timing_sample_size": 0}
+				]
+			}
+		},
+		"timing_metadata": {
+			"file": {"median_duration": 1200, "default_duration": 1000},
+			"example": {"median_duration": 800, "default_duration": 1000},
+			"selector": {"median_duration": 2000, "default_duration": 1000}
+		}
+	}`
+
+	var p TestPlan
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if p.TimingMetadata == nil {
+		t.Fatal("TimingMetadata is nil, want non-nil")
+	}
+	if p.TimingMetadata.File == nil {
+		t.Fatal("TimingMetadata.File is nil")
+	}
+	if p.TimingMetadata.File.MedianDuration == nil || *p.TimingMetadata.File.MedianDuration != 1200 {
+		t.Errorf("File.MedianDuration = %v, want 1200", p.TimingMetadata.File.MedianDuration)
+	}
+	if p.TimingMetadata.File.DefaultDuration != 1000 {
+		t.Errorf("File.DefaultDuration = %v, want 1000", p.TimingMetadata.File.DefaultDuration)
+	}
+	if p.TimingMetadata.Example == nil {
+		t.Fatal("TimingMetadata.Example is nil")
+	}
+	if p.TimingMetadata.Example.MedianDuration == nil || *p.TimingMetadata.Example.MedianDuration != 800 {
+		t.Errorf("Example.MedianDuration = %v, want 800", p.TimingMetadata.Example.MedianDuration)
+	}
+	if p.TimingMetadata.Selector == nil {
+		t.Fatal("TimingMetadata.Selector is nil")
+	}
+	if p.TimingMetadata.Selector.MedianDuration == nil || *p.TimingMetadata.Selector.MedianDuration != 2000 {
+		t.Errorf("Selector.MedianDuration = %v, want 2000", p.TimingMetadata.Selector.MedianDuration)
+	}
+	gotTests := p.Tasks["0"].Tests
+	wantTests := []TestCase{
+		{Path: "a_spec.rb", EstimatedDuration: 1500, TimingSampleSize: 7},
+		{Path: "b_spec.rb", EstimatedDuration: 1000, TimingSampleSize: 0},
+	}
+	if diff := cmp.Diff(gotTests, wantTests); diff != "" {
+		t.Errorf("tests diff (-got +want):\n%s", diff)
+	}
+}
+
+func TestTestPlan_UnmarshalWithFileOnly(t *testing.T) {
+	raw := `{
+		"identifier": "x",
+		"parallelism": 2,
+		"tasks": {},
+		"timing_metadata": {"file": {"median_duration": null, "default_duration": 1000}}
+	}`
+
+	var p TestPlan
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if p.TimingMetadata == nil || p.TimingMetadata.File == nil {
+		t.Fatal("TimingMetadata.File is nil")
+	}
+	if p.TimingMetadata.Example != nil {
+		t.Errorf("TimingMetadata.Example = %+v, want nil", p.TimingMetadata.Example)
+	}
+	if p.TimingMetadata.Selector != nil {
+		t.Errorf("TimingMetadata.Selector = %+v, want nil", p.TimingMetadata.Selector)
+	}
+	if p.TimingMetadata.File.MedianDuration != nil {
+		t.Errorf("File.MedianDuration = %v, want nil", *p.TimingMetadata.File.MedianDuration)
+	}
+	if p.TimingMetadata.File.DefaultDuration != 1000 {
+		t.Errorf("File.DefaultDuration = %v, want 1000", p.TimingMetadata.File.DefaultDuration)
+	}
+}
+
+func TestTestPlan_UnmarshalWithoutTimingFields(t *testing.T) {
+	// Older / cached / error plans omit timing_metadata and timing_sample_size entirely.
+	raw := `{
+		"identifier": "old",
+		"parallelism": 1,
+		"tasks": {
+			"0": {"node_number": 0, "tests": [{"path": "a_spec.rb"}]}
+		}
+	}`
+
+	var p TestPlan
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if p.TimingMetadata != nil {
+		t.Errorf("TimingMetadata = %+v, want nil", p.TimingMetadata)
+	}
+	if got := p.Tasks["0"].Tests[0].TimingSampleSize; got != 0 {
+		t.Errorf("TimingSampleSize = %d, want 0", got)
+	}
+}
+
+func TestTestPlan_UnmarshalWithSelectorTasks(t *testing.T) {
+	raw := `{
+		"identifier": "selector-plan",
+		"parallelism": 2,
+		"tasks": {
+			"0": {
+				"node_number": 0,
+				"tests": [
+					{
+						"value": "github.com/buildkite/test-engine-client/internal/api",
+						"format": "selector",
+						"estimated_duration": 3000,
+						"timing_sample_size": 7
+					}
+				]
+			}
+		},
+		"timing_metadata": {
+			"selector": {"median_duration": 1750, "default_duration": 1000}
+		}
+	}`
+
+	var p TestPlan
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	median := 1750.0
+	want := TestPlan{
+		Identifier:  "selector-plan",
+		Parallelism: 2,
+		Tasks: map[string]*Task{
+			"0": {
+				NodeNumber: 0,
+				Tests: []TestCase{{
+					Value:             "github.com/buildkite/test-engine-client/internal/api",
+					Format:            TestCaseFormatSelector,
+					EstimatedDuration: 3000,
+					TimingSampleSize:  7,
+				}},
+			},
+		},
+		TimingMetadata: &TimingMetadata{
+			Selector: &FormatTimingMetadata{MedianDuration: &median, DefaultDuration: 1000},
+		},
+	}
+
+	if diff := cmp.Diff(p, want); diff != "" {
+		t.Errorf("TestPlan diff (-got +want):\n%s", diff)
+	}
+}
+
+func TestTestPlan_RoundTrip(t *testing.T) {
+	median := 1234.5
+	original := TestPlan{
+		Identifier:  "id",
+		Parallelism: 1,
+		Tasks: map[string]*Task{
+			"0": {NodeNumber: 0, Tests: []TestCase{{Path: "a", TimingSampleSize: 3}}},
+		},
+		TimingMetadata: &TimingMetadata{
+			File: &FormatTimingMetadata{MedianDuration: &median, DefaultDuration: 1000},
+		},
+	}
+	b, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got TestPlan
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if diff := cmp.Diff(original, got); diff != "" {
+		t.Errorf("round-trip diff (-want +got):\n%s", diff)
+	}
+}
+
+func TestTestPlan_TargetTimeEstimator(t *testing.T) {
+	for _, value := range []string{`null`, `""`, `"mean_with_fallbacks_v1"`, `"p90_with_median_fallbacks_v1"`, `"future"`} {
+		var got TestPlan
+		if err := json.Unmarshal([]byte(`{"sizing":{"method":"timing","target_time_estimator":`+value+`,"target_time_ms":0.5,"estimated_required_parallelism":0}}`), &got); err != nil {
+			t.Fatal(err)
+		}
+		var want *string
+		if err := json.Unmarshal([]byte(value), &want); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(want, got.Sizing.TargetTimeEstimator); diff != "" {
+			t.Fatal(diff)
+		}
+		if got.Sizing.TargetTimeMS == nil || *got.Sizing.TargetTimeMS != 0.5 || got.Sizing.EstimatedRequiredParallelism == nil || *got.Sizing.EstimatedRequiredParallelism != 0 {
+			t.Fatalf("lost fractional/zero values: %+v", got.Sizing)
+		}
+		encoded, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var roundTrip TestPlan
+		if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(got, roundTrip); diff != "" {
+			t.Fatal(diff)
+		}
+	}
+}
+
+func TestTestPlan_OptionalPlanningMetadata(t *testing.T) {
+	zero, no, strategy := 0, false, "manual"
+	for _, tt := range []struct {
+		body string
+		want TestPlan
+	}{
+		{`{}`, TestPlan{}},
+		{`{"selection":null,"sizing":null}`, TestPlan{}},
+		{`{"selection":{"strategy":null,"duration_estimates":{"candidate_total_duration_ms":null,"selected_total_duration_ms":null,"candidate_timing_coverage":null}},"sizing":{"runnable_units":null,"max_parallelism_binding":null,"runnable_units_binding":null,"target_time_ms":null,"estimated_required_parallelism":null,"estimated_max_task_duration_ms":null}}`, TestPlan{Selection: &SelectionMetadata{DurationEstimates: &SelectionDurationEstimates{}}, Sizing: &SizingMetadata{}}},
+		{`{"selection":{"applied":false,"strategy":"manual","duration_estimates":{"candidate_total_duration_ms":0,"selected_total_duration_ms":0,"candidate_timing_coverage":0}},"sizing":{"runnable_units":0,"max_parallelism_binding":false,"runnable_units_binding":false,"target_time_ms":0.5,"estimated_required_parallelism":0,"estimated_max_task_duration_ms":0}}`, TestPlan{
+			Selection: &SelectionMetadata{Applied: &no, Strategy: &strategy, DurationEstimates: &SelectionDurationEstimates{CandidateTotalDurationMS: &zero, SelectedTotalDurationMS: &zero, CandidateTimingCoverage: fp(0)}},
+			Sizing:    &SizingMetadata{RunnableUnits: &zero, MaxParallelismBinding: &no, RunnableUnitsBinding: &no, TargetTimeMS: fp(0.5), EstimatedRequiredParallelism: &zero, EstimatedMaxTaskDurationMS: &zero},
+		}},
+	} {
+		var got TestPlan
+		if err := json.Unmarshal([]byte(tt.body), &got); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(tt.want, got); diff != "" {
+			t.Errorf("decode %s (-want +got):\n%s", tt.body, diff)
+		}
+		encoded, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var roundTrip TestPlan
+		if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff(got, roundTrip); diff != "" {
+			t.Errorf("round trip lost presence (-want +got):\n%s", diff)
+		}
+	}
+}

@@ -1,0 +1,137 @@
+# Using bktec with Jest
+To integrate bktec with Jest, set the `BUILDKITE_TEST_ENGINE_TEST_RUNNER` environment variable to `jest`. Then, specify the `BUILDKITE_TEST_ENGINE_RESULT_PATH` to define where the JSON result should be stored. bktec will instruct Jest to output the JSON result to this path, which is necessary for bktec to read the test results for retries and verification purposes.
+
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_RUNNER=jest
+export BUILDKITE_TEST_ENGINE_RESULT_PATH=tmp/jest-result.json
+```
+
+## Configure test command
+By default, bktec runs Jest with the following command:
+
+```sh
+npx jest --runTestsByPath {{testExamples}} --json --testLocationInResults --outputFile {{resultPath}}
+```
+
+In this command, `{{testExamples}}` is replaced by bktec with the list of test files or tests to run, and `{{resultPath}}` is replaced with the value set in `BUILDKITE_TEST_ENGINE_RESULT_PATH`. You can customize this command using the `BUILDKITE_TEST_ENGINE_TEST_CMD` environment variable.
+
+To customize the test command, set the following environment variable:
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_CMD="yarn test {{testExamples}} --json --testLocationInResults --outputFile {{resultPath}}"
+```
+
+> [!IMPORTANT]
+> Make sure to append `--json --testLocationInResults --outputFile {{resultPath}}` in your custom test command, as bktec requires this to read the test results for retries and verification purposes.
+
+## Filter test files
+By default, bktec runs test files that match the `**/{__tests__/**/*,*.spec,*.test}.{ts,js,tsx,jsx}` pattern. You can customize this pattern using the `BUILDKITE_TEST_ENGINE_TEST_FILE_PATTERN` environment variable. For instance, to configure bktec to only run Jest test files inside the `src/components` directory, use:
+
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_FILE_PATTERN=src/components/**/*.test.{ts,tsx}
+```
+
+Additionally, you can exclude specific files or directories that match a certain pattern using the `BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN` environment variable. For example, to exclude test files inside the `src/utilities` directory, use:
+
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN=src/utilities
+```
+
+You can also use both `BUILDKITE_TEST_ENGINE_TEST_FILE_PATTERN` and `BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN` simultaneously. For example, to run all Jest test files with `spec.ts`, except those in the `src/components` directory, use:
+
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_FILE_PATTERN=**/*.spec.ts
+export BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN=src/components
+```
+
+> [!TIP]
+> This option accepts the pattern syntax supported by the [zzglob](https://github.com/DrJosh9000/zzglob?tab=readme-ov-file#pattern-syntax) library.
+
+## Location prefix
+If you have configured the [Buildkite test collector](https://buildkite.com/docs/test-engine/test-collection) with a location prefix, you should set the same prefix for bktec so that test file paths match those reported by the collector. You can set this using the `--location-prefix` flag or the `BUILDKITE_TEST_ENGINE_LOCATION_PREFIX` environment variable.
+
+```sh
+bktec run --location-prefix "my/prefix/"
+```
+
+Or using the environment variable:
+
+```sh
+export BUILDKITE_TEST_ENGINE_LOCATION_PREFIX=my/prefix/
+```
+
+## Selector-based test splitting
+
+Jest uses [selector-based test splitting](../README.md#selector-based-test-splitting) by default. Each test file path discovered with Jest's default `**/{__tests__/**/*,*.spec,*.test}.{ts,js,tsx,jsx}` pattern becomes a selector. You can customize which files are discovered with `BUILDKITE_TEST_ENGINE_TEST_FILE_PATTERN` and `BUILDKITE_TEST_ENGINE_TEST_FILE_EXCLUDE_PATTERN`; the `{{testExamples}}` command placeholder works as before.
+
+> [!NOTE]
+> If you upload results with the [JavaScript test collector](https://buildkite.com/docs/test-engine/test-collection/javascript-collectors), we recommend updating to `buildkite-test-collector` v1.10.0 or later so selectors are attributed directly. Older versions can still upload results, and Test Engine [attempts to match selectors using the file path](../README.md#how-selectors-are-matched). If no history matches, Test Engine uses default duration estimates and bktec prints a warning. Updating matters most if you use a [location prefix](#location-prefix), since the fallback only handles the prefix on a best-effort basis.
+
+## Automatically retry failed tests
+You can configure bktec to automatically retry failed tests using the `BUILDKITE_TEST_ENGINE_RETRY_COUNT` environment variable. When this variable is set to a number greater than `0`, bktec will retry each failed test up to the specified number of times, using the following command:
+
+```sh
+npx jest {{testExamples}} --testNamePattern '{{testNamePattern}}' --json --testLocationInResults --outputFile {{resultPath}}
+```
+
+In this command:
+- `{{testExamples}}` is replaced by bktec with the specific test files containing failed tests
+- `{{testNamePattern}}` is replaced by bktec with the pattern matching the failed test names
+- `{{resultPath}}` is replaced with the value set in `BUILDKITE_TEST_ENGINE_RESULT_PATH`
+
+You can customize this command using the `BUILDKITE_TEST_ENGINE_RETRY_CMD` environment variable.
+
+A test file that fails outside its tests, for example because it doesn't load, fails the job, but failed tests in the other files are still retried.
+
+### Recommended retry configuration
+
+To enable automatic retry and customize the retry command, set the following environment variables:
+
+```sh
+export BUILDKITE_TEST_ENGINE_RETRY_CMD="yarn test {{testExamples}} --testNamePattern '{{testNamePattern}}' --json --testLocationInResults --outputFile {{resultPath}}"
+export BUILDKITE_TEST_ENGINE_RETRY_COUNT=2
+```
+
+> [!TIP]
+> Including `{{testExamples}}` tells Jest to only parse the files containing failed tests, rather than scanning all test files in your project. This significantly improves retry performance, especially in projects with many test files.
+
+### Alternative configuration (not recommended)
+
+If you need to omit the `{{testExamples}}` placeholder for compatibility with rare edge cases (such as custom global setup that depends on discovering all test files), you can use:
+
+```sh
+export BUILDKITE_TEST_ENGINE_RETRY_CMD="yarn test --testNamePattern '{{testNamePattern}}' --json --testLocationInResults --outputFile {{resultPath}}"
+export BUILDKITE_TEST_ENGINE_RETRY_COUNT=2
+```
+
+Note that this will cause Jest to parse all test files on every retry, which may slow down your retry process.
+
+> [!IMPORTANT]
+> Make sure to append `--testNamePattern '{{testNamePattern}}' --json --testLocationInResults --outputFile {{resultPath}}` in your custom retry command.
+
+## Run tests from a Test Scheduler pool
+To run Jest tests from a Test Scheduler pool, use [`bktec pool run`](./pool-run.md). It uses the test command and result path configured above, and runs Jest once for each lease.
+
+```sh
+export BUILDKITE_TEST_ENGINE_TEST_RUNNER=jest
+export BUILDKITE_TEST_ENGINE_RESULT_PATH=tmp/jest-result.json
+
+bktec pool run --suite-slug my-suite --local-retry-count 1
+```
+
+For each lease, bktec runs the test command with the lease's test files. The command must write Jest's JSON report to `{{resultPath}}`.
+
+With `--local-retry-count`, bktec reruns a lease's failed tests with the retry command. Unless you set `BUILDKITE_TEST_ENGINE_RETRY_CMD` (`--retry-command`), the retry command runs only the files of those tests:
+
+```sh
+npx jest --runTestsByPath {{testExamples}} --testNamePattern '{{testNamePattern}}' --json --testLocationInResults --outputFile {{resultPath}}
+```
+
+### Pool results
+
+A lease's tests are reported as passed or failed from the Jest report. A test file that fails outside its tests, for example because it doesn't load, is reported as errored without affecting the lease's other files.
+
+All of a lease's tests are reported as errored when:
+
+- the command doesn't write a usable report.
+- a file with failed tests also fails outside them, for example in an `afterAll` hook, because the Jest report doesn't say which file.
+- Jest exits with an error but reports no failed tests, such as when a coverage threshold isn't met.

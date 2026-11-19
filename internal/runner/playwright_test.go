@@ -1,0 +1,376 @@
+package runner
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"slices"
+	"strings"
+	"syscall"
+	"testing"
+
+	"github.com/buildkite/bktest/v3/internal/plan"
+	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
+)
+
+func TestPlaywrightRun(t *testing.T) {
+	changeCwd(t, "./testdata/playwright")
+
+	playwright := NewPlaywright(RunnerConfig{
+		TestCommand: "yarn run playwright test",
+		ResultPath:  "test-results/results.json",
+	})
+
+	testCases := []plan.TestCase{
+		{Path: "./testdata/playwright/tests/example.spec.js"},
+	}
+	result := NewRunResult([]plan.TestCase{})
+	err := playwright.Run(result, testCases, false)
+
+	if err != nil {
+		t.Errorf("Playwright.Run(%v) error = %v", testCases, err)
+	}
+
+	// 2 tests in 2 projects, plus the setup project's test.
+	if len(result.tests) != 5 {
+		t.Errorf("Playwright.Run(%v) len(RunResult.tests) = %d, want 5", testCases, len(result.tests))
+	}
+
+	if result.Status() != RunStatusPassed {
+		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
+	}
+}
+
+func TestPlaywrightRun_TestFailed(t *testing.T) {
+	changeCwd(t, "./testdata/playwright")
+
+	playwright := NewPlaywright(RunnerConfig{
+		ResultPath: "test-results/results.json",
+	})
+
+	t.Cleanup(func() {
+		os.Remove(playwright.ResultPath)
+	})
+
+	testCases := []plan.TestCase{
+		{Path: "./tests/failed.spec.js"},
+	}
+	result := NewRunResult([]plan.TestCase{})
+	err := playwright.Run(result, testCases, false)
+
+	wantFailedTests := []plan.TestCase{
+		{
+			Scope: " chromium failed.spec.js test group failed",
+			Path:  "failed.spec.js:5",
+			Name:  "failed",
+		},
+		{
+			Scope: " firefox failed.spec.js test group failed",
+			Path:  "failed.spec.js:5",
+			Name:  "failed",
+		},
+		{
+			Scope: " chromium failed.spec.js timed out",
+			Path:  "failed.spec.js:14",
+			Name:  "timed out",
+		},
+		{
+			Scope: " firefox failed.spec.js timed out",
+			Path:  "failed.spec.js:14",
+			Name:  "timed out",
+		},
+	}
+
+	exitError := new(exec.ExitError)
+	assert.ErrorAs(t, err, &exitError)
+
+	if result.Status() != RunStatusFailed {
+		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusFailed)
+	}
+
+	// Sort the failed tests by scope and name when comparing
+	sorter := cmp.Transformer("Sort", func(in []plan.TestCase) []plan.TestCase {
+		out := append([]plan.TestCase(nil), in...) // Copy input to avoid mutating it
+		slices.SortFunc(out, func(a, b plan.TestCase) int {
+			return strings.Compare(a.Scope+"/"+a.Name, b.Scope+"/"+b.Name)
+		})
+		return out
+	})
+
+	if diff := cmp.Diff(result.FailedTests(), wantFailedTests, sorter); diff != "" {
+		t.Errorf("Playwright.Run(%v) RunResult.FailedTests() diff (-got +want):\n%s", testCases, diff)
+	}
+}
+
+func TestPlaywrightRun_TestSkipped(t *testing.T) {
+	changeCwd(t, "./testdata/playwright")
+
+	playwright := NewPlaywright(RunnerConfig{
+		TestCommand: "yarn run playwright test",
+		ResultPath:  "test-results/results.json",
+	})
+
+	testCases := []plan.TestCase{
+		{Path: "./testdata/playwright/tests/skipped.spec.js"},
+	}
+	result := NewRunResult([]plan.TestCase{})
+	err := playwright.Run(result, testCases, false)
+
+	if err != nil {
+		t.Errorf("Playwright.Run(%v) error = %v", testCases, err)
+	}
+
+	if result.Status() != RunStatusPassed {
+		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
+	}
+
+	test := result.tests[" chromium skipped.spec.js it is skipped/it is skipped/skipped.spec.js:4"]
+	if test.Status != TestStatusSkipped {
+		t.Errorf("Playwright.Run(%v) test.Status = %v, want %v", testCases, test.Status, TestStatusSkipped)
+	}
+}
+
+func TestPlaywrightRun_Error(t *testing.T) {
+	changeCwd(t, "./testdata/playwright")
+
+	playwright := NewPlaywright(RunnerConfig{
+		ResultPath: "test-results/results.json",
+	})
+
+	testCases := []plan.TestCase{
+		{Path: "./tests/example.spec.js"},
+		{Path: "./tests/error.spec.js"},
+	}
+	result := NewRunResult([]plan.TestCase{})
+	err := playwright.Run(result, testCases, false)
+
+	// error.spec.js doesn't load, so Playwright runs no tests. The command
+	// fails even though example.spec.js passes when it runs again without it.
+	exitError := new(exec.ExitError)
+	assert.ErrorAs(t, err, &exitError)
+
+	if result.Status() != RunStatusError {
+		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusError)
+	}
+	if diff := cmp.Diff(result.ErroredFiles(), []string{"tests/error.spec.js"}); diff != "" {
+		t.Errorf("Playwright.Run(%v) RunResult.ErroredFiles() diff (-got +want):\n%s", testCases, diff)
+	}
+	if !result.Retryable() {
+		t.Errorf("Playwright.Run(%v) RunResult.Retryable = false, want true", testCases)
+	}
+	// 2 tests in 2 projects, plus the setup project's test.
+	if stats := result.Statistics(); stats.PassedOnFirstRun != 5 || stats.Total != 5 {
+		t.Errorf("Playwright.Run(%v) RunResult.Statistics = %+v, want 5 passed", testCases, stats)
+	}
+}
+
+func TestPlaywrightRun_ErrorOutsideTestFiles(t *testing.T) {
+	changeCwd(t, "./testdata/playwright")
+
+	playwright := NewPlaywright(RunnerConfig{
+		ResultPath: "test-results/results.json",
+	})
+
+	// error.spec.js isn't given to the command as itself, so its load error
+	// can't be attributed to one of the command's files.
+	testCases := []plan.TestCase{
+		{Path: "./tests/example.spec.js"},
+		{Path: "error"},
+	}
+	result := NewRunResult([]plan.TestCase{})
+	err := playwright.Run(result, testCases, false)
+
+	exitError := new(exec.ExitError)
+	assert.ErrorAs(t, err, &exitError)
+
+	if result.Retryable() {
+		t.Errorf("Playwright.Run(%v) RunResult.Retryable = true, want false", testCases)
+	}
+	if len(result.tests) != 0 {
+		t.Errorf("Playwright.Run(%v) len(RunResult.tests) = %d, want 0", testCases, len(result.tests))
+	}
+}
+
+func TestPlaywrightRun_CommandFailed(t *testing.T) {
+	playwright := NewPlaywright(RunnerConfig{
+		TestCommand: "npx playwright test --oops",
+	})
+
+	testCases := []plan.TestCase{
+		{Path: "./doesnt-matter.spec.js"},
+	}
+	result := NewRunResult([]plan.TestCase{})
+	err := playwright.Run(result, testCases, false)
+
+	if result.Status() != RunStatusUnknown {
+		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusUnknown)
+	}
+
+	exitError := new(exec.ExitError)
+	assert.ErrorAs(t, err, &exitError)
+}
+
+func TestPlaywrightRun_SignaledError(t *testing.T) {
+	playwright := NewPlaywright(RunnerConfig{
+		TestCommand: "./testdata/segv.sh --outputFile {{resultPath}}",
+	})
+
+	testCases := []plan.TestCase{
+		{Path: "./doesnt-matter.spec.js"},
+	}
+	result := NewRunResult([]plan.TestCase{})
+	err := playwright.Run(result, testCases, false)
+
+	if result.Status() != RunStatusUnknown {
+		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusUnknown)
+	}
+
+	signalError := new(ProcessSignaledError)
+	if !errors.As(err, &signalError) {
+		t.Errorf("Playwright.Run(%v) error type = %T (%v), want *ErrProcessSignaled", testCases, err, err)
+	}
+	if signalError.Signal != syscall.SIGSEGV {
+		t.Errorf("Playwright.Run(%v) signal = %d, want %d", testCases, syscall.SIGSEGV, signalError.Signal)
+	}
+}
+
+func TestPlaywrightCommandNameAndArgs_WithPlaceholder(t *testing.T) {
+	testCases := []plan.TestCase{{Path: "tests/example.spec.js"}, {Path: "tests/failed.spec.js"}}
+	testCommand := "npx playwright test {{testExamples}}"
+
+	rspec := NewPlaywright(RunnerConfig{
+		TestCommand: testCommand,
+	})
+
+	gotName, gotArgs, err := rspec.CommandNameAndArgs(testCases, false)
+	if err != nil {
+		t.Errorf("commandNameAndArgs(%v, %q) error = %v", testCases, testCommand, err)
+	}
+
+	wantName := "npx"
+	wantArgs := []string{"playwright", "test", "tests/example.spec.js", "tests/failed.spec.js"}
+
+	if diff := cmp.Diff(gotName, wantName); diff != "" {
+		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
+	}
+	if diff := cmp.Diff(gotArgs, wantArgs); diff != "" {
+		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
+	}
+}
+
+func TestPlaywrightCommandNameAndArgs_WithoutPlaceholder(t *testing.T) {
+	testCases := []plan.TestCase{{Path: "tests/example.spec.js"}, {Path: "tests/failed.spec.js"}}
+	testCommand := "npx playwright test"
+
+	rspec := NewPlaywright(RunnerConfig{
+		TestCommand: testCommand,
+	})
+
+	gotName, gotArgs, err := rspec.CommandNameAndArgs(testCases, false)
+	if err != nil {
+		t.Errorf("commandNameAndArgs(%v, %q) error = %v", testCases, testCommand, err)
+	}
+
+	wantName := "npx"
+	wantArgs := []string{"playwright", "test", "tests/example.spec.js", "tests/failed.spec.js"}
+
+	if diff := cmp.Diff(gotName, wantName); diff != "" {
+		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
+	}
+	if diff := cmp.Diff(gotArgs, wantArgs); diff != "" {
+		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
+	}
+}
+
+func TestPlaywrightDiscoverTestTargets(t *testing.T) {
+	changeCwd(t, "./testdata/playwright")
+	playwright := NewPlaywright(RunnerConfig{})
+
+	got, err := playwright.DiscoverTestTargets()
+	if err != nil {
+		t.Errorf("Playwright.DiscoverTestTargets() error = %v", err)
+	}
+
+	want := []string{
+		"tests/error.spec.js",
+		"tests/example.spec.js",
+		"tests/failed.spec.js",
+		"tests/skipped.spec.js",
+	}
+
+	if diff := cmp.Diff(got, want); diff != "" {
+		t.Errorf("Playwright.DiscoverTestTargets() diff (-got +want):\n%s", diff)
+	}
+}
+
+func TestPlaywrightGetExamples(t *testing.T) {
+	changeCwd(t, "./testdata/playwright")
+
+	playwright := NewPlaywright(RunnerConfig{
+		TestCommand: "npx playwright test",
+	})
+
+	files := []string{"tests/example.spec.js"}
+	got, err := playwright.GetExamples(files)
+	if err != nil {
+		t.Fatalf("Playwright.GetExamples(%v) error = %v", files, err)
+	}
+
+	// example.spec.js has 2 tests in a "home page" describe block.
+	// With 2 projects (chromium, firefox), we expect 4 test cases, plus the
+	// setup project's test, which Playwright lists whichever files are given.
+	want := []plan.TestCase{
+		{
+			Name:  "set up app",
+			Path:  "app.setup.js:3",
+			Scope: " setup app.setup.js set up app",
+		},
+		{
+			Name:  "has title",
+			Path:  "example.spec.js:4",
+			Scope: " chromium example.spec.js home page has title",
+		},
+		{
+			Name:  "has title",
+			Path:  "example.spec.js:4",
+			Scope: " firefox example.spec.js home page has title",
+		},
+		{
+			Name:  "says hello",
+			Path:  "example.spec.js:10",
+			Scope: " chromium example.spec.js home page says hello",
+		},
+		{
+			Name:  "says hello",
+			Path:  "example.spec.js:10",
+			Scope: " firefox example.spec.js home page says hello",
+		},
+	}
+
+	// Sort both slices by scope for consistent comparison
+	sorter := cmp.Transformer("Sort", func(in []plan.TestCase) []plan.TestCase {
+		out := append([]plan.TestCase(nil), in...)
+		slices.SortFunc(out, func(a, b plan.TestCase) int {
+			return strings.Compare(a.Scope, b.Scope)
+		})
+		return out
+	})
+
+	if diff := cmp.Diff(got, want, sorter); diff != "" {
+		t.Errorf("Playwright.GetExamples(%v) diff (-got +want):\n%s", files, diff)
+	}
+}
+
+func TestPlaywrightGetExamples_EmptyFiles(t *testing.T) {
+	playwright := NewPlaywright(RunnerConfig{})
+
+	got, err := playwright.GetExamples([]string{})
+	if err != nil {
+		t.Errorf("Playwright.GetExamples([]) error = %v", err)
+	}
+
+	if len(got) != 0 {
+		t.Errorf("Playwright.GetExamples([]) = %v, want empty slice", got)
+	}
+}
