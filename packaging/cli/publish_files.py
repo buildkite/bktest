@@ -104,7 +104,7 @@ class FilesDestination:
         # Files registry entries use the basename without the version and extension.
         basenames = {name.rsplit(f"-{version}.", 1)[0]: name for name in assets}
         found = set()
-        url = self.url + "?per_page=100"
+        url = self.url + "?per_page=50"
         visited = set()
         while url:
             if url in visited or urlsplit(url)._replace(query="").geturl() != self.url:
@@ -160,6 +160,8 @@ class FilesDestination:
         if result.returncode:
             raise OSError(f"legacy Files request failed (curl exit {result.returncode})")
         body, status, link = result.stdout.rsplit(b"\n", 2)
-        if status != b"200":
+        # The Packages controller renders inventory and create as 201;
+        # the exact file download still requires 200 after redirects.
+        if status != b"200" and not (status == b"201" and url.split("?", 1)[0] == self.url):
             raise OSError(f"legacy Files request failed (HTTP {status.decode()})")
         return body, link.decode()

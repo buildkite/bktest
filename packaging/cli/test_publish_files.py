@@ -64,11 +64,11 @@ class FilesAPI(BaseHTTPRequestHandler):
             if name not in state.remote:
                 return self.reply(404)
             return self.reply(200, state.downloads.get(name, state.remote[name]))
-        if self.path == API + "?per_page=100":
+        if self.path == API + "?per_page=50":
             if state.json_next is not None:
-                return self.reply(200, json.dumps({"items": [], "links": {"next": state.json_next}}).encode())
-            return self.reply(200, b'{"items": []}', link=f'<{API}?page=2>; rel="next"')
-        if self.path != API + "?page=2":
+                return self.reply(201, json.dumps({"items": [], "links": {"next": state.json_next}}).encode())
+            return self.reply(201, b'{"items": []}', link=f'<{API}?after=opaque&per_page=50>; rel="next"')
+        if self.path != API + "?after=opaque&per_page=50":
             return self.reply(404)
         if state.list_failure:
             return self.reply(state.list_failure)
@@ -76,7 +76,7 @@ class FilesAPI(BaseHTTPRequestHandler):
         rows.extend({"name": name.split("-3.8.7.")[0], "version": VERSION,
                      "digests": {"sha256": sha256(data).hexdigest()}}
                     for name, data in state.remote.items())
-        return self.reply(200, json.dumps({"items": rows}).encode())
+        return self.reply(201, json.dumps({"items": rows, "links": {}}).encode())
 
     def do_POST(self):
         state = self.state
@@ -100,7 +100,7 @@ class FilesAPI(BaseHTTPRequestHandler):
         receipt.update(state.receipt_fields)
         if state.bad_receipt == name:
             receipt["digests"]["sha256"] = "0" * 64
-        return self.reply(503 if state.fail_after_create == name else 200, json.dumps(receipt).encode())
+        return self.reply(503 if state.fail_after_create == name else 201, json.dumps(receipt).encode())
 
 
 class FilesDestinationTest(unittest.TestCase):
@@ -168,9 +168,9 @@ class FilesDestinationTest(unittest.TestCase):
 
     def test_json_pagination_checks_next_page_and_refuses_unsafe_links(self):
         self.remote[BINARIES[-1]] = self.contents[BINARIES[-1]]
-        self.json_next = "?page=2"
+        self.json_next = "?after=opaque&per_page=50"
         self.assertNotIn(BINARIES[-1], self.destination.preflight(self.stage))
-        for link in ("?per_page=100", "https://other.invalid" + API, "/different?page=2"):
+        for link in ("?per_page=50", "https://other.invalid" + API, "/different?after=opaque"):
             with self.subTest(link=link), self.assertRaisesRegex(ValueError, "unsafe legacy Files inventory pagination"):
                 self.json_next = link
                 self.destination.preflight(self.stage)

@@ -7,7 +7,7 @@ import re
 import subprocess
 import tarfile
 from urllib.error import HTTPError
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import uuid4
 
@@ -105,12 +105,12 @@ class LinuxPackagesDestination:
             headers["Content-Type"] = content_type
         try:
             with self.opener.open(Request(self.api_base + path, data=body, headers=headers), timeout=30) as response:
-                if response.status != 200:
+                if response.status not in (200, 201):
                     raise OSError(f"{REGISTRIES[fmt]} returned unexpected HTTP {response.status}")
                 result = json.load(response)
                 if not isinstance(result, dict):
                     raise ValueError(f"unexpected response from {REGISTRIES[fmt]}")
-                return result, response.headers.get("Link", "")
+                return result
         except HTTPError as error:
             raise OSError(f"{REGISTRIES[fmt]} returned HTTP {error.code}; stop and re-preflight before retry") from error
 
@@ -123,40 +123,46 @@ class LinuxPackagesDestination:
             versions = {stage.version} if fmt == "deb" else {stage.version, f"{stage.version}-1"}
             by_digest = {asset.sha256: key for key, asset in assets.items()}
             found = set()
-            page = 1
-            while True:
-                query = urlencode({"name": "bktec", "per_page": 100, "page": page})
-                result, link = self._request(fmt, f"{self._path(fmt)}?{query}")
+            filters = {"name": ["bktec"], "per_page": ["50"]}
+            base = self.api_base + self._path(fmt)
+            url = base + "?" + urlencode(filters, doseq=True)
+            cursors = set()
+            while url:
+                result = self._request(fmt, url.removeprefix(self.api_base))
                 items = result.get("items")
                 if not isinstance(items, list):
                     raise ValueError(f"missing package inventory in {REGISTRIES[fmt]}")
                 for item in items:
-                    if (not isinstance(item, dict) or item.get("name") != "bktec"
+                    if (not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"]
                             or not isinstance(item.get("version"), str) or not item["version"]):
                         raise ValueError(f"unexpected listing in {REGISTRIES[fmt]}")
                     digests = item.get("digests")
                     sha = digests.get("sha256") if isinstance(digests, dict) else None
-                    if item["version"] not in versions:
+                    # The server search can return partial name matches.
+                    if item["name"] != "bktec" or item["version"] not in versions:
                         if isinstance(sha, str) and sha in by_digest:
-                            raise ValueError(f"staged bytes listed under an unexpected version in {REGISTRIES[fmt]}")
+                            raise ValueError(f"staged bytes listed under an unexpected name or version in {REGISTRIES[fmt]}")
                         continue
                     key = by_digest.get(sha) if isinstance(sha, str) else None
                     if key is None or key in found:
                         raise ValueError(f"different, duplicate or unverifiable bytes at the exact version in {REGISTRIES[fmt]}")
                     found.add(key)
 
-                next_links = re.findall(r'<([^>]+)>;\s*rel="next"', link)
-                if not next_links:
+                links = result.get("links")
+                if not isinstance(links, dict):
+                    raise ValueError("missing package pagination")
+                if "next" not in links:
                     break
-                if len(next_links) != 1:
-                    raise ValueError("ambiguous package pagination")
-                target = urlsplit(next_links[0])
-                expected = urlsplit(self.api_base + self._path(fmt))
-                params = parse_qs(target.query)
-                if ((target.scheme, target.netloc, target.path) != (expected.scheme, expected.netloc, expected.path)
-                        or params != {"name": ["bktec"], "per_page": ["100"], "page": [str(page + 1)]}):
+                if not isinstance(links["next"], str):
                     raise ValueError("unsafe package pagination")
-                page += 1
+                url = urljoin(url, links["next"])
+                target = urlsplit(url)
+                params = parse_qs(target.query, keep_blank_values=True)
+                cursor = params.pop("after", [])
+                if (target._replace(query="").geturl() != base or params != filters
+                        or len(cursor) != 1 or not cursor[0] or cursor[0] in cursors):
+                    raise ValueError("unsafe package pagination")
+                cursors.add(cursor[0])
             missing.extend(key for key in assets if key not in found)
         return tuple(missing)
 
@@ -180,7 +186,7 @@ class LinuxPackagesDestination:
                 boundary = uuid4().hex
                 body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{asset.path.name}"\r\n'
                         'Content-Type: application/octet-stream\r\n\r\n').encode() + payload + f"\r\n--{boundary}--\r\n".encode()
-                result, _ = self._request(fmt, self._path(fmt), body=body, content_type=f"multipart/form-data; boundary={boundary}")
+                result = self._request(fmt, self._path(fmt), body=body, content_type=f"multipart/form-data; boundary={boundary}")
                 if (result.get("name") != "bktec" or result.get("registry", {}).get("slug") != REGISTRIES[fmt]
                         or result.get("organization", {}).get("slug") != "buildkite"
                         or result.get("digests", {}).get("sha256") != asset.sha256):

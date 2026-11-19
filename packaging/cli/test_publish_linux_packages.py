@@ -65,6 +65,7 @@ class AdapterTest(unittest.TestCase):
         self.requests = []
         self.drop_response_after = None
         self.paginate = False
+        self.next_page = None
         scenario = self
 
         class Registry(BaseHTTPRequestHandler):
@@ -94,14 +95,16 @@ class AdapterTest(unittest.TestCase):
                     return
                 page = parse_qs(urlsplit(self.path).query)
                 scenario.requests.append(("GET", fmt, page))
-                if page == {"name": ["bktec"], "per_page": ["100"], "page": ["1"]}:
+                first = {"name": ["bktec"], "per_page": ["50"]}
+                if page == first:
                     if fmt == "deb" and scenario.paginate:
-                        next_url = scenario.url + self.path[:-1] + "2"
-                        self.respond(200, {"items": [{"name": "bktec", "version": "3.5.0"}]}, f'<{next_url}>; rel="next"')
+                        next_url = scenario.url + self.path + "&after=opaque%3D"
+                        self.respond(201, {"items": [{"name": "other-bktec", "version": scenario.stage.version}],
+                                           "links": {"next": scenario.next_page or next_url}})
                     else:
-                        self.respond(200, {"items": scenario.rows[fmt]})
-                elif fmt == "deb" and scenario.paginate and page == {"name": ["bktec"], "per_page": ["100"], "page": ["2"]}:
-                    self.respond(200, {"items": scenario.rows[fmt]})
+                        self.respond(201, {"items": scenario.rows[fmt], "links": {}})
+                elif fmt == "deb" and scenario.paginate and page == first | {"after": ["opaque="]}:
+                    self.respond(201, {"items": scenario.rows[fmt], "links": {}})
                 else:
                     self.respond(400, {})
 
@@ -132,7 +135,7 @@ class AdapterTest(unittest.TestCase):
                 if package_key(fmt, filename) == scenario.drop_response_after:
                     self.respond(503, {})
                     return
-                self.respond(200, {**row, "organization": {"slug": "buildkite"}, "registry": {"slug": f"test-engine-client-{fmt}"}})
+                self.respond(201, {**row, "organization": {"slug": "buildkite"}, "registry": {"slug": f"test-engine-client-{fmt}"}})
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Registry)
         self.url = f"http://127.0.0.1:{server.server_port}"
@@ -164,6 +167,15 @@ class AdapterTest(unittest.TestCase):
         self.adapter.publish_missing(self.stage, expected[2:])
         self.assertEqual(self.adapter.preflight(self.stage), ())
         self.assertEqual([package_key(req[1], req[2]) for req in self.requests if req[0] == "POST"], list(expected))
+
+    def test_rejects_cursor_that_changes_registry_or_filter(self):
+        self.paginate = True
+        for target in ("/another-registry?name=bktec&per_page=50&after=opaque",
+                       "?name=other&per_page=50&after=opaque"):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "unsafe package pagination"):
+                self.next_page = target
+                self.adapter.preflight(self.stage)
+        self.assertEqual(len(self.requests), 2)
 
     def test_not_overwriting_conflicting_rpm_when_deb_is_missing(self):
         self.rows["rpm"].append(self.row("rpm", "0" * 64))

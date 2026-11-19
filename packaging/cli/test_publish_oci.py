@@ -84,19 +84,32 @@ class OCIPublicationTest(unittest.TestCase):
             destination.preflight(self.stage)
 
     def test_registry_specific_absence_is_inconclusive_without_trusted_evidence(self):
-        _, ecr, packages = EXISTING_REPOSITORIES
+        _, _, packages = EXISTING_REPOSITORIES
         tag = "v3.7.0"
         missing = OSError(r'skopeo inspect failed: level=fatal msg="reading manifest: StatusCode: 404, \"\""')
-        for name, responses in (
-            # Skopeo renders the same error for 401, 403, and 404.
-            (ecr, [OSError('reading manifest: manifest unknown: Requested image not found"')]),
-            # The requested Repository label can hide a page from another repository.
-            (packages, [missing, json.dumps({"Repository": packages, "Tags": ["v3.5.0"]}).encode()]),
-        ):
-            with self.subTest(name=name), patch("publish_oci._run", side_effect=responses):
-                destination = OCIDestination(name, self.root, "", self.stage.archive_sha256)
-                with self.assertRaisesRegex(OSError, "OCI tag absence is inconclusive"):
-                    destination._remote_digest(f"{name}:{tag}")
+        with patch("publish_oci._run", side_effect=missing):
+            destination = OCIDestination(packages, self.root, "", self.stage.archive_sha256)
+            with self.assertRaisesRegex(OSError, "OCI tag absence is inconclusive"):
+                destination._remote_digest(f"{packages}:{tag}")
+
+    def test_ecr_requires_both_404_and_manifest_unknown_from_exact_route(self):
+        ecr = EXISTING_REPOSITORIES[1]
+        ref = f"{ecr}:v3.7.0"
+        destination = OCIDestination(ecr, self.root, "", self.stage.archive_sha256)
+        missing = OSError('reading manifest: manifest unknown: Requested image not found"')
+        for status, code in ((401, "MANIFEST_UNKNOWN"), (403, "MANIFEST_UNKNOWN"),
+                             (404, "NAME_UNKNOWN"), (404, "MANIFEST_UNKNOWN")):
+            body = json.dumps({"errors": [{"code": code}]}).encode() + f"\n{status}".encode()
+            with self.subTest(status=status, code=code), patch(
+                "publish_oci._run", side_effect=[missing, b'{"token":"fixture-token"}', body]
+            ) as transport:
+                if (status, code) == (404, "MANIFEST_UNKNOWN"):
+                    self.assertIsNone(destination._remote_digest(ref))
+                else:
+                    with self.assertRaisesRegex(OSError, "OCI tag absence is inconclusive"):
+                        destination._remote_digest(ref)
+                self.assertEqual(transport.call_args.args[-1],
+                                 "https://public.ecr.aws/v2/buildkite/test-engine-client/manifests/v3.7.0")
 
     @unittest.skipUnless(all(shutil.which(tool) for tool in ("skopeo", "umoci", "docker-registry")),
                          "requires skopeo, umoci and a local Distribution registry")

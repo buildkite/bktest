@@ -36,13 +36,35 @@ CONFIG = "application/vnd.oci.image.config.v1+json"
 SHA256 = r"[0-9a-f]{64}"
 
 
-def _run(*command: str, loopback: bool = False) -> bytes:
+def _run(*command: str, loopback: bool = False, stdin: bytes | None = None) -> bytes:
     env = ({name: value for name, value in os.environ.items() if not name.lower().endswith("_proxy")}
            if loopback else None)
-    result = subprocess.run(command, capture_output=True, env=env)
+    result = subprocess.run(command, input=stdin, capture_output=True, env=env)
     if result.returncode:
         raise OSError(f"{command[0]} {command[1]} failed: {result.stderr.decode(errors='replace').strip()}")
     return result.stdout
+
+
+def _ecr_tag_is_absent(tag: str) -> bool:
+    # This public repository can be checked with an anonymous pull token.
+    # Fixed HTTPS endpoints, no redirects, and the token never goes in argv.
+    curl = ("curl", "-q", "--silent", "--show-error", "--max-time", "30", "--proto", "=https")
+    try:
+        token = json.loads(_run(*curl, "--fail", "https://public.ecr.aws/token/?service=public.ecr.aws&scope=aws"))["token"]
+        if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9._~+/-]+=*", token):
+            return False
+        response = _run(*curl, "--header", "@-", "--header",
+                        f"Accept: {INDEX}, application/vnd.docker.distribution.manifest.list.v2+json",
+                        "--write-out", "\n%{http_code}",
+                        f"https://public.ecr.aws/v2/buildkite/test-engine-client/manifests/{tag}",
+                        stdin=f"Authorization: Bearer {token}\n".encode())
+        body, _, status = response.rpartition(b"\n")
+        if status != b"404":
+            return False
+        error, = json.loads(body)["errors"]
+        return error["code"] == "MANIFEST_UNKNOWN"
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
 
 
 def _blob(layout: Path, descriptor: dict) -> Path:
@@ -144,12 +166,16 @@ class OCIDestination:
         try:
             data = _run("skopeo", "inspect", "--raw", *options, f"docker://{ref}", loopback=local)
         except OSError as error:
-            # Skopeo loses the status for ECR's missing-image message. A
-            # Packages 404 is ambiguous, and list-tags hides the page URLs.
-            if ((self.name == EXISTING_REPOSITORIES[1] and
-                 re.search(r': manifest unknown: Requested image not found"?$', str(error))) or
-                (self.name == EXISTING_REPOSITORIES[2] and
-                 str(error).endswith(r': StatusCode: 404, \"\""'))):
+            # Skopeo loses the status for ECR's missing-image message.
+            if (self.name == EXISTING_REPOSITORIES[1] and
+                    re.search(r': manifest unknown: Requested image not found"?$', str(error))):
+                tag = ref.removeprefix(self.name + ":")
+                if re.fullmatch("v" + VERSION, tag) and _ecr_tag_is_absent(tag):
+                    return None
+                raise OSError(f"OCI tag absence is inconclusive for {ref}") from error
+            # Packages gives an empty 404 and list-tags hides the page URLs.
+            if (self.name == EXISTING_REPOSITORIES[2] and
+                    str(error).endswith(r': StatusCode: 404, \"\""')):
                 raise OSError(f"OCI tag absence is inconclusive for {ref}") from error
             # Treat only the registry's missing-manifest response as absence,
             # not auth, namespace, TLS or connectivity failures.
