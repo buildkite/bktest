@@ -22,7 +22,6 @@ enum BuildkiteTelemetryAttribute {
   static let executionExternalID = "buildkite.test.execution.external_id"
   static let executionLocation = "buildkite.test.location"
   static let executionScope = "buildkite.test.scope"
-  static let executionVia = "buildkite.execution.via"
   static let frameworkName = "buildkite.test.framework.name"
   static let jobID = "buildkite.job_id"
   static let message = "buildkite.message"
@@ -52,7 +51,6 @@ enum TelemetryLimit {
 }
 
 private enum TelemetryValue {
-  static let executionVia = "otlp"
   static let frameworkName = "xctest"
   static let rootSpanName = "test.execution"
   static let skippedResult = "skipped"
@@ -545,9 +543,8 @@ private final class LiveTelemetryClient {
     }
 
     // The Swift SDK keeps the most recently set attributes when the span's
-    // start-time attribute limit is exceeded. Set the three synthesis fields
-    // last so even a limit of three still produces a usable execution.
-    set(BuildkiteTelemetryAttribute.executionVia, .string(TelemetryValue.executionVia))
+    // start-time attribute limit is exceeded. Set the run key and result last
+    // so even a limit of two still produces a usable execution.
     set(BuildkiteTelemetryAttribute.runKey, .string(self.runKey))
     // Reserve the result's place before test code can consume the remaining
     // attribute budget. finishExecution replaces this placeholder.
