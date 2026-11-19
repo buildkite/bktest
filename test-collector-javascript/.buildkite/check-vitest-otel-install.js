@@ -18,7 +18,7 @@ const main = async () => {
     const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', scratch], { encoding: 'utf8' }))[0]
     fs.writeFileSync(path.join(scratch, 'package.json'), JSON.stringify({ private: true, type: 'module', devDependencies: {
       'buildkite-test-collector': `file:${path.join(scratch, packed.filename)}`,
-      vitest: '5.1.0', vite: '^8',
+      vitest: '^5.1.0', vite: '^8',
       ...Object.fromEntries(Object.entries(dependencies(line)).filter(([name]) => !name.includes('/instrumentation-'))),
       '@opentelemetry/auto-instrumentations-node': line === '2' ? '0.81.0' : '0.83.0',
     } }))
