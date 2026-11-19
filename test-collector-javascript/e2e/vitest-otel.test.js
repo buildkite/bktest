@@ -516,7 +516,7 @@ const ESM_TESTS = ['esm app', 'esm failure after I/O', 'ts app']
   const roots = spans.filter(s => s.name === 'test.execution')
   expect(roots).toHaveLength(8)
   expect(roots.every(s => !s.parentSpanId)).toBe(true)
-  for (const span of roots) expect(span.attributes).not.toHaveProperty('buildkite.execution.via')
+  for (const span of roots) expect(span.attributes).not.toHaveProperty(['buildkite.execution.via'])
   const root = roots.find(s => s.attributes['buildkite.test.name'] === 'body and IO')
   expect(root.attributes['code.column.number']).toBeGreaterThan(0n)
   const children = spans.filter(s => s.traceId === root.traceId && s !== root)

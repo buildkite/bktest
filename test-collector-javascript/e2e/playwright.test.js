@@ -530,7 +530,7 @@ describe('examples/playwright in OTel mode', () => {
     for (const span of spans) {
       expect(span.name).toBe('test.execution');
       expect(span.parentSpanId).toBe('');
-      expect(span.attributes).not.toHaveProperty('buildkite.execution.via');
+      expect(span.attributes).not.toHaveProperty(['buildkite.execution.via']);
       expect(span.attributes['buildkite.run_key']).toBe('playwright-otel-e2e');
       expect(span.attributes['buildkite.test.name']).not.toBe('');
       expect(span.attributes['buildkite.test.framework.name']).toBe('playwright');
