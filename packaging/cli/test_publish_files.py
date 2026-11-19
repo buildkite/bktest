@@ -95,7 +95,9 @@ class FilesAPI(BaseHTTPRequestHandler):
             return self.reply(409)
         state.remote[name] = part.get_payload(decode=True)
         receipt = {"organization": {"slug": "buildkite"}, "registry": {"slug": "bktec"},
+                   "name": name.split(f"-{VERSION}.")[0],
                    "digests": {"sha256": sha256(state.remote[name]).hexdigest()}}
+        receipt.update(state.receipt_fields)
         if state.bad_receipt == name:
             receipt["digests"]["sha256"] = "0" * 64
         return self.reply(503 if state.fail_after_create == name else 200, json.dumps(receipt).encode())
@@ -111,6 +113,7 @@ class FilesDestinationTest(unittest.TestCase):
         self.posts = []
         self.fail_after_create = None
         self.bad_receipt = None
+        self.receipt_fields = {}
         self.list_failure = None
         self.json_next = None
         server = ThreadingHTTPServer(("127.0.0.1", 0), partial(FilesAPI, self))
@@ -179,6 +182,22 @@ class FilesDestinationTest(unittest.TestCase):
             self.destination.publish_missing(self.stage, self.destination.preflight(self.stage))
         self.assertEqual(self.posts, [BINARIES[0]])
         self.assertNotIn(BINARIES[0], self.destination.preflight(self.stage))
+
+    def test_wrong_receipt_name_or_version_stops_before_next_upload(self):
+        for fields in ({"name": "elsewhere"}, {"version": "3.8.6"}):
+            with self.subTest(fields=fields):
+                self.remote.clear()
+                self.posts.clear()
+                self.receipt_fields = fields
+                with self.assertRaisesRegex(ValueError, "unverifiable Files upload receipt"):
+                    self.destination.publish_missing(self.stage, self.destination.preflight(self.stage))
+                self.assertEqual(self.posts, [BINARIES[0]])
+
+    def test_receipt_without_version_requires_matching_download_before_next_upload(self):
+        self.downloads[BINARIES[0]] = b"wrong served bytes"
+        with self.assertRaisesRegex(ValueError, "download hash differs"):
+            self.destination.publish_missing(self.stage, self.destination.preflight(self.stage))
+        self.assertEqual(self.posts, [BINARIES[0]])
 
     def test_conflicting_or_unavailable_inventory_is_not_missing(self):
         missing = self.destination.preflight(self.stage)

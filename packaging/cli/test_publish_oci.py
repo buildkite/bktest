@@ -83,28 +83,20 @@ class OCIPublicationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires an exact stable CLI version"):
             destination.preflight(self.stage)
 
-    def test_registry_specific_absence_does_not_adopt_ambiguous_failures(self):
+    def test_registry_specific_absence_is_inconclusive_without_trusted_evidence(self):
         _, ecr, packages = EXISTING_REPOSITORIES
         tag = "v3.7.0"
         missing = OSError(r'skopeo inspect failed: level=fatal msg="reading manifest: StatusCode: 404, \"\""')
-        for name, responses, expected in (
-            (ecr, [OSError('reading manifest: manifest unknown: Requested image not found"')], None),
-            (ecr, [OSError("reading manifest: name unknown")], OSError),
-            (packages, [missing, json.dumps({"Repository": packages, "Tags": ["v3.5.0"]}).encode()], None),
-            (packages, [missing, json.dumps({"Repository": packages, "Tags": [tag]}).encode()], ValueError),
-            (packages, [missing, json.dumps({"Repository": ecr, "Tags": ["v3.5.0"]}).encode()], ValueError),
-            (packages, [missing, OSError("error listing repository tags: 404")], OSError),
-            (packages, [OSError("reading manifest: unauthorized")], OSError),
+        for name, responses in (
+            # Skopeo renders the same error for 401, 403, and 404.
+            (ecr, [OSError('reading manifest: manifest unknown: Requested image not found"')]),
+            # The requested Repository label can hide a page from another repository.
+            (packages, [missing, json.dumps({"Repository": packages, "Tags": ["v3.5.0"]}).encode()]),
         ):
-            with self.subTest(name=name, responses=responses), patch("publish_oci._run", side_effect=responses) as run:
+            with self.subTest(name=name), patch("publish_oci._run", side_effect=responses):
                 destination = OCIDestination(name, self.root, "", self.stage.archive_sha256)
-                if expected is None:
-                    self.assertIsNone(destination._remote_digest(f"{name}:{tag}"))
-                else:
-                    with self.assertRaises(expected):
-                        destination._remote_digest(f"{name}:{tag}")
-                if len(responses) == 2:
-                    run.assert_called_with("skopeo", "list-tags", f"docker://{name}")
+                with self.assertRaisesRegex(OSError, "OCI tag absence is inconclusive"):
+                    destination._remote_digest(f"{name}:{tag}")
 
     @unittest.skipUnless(all(shutil.which(tool) for tool in ("skopeo", "umoci", "docker-registry")),
                          "requires skopeo, umoci and a local Distribution registry")

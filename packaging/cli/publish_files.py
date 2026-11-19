@@ -65,8 +65,14 @@ class FilesDestination:
                     if (receipt["organization"]["slug"], receipt["registry"]["slug"],
                             receipt["digests"]["sha256"]) != ("buildkite", "bktec", asset.sha256):
                         raise ValueError("receipt identity or digest differs")
+                    for key, expected in (("name", name.rsplit(f"-{stage.version}.", 1)[0]),
+                                          ("version", stage.version)):
+                        if key in receipt and receipt[key] != expected:
+                            raise ValueError(f"receipt {key} differs")
                 except (KeyError, TypeError, ValueError) as error:
                     raise ValueError(f"unverifiable Files upload receipt for {name}; re-preflight before retry") from error
+                if ("name" not in receipt or "version" not in receipt) and name in self._missing(stage.version, assets):
+                    raise ValueError(f"unverifiable Files upload receipt for {name}; re-preflight before retry")
 
     def _inventory(self, stage: Stage) -> dict[str, Asset]:
         if not re.fullmatch(rf"3\.{NUMBER}\.{NUMBER}", stage.version):
