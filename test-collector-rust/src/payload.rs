@@ -124,28 +124,23 @@ impl Payload {
     /// Returns a vector of payloads containing their individual batches of
     /// `TestData`.
     pub fn batchify(self, batch_size: usize) -> Vec<Self> {
-        let (complete, incomplete): (Vec<TestData>, Vec<TestData>) = self
+        let (complete, incomplete): (Vec<_>, Vec<_>) = self
             .data
-            .values()
-            .cloned()
-            .partition(|test_data| test_data.is_finished());
+            .iter()
+            .partition(|(_, test_data)| test_data.is_finished());
 
         let result = complete
             .chunks(batch_size)
             .map(|chunk| {
                 let mut payload = self.new_clean();
 
-                for test_data in chunk.iter() {
-                    payload
-                        .data
-                        .insert(test_data.name.clone(), test_data.clone());
+                for &(full_name, test_data) in chunk {
+                    payload.data.insert(full_name.clone(), test_data.clone());
                 }
 
                 if payload.data.len() < batch_size {
-                    for test_data in incomplete.iter() {
-                        payload
-                            .data
-                            .insert(test_data.name.clone(), test_data.clone());
+                    for &(full_name, test_data) in &incomplete {
+                        payload.data.insert(full_name.clone(), test_data.clone());
                     }
                 }
 
@@ -294,6 +289,54 @@ mod test {
 
         assert_eq!(finished.len(), finished_size - batch_size);
         assert_eq!(unfinished.len(), unfinished_size);
+    }
+
+    #[test]
+    fn batchify_preserves_results_with_the_same_leaf_name() {
+        for (batch_size, expected_batch_lengths) in [(3, vec![2]), (1, vec![1, 1])] {
+            let mut payload = Payload::new(RuntimeEnvironment::generic());
+            for line in [
+                r#"{"type":"suite","event":"started","test_count":3}"#,
+                r#"{"type":"test","event":"started","name":"a::works"}"#,
+                r#"{"type":"test","event":"started","name":"b::works"}"#,
+                r#"{"type":"test","event":"started","name":"c::works"}"#,
+                r#"{"type":"test","event":"ok","name":"a::works","exec_time":0.01}"#,
+                r#"{"type":"test","event":"failed","name":"b::works","exec_time":0.02}"#,
+            ] {
+                crate::input::parse_line(line, &mut payload);
+            }
+
+            let batches: Vec<_> = payload
+                .batchify(batch_size)
+                .into_iter()
+                .map(|batch| serde_json::to_value(batch).unwrap())
+                .collect();
+            let data: Vec<_> = batches
+                .iter()
+                .map(|batch| batch["data"].as_array().unwrap())
+                .collect();
+            assert_eq!(
+                data.iter().map(|batch| batch.len()).collect::<Vec<_>>(),
+                expected_batch_lengths
+            );
+
+            let mut results: Vec<_> = data
+                .into_iter()
+                .flatten()
+                .map(|test| {
+                    (
+                        test["scope"].as_str().unwrap(),
+                        test["name"].as_str().unwrap(),
+                        test["result"].as_str().unwrap(),
+                    )
+                })
+                .collect();
+            results.sort_unstable();
+            assert_eq!(
+                results,
+                [("a", "works", "passed"), ("b", "works", "failed")]
+            );
+        }
     }
 
     fn stub_test_data(finished: bool) -> TestData {

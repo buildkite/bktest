@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix missing results when tests in different Rust modules share the same name.
+
 ## 0.1.5
 
 ### Security
