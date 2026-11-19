@@ -114,7 +114,7 @@ file or packages from the compatibility checkout.
   build for each exact path and confirm one matching artifact from the approved
   handoff job. Independently download each exact path from that build into an
   empty directory and compare SHA-256 with the verifier output before releasing
-  the upload jobs. The plugin accepts `artifact-build-id` but not a job selector
+  the upload jobs. The plugin accepts `artifact_build_id` but not a job selector
   or a digest. Freeze the artifact set: no competing jobs, retries or duplicate
   paths may change what that build-level lookup returns. With `file` set to one
   approved relative path, `expected_sha` from the receipt, and `verify_dir` an
@@ -134,7 +134,7 @@ file or packages from the compatibility checkout.
   plugins:
     - publish-to-packages#v2.2.0:
         registry: buildkite/bktec
-        artifact-build-id: APPROVED_HANDOFF_BUILD_UUID
+        artifact_build_id: APPROVED_HANDOFF_BUILD_UUID
         artifacts: dist/buildkite-packages/EXACT_VERSIONED_FILENAME
   ```
 
