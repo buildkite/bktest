@@ -134,14 +134,13 @@ RSpec.describe Buildkite::TestCollector::OTel do
     expect(skipped.ended).to be(true)
   end
 
-  it "marks every test span as the submission, even one whose test describes nothing" do
+  it "reserves a result even when the test describes nothing" do
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new
-    described_class.instance_variable_set(:@tracer, provider.tracer("via-marker-test"))
+    described_class.instance_variable_set(:@tracer, provider.tracer("empty-test"))
 
     span = described_class.start_test_span(test: execution_test)
 
     expect(span.to_span_data.attributes).to eq(
-      "buildkite.execution.via" => "otlp",
       "test.case.result.status" => "unset",
     )
   ensure
@@ -152,7 +151,7 @@ RSpec.describe Buildkite::TestCollector::OTel do
   it "reserves synthesis attributes before descriptive fields, run metadata, and tags" do
     exporter = OpenTelemetry::SDK::Trace::Export::InMemorySpanExporter.new
     processor = OpenTelemetry::SDK::Trace::Export::SimpleSpanProcessor.new(exporter)
-    limits = OpenTelemetry::SDK::Trace::SpanLimits.new(attribute_count_limit: 3)
+    limits = OpenTelemetry::SDK::Trace::SpanLimits.new(attribute_count_limit: 2)
     provider = OpenTelemetry::SDK::Trace::TracerProvider.new(span_limits: limits)
     provider.add_span_processor(processor)
     described_class.instance_variable_set(:@tracer, provider.tracer("attribute-priority-test"))
@@ -187,7 +186,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider.force_flush
 
     expect(exporter.finished_spans.fetch(0).attributes).to eq(
-      "buildkite.execution.via" => "otlp",
       "buildkite.run_key" => "run-123",
       "test.case.result.status" => "pass",
     )
@@ -233,7 +231,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
     provider.force_flush
 
     expect(exporter.finished_spans.fetch(0).attributes).to include(
-      "buildkite.execution.via" => "otlp",
       "test.case.result.status" => "pass",
     )
   ensure
@@ -1074,7 +1071,6 @@ RSpec.describe Buildkite::TestCollector::OTel do
         provider.force_flush
 
         expect(exporter.finished_spans.fetch(0).attributes).to include(
-          "buildkite.execution.via" => "otlp",
           "buildkite.run_key" => "run-key",
           "test.case.result.status" => "pass",
           "buildkite.test.name" => "adds up",
