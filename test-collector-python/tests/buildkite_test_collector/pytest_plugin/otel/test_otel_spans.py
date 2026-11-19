@@ -56,8 +56,9 @@ def test_test_span_is_a_root_with_synthesis_attributes_first(state, successful_t
     linked = replace(export_state, job_links=export.job_span_links({"TRACEPARENT": VALID_TRACEPARENT}))
     span = spans.start_test_span(linked, successful_test)
     assert span.parent is None
-    assert list(span.attributes)[:3] == [
-        "buildkite.execution.via", "buildkite.run_key", "test.case.result.status"
+    assert "buildkite.execution.via" not in span.attributes
+    assert list(span.attributes)[:2] == [
+        "buildkite.run_key", "test.case.result.status"
     ]
     assert span.attributes["test.case.result.status"] == "unset"
     assert span.attributes["buildkite.run_key"] == "run-1"
@@ -93,7 +94,7 @@ def test_identity_and_location_survive_129_attributes(state, successful_test):
     finished = exporter.get_finished_spans()[0]
     assert len(finished.attributes) == 128
     assert finished.dropped_attributes > 0
-    assert finished.attributes["buildkite.execution.via"] == "otlp"
+    assert "buildkite.execution.via" not in finished.attributes
     assert finished.attributes["buildkite.run_key"] == "run-1"
     assert finished.attributes["test.case.result.status"] == "pass"
     assert finished.attributes["buildkite.test.scope"] == "wyld stallyns"

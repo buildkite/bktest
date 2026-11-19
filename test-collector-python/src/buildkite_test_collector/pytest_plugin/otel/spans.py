@@ -47,7 +47,6 @@ def start_test_span(state: ExportState, test: TestData) -> Optional[Span]:
     """Start the root ``test.execution`` span for ``test``; ``None`` (and a warning) on failure."""
     try:
         span_attrs: attrs.Attributes = {
-            attrs.EXECUTION_VIA_ATTRIBUTE: attrs.EXECUTION_VIA,
             attrs.RUN_KEY_ATTRIBUTE: state.run_key,
             attrs.RESULT_ATTRIBUTE: attrs.RESULT_UNSET,
         }
@@ -138,7 +137,6 @@ def _describe_test(
         span.set_attribute(key, value)
     # The Python SDK evicts the *oldest* attribute at the count limit, so the
     # execution identity, result and source location are written last.
-    span.set_attribute(attrs.EXECUTION_VIA_ATTRIBUTE, attrs.EXECUTION_VIA)
     span.set_attribute(attrs.RUN_KEY_ATTRIBUTE, run_attributes[attrs.RUN_KEY_ATTRIBUTE])
     span.set_attribute(attrs.RESULT_ATTRIBUTE, attrs.result_status(test) or attrs.RESULT_UNSET)
     span.set_attribute(attrs.SCOPE_ATTRIBUTE, test_attributes[attrs.SCOPE_ATTRIBUTE])

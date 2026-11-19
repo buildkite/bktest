@@ -22,8 +22,6 @@ from ...collector.run_env import RunEnv
 AttributeValue = Union[str, int]
 Attributes = Dict[str, AttributeValue]
 
-EXECUTION_VIA_ATTRIBUTE = "buildkite.execution.via"
-EXECUTION_VIA = "otlp"
 RUN_KEY_ATTRIBUTE = "buildkite.run_key"
 RESULT_ATTRIBUTE = "test.case.result.status"
 RESULT_UNSET = "unset"
