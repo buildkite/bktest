@@ -86,6 +86,8 @@ class ReleaseApi(BaseHTTPRequestHandler):
                 return self.reply({}, 422)
             release = dict(payload, id=release_id, upload_url=(
                 f'{fixture.origin}/repos/buildkite/{repo}/releases/{release_id}/assets' + '{?name,label}'))
+            if repo == fixture.bad_upload_url:
+                release['upload_url'] = fixture.origin + '/wrong{?name,label}'
             fixture.releases[repo] = release
             return self.reply(release, 201)
         if self.command == 'POST' and path == f'releases/{release_id}/assets' and release:
@@ -94,6 +96,10 @@ class ReleaseApi(BaseHTTPRequestHandler):
             if not release['draft'] or name in assets or self.headers.get('Content-Type') != 'application/octet-stream':
                 return self.reply({}, 422)
             if fixture.fail_upload == (repo, name):
+                if fixture.leave_starter:
+                    asset_id = 100 + len(fixture.downloads)
+                    fixture.downloads[asset_id] = b''
+                    assets[name] = dict(name=name, id=asset_id, size=0, state='starter')
                 return self.reply({}, 502)
             asset_id = 100 + len(fixture.downloads)
             fixture.downloads[asset_id] = raw
@@ -151,6 +157,8 @@ class PublicationTest(unittest.TestCase):
         self.targets = dict(REPOS)
         self.projection = f'repository github.com/buildkite/bktest\ncommit {CANONICAL}\n'.encode()
         self.fail_upload = None
+        self.leave_starter = False
+        self.bad_upload_url = None
         server = HTTPServer(('127.0.0.1', 0), ReleaseApi)
         server.fixture = self
         self.origin = f'http://127.0.0.1:{server.server_port}'
@@ -195,6 +203,40 @@ class PublicationTest(unittest.TestCase):
         self.run_driver(apply=True)
         self.assertEqual(self.writes, [])
         self.assertNotIn('releases/latest', [path for _, path in self.reads])
+
+    def test_empty_starter_on_owned_draft_requires_separate_cleanup(self):
+        repo, name = self.fail_upload = ('test-engine-client', f'bktec_{self.version}_windows_arm64.exe')
+        self.leave_starter = True
+        with self.assertRaisesRegex(ValueError, 'HTTP 502'):
+            self.run_driver(apply=True)
+        self.assertTrue(self.releases[repo]['draft'])
+        placeholder = self.remote[repo][name]
+        self.fail_upload = None
+        self.writes.clear()
+        with self.assertRaisesRegex(ValueError, rf'empty starter asset {name} \(asset ID {placeholder["id"]}\)'):
+            self.run_driver(apply=True)
+        self.assertEqual(self.writes, [])
+        self.assertEqual(self.remote[repo][name], placeholder)
+
+        # Simulate separately authorized cleanup, outside the driver.
+        del self.remote[repo][name]
+        self.run_driver(apply=True)
+        self.assertEqual([(r, action) for r, action, _ in self.writes], [(repo, 'upload'), (repo, 'publish')])
+        self.assertEqual(self.writes[0][2], name)
+
+    def test_bad_draft_upload_url_stops_before_upload_and_on_cross_repo_preflight(self):
+        self.bad_upload_url = 'test-engine-client'
+        with self.assertRaisesRegex(ValueError, 'test-engine-client: unexpected release upload URL'):
+            self.run_driver(apply=True)
+        self.assertEqual([action for repo, action, _ in self.writes if repo == self.bad_upload_url], ['create'])
+        self.releases.pop('bktest')
+        self.remote['bktest'].clear()
+        self.writes.clear()
+        for apply in (False, True):
+            with self.subTest(apply=apply):
+                with self.assertRaisesRegex(ValueError, 'test-engine-client: unexpected release upload URL'):
+                    self.run_driver(apply=apply)
+                self.assertEqual(self.writes, [])
 
     def test_wrong_legacy_tag_or_projection_blocks_both_repositories_before_writes(self):
         for target, projection, message in [

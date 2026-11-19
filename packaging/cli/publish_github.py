@@ -106,6 +106,12 @@ class GitHubRelease:
             raise ValueError(f'{self.name}: invalid release ID')
         return release_id
 
+    def upload_endpoint(self, release, release_id):
+        url = f'{self.uploads}{self.prefix}/releases/{release_id}/assets'
+        if release.get('upload_url') != url + '{?name,label}':
+            raise ValueError(f'{self.name}: unexpected release upload URL for draft {release_id}')
+        return url
+
     def inspect(self, stage):
         self.verify_source(stage)
         expected = {Path(name).name: asset for name, asset in stage.assets.items()
@@ -127,16 +133,22 @@ class GitHubRelease:
                 raise ValueError(f'{self.name}: unexpected or duplicate asset {name}')
             local = remaining.pop(name)
             asset_id = asset['id']
-            if (type(asset_id) is not int or asset_id <= 0 or asset['state'] != 'uploaded' or
-                    asset['size'] != local.path.stat().st_size):
+            if type(asset_id) is not int or asset_id <= 0:
+                raise ValueError(f'{self.name}: invalid asset ID for {name}')
+            if release['draft'] and asset['state'] == 'starter' and type(asset['size']) is int and asset['size'] == 0:
+                raise ValueError(f'{self.name}: v{stage.version} draft {release_id} has empty starter asset {name} '
+                                 f'(asset ID {asset_id}); stopped. See publish.py --help for separately authorized cleanup')
+            if asset['state'] != 'uploaded' or asset['size'] != local.path.stat().st_size:
                 raise ValueError(f'{self.name}: differing or incomplete asset {name}')
             with self.request(f'{self.api}{self.prefix}/releases/assets/{asset_id}',
                               accept='application/octet-stream') as response:
                 observed = hashlib.file_digest(response, 'sha256').hexdigest()
             if observed != local.sha256:
                 raise ValueError(f'{self.name}: differing asset hash for {name}')
-        if remaining and not release['draft']:
-            raise ValueError(f'{self.name}: published release is incomplete; only owned drafts can resume')
+        if remaining:
+            if not release['draft']:
+                raise ValueError(f'{self.name}: published release is incomplete; only owned drafts can resume')
+            self.upload_endpoint(release, release_id)
         return release, remaining
 
     def preflight(self, stage):
@@ -165,11 +177,7 @@ class GitHubRelease:
         release_id = self.verify_release(release, stage)
         if not release['draft']:
             raise ValueError(f'{self.name}: release visibility changed unexpectedly')
-        url = f'{self.uploads}{self.prefix}/releases/{release_id}/assets'
-        if release['upload_url'] != url + '{?name,label}':
-            raise ValueError(f'{self.name}: unexpected release upload URL')
-        # Send raw bytes. GitHub refuses duplicate names; never delete a
-        # differing asset or a starter left by an interrupted server upload.
+        url = self.upload_endpoint(release, release_id) if remaining else None
         for name in sorted(remaining, key=lambda name: (name != 'manifest.json', name)):
             asset = remaining[name]
             with asset.path.open('rb') as data, self.request(

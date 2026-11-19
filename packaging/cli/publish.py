@@ -3,6 +3,23 @@
 
 Both protected tags must already exist. No tag or mutable channel is changed.
 Serialize runs for a version and retain the original archive for all retries.
+
+Recovery after a GitHub upload returns HTTP 502:
+  1. Stop writes and rerun without --apply using the same approved inputs.
+     If GitHub left no asset, normal missing-only resume is possible once
+     both repositories pass preflight. If an empty starter is reported,
+     record the repository, tag, draft ID, asset name and asset ID.
+  2. Before any cleanup, independently recheck the peeled tag, draft ID,
+     stage reservation (archive digest and both source SHAs), and asset
+     membership: the ID must still identify the expected name on that exact
+     owned draft, with state 'starter' and size 0. Stop if anything differs
+     or ownership is unclear. This does not apply to published releases,
+     uploaded assets, or hash conflicts.
+  3. Only with separate approval for that exact asset ID, the serialized
+     release owner may remove that one placeholder outside the driver.
+     Rerun read-only preflight for both repositories with the same archive;
+     resume only after preflight passes and writes are authorized again.
+     The driver never deletes anything.
 """
 
 import argparse
@@ -151,7 +168,7 @@ def reconcile(stage: Stage, github: tuple[Destination, ...], *,
 def main():
     from publish_github import GitHubRelease
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('archive', type=Path, help='retained dist/cli-release.tar')
     parser.add_argument('--archive-sha256', required=True, help='independently approved SHA-256 of the archive')
     parser.add_argument('--tag', required=True, help='exact approved version tag (already exists in both repos)')
