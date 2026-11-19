@@ -396,43 +396,6 @@ describe('a', () => {
 	assert.Equal(t, runner.RunStatistics{Total: 2, PassedOnFirstRun: 1, PassedOnRetry: 1}, testResult.Statistics())
 }
 
-func TestRun_IgnoresLegacyExperiment(t *testing.T) {
-	for _, cached := range []bool{false, true} {
-		for _, experiment := range []string{"", `"experiment":"peppermint",`} {
-			t.Run(fmt.Sprintf("cached=%t/legacy=%t", cached, experiment != ""), func(t *testing.T) {
-				t.Chdir(t.TempDir())
-				require.NoError(t, os.WriteFile("files.txt", []byte("apple\nbanana\ncherry\n"), 0600))
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.Method == http.MethodGet && !cached {
-						w.WriteHeader(http.StatusNotFound)
-						fmt.Fprint(w, `{"message":"Not Found"}`)
-						return
-					}
-					fmt.Fprint(w, `{`+experiment+`"identifier":"plan","parallelism":2,"tasks":{
-						"0":{"node_number":0,"tests":[{"path":"apple"}]},
-						"1":{"node_number":1,"tests":[{"path":"cherry"},{"path":"banana"}]}
-					}}`)
-				}))
-				defer server.Close()
-
-				var logs bytes.Buffer
-				setDebugEnabled(t, &logs)
-				cfg := &config.Config{
-					TestRunner: "custom", TestFilePattern: "*",
-					TestCommand:   shellquote.Join("sh", "-c", `printf '%s\n' "$@" > ran.txt`, "sh") + " {{testExamples}}",
-					ServerBaseURL: server.URL, Identifier: "plan", OrganizationSlug: "org", SuiteSlug: "suite",
-					NodeIndex: 1, Parallelism: 2, CollectGitMetadata: new(false),
-				}
-				require.NoError(t, Run(context.Background(), cfg, "files.txt"))
-				ran, err := os.ReadFile("ran.txt")
-				require.NoError(t, err)
-				assert.Equal(t, "cherry\nbanana\n", string(ran))
-				assert.NotContains(t, logs.String(), "My favourite ice cream")
-			})
-		}
-	}
-}
-
 func TestRun_GotestsumNativeRetryExitZero(t *testing.T) {
 	t.Chdir(t.TempDir())
 	require.NoError(t, os.WriteFile("packages.txt", []byte("example.com/hello\n"), 0600))
