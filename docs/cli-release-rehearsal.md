@@ -48,13 +48,21 @@ pre-existing fake stable pointer is untouched, even with a staged Files archive.
 
 ## Hand off an approved stable stage to the existing legacy uploaders
 
-This is a manual runbook, not a pipeline. The local preparation below needs no
-credentials. Do not run the upload steps until the release owner authorizes the
+This is a manual runbook, not a pipeline. Local preparation needs no credentials.
+**The upload steps are not runnable with the pipelines as configured.** The
+existing Files jobs depend on the legacy `release` job, which runs GoReleaser,
+and the canonical stage has no writer credentials. Before the legacy writer is
+retired, the release owner must identify and separately approve a way to run
+only the handoff jobs under an authorized legacy release identity, without the
+normal bootstrap. Confirm artifact access and each destination's permissions
+from that execution context. If no such path is available, stop after local
+preparation; do not unblock or reuse the normal release job as a workaround.
+
+Even with that path, do not upload until the release owner authorizes the
 specific version and destinations, verifies both exact-version GitHub releases,
-and confirms no other writer can publish this version. Keep the existing legacy
-release pipeline from running its normal release command for this handoff. Do not
-run `prepare-release.sh`, `release.sh`, `svu`, or GoReleaser; none of them should
-select a version, tag a commit, or generate replacement payloads.
+and confirms no other writer can publish this version. Do not run
+`prepare-release.sh`, `release.sh`, `svu`, or GoReleaser; none should select a
+version, tag a commit, or generate replacement payloads.
 
 ### Select and verify the artifact
 
