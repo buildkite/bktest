@@ -150,6 +150,26 @@ class OCIPublicationTest(unittest.TestCase):
         self.assertEqual(read(tagged), raw)
         self.assertEqual(read(latest), latest_before)
 
+        # Keep the matching index and manifests visible, but remove a referenced
+        # layer from the registry's content store (not the approved layout).
+        header = json.loads((image / "index.json").read_bytes())["manifests"][0]
+        blobs = image / "blobs/sha256"
+        index = json.loads((blobs / header["digest"].removeprefix("sha256:")).read_bytes())
+        child = index["manifests"][0]["digest"].removeprefix("sha256:")
+        manifest = json.loads((blobs / child).read_bytes())
+        for descriptor in (manifest["config"], *manifest["layers"]):
+            sha256 = descriptor["digest"].removeprefix("sha256:")
+            stored = self.root / "registry/docker/registry/v2/blobs/sha256" / sha256[:2] / sha256 / "data"
+            saved = stored.read_bytes()
+            stored.unlink()
+            try:
+                self.assertEqual(read(tagged), raw)
+                self.assertTrue(read(f"docker://{name}@sha256:{child}"))
+                with self.assertRaisesRegex(OSError, "cannot read back OCI content"):
+                    destination.preflight(self.stage)
+            finally:
+                stored.write_bytes(saved)
+
         self.stage.version = "3.7.1"
         next_ref, = destination.preflight(self.stage)
         seed(conflict, f"docker://{next_ref}")  # Another writer after preflight.

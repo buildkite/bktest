@@ -5,10 +5,12 @@ from functools import partial
 from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import tempfile
 from threading import Thread
 import unittest
+from unittest.mock import patch
 
 from publish_files import FilesDestination
 
@@ -138,6 +140,7 @@ class FilesDestinationTest(unittest.TestCase):
         return Asset(path, sha256(data).hexdigest())
 
     def test_resume_after_ambiguous_create_and_verify_every_download(self):
+        self.enterContext(patch.dict(os.environ, http_proxy="http://127.0.0.1:1", no_proxy="", NO_PROXY=""))
         self.remote[BINARIES[1]] = self.contents[BINARIES[1]]
         self.fail_after_create = BINARIES[2]
         missing = self.destination.preflight(self.stage)

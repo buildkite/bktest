@@ -138,9 +138,10 @@ class FilesDestination:
     def _request(self, url: str, token: str, *options: str) -> tuple[bytes, str]:
         # Pass the token via stdin, not argv. Only downloads follow redirects;
         # curl does not forward Authorization to another host. Never retry a POST.
+        direct = ("--noproxy", "*") if urlsplit(url).hostname == "127.0.0.1" else ()
         result = subprocess.run(
             ["curl", "-q", "--silent", "--max-time", "120", "--proto", "=http,https", "--header", "@-",
-             "--write-out", "\n%{http_code}\n%header{link}", *options, url],
+             "--write-out", "\n%{http_code}\n%header{link}", *direct, *options, url],
             input=f"Authorization: Bearer {token}\n".encode(), capture_output=True,
         )
         if result.returncode:

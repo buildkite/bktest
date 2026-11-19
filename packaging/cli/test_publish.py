@@ -3,6 +3,7 @@ from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -176,6 +177,7 @@ class PublicationTest(unittest.TestCase):
             publish.reconcile(release, destinations, apply=apply)
 
     def test_resume_draft_and_verify_exact_inventory_in_both_repositories(self):
+        self.enterContext(patch.dict(os.environ, http_proxy='http://127.0.0.1:1', no_proxy='', NO_PROXY=''))
         self.run_driver()
         self.assertEqual(self.writes, [])
         self.fail_upload = ('test-engine-client', f'bktec_{self.version}_linux_arm64.rpm')

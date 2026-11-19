@@ -12,6 +12,7 @@ does not offer a portable conditional create for manifest tags.
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -35,8 +36,10 @@ CONFIG = "application/vnd.oci.image.config.v1+json"
 SHA256 = r"[0-9a-f]{64}"
 
 
-def _run(*command: str) -> bytes:
-    result = subprocess.run(command, capture_output=True)
+def _run(*command: str, loopback: bool = False) -> bytes:
+    env = ({name: value for name, value in os.environ.items() if not name.lower().endswith("_proxy")}
+           if loopback else None)
+    result = subprocess.run(command, capture_output=True, env=env)
     if result.returncode:
         raise OSError(f"{command[0]} {command[1]} failed: {result.stderr.decode(errors='replace').strip()}")
     return result.stdout
@@ -63,7 +66,7 @@ class OCIDestination:
         pattern = r"127\.0\.0\.1:[0-9]+/buildkite/(?:test-engine-client-docker/)?test-engine-client"
         return re.fullmatch(pattern, self.name) is not None
 
-    def _inventory(self, stage: "Stage") -> tuple[str, tuple[str, ...]]:
+    def _inventory(self, stage: "Stage") -> tuple[str, dict]:
         if self.name not in EXISTING_REPOSITORIES and not self._loopback():
             raise ValueError(f"not an existing OCI destination: {self.name}")
         if not re.fullmatch(VERSION, stage.version) or "-" in stage.version:
@@ -71,12 +74,12 @@ class OCIDestination:
         if not re.fullmatch(SHA256, self.archive_sha256) or self.archive_sha256 != stage.archive_sha256:
             raise ValueError("OCI approval does not match the stage archive")
         try:
-            children = self._verify_layout(stage)
+            top = self._verify_layout(stage)
         except (KeyError, TypeError, AttributeError) as error:
             raise ValueError("malformed OCI layout or stage inventory") from error
-        return f"{self.name}:v{stage.version}", children
+        return f"{self.name}:v{stage.version}", top
 
-    def _verify_layout(self, stage: "Stage") -> tuple[str, ...]:
+    def _verify_layout(self, stage: "Stage") -> dict:
         if ":" in str(self.layout.resolve()):
             raise ValueError("OCI layout path cannot contain a colon")
         if json.loads((self.layout / "oci-layout").read_bytes())["imageLayoutVersion"] != "1.0.0":
@@ -100,7 +103,7 @@ class OCIDestination:
             (layout / "blobs").symlink_to(self.layout.resolve() / "blobs", target_is_directory=True)
             for child, (_, arch) in zip(children, platforms):
                 self._verify_platform(stage, layout, child, arch)
-        return tuple(child["digest"] for child in children)
+        return top
 
     def _verify_platform(self, stage: "Stage", layout: Path, child: dict, arch: str) -> None:
         image = json.loads(_blob(layout, child).read_bytes())
@@ -136,9 +139,10 @@ class OCIDestination:
                 raise ValueError(f"OCI payload differs from stage: linux/{arch} /usr/local/bin/{name}")
 
     def _remote_digest(self, ref: str) -> str | None:
-        tls = ("--tls-verify=false",) if self._loopback() else ()
+        local = self._loopback()
+        options = ("--tls-verify=false", "--no-creds") if local else ()
         try:
-            data = _run("skopeo", "inspect", "--raw", *tls, f"docker://{ref}")
+            data = _run("skopeo", "inspect", "--raw", *options, f"docker://{ref}", loopback=local)
         except OSError as error:
             # Treat only the registry's missing-manifest response as absence,
             # not auth, namespace, TLS or connectivity failures.
@@ -147,32 +151,47 @@ class OCIDestination:
             raise
         return "sha256:" + hashlib.sha256(data).hexdigest()
 
-    def _present(self, ref: str, children: tuple[str, ...]) -> bool:
+    def _present(self, ref: str, top: dict) -> bool:
         actual = self._remote_digest(ref)
         if actual is None:
             return False
         if actual != self.index_digest:
             raise ValueError(f"OCI version already exists with a different digest: {ref}")
-        for child in children:
-            if self._remote_digest(f"{self.name}@{child}") != child:
-                raise ValueError(f"OCI platform manifest readback differs: {self.name}@{child}")
+        # A matching tag does not prove that all referenced blobs can be pulled.
+        # Read back the exact digest, not the tag, into an empty OCI layout.
+        pinned = f"{self.name}@{self.index_digest}"
+        local = self._loopback()
+        options = ("--src-tls-verify=false", "--src-no-creds") if local else ()
+        with TemporaryDirectory(prefix="readback-oci-") as temporary:
+            layout = Path(temporary)
+            try:
+                _run("skopeo", "copy", "--all", "--preserve-digests", "--remove-signatures",
+                     "--dest-oci-accept-uncompressed-layers",
+                     *options, f"docker://{pinned}", f"oci:{layout}", loopback=local)
+                index = json.loads(_blob(layout, top).read_bytes())
+                for child in index["manifests"]:
+                    image = json.loads(_blob(layout, child).read_bytes())
+                    for descriptor in (image["config"], *image["layers"]):
+                        _blob(layout, descriptor)
+            except OSError as error:
+                raise OSError(f"cannot read back OCI content for {ref}: {error}") from error
         return True
 
     def preflight(self, stage: "Stage") -> tuple[str, ...]:
-        ref, children = self._inventory(stage)
-        return () if self._present(ref, children) else (ref,)
+        ref, top = self._inventory(stage)
+        return () if self._present(ref, top) else (ref,)
 
     def publish_missing(self, stage: "Stage", missing: tuple[str, ...]) -> None:
         if not missing:
             return
         if not self._loopback():
             raise ValueError("OCI writes are restricted to loopback rehearsal")
-        ref, children = self._inventory(stage)
+        ref, top = self._inventory(stage)
         if missing != (ref,):
             raise ValueError("OCI publication may only write the requested exact-version index")
-        if self._present(ref, children):
+        if self._present(ref, top):
             return
-        _run("skopeo", "copy", "--all", "--preserve-digests", "--dest-tls-verify=false",
-             f"oci:{self.layout.resolve()}", f"docker://{ref}")
-        if not self._present(ref, children):
+        _run("skopeo", "copy", "--all", "--preserve-digests", "--dest-tls-verify=false", "--dest-no-creds",
+             f"oci:{self.layout.resolve()}", f"docker://{ref}", loopback=True)
+        if not self._present(ref, top):
             raise OSError(f"OCI version absent after copy: {ref}")
