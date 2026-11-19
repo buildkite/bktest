@@ -1,0 +1,14 @@
+# Deliberately stages only. Never add credentials to this job.
+steps:
+  - label: ":package: Stage both CLI distributions"
+    command: |
+      bash packaging/cli/stage-checkout.sh dist/cli-release &&
+      tar -C dist/cli-release -cf dist/cli-release.tar .
+    artifact_paths: "dist/cli-release.tar"
+    plugins:
+      - docker-compose#v5.12.1:
+          config: .buildkite/cli/docker-compose.yml
+          cli-version: 2
+          run: stage
+          environment:
+            - BUILDKITE_TAG

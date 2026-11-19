@@ -27,6 +27,16 @@ agents:
   queue: hosted
 
 steps:
+  # CLI release staging only. No publisher or release credentials are wired.
+  - label: ":pipeline: bktest CLI release rehearsal"
+    if: build.tag == null
+    if_changed: "{cmd/**,internal/**,go.mod,go.sum,packaging/**,.buildkite/pipeline.release.yml,.buildkite/pipeline.cli-release.yml,.buildkite/cli/**,.buildkite/steps/update-ca-certificates}"
+    command: "[ ! -f go.mod ] || buildkite-agent pipeline upload .buildkite/pipeline.cli-release.yml"
+
+  - label: ":pipeline: bktest CLI tag staging"
+    if: build.tag =~ /^v3[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-[0-9A-Za-z-]+([.][0-9A-Za-z-]+)*)?$$/
+    command: "[ ! -f go.mod ] || buildkite-agent pipeline upload .buildkite/pipeline.cli-release.yml"
+
   - label: ":pipeline: test-collector-ruby release rehearsal"
     if: build.tag == null
     if_changed: "{test-collector-ruby/**,.buildkite/steps/update-ca-certificates}"
