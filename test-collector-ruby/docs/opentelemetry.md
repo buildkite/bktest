@@ -5,10 +5,9 @@
 > OpenTelemetry. Existing OpenTelemetry setups may work, but are not yet
 > supported or guaranteed to work.
 
-When `otel_enabled` is true, spans are the only submission path. Every
-`test.execution` span has `buildkite.execution.via=otlp`, which makes the span
-itself the submission: Buildkite synthesizes the execution from it server-side,
-with nothing sent to `/v1/uploads` and no JSON artifact written for
+When `otel_enabled` is true, spans are the only submission path. Each
+`test.execution` span is the submission: Buildkite synthesizes the execution
+from it server-side, with nothing sent to `/v1/uploads` and no JSON artifact written for
 `artifact_path`. Resources identify the suite, CI run and worker, and VCS ref
 that produced telemetry. Test Engine run metadata and any `tags:` you configure
 live only on each `test.execution` span, not its children.
@@ -90,8 +89,6 @@ have no phase spans. Suite-level failures without an example result (such as
 
 ## OTLP execution attributes
 
-The `buildkite.execution.via=otlp` marker opts every exported test span
-into execution synthesis.
 Buildkite-specific execution fields are flat (`buildkite.run_key`,
 `buildkite.job_id`, ...); producer identity follows OpenTelemetry resource
 semantic conventions.
@@ -120,7 +117,6 @@ operations do not need:
 
 | Span attribute | Value | Execution field |
 | --- | --- | --- |
-| `buildkite.execution.via` | `otlp` — opts this span in to synthesis | — |
 | `buildkite.run_key` | the Test Engine run key (required) | run key |
 | `buildkite.run_url` | a configured run URL when it differs from, or cannot be represented by, the CI resource URL | URL |
 | `buildkite.build_number` | the build number | number |

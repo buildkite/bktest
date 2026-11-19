@@ -12,7 +12,6 @@ module Buildkite::TestCollector
     RUN_KEY_HEADER = "Buildkite-Tests-Run-Key"
     RUN_KEY_FORMAT = /\A[!-~]{1,255}\z/
 
-    EXECUTION_VIA_ATTRIBUTE = "buildkite.execution.via"
     RESULT_ATTRIBUTE = "test.case.result.status"
     TAG_ATTRIBUTE_PREFIX = "buildkite.tag."
 
@@ -223,9 +222,8 @@ module Buildkite::TestCollector
         return unless enabled?
 
         # The SDK retains the earliest attributes at its configured limit.
-        # These three are the minimum needed to synthesize an execution. The
-        # span is the submission, so every test span must carry the via marker.
-        attributes = { EXECUTION_VIA_ATTRIBUTE => "otlp" }
+        # Reserve the run key and result before descriptive fields and tags.
+        attributes = {}
         run_key = (@run_attributes || {})["buildkite.run_key"]
         attributes["buildkite.run_key"] = run_key if run_key
         # Reserve the result's position before test code can consume the

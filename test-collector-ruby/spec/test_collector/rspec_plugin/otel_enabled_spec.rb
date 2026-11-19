@@ -54,8 +54,8 @@ RSpec.describe "RSpec OTLP-only submission" do
     span = finished_test_span
 
     expect(span).not_to be_nil
+    expect(span.attributes).not_to have_key("buildkite.execution.via")
     expect(span.attributes).to include(
-      "buildkite.execution.via" => "otlp",
       "buildkite.test.scope" => "OTLP-only group",
       "buildkite.test.name" => "does something",
       "test.suite.name" => "OTLP-only group",
@@ -237,7 +237,7 @@ RSpec.describe "RSpec OTLP-only submission" do
     expect(failures.length).to eq(2)
     expect(failures.map(&:trace_id).uniq.length).to eq(2)
     failures.each do |span|
-      expect(span.attributes).to include("buildkite.execution.via" => "otlp")
+      expect(span.attributes).not_to have_key("buildkite.execution.via")
       expect(span.attributes.fetch("buildkite.test.execution.external_id")).not_to be_empty
       expect(span.status.code).to eq(OpenTelemetry::Trace::Status::ERROR)
       expect(span.status.description).to include("database unavailable")
