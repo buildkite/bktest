@@ -256,28 +256,45 @@ Splitting quality depends on the timing data available for the suite. First runs
 
 ## Installation
 
-For a released CLI, keep using the [`bktec` installation guide](https://github.com/buildkite/test-engine-client#installation).
-To try the source preview, see [Development](#development).
+> [!IMPORTANT]
+> Use the `bktest` routes below only once an announced CLI release identifies
+> the exact version and verified inventory for the route and platform you use.
+> Until then, follow the [released `bktec` installation guide](https://github.com/buildkite/test-engine-client#installation)
+> or build from source under [Development](#development).
 
 ### Planned `bktest` install paths
 
-These install routes are a preview, not instructions to switch now:
+Once the inventory confirms the download for your platform, use the
+[canonical `bktest` GitHub release](https://github.com/buildkite/bktest/releases)
+for the exact announced CLI tag (`v3.x.y` or an explicitly chosen `v3.x.y-rc.N`).
+This repository also hosts collectors; `releases/latest` is not a CLI selector.
 
-- **Downloads:** Pick an exact plain `v3.x.y` CLI tag from the
-  [releases page](https://github.com/buildkite/bktest/releases) and verify the
-  binary's checksum. This repository also hosts collector releases, so its
-  `releases/latest` is not a CLI selector.
-- **Go:** `go install github.com/buildkite/bktest/v3/cmd/bktest@<version>`,
-  where `<version>` is the exact CLI tag, including `v`.
-- **Homebrew:** The plan is for `bktest` to be an alias of the existing `bktec`
-  formula, not a second formula. In a local Homebrew 7 rehearsal with an
-  untrusted tap, a fresh alias install required trusting the owning formula.
-  The install steps for a fresh client using the official tap are not yet verified.
-- **Linux packages and containers:** Keep the existing `bktec` package for
-  apt/dnf and the existing `test-engine-client` image. The plan is for both to
-  ship both executable names, with the legacy image entrypoint unchanged.
-  Separate `bktest` package, image, and Buildkite Files namespaces are outside
-  the initial rollout.
+1. Download `bktest_<version>_<os>_<arch>` (`.exe` on Windows) and
+   `bktest_<version>_checksums.txt` from that tag. The filenames omit the leading
+   `v`. Pick the OS and architecture from the verified release inventory.
+2. Hash the downloaded binary (`sha256sum` on Linux, `shasum -a 256` on macOS,
+   `Get-FileHash -Algorithm SHA256` on Windows). Compare it with the exact
+   filename entry in the checksum file and the released inventory. Do not run
+   the binary if any of them differ or the entry is missing.
+3. On Linux/macOS, install the verified file as `bktest` in a bin directory on
+   your `PATH` and make it executable. On Windows, place it there as `bktest.exe`.
+   Run `bktest --version` and check that it reports the selected CLI version.
+
+If the release confirms the canonical Go install route for that tag, set
+`BKT_VERSION` to the exact published tag, including the leading `v`, and run:
+
+```sh
+go install "github.com/buildkite/bktest/v3/cmd/bktest@${BKT_VERSION:?Set the exact published CLI tag}"
+```
+
+Existing installs can keep their [legacy downloads](https://github.com/buildkite/test-engine-client/releases)
+and `github.com/buildkite/test-engine-client/v3` Go module path. For apt/dnf,
+keep the `bktec` package name; for containers, keep the `test-engine-client`
+image and its existing entrypoint. Use an exact version listed for that channel
+before expecting both executable names. The existing Buildkite Files routes
+also require exact versions. For Homebrew, follow the release's verified
+official tap instructions when available; the proposed `bktest` alias uses the
+existing `bktec` formula, not a second formula.
 
 Keep any pinned Tests plugin steps unchanged unless you want to choose the
 CLI yourself. For an explicitly installed binary, set `install-client: false`
@@ -805,8 +822,11 @@ bktec may exit with a variety of exit statuses, outlined below:
 
 ## Development
 
+Open CLI issues and pull requests in [buildkite/bktest](https://github.com/buildkite/bktest).
+Make changes here rather than editing generated Go source in the legacy repo.
 The Go command lives in `cmd/bktest`. Build it from the repository root with
-`go build ./cmd/bktest`.
+`go build ./cmd/bktest`. See the [CLI import and delta runbook](./docs/cli-import.md)
+for the relationship between the canonical and legacy trees.
 
 Make sure you have Go, Ruby, and Node.js installed in your environment. You can follow the installation guides for each of these tools:
 
