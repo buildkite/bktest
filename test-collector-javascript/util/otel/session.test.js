@@ -87,7 +87,6 @@ describe('createSession', () => {
     expect(span.status.code).toBe(0)
     expect(span.events).toEqual([])
     expect(span.attributes).toEqual({
-      'buildkite.execution.via': 'otlp',
       'buildkite.run_key': 'run-1',
       'test.case.result.status': 'pass',
       'buildkite.test.scope': 'sum',

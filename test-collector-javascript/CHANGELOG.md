@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Stop sending the obsolete `buildkite.execution.via` attribute on OpenTelemetry test spans.
+
 ## 1.16.0
 
 - Vitest: record package spans for database queries and framework calls in OpenTelemetry mode. See the [package instrumentation guide](docs/opentelemetry.md#vitest-package-instrumentation) for import limits.
