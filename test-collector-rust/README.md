@@ -27,10 +27,10 @@ or later:
 cargo install --force buildkite-test-collector
 ```
 
-Alternatively you can install direct from the repo
+Alternatively, install directly from the `buildkite/bktest` repository:
 
 ```sh
-cargo install --git https://github.com/buildkite/test-collector-rust buildkite-test-collector
+cargo install --git https://github.com/buildkite/bktest --locked buildkite-test-collector
 ```
 
 3. Configure your environment
@@ -43,20 +43,19 @@ variables which are present. If this detection fails then the application will
 crash with an error. To force the use of a "generic CI environment" just set
 the `CI` environment variable to any non-empty value.
 
-3. Change your test output to JSON format
+4. Run your tests with nightly Rust and send the results to the collector
 
-In your CI environment you will need to change your output format to `JSON` and
-add `--report-time` to include execution times in the output. Unfortunately,
-these are currently unstable options for Rust, so some extra command line
-options are needed. Once you have the JSON output you can simply pipe it
-through the `buildkite-test-collector` binary - the input JSON is echoed back
-to STDOUT so that you can still operate upon it if needed.
+Rust's JSON test output and per-test timings require a nightly toolchain. Install
+it in your CI environment (for example, with `rustup toolchain install nightly`).
+The collector echoes the JSON to standard output. In Bash, enable `pipefail` so
+the step fails when `cargo test` fails, even if the collector exits successfully.
 
-```sh
-cargo test -- -Z unstable-options --format json --report-time | buildkite-test-collector
+```bash
+set -o pipefail
+cargo +nightly test -- -Z unstable-options --format json --report-time | buildkite-test-collector
 ```
 
-4. Confirm correct operation
+5. Confirm correct operation
 
 Verify that the run is visible in the Buildkite analytics dashboard
 
