@@ -48,7 +48,7 @@ def _by_name(spans):
 def _assert_synthesis_prerequisites(span, run_key):
     assert span.name == "test.execution"
     assert span.parent_span_id == b""
-    assert span.attributes["buildkite.execution.via"] == "otlp"
+    assert "buildkite.execution.via" not in span.attributes
     assert span.attributes["buildkite.test.name"]
     assert span.attributes["buildkite.run_key"] == run_key
     assert span.attributes["test.case.result.status"] in ("pass", "fail", "skipped")
