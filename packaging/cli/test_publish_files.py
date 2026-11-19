@@ -63,6 +63,8 @@ class FilesAPI(BaseHTTPRequestHandler):
                 return self.reply(404)
             return self.reply(200, state.downloads.get(name, state.remote[name]))
         if self.path == API + "?per_page=100":
+            if state.json_next is not None:
+                return self.reply(200, json.dumps({"items": [], "links": {"next": state.json_next}}).encode())
             return self.reply(200, b'{"items": []}', link=f'<{API}?page=2>; rel="next"')
         if self.path != API + "?page=2":
             return self.reply(404)
@@ -103,6 +105,7 @@ class FilesDestinationTest(unittest.TestCase):
         self.posts = []
         self.fail_after_create = None
         self.list_failure = None
+        self.json_next = None
         server = ThreadingHTTPServer(("127.0.0.1", 0), partial(FilesAPI, self))
         self.addCleanup(server.server_close)
         thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
@@ -152,6 +155,16 @@ class FilesDestinationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "download hash differs"):
             self.destination.preflight(self.stage)
 
+    def test_json_pagination_checks_next_page_and_refuses_unsafe_links(self):
+        self.remote[BINARIES[-1]] = self.contents[BINARIES[-1]]
+        self.json_next = "?page=2"
+        self.assertNotIn(BINARIES[-1], self.destination.preflight(self.stage))
+        for link in ("?per_page=100", "https://other.invalid" + API, "/different?page=2"):
+            with self.subTest(link=link), self.assertRaisesRegex(ValueError, "unsafe legacy Files inventory pagination"):
+                self.json_next = link
+                self.destination.preflight(self.stage)
+        self.assertEqual(self.posts, [])
+
     def test_conflicting_or_unavailable_inventory_is_not_missing(self):
         missing = self.destination.preflight(self.stage)
         self.remote[BINARIES[-1]] = b"conflicting bytes"
@@ -169,6 +182,8 @@ class FilesDestinationTest(unittest.TestCase):
     def test_stage_validation_and_explicit_write_gate(self):
         with self.assertRaisesRegex(ValueError, "verified create-only"):
             FilesDestination("mock-read", "mock-write")
+        with self.assertRaisesRegex(ValueError, "writes are restricted to loopback"):
+            FilesDestination("mock-read", "mock-write", verified_create_only=True)
         with self.assertRaisesRegex(ValueError, "stable CLI version"):
             self.destination.preflight(replace(self.stage, version="3.8.7-rc.1"))
         with self.assertRaisesRegex(ValueError, "unapproved"):

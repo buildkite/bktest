@@ -74,6 +74,8 @@ class OCIPublicationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not an existing OCI destination"):
             destination.preflight(self.stage)
         destination = replace(destination, name="docker.io/buildkite/test-engine-client")
+        with self.assertRaisesRegex(ValueError, "writes are restricted to loopback"):
+            destination.publish_missing(self.stage, (destination.name + ":v3.7.0",))
         with self.assertRaisesRegex(ValueError, "does not match the stage archive"):
             replace(destination, archive_sha256="b" * 64).preflight(self.stage)
         self.stage.version = "3.7.0-rc.1"

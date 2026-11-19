@@ -165,12 +165,14 @@ class OCIDestination:
     def publish_missing(self, stage: "Stage", missing: tuple[str, ...]) -> None:
         if not missing:
             return
+        if not self._loopback():
+            raise ValueError("OCI writes are restricted to loopback rehearsal")
         ref, children = self._inventory(stage)
         if missing != (ref,):
             raise ValueError("OCI publication may only write the requested exact-version index")
         if self._present(ref, children):
             return
-        tls = ("--dest-tls-verify=false",) if self._loopback() else ()
-        _run("skopeo", "copy", "--all", "--preserve-digests", *tls, f"oci:{self.layout.resolve()}", f"docker://{ref}")
+        _run("skopeo", "copy", "--all", "--preserve-digests", "--dest-tls-verify=false",
+             f"oci:{self.layout.resolve()}", f"docker://{ref}")
         if not self._present(ref, children):
             raise OSError(f"OCI version absent after copy: {ref}")

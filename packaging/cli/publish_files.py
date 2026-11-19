@@ -27,10 +27,12 @@ class FilesDestination:
                  api_origin: str = "https://api.buildkite.com",
                  download_origin: str = "https://packages.buildkite.com",
                  verified_create_only: bool = False):
-        # Only enable writes after confirming the service rejects duplicates atomically
-        # and does not move a channel when a version is added. The mock opts in too.
-        if write_token is not None and not verified_create_only:
-            raise ValueError("Files writes require verified create-only and channel behavior")
+        if write_token is not None:
+            if not verified_create_only:
+                raise ValueError("Files writes require verified create-only and channel behavior")
+            if not all(re.fullmatch(r"http://127\.0\.0\.1:[0-9]+/?", origin)
+                       for origin in (api_origin, download_origin)):
+                raise ValueError("Files writes are restricted to loopback rehearsal")
         self.read_token = read_token
         self.write_token = write_token
         self.url = api_origin.rstrip("/") + "/v2/packages/organizations/buildkite/registries/bktec/packages"
@@ -97,9 +99,16 @@ class FilesDestination:
             visited.add(url)
             body, link = self._request(url, self.read_token)
             try:
-                rows = json.loads(body)["items"]
+                page = json.loads(body)
+                rows = page["items"]
                 if not isinstance(rows, list):
                     raise TypeError("items must be an array")
+                links = page.get("links", {})
+                if not isinstance(links, dict):
+                    raise TypeError("links must be an object")
+                next_page = links.get("next")
+                if next_page is not None and not isinstance(next_page, str):
+                    raise TypeError("links.next must be a string")
                 for row in rows:
                     if not isinstance(row["version"], str):
                         raise TypeError("version must be a string")
@@ -113,8 +122,9 @@ class FilesDestination:
                     found.add(name)
             except (KeyError, TypeError, json.JSONDecodeError) as error:
                 raise ValueError("invalid legacy Files inventory response") from error
-            next_page = re.search(r'<([^>]+)>;\s*rel="next"', link)
-            url = urljoin(url, next_page[1]) if next_page else None
+            if not next_page and (header_next := re.search(r'<([^>]+)>;\s*rel="next"', link)):
+                next_page = header_next[1]
+            url = urljoin(url, next_page) if next_page else None
         # An API basename does not prove the extension or the bytes served at
         # the old download URL. Verify the exact versioned filenames too.
         for name in assets:
