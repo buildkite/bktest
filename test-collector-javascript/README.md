@@ -24,6 +24,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
 
     ### Jest
 
+    See a [working Jest example](https://github.com/buildkite/test-engine-client-examples/tree/main/jest#readme).
+
     Update your [Jest configuration](https://jestjs.io/docs/configuration):<br>
 
     ```js
@@ -57,6 +59,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ```
 
     ### Vitest
+
+    See a working example for [Vitest 5](https://github.com/buildkite/test-engine-client-examples/tree/main/vitest#readme) or [Vitest 4](https://github.com/buildkite/test-engine-client-examples/tree/main/vitest-4#readme).
 
     Supports Vitest 1–5. Vitest 5 requires Node.js 22.12+; the reporter
     configuration below is unchanged when upgrading from Vitest 4.
@@ -160,6 +164,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
 
     ### Playwright
 
+    See a [working Playwright example](https://github.com/buildkite/test-engine-client-examples/tree/main/playwright#readme).
+
     Update your [Playwright configuration](https://playwright.dev/docs/test-configuration):<br>
 
     ```js
@@ -196,6 +202,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
 
    ### Cypress
 
+   See a [working Cypress example](https://github.com/buildkite/test-engine-client-examples/tree/main/cypress#readme).
+
    Update your [Cypress configuration](https://docs.cypress.io/guides/references/configuration):<br>
 
    ```js
@@ -231,6 +239,8 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
     ```
 
 ## 🔭 OpenTelemetry (experimental)
+
+See a working OpenTelemetry example for [Jest](https://github.com/buildkite/test-engine-client-examples/tree/main/jest-otel#readme), [Vitest](https://github.com/buildkite/test-engine-client-examples/tree/main/vitest-otel#readme), or [Playwright](https://github.com/buildkite/test-engine-client-examples/tree/main/playwright-otel#readme).
 
 Jest, Vitest and Playwright can also send results as OpenTelemetry traces, with
 HTTP calls, database queries and your own spans under each test in Jest and
