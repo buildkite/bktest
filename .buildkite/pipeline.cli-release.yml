@@ -1,6 +1,7 @@
 # Deliberately stages only. Never add credentials to this job.
 steps:
   - label: ":package: Stage both CLI distributions"
+    key: cli-stage
     command: |
       bash packaging/cli/stage-checkout.sh dist/cli-release &&
       tar -C dist/cli-release -cf dist/cli-release.tar .
@@ -12,3 +13,9 @@ steps:
           run: stage
           environment:
             - BUILDKITE_TAG
+
+  - label: ":mag: Verify retained CLI stage"
+    key: cli-stage-verify
+    depends_on: cli-stage
+    command: python3 -B packaging/cli/verify_stage.py
+    artifact_paths: "dist/cli-release-receipt.json"
