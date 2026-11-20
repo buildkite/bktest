@@ -1,9 +1,6 @@
 # OpenTelemetry submission (experimental)
 
 > **This feature is still under development and may change.**
-> This experimental support is intended for suites that do not already configure
-> OpenTelemetry. Existing OpenTelemetry setups may work, but are not yet
-> supported or guaranteed to work.
 
 When `otel_enabled` is true, spans are the only submission path. Each
 `test.execution` span is the submission: Buildkite synthesizes the execution
@@ -205,15 +202,34 @@ instrumentation's namespace upcased with `::` replaced by `_`, so
 has a single switch that disables every registered instrumentation at once.
 
 If your suite already configures the OpenTelemetry SDK, the collector attaches
-its forwarder to that provider and installs no instrumentation; install and
-configure instrumentation there as you normally would. This is also the way to
-keep a bundle full of instrumentation gems (such as
-`opentelemetry-instrumentation-all`, loaded for production) unpatched under
-test: configure the SDK yourself, before the suite starts, without `use` or
+its forwarder to the global tracer provider and installs no instrumentation.
+Install and configure instrumentation there as you normally would. The provider
+must support `add_span_processor`; existing span processors and exporters stay
+in place.
+SDK setup can appear before or after `Buildkite::TestCollector.configure` in
+`spec/spec_helper.rb`, but must finish before the collector's `before(:suite)`
+hook runs. If you configure the SDK in a `before(:suite)` hook, register that
+hook before configuring the collector.
+
+Do not replace the global tracer provider or call `OpenTelemetry::SDK.configure`
+again after the collector attaches. The collector does not forward child spans
+from a replacement or separate provider. A provider that cannot accept a span
+processor disables child forwarding with a warning. These limitations do not
+affect `test.execution` export, which uses the collector's private provider.
+Child spans also remain subject to the suite-owned provider's sampling.
+
+Configuring the SDK yourself is also the way to keep a bundle full of
+instrumentation gems (such as `opentelemetry-instrumentation-all`, loaded for
+production) unpatched under test: configure the SDK yourself, before the suite
+starts, without `use` or
 `use_all`, and the collector forwards only `test.execution` spans, any spans
-your suite creates by hand, and the phases that grouped those spans. Set
-`OTEL_TRACES_EXPORTER=none` as well, or the SDK adds its own default OTLP exporter aimed at
-`localhost:4318`:
+your suite creates by hand, and the phases that grouped those spans. If your suite
+needs no exporter of its own, set `OTEL_TRACES_EXPORTER=none` before configuring
+the SDK. Without an explicit span processor, the SDK otherwise adds a default
+OTLP exporter, which uses the standard `OTEL_EXPORTER_OTLP_*` settings or
+`localhost:4318`. Avoid sending child spans to the same endpoint through both
+your own exporter and the collector, including
+when bktec's relay sets those environment variables:
 
 ```ruby
 # spec/spec_helper.rb

@@ -22,7 +22,7 @@ system_packages() {
   # Compiler/native extensions, Swift/OTP/.NET runtimes, and Chromium/Cypress.
   for package in build-essential curl unzip xz-utils pkg-config \
     libssl-dev libyaml-dev zlib1g-dev libncurses6 libtinfo6 libodbc2 \
-    libicu72 libxml2 libcurl4 libedit2 libsqlite3-0 libpython3.11 \
+    libicu-dev libxml2 libcurl4 libedit2 libsqlite3-0 libpython3-dev \
     libatomic1 clang libblocksruntime-dev \
     libgtk-3-0 libgbm1 libnotify4 libnss3 libxss1 libasound2 libxtst6 \
     libatk-bridge2.0-0 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
