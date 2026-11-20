@@ -257,17 +257,16 @@ Splitting quality depends on the timing data available for the suite. First runs
 ## Installation
 
 > [!IMPORTANT]
-> The commands below explicitly opt in to `v3.6.0-rc.3`, a prerelease, not
-> a stable recommendation. For stable installs, continue using the
-> [released `bktec` installation guide](https://github.com/buildkite/test-engine-client#installation)
-> until an announced stable CLI release identifies its exact tag and verified
-> installation routes. Do not assume an RC route is available at the stable tag.
+> The `v3.6.0` instructions below are a launch preview. The public downloads
+> and Go installs at that tag are pending verification. Until the stable
+> rollout is confirmed, use the [released `bktec` installation guide](https://github.com/buildkite/test-engine-client#installation)
+> and keep existing version pins and default install routes unchanged.
 
 ### Download `bktest` from GitHub
 
-Use the [exact CLI release](https://github.com/buildkite/bktest/releases/tag/v3.6.0-rc.3),
-not `releases/latest`: this repository also publishes collector releases.
-Choose the asset for your OS and architecture. Filenames omit the leading `v`.
+Once the [v3.6.0 release](https://github.com/buildkite/bktest/releases/tag/v3.6.0)
+and its asset inventory are verified, choose the exact asset for your OS and
+architecture from that release. Filenames omit the leading `v`.
 
 On Linux or macOS, run this from a new directory. This example selects Linux
 AMD64; change `target` to `linux_arm64`, `darwin_amd64`, or `darwin_arm64` as
@@ -276,7 +275,7 @@ appropriate. Verification happens before the binary is made executable.
 ```sh
 (
   set -eu
-  tag=v3.6.0-rc.3
+  tag=v3.6.0
   version=${tag#v}
   target=linux_amd64
   asset="bktest_${version}_${target}"
@@ -297,44 +296,47 @@ appropriate. Verification happens before the binary is made executable.
 )
 ```
 
-On Windows, download `bktest_3.6.0-rc.3_windows_amd64.exe` or
-`bktest_3.6.0-rc.3_windows_arm64.exe` and `bktest_3.6.0-rc.3_checksums.txt`
+On Windows, download `bktest_3.6.0_windows_amd64.exe` or
+`bktest_3.6.0_windows_arm64.exe` and `bktest_3.6.0_checksums.txt`
 from the same release. Run `Get-FileHash -Algorithm SHA256` on the downloaded
 file and compare the hash with its exact filename entry in the checksum file.
 Do not run it if the entry is missing or the hash differs. Rename the verified
 file to `bktest.exe` and run `./bktest.exe --version` in PowerShell.
 
-The version check should report `bktest v3.6.0-rc.3`. Place the verified
+The version check should report `bktest v3.6.0`. Place the verified
 executable in a directory on your `PATH` to use it from other directories.
 
 ### Install with Go
 
-With Go 1.27.3 or later, install the exact prerelease from the canonical module:
+After the `v3.6.0` module and toolchain requirement are verified, use the
+exact canonical Go install path:
 
 ```sh
-go install github.com/buildkite/bktest/v3/cmd/bktest@v3.6.0-rc.3
+go install github.com/buildkite/bktest/v3/cmd/bktest@v3.6.0
 ```
 
 Go places the executable in `GOBIN`, or the `bin` directory under `GOPATH`
-when `GOBIN` is unset. Unlike the GitHub binary, this build reports `bktest dev`
-because `go install` does not stamp the release version. Run
+when `GOBIN` is unset. A Go-built binary may report `bktest dev` because
+`go install` does not stamp the release version. Run
 `go version -m /path/to/bktest` and check that the `mod` line shows
-`github.com/buildkite/bktest/v3` at `v3.6.0-rc.3`.
+`github.com/buildkite/bktest/v3` at `v3.6.0`.
 
 ### Existing install routes
 
 Existing installs can keep their [legacy downloads](https://github.com/buildkite/test-engine-client/releases)
-and `github.com/buildkite/test-engine-client/v3` Go module path. The legacy
-RC.3 Go route is `go install github.com/buildkite/test-engine-client/v3@v3.6.0-rc.3`.
+and `github.com/buildkite/test-engine-client/v3` Go module path. Once verified,
+the exact legacy Go command for this release is
+`go install github.com/buildkite/test-engine-client/v3@v3.6.0`.
 Go writes `test-engine-client` (`test-engine-client.exe` on Windows); if your
 pipeline calls `bktec`, keep your existing rename or wrapper. The legacy GitHub
 download keeps the `bktec` filename prefix.
 
 Keep the existing `bktec` package for apt/dnf, the `test-engine-client` image
 and entrypoint, and the existing Buildkite Files routes. Check the exact
-channel and version before expecting both executable names. The Homebrew
-`bktest` alias is planned for the existing `bktec` formula; instructions for
-a fresh install from the official tap are not yet verified.
+channel and version before expecting both executable names. Stable package,
+image, and Buildkite Files availability and default changes are pending
+verification. Keep using the existing Homebrew `bktec` route; a fresh
+`bktest` alias install from the official tap is not yet verified.
 
 Keep any pinned Tests plugin steps unchanged unless you want to choose the
 CLI yourself. For an explicitly installed binary, set `install-client: false`
@@ -351,8 +353,8 @@ and ARM64. Windows binaries have an `.exe` extension.
 Install the released [`bktec`](#installation), make it available in your test
 environment, and configure your Test Engine suite for
 [OIDC authentication](#authentication). Existing `bktec` installs have used
-OIDC by default since version 2.6.0. If you explicitly installed the RC through
-the canonical route above, use `bktest run` instead of `bktec run` in this step.
+OIDC by default since version 2.6.0. Once the canonical route is verified, use
+`bktest run` in this step if you explicitly installed `bktest`.
 
 This example runs RSpec across 10 parallel Buildkite jobs and uploads results
 using the CLI's built-in uploader, available since `bktec` 2.7.0:
