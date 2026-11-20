@@ -3,7 +3,10 @@ from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tarfile
 import tempfile
 from threading import Thread
@@ -174,6 +177,7 @@ class PublicationTest(unittest.TestCase):
             publish.reconcile(release, destinations, apply=apply)
 
     def test_resume_draft_and_verify_exact_inventory_in_both_repositories(self):
+        self.enterContext(patch.dict(os.environ, http_proxy='http://127.0.0.1:1', no_proxy='', NO_PROXY=''))
         self.run_driver()
         self.assertEqual(self.writes, [])
         self.fail_upload = ('test-engine-client', f'bktec_{self.version}_linux_arm64.rpm')
@@ -318,6 +322,25 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(set(self.releases), set(REPOS))
         self.assertTrue(all(release['prerelease'] and not release['draft'] for release in self.releases.values()))
         self.assertNotIn('releases/latest', [path for _, path in self.reads])
+
+
+class PublicationCLITest(unittest.TestCase):
+    def test_refuses_unsupported_registry_runs_before_opening_archive_or_network(self):
+        args = [sys.executable, '-B', str(Path(publish.__file__)), 'unused.tar', '--archive-sha256', '0' * 64,
+                '--source', CANONICAL, '--legacy-source', LEGACY]
+        stable = ['--mode', 'stable', '--tag', 'v3.1.2']
+        for flags, message in (
+            (stable + ['--files', '--apply'], 'real registry writes are disabled'),
+            (stable + ['--oci', 'docker.io/buildkite/test-engine-client', '--oci-layout', '.',
+                       '--oci-index-sha256', 'sha256:' + '0' * 64, '--apply'], 'real registry writes are disabled'),
+            (['--mode', 'prerelease', '--tag', 'v3.1.2-rc.1', '--files'], 'prereleases cannot use stable registry destinations'),
+            (stable + ['--loopback-linux-packages', '1234'], 'require --loopback-github'),
+            (stable + ['--files', '--loopback-github', '1234'], 'requires its matching port'),
+        ):
+            with self.subTest(flags=flags):
+                result = subprocess.run(args + flags, env={}, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 1, result)
+                self.assertIn(message, result.stderr)
 
 
 if __name__ == '__main__':
