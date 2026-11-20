@@ -25,7 +25,8 @@ module Buildkite
 
       def interrupt
         @interrupted = true
-        @socket&.close
+        # Close outside the trap so an interrupted IO wait can release its locks.
+        Thread.new(@socket) { |socket| socket&.close }
       end
 
       def request(method, path, payload, expected: 200)

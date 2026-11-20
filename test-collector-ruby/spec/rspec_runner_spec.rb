@@ -407,20 +407,24 @@ RSpec.describe "buildkite-rspec" do
     expect(File.exist?("#{@dir}/boots")).to be(false)
   end
 
-  it "interrupts an idle long poll and DELETEs instead of retrying for more work" do
-    status = with_runner do |child|
-      handshake
-      request(disconnect: true) do |method, path|
-        expect([method, path]).to eq(["POST", "/v1/batches"])
-        Process.kill("TERM", child.pid)
-        sleep(0.05)
+  %w[INT TERM].each do |signal|
+    it "interrupts an idle long poll on SIG#{signal} without deadlocking or retrying for more work" do
+      status = with_runner do |child|
+        handshake
+        request(disconnect: true) do |method, path|
+          expect([method, path]).to eq(["POST", "/v1/batches"])
+          sleep(0.05)
+          Process.kill(signal, child.pid)
+          request do |method, path, _, body|
+            expect([method, path]).to eq(["DELETE", "/v1/sessions/session-1"])
+            expect(body).to eq("reason" => "signal_#{signal.downcase}")
+          end
+        end
       end
-      request do |method, path|
-        expect([method, path]).to eq(["DELETE", "/v1/sessions/session-1"])
-      end
+      expect(status.exitstatus).to eq(1), @output
+      expect(@output).not_to include("ThreadError", "cleanup failed")
+      expect(File.exist?("#{@dir}/executions")).to be(false)
     end
-    expect(status.exitstatus).to eq(1), @output
-    expect(File.exist?("#{@dir}/executions")).to be(false)
   end
 
   it "fails closed when a session is fenced" do
