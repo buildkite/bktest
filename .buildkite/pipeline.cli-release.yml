@@ -19,3 +19,11 @@ steps:
     depends_on: cli-stage
     command: python3 -B packaging/cli/verify_stage.py
     artifact_paths: "dist/cli-release-receipt.json"
+    plugins:
+      - docker#v5.13.0:
+          image: python:3.13-bookworm
+          mount-buildkite-agent: true
+          propagate-uid-gid: true
+          environment:
+            - BUILDKITE_BUILD_ID
+            - BUILDKITE_TAG
