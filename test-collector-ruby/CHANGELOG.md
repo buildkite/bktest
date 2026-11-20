@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+* Fix `ThreadError: deadlock; recursive locking` when SIGINT or SIGTERM
+  interrupts `buildkite-rspec` while it waits for more work.
+
 ## v2.17.1
 
 * Failed tests with no instrumented work no longer send OpenTelemetry phase
