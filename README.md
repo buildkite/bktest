@@ -343,12 +343,27 @@ To pin a container to `3.6.0`, use one of these existing repositories:
 
 These images include both executable names and retain the `bktec` entrypoint.
 Keep existing apt/dnf and Homebrew installs on the `bktec` package or formula.
-This guide does not recommend switching those routes or any mutable default.
+Existing installs do not need to change routes or version pins.
 
 Keep any pinned Tests plugin steps unchanged unless you want to choose the
 CLI yourself. For an explicitly installed binary, set `install-client: false`
 and invoke the intended binary in `command`. Keep the plugin's runner, suite,
 and upload configuration.
+
+### Fresh Homebrew install
+
+On Apple Silicon macOS or Linux x86-64, add the official tap, trust the owning
+`bktec` formula, and install its `bktest` alias:
+
+```sh
+brew tap buildkite/buildkite
+brew trust --formula buildkite/buildkite/bktec
+brew install buildkite/buildkite/bktest
+bktest --version
+```
+
+The alias installs the same formula, not a second package. Both `bktest`
+and `bktec` are available after installation.
 
 ### Supported OS/Architecture
 
