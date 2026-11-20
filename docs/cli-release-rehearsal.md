@@ -33,7 +33,11 @@ checkout or reselect the version in the compatibility repository.
 | `image/linux_{amd64,arm64}/` | Build contexts for `buildkite/test-engine-client`, `public.ecr.aws/buildkite/test-engine-client`, and `packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client`. Both commands are installed; keep `/usr/local/bin/bktec` as the entrypoint. Build local OCI images from the contexts before checking a container off. |
 | `tap/` | Replace `Formula/bktec.rb` in `buildkite/homebrew-buildkite` and add `Aliases/bktest -> ../Formula/bktec.rb`. Keep `bktec` the sole owning formula. |
 
-The staging job uploads only a Buildkite artifact (`dist/cli-release.tar`).
+The staging job uploads `dist/cli-release.tar`. A separate, credential-free
+job downloads it from the staging job, verifies the members, and uploads
+`dist/cli-release-receipt.json` with the build and staging job IDs, tag, source,
+and archive and manifest SHA-256s. A receipt with a null tag is a rehearsal,
+not a release input. Record the exact receipt before approving any handoff.
 For a local release simulation, `packaging/cli/rehearse.py` takes the stage, a
 fake destination directory, and explicit `--tag`, `--source` and `--approve`
 arguments. It cannot contact a registry. It reserves the version with the
