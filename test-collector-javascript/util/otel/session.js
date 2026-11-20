@@ -50,7 +50,7 @@ const createSession = (settings) => {
       const span = tracer.startSpan('test.execution', {
         root: true, kind: api.SpanKind.INTERNAL, startTime, links: jobSpanLinks(sdk),
         attributes: limitAttributes({
-          'buildkite.execution.via': 'otlp', 'buildkite.run_key': runKey,
+          'buildkite.run_key': runKey,
           'test.case.result.status': 'unset', ...attributes,
         }),
       }, api.ROOT_CONTEXT)

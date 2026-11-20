@@ -46,6 +46,195 @@ Both GitHub releases are simulated for prereleases; the stage still contains
 Files and packages, but no prerelease registry publication is enabled. A
 pre-existing fake stable pointer is untouched, even with a staged Files archive.
 
+## Hand off an approved stable stage to the existing legacy uploaders
+
+This is a manual runbook, not a pipeline. Local preparation needs no credentials.
+**The upload steps are not runnable with the pipelines as configured.** The
+existing Files jobs depend on the legacy `release` job, which runs GoReleaser,
+and the canonical stage has no writer credentials. Before the legacy writer is
+retired, the release owner must identify and separately approve a way to run
+only the handoff jobs under an authorized legacy release identity, without the
+normal bootstrap. Confirm artifact access and each destination's permissions
+from that execution context. If no such path is available, stop after local
+preparation; do not unblock or reuse the normal release job as a workaround.
+
+Even with that path, do not upload until the release owner authorizes the
+specific version and destinations, verifies both exact-version GitHub releases,
+and confirms no other writer can publish this version. Do not run
+`prepare-release.sh`, `release.sh`, `svu`, or GoReleaser; none should select a
+version, tag a commit, or generate replacement payloads.
+
+### Select and verify the artifact
+
+Record the approved canonical source SHA, tag, archive SHA-256, `bktest-release`
+build UUID and staging job UUID. On a clean scratch directory in an authorized
+artifact-reading job, fetch the exact build and job, not the latest build or an
+artifact wildcard. Do not include artifacts from retried jobs. For a local
+rehearsal, use the already-retained archive instead of calling the agent:
+
+```sh
+buildkite-agent artifact download 'dist/cli-release.tar' "$scratch" \
+  --build "${STAGE_BUILD_ID:?}" --step "${STAGE_JOB_ID:?}"
+```
+
+From the canonical checkout, set `ARCHIVE` to that file, and `ARCHIVE_SHA256`,
+`TAG`, and `SOURCE` to the independently approved values. Set `OUT` to a new
+directory under scratch. The landed verifier checks the digest, source, version,
+all members and checksums before any files are copied. This command never calls
+Buildkite or a registry:
+
+```sh
+PYTHONPATH=packaging/cli python3 -B - \
+  "${ARCHIVE:?}" "${ARCHIVE_SHA256:?}" "${TAG:?}" "${SOURCE:?}" "${OUT:?}" <<'PY'
+from pathlib import Path
+from shutil import copyfile
+import sys
+
+from publish import open_stage, validate_ref
+
+archive, sha, tag, source, out = sys.argv[1:]
+validate_ref(tag, source, mode="stable")
+with open_stage(Path(archive), sha, tag, source) as stage:
+    root = Path(out)
+    root.mkdir(mode=0o700)
+    for name, asset in sorted(stage.assets.items()):
+        if not name.startswith(("files/", "packages/", "image/")):
+            continue
+        path = root / ("dist/buildkite-packages/" + asset.path.name if name.startswith("files/") else name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        copyfile(asset.path, path)
+        if name.startswith("image/") and path.name in ("bktec", "bktest"):
+            path.chmod(0o755)
+        print(f"{asset.sha256}  {path.relative_to(root)}")
+PY
+```
+
+Retain that digest output with the approval. It covers seven Files artifacts,
+four packages and two three-file image contexts. Never regenerate the checksum
+file or packages from the compatibility checkout.
+
+### Files and native packages (writes require approval)
+
+- **Files:** Use the existing `publish-to-packages#v2.2.0` plugin, registry
+  `buildkite/bktec`, and one job per exact filename under
+  `dist/buildkite-packages/` (six binaries and one checksum). First retain the
+  seven files as Buildkite artifacts in an approved handoff build. Search that
+  build for each exact path and confirm one matching artifact from the approved
+  handoff job. Independently download each exact path from that build into an
+  empty directory and compare SHA-256 with the verifier output before releasing
+  the upload jobs. The plugin accepts `artifact_build_id` but not a job selector
+  or a digest. Freeze the artifact set: no competing jobs, retries or duplicate
+  paths may change what that build-level lookup returns. With `file` set to one
+  approved relative path, `expected_sha` from the receipt, and `verify_dir` an
+  empty scratch directory, check the same build-level lookup the plugin uses:
+
+  ```sh
+  buildkite-agent artifact search "$file" --build "$HANDOFF_BUILD_ID" --format '%i %j %p\n'
+  # Continue only if the output has exactly one artifact, from the approved job.
+  buildkite-agent artifact download "$file" "$verify_dir" --build "$HANDOFF_BUILD_ID" &&
+    (cd "$verify_dir" && printf '%s  %s\n' "$expected_sha" "$file" | sha256sum --check --strict)
+  ```
+
+  Only after that passes, use the existing plugin configuration (substitute
+  literal approved values):
+
+  ```yaml
+  plugins:
+    - publish-to-packages#v2.2.0:
+        registry: buildkite/bktec
+        artifact_build_id: APPROVED_HANDOFF_BUILD_UUID
+        artifacts: dist/buildkite-packages/EXACT_VERSIONED_FILENAME
+  ```
+
+  Its OIDC audience is `https://packages.buildkite.com/buildkite/bktec`. The
+  current Files policy grants `write_packages` to issuer
+  `https://agent.buildkite.com` with organization `buildkite` and pipeline
+  `test-engine-client-release`, not to the canonical stage job. Read back from
+  `https://packages.buildkite.com/buildkite/bktec/files/<exact filename>` and
+  compare bytes by SHA-256, including the checksum file itself.
+- **DEB/RPM:** Use the unchanged legacy `.buildkite/steps/upload-linux-packages.sh`
+  once per approved `packages/deb/bktec_<version>_linux_<arch>.deb` or
+  `packages/rpm/bktec_<version>_linux_<arch>.rpm`, from a verified legacy
+  checkout with the reviewed uploader. Check the file SHA-256 against
+  the receipt immediately before passing its absolute path to the script, for
+  example `sh "$legacy_checkout/.buildkite/steps/upload-linux-packages.sh" "$file"`.
+  Keep the package name `bktec` and existing registries `test-engine-client-deb`
+  and `test-engine-client-rpm`. The script requests a 180-second agent OIDC token
+  for `https://packages.buildkite.com/buildkite/<registry>` and POSTs the file to
+  `/v2/packages/organizations/buildkite/registries/<registry>/packages` on
+  `api.buildkite.com`. Verify `write_packages` for the actual legacy release job
+  against both existing policies; access to Files does not imply native access.
+  Each accepted package can become selectable by unpinned APT/DNF as its index
+  updates, independently per architecture and format. Authorize that exposure
+  **before** the first native POST, and check both arches in the signed indexes.
+
+After an ambiguous POST, stop that destination and record the exact file and
+response. Do not retry the plugin job or script blindly. Verify the exact
+filename/version/architecture and SHA-256 via inventory and served bytes, or
+have the registry owner confirm absence after propagation. Skip a verified match;
+resume only a confirmed missing file with the same approved bytes. Stop on a
+conflict or unverifiable state; this runbook does not replace or delete objects.
+
+### Images (build before authorizing push)
+
+Build each platform once from its verified context on a prepared builder. The
+Dockerfile preserves `/usr/local/bin/bktec` as entrypoint and installs both
+names. Record the resolved Alpine base digest for each platform and the local
+image IDs; retain the built images for retries. Building the image can fetch the
+base and Alpine packages, but must not log in to or push to any destination:
+
+```sh
+for arch in amd64 arm64; do
+  local_ref="bktec-stage:$TAG-$arch"
+  docker buildx build --platform "linux/$arch" --load --provenance=false --sbom=false \
+    --tag "$local_ref" "$OUT/image/linux_$arch" || exit
+  docker image inspect --format '{{.Id}}' "$local_ref" > "$OUT/image-$arch.iid" || exit
+  docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}} {{json .Config.Entrypoint}}' \
+    "$local_ref" || exit
+done
+```
+
+Stop unless the reported platforms are `linux/amd64` and `linux/arm64`, each
+with `[/usr/local/bin/bktec]` as its sole entrypoint. Retain the built images
+and ID files together (use `docker image save` if handing off to another host).
+
+After separate approval, use the existing registry login identities from the
+legacy release job. Do not put credentials on the builder or in the receipt:
+
+| Destination repository | Existing login and permission to verify |
+| --- | --- |
+| `docker.io/buildkite/test-engine-client` | `DOCKERHUB_USER` / `DOCKERHUB_PASSWORD` via the `pipeline-buildkite-test-engine-client-release` SSM role in `445615400570`; verify the account can push to this repository. |
+| `public.ecr.aws/buildkite/test-engine-client` | Existing `pipeline-buildkite-test-engine-client-release` web-identity role in `172840064832`; `aws ecr-public get-login-password --region us-east-1`, Docker user `AWS`; verify public ECR login and push permissions for this repository. |
+| `packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client` | 300-second Buildkite OIDC token for `https://packages.buildkite.com/buildkite/test-engine-client-docker`, Docker user `buildkite`; verify this registry grants the executing legacy release job package-write access. |
+
+For each approved repository (`repo`), check exact existing version and arch
+tags before pushing. Skip only an exact match to a previously recorded digest;
+a differing or ambiguous tag stops the route. For each confirmed missing
+alias, set `arch` to its architecture and run:
+
+```sh
+alias_ref="$repo:$TAG-$arch"
+docker image tag "$(cat "$OUT/image-$arch.iid")" "$alias_ref" &&
+docker image push "$alias_ref" &&
+docker buildx imagetools inspect "$alias_ref"
+```
+
+Record the **registry manifest digest** from each push and confirm it in exact
+tag readback (the local image ID is not the manifest digest). Using those two
+read-back digests, publish only the versioned multi-arch list if missing:
+
+```sh
+docker manifest create "$repo:$TAG" "$repo@$amd64_digest" "$repo@$arm64_digest" &&
+docker manifest push --purge "$repo:$TAG" &&
+docker buildx imagetools inspect "$repo:$TAG"
+```
+
+Capture the list digest and verify its Linux amd64/arm64 child digests equal the
+alias digests. Stop after any uncertain write and re-read the exact references
+before authorizing a retry; do not rebuild. Keep `latest` unchanged at all three
+registries. This handoff does not select a version, change a tag policy or move
+a GitHub release or Homebrew pointer.
+
 ## Proposed cutover (not enabled by this change)
 
 1. In `buildkite/saas-iac` `public-tf/pipelines.tf`, retain

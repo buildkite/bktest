@@ -336,7 +336,7 @@ only to each `test.execution` root. They are not duplicated onto child spans.
 Collector-managed children share the producer resource; children from a tracer
 provider configured by the test suite keep that provider's resource.
 
-The collector prioritizes `buildkite.execution.via`, `buildkite.run_key`, and
+The collector prioritizes `buildkite.run_key` and
 `test.case.result.status` so Test Engine can synthesize an execution when the
 OpenTelemetry SDK span attribute limit is constrained.
 

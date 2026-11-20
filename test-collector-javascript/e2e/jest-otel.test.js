@@ -1537,7 +1537,7 @@ const spoolRun = async ({ files = 1, body, args = [], env = {}, config: override
       for (const span of unique.values()) {
         expect(span.name).toBe('test.execution')
         expect(span.parentSpanId).toBe('')
-        expect(span.attributes['buildkite.execution.via']).toBe('otlp')
+        expect(span.attributes).not.toHaveProperty(['buildkite.execution.via'])
         expect(span.attributes['buildkite.test.name']).not.toBe('')
         expect(span.attributes['buildkite.run_key']).toBe('otel-e2e-run')
         expect(['pass', 'fail', 'skipped']).toContain(span.attributes['test.case.result.status'])

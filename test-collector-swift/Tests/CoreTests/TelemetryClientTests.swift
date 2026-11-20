@@ -76,7 +76,7 @@ final class TelemetryClientTests: XCTestCase {
     )
     XCTAssertEqual(span.name, "test.execution")
     XCTAssertNil(span.parentSpanId)
-    XCTAssertEqual(span.attributes[BuildkiteTelemetryAttribute.executionVia], .string("otlp"))
+    XCTAssertNil(span.attributes["buildkite.execution.via"])
     XCTAssertEqual(span.attributes[BuildkiteTelemetryAttribute.executionScope], .string("PaymentTests"))
     XCTAssertEqual(span.attributes[BuildkiteTelemetryAttribute.testName], .string("testChargeCard"))
     XCTAssertEqual(span.attributes["test.case.result.status"], .string("pass"))
@@ -811,7 +811,7 @@ final class TelemetryClientTests: XCTestCase {
       logger: nil,
       rootExporter: rootExporter,
       childExporter: InMemoryExporter(),
-      rootSpanLimits: SpanLimits().settingAttributeCountLimit(3)
+      rootSpanLimits: SpanLimits().settingAttributeCountLimit(2)
     ))
     var test = TestState(id: UUID(), className: "LimitedTests", testName: "testRequiredFields")
 
@@ -822,7 +822,6 @@ final class TelemetryClientTests: XCTestCase {
 
     let span = try XCTUnwrap(rootExporter.getFinishedSpanItems().only)
     XCTAssertEqual(span.attributes, [
-      BuildkiteTelemetryAttribute.executionVia: .string("otlp"),
       BuildkiteTelemetryAttribute.runKey: .string("run-key"),
       SemanticConventions.Test.caseResultStatus.rawValue: .string("pass"),
     ])
