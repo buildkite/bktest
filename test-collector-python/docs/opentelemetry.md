@@ -1,8 +1,8 @@
 # OpenTelemetry submission (experimental)
 
-> **Under development and subject to change.** Intended for suites that do not
-> already configure OpenTelemetry. Existing OTel setups may work, but are not
-> yet supported or guaranteed to work.
+> **Under development and subject to change.** Suites that already configure
+> OpenTelemetry can use their global tracer provider as described under
+> [Child spans and instrumentation](#child-spans-and-instrumentation).
 
 ## Enable OTel mode
 
@@ -68,12 +68,18 @@ installs its own if none exists. A suite provider must be set before then: in a
 plugin, before pytest runs, or when a `conftest.py` loaded at startup is imported
 (in the rootdir or a test path passed on the command line). Setting it in a
 fixture or a `conftest.py` discovered during collection is too late: OpenTelemetry
-refuses it, its exporters receive no spans, and the collector warns at session end.
+refuses it, and its exporters receive no spans created through the global
+provider. The collector warns at session end if its own provider was installed.
+
+With `pytest-xdist`, configure the provider and instrumentation in each worker,
+not only in the controller process.
 
 With a suite-owned provider, child spans keep its resource, sampler and limits.
-Its exporters also receive all phase spans, including empty ones, but not their
-`test.execution` parent. A provider that cannot accept span processors disables
-child export with a warning; test spans are still exported.
+Existing span processors and exporters remain active. Its exporters also receive
+all phase spans, including empty ones, but not their `test.execution` parent.
+Spans created through a separate, non-global provider are not forwarded. A
+provider that cannot accept span processors disables child export with a warning;
+test spans are still exported even if the global provider drops child spans.
 
 ### Filtering child spans
 
