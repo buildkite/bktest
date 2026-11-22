@@ -14,6 +14,21 @@ agents:
 steps:
   - group: ":javascript: test-collector-javascript"
     steps:
+      - label: ":mocha: Mocha {{matrix}} reporter compatibility"
+        matrix:
+          - "10.8.2"
+          - "11.8.0"
+          - "12.0.3"
+        command:
+          - "cd test-collector-javascript"
+          - "npm ci --ignore-scripts"
+          # Mocha 12 needs mocha-multi-reporters 1.5.2; the lockfile has 1.5.1.
+          - "npm install --no-save --ignore-scripts --legacy-peer-deps mocha@{{matrix}} mocha-multi-reporters@1.5.2"
+          - "EXPECTED_MOCHA_VERSION={{matrix}} npm test -- --runInBand mocha/reporter.test.js"
+        plugins:
+          - docker#v3.7.0:
+              image: node:22.15.0
+              mount-buildkite-agent: false
       - label: ":npm: npm {{matrix}} SDK 2 + 3 install compatibility"
         matrix:
           - "10"

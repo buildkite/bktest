@@ -2,7 +2,6 @@ const { randomUUID } = require('crypto')
 const CI = require('../util/ci')
 const Paths = require('../util/paths')
 const Mocha = require('mocha')
-const Runnable = require('mocha/lib/runnable')
 const uploadTestResults = require('../util/uploadTestResults')
 const failureExpanded = require('../util/failureExpanded')
 
@@ -15,7 +14,7 @@ const {
   STATE_PASSED,
   STATE_PENDING,
   STATE_FAILED,
-} = Runnable.constants
+} = Mocha.Runnable.constants
 
 class MochaBuildkiteTestEngineReporter {
   constructor(runner, options, testRunner = 'mocha') {

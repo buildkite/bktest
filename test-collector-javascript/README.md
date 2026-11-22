@@ -124,7 +124,7 @@ Official [Buildkite Test Engine](https://buildkite.com/platform/test-engine) col
 
     ### Mocha
 
-    [Install mocha-multi-reporters](https://github.com/stanleyhlng/mocha-multi-reporters) in your project:<br>
+    [Install mocha-multi-reporters](https://github.com/stanleyhlng/mocha-multi-reporters) in your project (Mocha 12 needs 1.5.2 or later):<br>
 
     ```
     npm install mocha-multi-reporters --save-dev
