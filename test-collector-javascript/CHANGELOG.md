@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix Mocha and Cypress reporters failing to load when used with Mocha 12.
 - Stop sending the obsolete `buildkite.execution.via` attribute on OpenTelemetry test spans.
 
 ## 1.16.0
