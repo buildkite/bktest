@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -27,7 +27,8 @@ class GitHubRelease:
         self.api = api
         self.uploads = uploads
         self.prefix = f'/repos/buildkite/{repo}'
-        self.opener = build_opener(NoRedirect())
+        local = all(urlsplit(origin).hostname == '127.0.0.1' for origin in (api, uploads))
+        self.opener = build_opener(NoRedirect(), *([ProxyHandler({})] if local else []))
 
     def request(self, url, *, accept='application/vnd.github+json', data=None, headers=None, status=200, method=None):
         req = Request(url, data=data, method=method, headers={
