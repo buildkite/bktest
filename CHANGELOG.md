@@ -1,5 +1,6 @@
 # Changelog
 ## Unreleased
+- Skip waiting for the Test Scheduler pool to finish when an original Buildkite job's attempts all pass, including after local retries. Retried Buildkite jobs still check for terminal failures in earlier jobs.
 - Remove automatic job reruns after a Test Scheduler pool finishes. Rebuild to rerun failed tests; in-job retries with `--local-retry-count` are unchanged.
 
 ## 3.6.0 - 2026-11-20
