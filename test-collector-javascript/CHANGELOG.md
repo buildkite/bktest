@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.16.1
+
 - Fix the Mocha reporter failing to load with Mocha 12, which dropped all results when run through mocha-multi-reporters. Mocha 12 also needs mocha-multi-reporters 1.5.2 or later.
 - Stop sending the obsolete `buildkite.execution.via` attribute on OpenTelemetry test spans.
 
