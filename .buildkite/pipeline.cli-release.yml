@@ -29,18 +29,18 @@ steps:
             - BUILDKITE_TAG
 
   # This route stays off until tag protection, the approvers and the
-  # step-scoped credential are in place. It does not move stable channels.
-  - group: ":github: Versioned CLI releases"
+  # step-scoped credentials are in place.
+  - group: ":package: CLI publication and promotion"
     if: >-
       false && pipeline.slug == "bktest-release" && build.source == "webhook" &&
       build.tag =~ /^v3[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-[0-9A-Za-z-]+([.][0-9A-Za-z-]+)*)?$$/ &&
       build.env("CLI_RELEASE_GITHUB_ENABLED") == "true"
     steps:
-      - block: "Publish both versioned CLI GitHub releases?"
+      - block: "Sync the legacy Go module and publish versioned CLI releases?"
         key: cli-github-approval
         depends_on: cli-stage-verify
         allowed_teams: [test-engine]
-        prompt: "Check the reviewed canonical commit, paired legacy tag and retained stage receipt before approving. This does not promote Latest."
+        prompt: "Check the reviewed canonical commit and retained stage receipt before approving legacy sync, same-version tag and versioned publishing. This does not promote Latest."
         fields:
           - text: "Approved archive SHA-256"
             key: cli-archive-sha256
@@ -48,13 +48,26 @@ steps:
           - text: "Approved staging job UUID"
             key: cli-stage-job
             format: "[0-9a-f-]{36}"
-          - text: "Approved legacy source commit"
-            key: cli-legacy-source
-            format: "[0-9a-f]{40}"
+
+      - label: ":git: Sync and tag the legacy Go module"
+        key: cli-sync-legacy
+        depends_on: cli-github-approval
+        concurrency: 1
+        concurrency_group: bktest-release/cli-legacy-sync
+        command: python3 -B packaging/cli/sync_legacy.py --apply
+        plugins:
+          - docker#v5.13.0:
+              image: python:3.13-bookworm
+              mount-buildkite-agent: true
+              propagate-uid-gid: true
+              environment:
+                - BUILDKITE_BUILD_ID
+                - BUILDKITE_TAG
+                - CLI_LEGACY_TOKEN
 
       - label: ":github: Publish both versioned CLI releases"
         key: cli-publish-github
-        depends_on: cli-github-approval
+        depends_on: cli-sync-legacy
         concurrency: 1
         concurrency_group: bktest-release/cli-github
         command: python3 -B packaging/cli/publish_github_job.py
@@ -72,3 +85,181 @@ steps:
                 - BUILDKITE_TAG
                 - CLI_RELEASE_GITHUB_ENABLED
                 - GH_TOKEN
+
+      - label: ":package: Prepare stable distribution inputs"
+        key: cli-distribution-inputs
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-publish-github
+        command: python3 -B packaging/cli/publish_distribution_job.py inputs
+        artifact_paths: "dist/cli-distribution/dist/buildkite-packages/*"
+        plugins:
+          - docker#v5.13.0:
+              image: python:3.13-bookworm
+              mount-buildkite-agent: true
+              propagate-uid-gid: true
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG]
+
+      - label: ":package: Publish versioned Files"
+        key: cli-files-dispatch
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-distribution-inputs
+        command: python3 -B packaging/cli/publish_distribution_job.py files
+        plugins:
+          - docker#v5.13.0:
+              image: python:3.13-bookworm
+              mount-buildkite-agent: true
+              propagate-uid-gid: true
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG]
+
+      - label: ":mag: Verify published Files"
+        key: cli-files-verify
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-files-dispatch
+        command: python3 -B packaging/cli/publish_distribution_job.py verify-files
+        plugins:
+          - docker#v5.13.0:
+              image: python:3.13-bookworm
+              mount-buildkite-agent: true
+              propagate-uid-gid: true
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG]
+
+      - label: ":docker: Build and retain both OCI images"
+        key: cli-build-oci
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-github-approval
+        agents: {queue: cli-oci}
+        command: python3 -B packaging/cli/publish_oci.py build
+        artifact_paths: "dist/cli-oci/*"
+
+      - label: ":docker: Publish versioned OCI to Docker Hub"
+        key: cli-publish-dockerhub
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: [cli-build-oci, cli-publish-github]
+        agents: {queue: cli-oci}
+        concurrency: 1
+        concurrency_group: bktest-release/cli-oci
+        command: python3 -B packaging/cli/publish_oci.py versioned dockerhub
+
+      - label: ":docker: Publish versioned OCI to ECR Public"
+        key: cli-publish-ecr
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: [cli-build-oci, cli-publish-github]
+        agents: {queue: cli-oci}
+        concurrency: 1
+        concurrency_group: bktest-release/cli-oci
+        command: python3 -B packaging/cli/publish_oci.py versioned ecr
+
+      - label: ":docker: Publish versioned OCI to Buildkite Packages"
+        key: cli-publish-packages-oci
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: [cli-build-oci, cli-publish-github]
+        agents: {queue: cli-oci}
+        concurrency: 1
+        concurrency_group: bktest-release/cli-oci
+        command: python3 -B packaging/cli/publish_oci.py versioned packages
+
+      - block: "Promote the verified stable CLI release?"
+        key: cli-stable-approval
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: [cli-files-verify, cli-publish-dockerhub, cli-publish-ecr, cli-publish-packages-oci]
+        allowed_teams: [test-engine]
+        prompt: "Verify versioned destinations and the signed native catalogs before authorizing stable exposure."
+        fields:
+          - text: "Confirmed absent native packages (space-separated deb-amd64 deb-arm64 rpm-amd64 rpm-arm64; enter none if all match)"
+            key: cli-native-missing
+            format: "(none|(deb|rpm)-(amd64|arm64)( (deb|rpm)-(amd64|arm64))*)"
+          - text: "Approved current Homebrew tap commit"
+            key: cli-tap-head
+            format: "[0-9a-f]{40}"
+          - text: "Current Docker Hub latest digest"
+            key: cli-previous-dockerhub
+            format: "sha256:[0-9a-f]{64}"
+          - text: "Current ECR Public latest digest"
+            key: cli-previous-ecr
+            format: "sha256:[0-9a-f]{64}"
+          - text: "Current Packages OCI latest digest"
+            key: cli-previous-packages
+            format: "sha256:[0-9a-f]{64}"
+          - text: "Current legacy GitHub Latest release ID"
+            key: cli-github-previous-latest
+            format: "[1-9][0-9]*"
+
+      - label: ":linux: Publish stable {{matrix.format}} {{matrix.arch}}"
+        key: cli-promote-native
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-stable-approval
+        concurrency: 1
+        concurrency_group: bktest-release/cli-native
+        command: python3 -B packaging/cli/publish_distribution_job.py native {{matrix.format}} {{matrix.arch}}
+        matrix:
+          setup:
+            format: [deb, rpm]
+            arch: [amd64, arm64]
+        plugins:
+          - docker#v5.13.0:
+              image: python:3.13-bookworm
+              mount-buildkite-agent: true
+              propagate-uid-gid: true
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG]
+
+      - block: "Confirm both architectures in the signed native indexes"
+        key: cli-native-readback
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-promote-native
+        allowed_teams: [test-engine]
+        prompt: "Read back all four exact DEB/RPM packages and compare served SHA-256s with the retained archive before allowing Homebrew and Latest promotion."
+
+      - label: ":brew: Promote official Homebrew formula"
+        key: cli-promote-tap
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-native-readback
+        concurrency: 1
+        concurrency_group: bktest-release/cli-tap
+        command: python3 -B packaging/cli/promote_tap.py
+        plugins:
+          - docker#v5.13.0:
+              image: python:3.13-bookworm
+              mount-buildkite-agent: true
+              propagate-uid-gid: true
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG, CLI_TAP_TOKEN]
+
+      - label: ":docker: Promote the verified OCI index on Docker Hub"
+        key: cli-promote-dockerhub
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-native-readback
+        agents: {queue: cli-oci}
+        concurrency: 1
+        concurrency_group: bktest-release/cli-oci
+        command: python3 -B packaging/cli/publish_oci.py latest dockerhub
+
+      - label: ":docker: Promote the verified OCI index on ECR Public"
+        key: cli-promote-ecr
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-native-readback
+        agents: {queue: cli-oci}
+        concurrency: 1
+        concurrency_group: bktest-release/cli-oci
+        command: python3 -B packaging/cli/publish_oci.py latest ecr
+
+      - label: ":docker: Promote the verified OCI index on Buildkite Packages"
+        key: cli-promote-packages-oci
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-native-readback
+        agents: {queue: cli-oci}
+        concurrency: 1
+        concurrency_group: bktest-release/cli-oci
+        command: python3 -B packaging/cli/publish_oci.py latest packages
+
+      - label: ":github: Promote legacy GitHub Latest"
+        key: cli-promote-github
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: [cli-promote-tap, cli-promote-dockerhub, cli-promote-ecr, cli-promote-packages-oci]
+        concurrency: 1
+        concurrency_group: bktest-release/cli-github
+        command: python3 -B packaging/cli/promote_github.py
+        plugins:
+          - docker#v5.13.0:
+              image: python:3.13-bookworm
+              mount-buildkite-agent: true
+              propagate-uid-gid: true
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG, GH_TOKEN]

@@ -36,7 +36,10 @@ def main():
     stage_job = str(UUID(approved('cli-stage-job')))
     build = str(UUID(env['BUILDKITE_BUILD_ID']))
 
-    subprocess.run(['git', 'fetch', '--no-tags', 'https://github.com/buildkite/bktest.git',
+    fetch = ['git', 'fetch', '--no-tags']
+    if subprocess.check_output(['git', 'rev-parse', '--is-shallow-repository'], text=True).strip() == 'true':
+        fetch.append('--unshallow')
+    subprocess.run([*fetch, 'https://github.com/buildkite/bktest.git',
                     'refs/heads/main'], check=True)
     subprocess.run(['git', 'merge-base', '--is-ancestor', source, 'FETCH_HEAD'], check=True)
     path = 'dist/cli-release.tar'
