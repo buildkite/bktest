@@ -56,8 +56,8 @@ steps:
         concurrency_group: bktest-release/cli-legacy-sync
         command: python3 -B packaging/cli/sync_legacy.py --apply
         plugins:
-          - aws-assume-role-with-web-identity#v1.4.0:
-              role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-sync-legacy
+          - aws-assume-role-with-web-identity#v1.4.0: &github_role
+              role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-github
               region: us-east-1
               session-tags: [pipeline_id, build_source]
           - buildkite/just-works#v0.2.0: &github_exchange
@@ -78,10 +78,7 @@ steps:
         concurrency_group: bktest-release/cli-github
         command: python3 -B packaging/cli/publish_github_job.py
         plugins:
-          - aws-assume-role-with-web-identity#v1.4.0:
-              role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-publish-github
-              region: us-east-1
-              session-tags: [pipeline_id, build_source]
+          - aws-assume-role-with-web-identity#v1.4.0: *github_role
           - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
@@ -242,10 +239,7 @@ steps:
         concurrency_group: bktest-release/cli-tap
         command: python3 -B packaging/cli/promote_tap.py
         plugins:
-          - aws-assume-role-with-web-identity#v1.4.0:
-              role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-promote-tap
-              region: us-east-1
-              session-tags: [pipeline_id, build_source]
+          - aws-assume-role-with-web-identity#v1.4.0: *github_role
           - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
@@ -290,10 +284,7 @@ steps:
         concurrency_group: bktest-release/cli-github
         command: python3 -B packaging/cli/promote_github.py
         plugins:
-          - aws-assume-role-with-web-identity#v1.4.0:
-              role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-promote-github
-              region: us-east-1
-              session-tags: [pipeline_id, build_source]
+          - aws-assume-role-with-web-identity#v1.4.0: *github_role
           - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm

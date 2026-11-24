@@ -90,14 +90,15 @@ manual paired publisher with both existing tags, not move the canonical tag.
 
 The AWS roles referenced by the YAML must be provisioned separately. Do not
 use shared pipeline environment secrets, the collector role, or the archived
-legacy role. Each AWS writer assumes its own role. The GitHub jobs then use
+legacy role. Three roles serve GitHub, Docker Hub, and ECR Public separately.
+The four GitHub jobs share an invoke-only role, then use
 the `just-works` plugin to obtain a short-lived `GH_TOKEN` from Exchange.
 Do not put a GitHub token or App key in Parameter Store. Docker Hub alone
 uses SSM: populate the two `SecureString` parameters named in the pipeline
 YAML in `us-east-1`. ECR and Buildkite Packages don't read SSM.
 
 Before enabling publication, have the Exchange owners approve enrollment
-for the canonical organization and pipeline IDs. Give each GitHub role
+for the canonical organization and pipeline IDs. Give the GitHub role
 `lambda:InvokeFunction` only on the Exchange function and require Exchange
 to select the repository and identity for the signed writer job. A single
 pipeline-wide Exchange grant for the `buildkite` GitHub organization does
@@ -109,8 +110,9 @@ In IAM, require the Buildkite OIDC provider, `aud=sts.amazonaws.com`, the
 canonical pipeline UUID in `aws:RequestTag/pipeline_id`, and the default signed subject matching
 `organization:buildkite:pipeline:bktest-release:ref:refs/tags/v3.*:commit:*:step:<exact-job-key>`.
 Allow `sts:TagSession` and require the signed `aws:RequestTag/build_source`
-to be `webhook` on the same trust statement. For each shared Docker Hub or
-ECR role, list only its two allowed subjects. Restrict SSM roles to
+to be `webhook` on the same trust statement. List only the four GitHub writer
+subjects on the GitHub role and the two matching subjects on each OCI role.
+Restrict the Docker Hub role to
 `ssm:GetParameters` on the exact parameter ARNs from the job, plus decrypt
 only for those parameters if a customer-managed KMS key is used. Give the ECR
 role only login plus push to the existing repository. Verify the role denies
