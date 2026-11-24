@@ -59,7 +59,7 @@ steps:
           - aws-assume-role-with-web-identity#v1.4.0: &dev_role
               role-arn: arn:aws:iam::445615400570:role/pipeline-buildkite-bktest-release-cli
               region: us-east-1
-              session-tags: &release_claims [organization_slug, organization_id, pipeline_slug, build_branch]
+              session-tags: &release_claims [organization_slug, organization_id, pipeline_slug]
           - buildkite/just-works#v0.2.0: &github_exchange
               assume-role: false
               ecr: {enabled: false}

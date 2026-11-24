@@ -107,18 +107,17 @@ and branch privileges as a workaround. Until Exchange can enforce the
 scopes below, keep the writer group disabled.
 
 Both roles use the standard Terraform pipeline role module. IAM checks the
-signed organization and pipeline claims and the `v3.*` build branch pattern;
-Buildkite presents tags as build branches. IAM does not distinguish steps,
-tag refs from same-named branches, or webhook builds from manual/API builds.
-The pipeline's writer group separately checks tag and webhook source and
-uses manual approval gates. Keep the release pipeline restricted to trusted
-operators and protect release tags before enabling writes.
+signed organization and pipeline claims, not the branch, tag, build source,
+or job. Main and collector builds in the same pipeline can also assume these
+roles. The writer group separately checks tag and webhook source and uses
+manual approval gates; these restrict the workflow, not AWS role assumption.
+Keep the release pipeline restricted to trusted operators and protect
+release tags before enabling writes.
 
 Limit the Dev role's SSM access to `ssm:GetParameters` on the two exact
 Docker Hub parameter ARNs, plus decrypt only for those parameters if a
 customer-managed KMS key is used. Give the Dist role only ECR Public login
-and push to the existing repository. Verify both roles deny other pipelines,
-ordinary main builds, and collector builds.
+and push to the existing repository. Verify both roles deny other pipelines.
 
 | Job key | Manual setup |
 | --- | --- |
