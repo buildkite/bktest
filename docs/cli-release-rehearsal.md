@@ -50,20 +50,34 @@ Both GitHub releases are simulated for prereleases; the stage still contains
 Files and packages, but no prerelease registry publication is enabled. A
 pre-existing fake stable pointer is untouched, even with a staged Files archive.
 
-## Paired GitHub publication (disabled during cutover)
+## Automated tag workflow (disabled during cutover)
 
 The route is disabled in the pipeline itself. The environment opt-in is
 not a security boundary and cannot enable the route on its own.
 
-Once enabled, only a plain CLI tag push to `bktest-release` exposes the
-GitHub approval block. An authorized release approver checks the exact
-canonical commit, the corresponding tag and projection in `test-engine-client`,
-and the verifier receipt. Enter the approved archive SHA-256, staging job UUID
-and full legacy commit. Do not supply credentials through approval fields.
+Once enabled, push an approved, unused CLI tag pointing at the reviewed
+canonical `main` commit. The build compiles and verifies once. At the first
+`test-engine` block, enter the archive SHA-256 and exact stage job UUID from
+the verifier receipt, never credentials. The sync job verifies the archive,
+projects the CLI into `test-engine-client`, and atomically fast-forwards its
+`main` and creates the same tag. It checks the projected bytes before the
+push and reads back the tag. It will not force-push or move an existing tag.
 
-The job downloads that exact archive, checks the canonical commit is on `main`,
-and uses the existing dual publisher to verify both GitHub refs and the archive
-before writing. It never creates tags or promotes Latest. After an ambiguous
+The paired publisher uses that exact archive and verified legacy commit,
+checks both refs and publishes both GitHub releases without setting Latest.
+Stable builds then publish and read back the seven versioned Files and the
+two OCI architecture aliases and multi-arch index in all three registries.
+Prereleases stop after both GitHub releases. The legacy stable Go discovery
+path can change as soon as its tag is created; approve that at the first block.
+
+At the stable block, pin the current tap head, legacy GitHub Latest release
+ID, and each registry's OCI Latest digest. List only missing native packages
+after inspecting the signed catalogs. Once the native jobs complete, verify
+the served hashes against the retained archive and confirm the readback block.
+This releases tap and OCI Latest updates, followed by legacy GitHub Latest.
+Canonical GitHub Latest does not move.
+
+After an ambiguous
 result, inspect both releases and read back the assets before retrying with the
 same approval and retained archive. Follow `publish.py --help` if GitHub left an
 empty upload placeholder. Do not rerun staging or move a tag to recover a write.
@@ -71,6 +85,36 @@ empty upload placeholder. Do not rerun staging or move a tag to recover a write.
 An existing tag built with staging-only YAML will never acquire a publisher
 on retry. An approved recovery must use the existing build receipt and the
 manual paired publisher with both existing tags, not move the canonical tag.
+
+### Provision writer access before activation
+
+Configure credentials manually for `bktest-release` in the approved secret
+provider, injected only into the indicated job keys. Do not use shared pipeline
+environment secrets. Require the canonical pipeline identity, protected CLI tag
+ref, and exact job key at the credential provider; verify denials for staging,
+rehearsals, collectors, and manual/API builds before enabling the group.
+
+| Job key | Manual setup |
+| --- | --- |
+| `cli-sync-legacy` | `CLI_LEGACY_TOKEN`: short-lived GitHub App installation token with Contents write for `buildkite/test-engine-client` only. The repository and organization owners must review a narrow direct-update exception for the app on `main`; current required PR/CI rules do not permit this job. Retain non-fast-forward and deletion protection. |
+| `cli-publish-github` | `GH_TOKEN`: GitHub App installation token with Contents write for only `buildkite/bktest` and `buildkite/test-engine-client`, with no tag or branch bypass. |
+| `cli-promote-github` | `GH_TOKEN`: separate legacy-repo-only Contents write token for the approved promotion job, with no tag or branch bypass. |
+| `cli-files-0` through `cli-files-6` | Files registry `buildkite/bktec`: job-scoped Buildkite OIDC `write_packages` for each Files plugin job, audience `https://packages.buildkite.com/buildkite/bktec`. |
+| `cli-promote-native` | Buildkite OIDC `write_packages` on `test-engine-client-deb` and `test-engine-client-rpm`, with the exact registry URL as audience. Do not expose this grant to the verifier or OCI jobs. |
+| `cli-publish-dockerhub`, `cli-promote-dockerhub` | `CLI_DOCKERHUB_USER` and repository-scoped `CLI_DOCKERHUB_TOKEN` for `buildkite/test-engine-client`. |
+| `cli-publish-ecr`, `cli-promote-ecr` | Short-lived AWS role credentials with ECR Public login and push restricted to the existing `test-engine-client` repository. |
+| `cli-publish-packages-oci`, `cli-promote-packages-oci` | OIDC write to `test-engine-client-docker` with audience `https://packages.buildkite.com/buildkite/test-engine-client-docker`. Configure `CLI_PACKAGES_OCI_CONTROL_TAG` and `CLI_PACKAGES_OCI_CONTROL_DIGEST` with an independently verified existing ref/digest. |
+| `cli-promote-tap` | `CLI_TAP_TOKEN`: tap-only GitHub App installation token with Contents write for `buildkite/homebrew-buildkite`. The tap owners must review a narrow direct-update exception on `master`; the current protections must not be silently relaxed. |
+
+Use separate creation and immutability rules for `v3.*` on both source
+repositories: permit creation only for approved principals, and protect
+updates/deletions without granting bypass of those protections. Verify all
+legacy writer access is retired before transferring trust. Set up the
+`cli-oci` queue with Python 3.11+, Buildx capable of exporting amd64 and arm64
+OCI archives, Skopeo, and AWS CLI. Keep the `cli-build-oci` job credential-free.
+Do not configure a queue-wide credential. Enable the group in a reviewed
+change only after a no-public-write rehearsal
+demonstrates the credential boundaries and the release owner accepts recovery.
 
 ## Prepare a stable stage for the existing destinations
 

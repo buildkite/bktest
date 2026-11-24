@@ -1,7 +1,4 @@
-# Releasing collectors
-
-This guide describes the collector release contracts and previews the planned
-CLI release contract without documenting credentials or private infrastructure.
+# Releasing bktest and its collectors
 
 Anyone can prepare a release pull request. Pushing release tags, publishing
 packages, approving release jobs, and creating GitHub releases require the
@@ -11,21 +8,20 @@ Engine maintainer to complete the release.
 
 ## CLI releases
 
-The CLI release contract below is a preview. It does not authorize tags,
-publishing, or install-channel changes. The old release pipeline is archived;
-do not unblock or retry its historical publisher jobs. The canonical pipeline
-can stage release inputs, but routine publication is not yet enabled.
+Plain `v3.x.y` and `v3.x.y-rc.N` tags are reserved for the CLI; collectors use
+the prefixed tags below. The [`bktest-release` pipeline](https://buildkite.com/buildkite/bktest-release)
+stages and verifies one build of the reviewed canonical commit, distributed
+under both executable names. The legacy release pipeline is archived; do not
+unblock or retry its historical publisher jobs.
 
-The plan reserves plain `v3.x.y` and `v3.x.y-rc.N` tags here for the CLI;
-collectors use the prefixed tags below. Each operating system and architecture
-will have one build from the reviewed canonical commit, distributed under both
-executable names. The generated legacy Go source will come from that same
-commit. Record the paired source commits, exact tags, and artifact checksums
-before any approved publication. Existing legacy asset names and the CLI-only
-legacy `releases/latest` remain part of the compatibility contract.
-
-Versioned publication and install-channel changes require separate approval.
-Prereleases must not move stable channels, and published versions are immutable.
+**Routine publication is not yet enabled.** After activation, the first
+release approval allows the pipeline to sync and tag the legacy Go module
+and publish both versioned GitHub releases from the retained build. Stable
+releases also publish versioned Files and images, then require separate
+approval before publishing native packages or updating Homebrew and Latest.
+Prereleases do not move the stable channels. Treat both tags and all published
+versions as immutable. Follow the [CLI release runbook](docs/cli-release-rehearsal.md)
+for the approvals, credential setup, and recovery procedure.
 
 ## Shared release contract
 
