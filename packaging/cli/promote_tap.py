@@ -46,7 +46,9 @@ def main():
         git(repo, 'add', 'Formula/bktec.rb', 'Aliases/bktest')
         git(repo, '-c', 'user.name=Buildkite CLI Release', '-c', 'user.email=release@buildkite.com',
             'commit', '-m', f'Update bktec to {tag}')
-        token = os.environ['CLI_TAP_TOKEN']
+        token = os.environ['GH_TOKEN']
+        if not token:
+            raise ValueError('missing Homebrew tap credential')
         auth = dict(os.environ, GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
                     GIT_CONFIG_VALUE_0='Authorization: Basic ' + base64.b64encode(f'x-access-token:{token}'.encode()).decode())
         git(repo, 'push', TAP, 'HEAD:refs/heads/master', env=auth)

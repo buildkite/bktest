@@ -54,7 +54,7 @@ steps:
         depends_on: cli-github-approval
         concurrency: 1
         concurrency_group: bktest-release/cli-legacy-sync
-        command: python3 -B packaging/cli/github_app_job.py
+        command: python3 -B packaging/cli/sync_legacy.py --apply
         plugins:
           - aws-assume-role-with-web-identity#v1.4.0:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-sync-legacy
@@ -62,27 +62,19 @@ steps:
               session-tags: [build_source]
           - aws-ssm#v1.0.0:
               parameters:
-                CLI_GITHUB_APP_ID: /pipelines/buildkite/bktest-release/cli/sync-legacy/app-id
-                CLI_GITHUB_INSTALLATION_ID: /pipelines/buildkite/bktest-release/cli/sync-legacy/installation-id
-                CLI_GITHUB_PRIVATE_KEY_B64: /pipelines/buildkite/bktest-release/cli/sync-legacy/private-key-b64
+                GH_TOKEN: /pipelines/buildkite/bktest-release/cli/sync-legacy/github-token
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true
               propagate-uid-gid: true
-              environment:
-                - BUILDKITE_BUILD_ID
-                - BUILDKITE_STEP_KEY
-                - BUILDKITE_TAG
-                - CLI_GITHUB_APP_ID
-                - CLI_GITHUB_INSTALLATION_ID
-                - CLI_GITHUB_PRIVATE_KEY_B64
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG, GH_TOKEN]
 
       - label: ":github: Publish both versioned CLI releases"
         key: cli-publish-github
         depends_on: cli-sync-legacy
         concurrency: 1
         concurrency_group: bktest-release/cli-github
-        command: python3 -B packaging/cli/github_app_job.py
+        command: python3 -B packaging/cli/publish_github_job.py
         plugins:
           - aws-assume-role-with-web-identity#v1.4.0:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-publish-github
@@ -90,9 +82,7 @@ steps:
               session-tags: [build_source]
           - aws-ssm#v1.0.0:
               parameters:
-                CLI_GITHUB_APP_ID: /pipelines/buildkite/bktest-release/cli/publish-github/app-id
-                CLI_GITHUB_INSTALLATION_ID: /pipelines/buildkite/bktest-release/cli/publish-github/installation-id
-                CLI_GITHUB_PRIVATE_KEY_B64: /pipelines/buildkite/bktest-release/cli/publish-github/private-key-b64
+                GH_TOKEN: /pipelines/buildkite/bktest-release/cli/publish-github/github-token
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true
@@ -105,9 +95,7 @@ steps:
                 - BUILDKITE_BUILD_ID
                 - BUILDKITE_TAG
                 - CLI_RELEASE_GITHUB_ENABLED
-                - CLI_GITHUB_APP_ID
-                - CLI_GITHUB_INSTALLATION_ID
-                - CLI_GITHUB_PRIVATE_KEY_B64
+                - GH_TOKEN
 
       - label: ":package: Prepare stable distribution inputs"
         key: cli-distribution-inputs
@@ -252,7 +240,7 @@ steps:
         depends_on: cli-native-readback
         concurrency: 1
         concurrency_group: bktest-release/cli-tap
-        command: python3 -B packaging/cli/github_app_job.py
+        command: python3 -B packaging/cli/promote_tap.py
         plugins:
           - aws-assume-role-with-web-identity#v1.4.0:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-promote-tap
@@ -260,15 +248,12 @@ steps:
               session-tags: [build_source]
           - aws-ssm#v1.0.0:
               parameters:
-                CLI_GITHUB_APP_ID: /pipelines/buildkite/bktest-release/cli/promote-tap/app-id
-                CLI_GITHUB_INSTALLATION_ID: /pipelines/buildkite/bktest-release/cli/promote-tap/installation-id
-                CLI_GITHUB_PRIVATE_KEY_B64: /pipelines/buildkite/bktest-release/cli/promote-tap/private-key-b64
+                GH_TOKEN: /pipelines/buildkite/bktest-release/cli/promote-tap/github-token
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true
               propagate-uid-gid: true
-              environment: [BUILDKITE_BUILD_ID, BUILDKITE_STEP_KEY, BUILDKITE_TAG,
-                            CLI_GITHUB_APP_ID, CLI_GITHUB_INSTALLATION_ID, CLI_GITHUB_PRIVATE_KEY_B64]
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG, GH_TOKEN]
 
       - label: ":docker: Promote the verified OCI index on Docker Hub"
         key: cli-promote-dockerhub
@@ -305,7 +290,7 @@ steps:
         depends_on: [cli-promote-tap, cli-promote-dockerhub, cli-promote-ecr, cli-promote-packages-oci]
         concurrency: 1
         concurrency_group: bktest-release/cli-github
-        command: python3 -B packaging/cli/github_app_job.py
+        command: python3 -B packaging/cli/promote_github.py
         plugins:
           - aws-assume-role-with-web-identity#v1.4.0:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-promote-github
@@ -313,12 +298,9 @@ steps:
               session-tags: [build_source]
           - aws-ssm#v1.0.0:
               parameters:
-                CLI_GITHUB_APP_ID: /pipelines/buildkite/bktest-release/cli/promote-github/app-id
-                CLI_GITHUB_INSTALLATION_ID: /pipelines/buildkite/bktest-release/cli/promote-github/installation-id
-                CLI_GITHUB_PRIVATE_KEY_B64: /pipelines/buildkite/bktest-release/cli/promote-github/private-key-b64
+                GH_TOKEN: /pipelines/buildkite/bktest-release/cli/promote-github/github-token
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true
               propagate-uid-gid: true
-              environment: [BUILDKITE_BUILD_ID, BUILDKITE_STEP_KEY, BUILDKITE_TAG,
-                            CLI_GITHUB_APP_ID, CLI_GITHUB_INSTALLATION_ID, CLI_GITHUB_PRIVATE_KEY_B64]
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG, GH_TOKEN]

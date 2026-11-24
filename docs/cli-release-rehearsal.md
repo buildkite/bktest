@@ -95,13 +95,13 @@ obtains AWS credentials; `aws-ssm` loads only that job's named parameters in
 `us-east-1`. Store credentials as `SecureString` values under
 `/pipelines/buildkite/bktest-release/cli/` as named in the pipeline YAML.
 
-For each GitHub job, provision its own App with Contents write and only the
-installations and repositories in the table. Store `app-id`, `installation-id`,
-and `private-key-b64` (base64 of the PEM as one line). The writer container
-uses the key once to mint a short-lived installation token, then starts the
-publisher with that token, not the signing key. Don't store installation tokens
-in SSM. For Docker Hub, populate the `dockerhub/user` and `dockerhub/token`
-parameters. ECR and Buildkite Packages don't read SSM.
+For each GitHub job, store a separate, expiring fine-grained personal access
+token from an approved account in that job's `github-token` parameter. The
+plugin exports it as `GH_TOKEN`. Grant Contents write only on the repositories
+in the table. Do not duplicate a broad token across jobs. Record the token's
+owner, expiration, and rotation procedure before activation. For Docker Hub,
+populate `dockerhub/user` and `dockerhub/token`. ECR and Buildkite Packages
+don't read SSM.
 
 In IAM, require the Buildkite OIDC provider, `aud=sts.amazonaws.com`, the
 canonical pipeline UUID and the default signed subject matching
@@ -116,15 +116,15 @@ staging, rehearsals, collectors, manual/API builds, and other writer steps.
 
 | Job key | Manual setup |
 | --- | --- |
-| `cli-sync-legacy` | `CLI_LEGACY_TOKEN`: short-lived GitHub App installation token with Contents write for `buildkite/test-engine-client` only. The repository and organization owners must review a narrow direct-update exception for the app on `main`; current required PR/CI rules do not permit this job. Retain non-fast-forward and deletion protection. |
-| `cli-publish-github` | `GH_TOKEN`: GitHub App installation token with Contents write for only `buildkite/bktest` and `buildkite/test-engine-client`, with no tag or branch bypass. |
+| `cli-sync-legacy` | `GH_TOKEN` for `buildkite/test-engine-client` only. The token acts as its owner; repository and organization owners must approve an identity allowed to fast-forward legacy `main` and create CLI tags. Do not grant permission to move or delete existing tags. |
+| `cli-publish-github` | `GH_TOKEN` for `buildkite/bktest` and `buildkite/test-engine-client` only. Use an identity without tag or branch bypass. |
 | `cli-promote-github` | `GH_TOKEN`: separate legacy-repo-only Contents write token for the approved promotion job, with no tag or branch bypass. |
 | `cli-files-0` through `cli-files-6` | Files registry `buildkite/bktec`: job-scoped Buildkite OIDC `write_packages` for each Files plugin job, audience `https://packages.buildkite.com/buildkite/bktec`. |
 | `cli-promote-native` | Buildkite OIDC `write_packages` on `test-engine-client-deb` and `test-engine-client-rpm`, with the exact registry URL as audience. Do not expose this grant to the verifier or OCI jobs. |
 | `cli-publish-dockerhub`, `cli-promote-dockerhub` | `CLI_DOCKERHUB_USER` and repository-scoped `CLI_DOCKERHUB_TOKEN` for `buildkite/test-engine-client`. |
 | `cli-publish-ecr`, `cli-promote-ecr` | Short-lived AWS role credentials with ECR Public login and push restricted to the existing `test-engine-client` repository. |
 | `cli-publish-packages-oci`, `cli-promote-packages-oci` | OIDC write to `test-engine-client-docker` with audience `https://packages.buildkite.com/buildkite/test-engine-client-docker`. Configure `CLI_PACKAGES_OCI_CONTROL_TAG` and `CLI_PACKAGES_OCI_CONTROL_DIGEST` with an independently verified existing ref/digest. |
-| `cli-promote-tap` | `CLI_TAP_TOKEN`: tap-only GitHub App installation token with Contents write for `buildkite/homebrew-buildkite`. The tap owners must review a narrow direct-update exception on `master`; the current protections must not be silently relaxed. |
+| `cli-promote-tap` | `GH_TOKEN` for `buildkite/homebrew-buildkite` only. The tap owners must approve an identity allowed to update `master`; do not relax protection for other actors. |
 
 Use separate creation and immutability rules for `v3.*` on both source
 repositories: permit creation only for approved principals, and protect

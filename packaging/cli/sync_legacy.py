@@ -88,7 +88,7 @@ def main():
         with approved_input(stable=False) as (archive, _, sha, _, approved_tag, _, approved_source):
             with open_stage(Path(archive), sha, approved_tag, approved_source):
                 pass
-        token = os.environ['CLI_LEGACY_TOKEN']
+        token = os.environ['GH_TOKEN']
         if not token:
             raise ValueError('missing legacy sync credential')
         auth = dict(os.environ, GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
