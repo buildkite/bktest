@@ -152,14 +152,20 @@ file or packages from the compatibility checkout.
   canonical staging job must not have `write_packages`. Read back from
   `https://packages.buildkite.com/buildkite/bktec/files/<exact filename>` and
   compare bytes by SHA-256, including the checksum file itself.
-- **DEB/RPM:** Use the unchanged legacy `.buildkite/steps/upload-linux-packages.sh`
-  once per approved `packages/deb/bktec_<version>_linux_<arch>.deb` or
-  `packages/rpm/bktec_<version>_linux_<arch>.rpm`, from a verified legacy
-  checkout with the reviewed uploader. Check the file SHA-256 against
-  the receipt immediately before passing its absolute path to the script, for
-  example `sh "$legacy_checkout/.buildkite/steps/upload-linux-packages.sh" "$file"`.
+- **DEB/RPM:** Run the canonical native handoff with one format and architecture:
+
+  ```sh
+  python3 -B packaging/cli/publish_native.py "$ARCHIVE" \
+    --archive-sha256 "$ARCHIVE_SHA256" --tag "$TAG" --source "$SOURCE" \
+    --format deb --arch arm64
+  ```
+
+  This verifies the full archive and reports the exact package and digest.
+  Only add `--confirmed-missing` in an approved writer job after confirming
+  the package is absent and approving exposure in the signed index. The command
+  sends one POST and does not retry; verify the result separately, even on success.
   Keep the package name `bktec` and existing registries `test-engine-client-deb`
-  and `test-engine-client-rpm`. The script requests a 180-second agent OIDC token
+  and `test-engine-client-rpm`. The command uses the legacy endpoint and a 180-second agent OIDC token
   for `https://packages.buildkite.com/buildkite/<registry>` and POSTs the file to
   `/v2/packages/organizations/buildkite/registries/<registry>/packages` on
   `api.buildkite.com`. Verify `write_packages` for the approved native release job
