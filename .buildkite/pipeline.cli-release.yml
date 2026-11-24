@@ -60,9 +60,11 @@ steps:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-sync-legacy
               region: us-east-1
               session-tags: [build_source]
-          - aws-ssm#v1.0.0:
-              parameters:
-                GH_TOKEN: /pipelines/buildkite/bktest-release/cli/sync-legacy/github-token
+          - buildkite/just-works#v0.2.0: &github_exchange
+              assume-role: false
+              ecr: {enabled: false}
+              ssm: {enabled: false}
+              github: {changes-enabled: true, organization: buildkite}
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true
@@ -80,9 +82,7 @@ steps:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-publish-github
               region: us-east-1
               session-tags: [build_source]
-          - aws-ssm#v1.0.0:
-              parameters:
-                GH_TOKEN: /pipelines/buildkite/bktest-release/cli/publish-github/github-token
+          - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true
@@ -246,9 +246,7 @@ steps:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-promote-tap
               region: us-east-1
               session-tags: [build_source]
-          - aws-ssm#v1.0.0:
-              parameters:
-                GH_TOKEN: /pipelines/buildkite/bktest-release/cli/promote-tap/github-token
+          - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true
@@ -296,9 +294,7 @@ steps:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-promote-github
               region: us-east-1
               session-tags: [build_source]
-          - aws-ssm#v1.0.0:
-              parameters:
-                GH_TOKEN: /pipelines/buildkite/bktest-release/cli/promote-github/github-token
+          - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true

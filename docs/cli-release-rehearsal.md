@@ -88,20 +88,22 @@ manual paired publisher with both existing tags, not move the canonical tag.
 
 ### Provision writer access before activation
 
-The AWS roles and SSM parameters referenced by the YAML must be provisioned
-separately. Do not use shared pipeline environment secrets, the collector role,
-or the archived legacy role. The `aws-assume-role-with-web-identity` step plugin
-obtains AWS credentials; `aws-ssm` loads only that job's named parameters in
-`us-east-1`. Store credentials as `SecureString` values under
-`/pipelines/buildkite/bktest-release/cli/` as named in the pipeline YAML.
+The AWS roles referenced by the YAML must be provisioned separately. Do not
+use shared pipeline environment secrets, the collector role, or the archived
+legacy role. Each AWS writer assumes its own role. The GitHub jobs then use
+the `just-works` plugin to obtain a short-lived `GH_TOKEN` from Exchange.
+Do not put a GitHub token or App key in Parameter Store. Docker Hub alone
+uses SSM: populate the two `SecureString` parameters named in the pipeline
+YAML in `us-east-1`. ECR and Buildkite Packages don't read SSM.
 
-For each GitHub job, store a separate, expiring fine-grained personal access
-token from an approved account in that job's `github-token` parameter. The
-plugin exports it as `GH_TOKEN`. Grant Contents write only on the repositories
-in the table. Do not duplicate a broad token across jobs. Record the token's
-owner, expiration, and rotation procedure before activation. For Docker Hub,
-populate `dockerhub/user` and `dockerhub/token`. ECR and Buildkite Packages
-don't read SSM.
+Before enabling publication, have the Exchange owners approve enrollment
+for the canonical organization and pipeline IDs. Give each GitHub role
+`lambda:InvokeFunction` only on the Exchange function and require Exchange
+to select the repository and identity for the signed writer job. A single
+pipeline-wide Exchange grant for the `buildkite` GitHub organization does
+not distinguish these jobs. Do not enroll with the combined repositories
+and branch privileges as a workaround. Until Exchange can enforce the
+scopes below, keep the writer group disabled.
 
 In IAM, require the Buildkite OIDC provider, `aud=sts.amazonaws.com`, the
 canonical pipeline UUID and the default signed subject matching
@@ -116,15 +118,15 @@ staging, rehearsals, collectors, manual/API builds, and other writer steps.
 
 | Job key | Manual setup |
 | --- | --- |
-| `cli-sync-legacy` | `GH_TOKEN` for `buildkite/test-engine-client` only. The token acts as its owner; repository and organization owners must approve an identity allowed to fast-forward legacy `main` and create CLI tags. Do not grant permission to move or delete existing tags. |
-| `cli-publish-github` | `GH_TOKEN` for `buildkite/bktest` and `buildkite/test-engine-client` only. Use an identity without tag or branch bypass. |
-| `cli-promote-github` | `GH_TOKEN`: separate legacy-repo-only Contents write token for the approved promotion job, with no tag or branch bypass. |
+| `cli-sync-legacy` | Exchange Contents write for `buildkite/test-engine-client` only. Owners must approve the identity for fast-forwarding legacy `main` and creating CLI tags, not moving or deleting them. |
+| `cli-publish-github` | Exchange Contents write for `buildkite/bktest` and `buildkite/test-engine-client` only, without tag or branch bypass. |
+| `cli-promote-github` | Exchange Contents write for `buildkite/test-engine-client` only, without tag or branch bypass. |
 | `cli-files-0` through `cli-files-6` | Files registry `buildkite/bktec`: job-scoped Buildkite OIDC `write_packages` for each Files plugin job, audience `https://packages.buildkite.com/buildkite/bktec`. |
 | `cli-promote-native` | Buildkite OIDC `write_packages` on `test-engine-client-deb` and `test-engine-client-rpm`, with the exact registry URL as audience. Do not expose this grant to the verifier or OCI jobs. |
 | `cli-publish-dockerhub`, `cli-promote-dockerhub` | `CLI_DOCKERHUB_USER` and repository-scoped `CLI_DOCKERHUB_TOKEN` for `buildkite/test-engine-client`. |
 | `cli-publish-ecr`, `cli-promote-ecr` | Short-lived AWS role credentials with ECR Public login and push restricted to the existing `test-engine-client` repository. |
 | `cli-publish-packages-oci`, `cli-promote-packages-oci` | OIDC write to `test-engine-client-docker` with audience `https://packages.buildkite.com/buildkite/test-engine-client-docker`. Configure `CLI_PACKAGES_OCI_CONTROL_TAG` and `CLI_PACKAGES_OCI_CONTROL_DIGEST` with an independently verified existing ref/digest. |
-| `cli-promote-tap` | `GH_TOKEN` for `buildkite/homebrew-buildkite` only. The tap owners must approve an identity allowed to update `master`; do not relax protection for other actors. |
+| `cli-promote-tap` | Exchange Contents write for `buildkite/homebrew-buildkite` only. The tap owners must approve the identity to update `master`; do not relax protection for other actors. |
 
 Use separate creation and immutability rules for `v3.*` on both source
 repositories: permit creation only for approved principals, and protect
