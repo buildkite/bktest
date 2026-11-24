@@ -57,7 +57,7 @@ steps:
         command: python3 -B packaging/cli/sync_legacy.py --apply
         plugins:
           - aws-assume-role-with-web-identity#v1.4.0: &github_role
-              role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-github
+              role-arn: arn:aws:iam::445615400570:role/pipeline-buildkite-bktest-release-cli-github
               region: us-east-1
               session-tags: [pipeline_id, build_source]
           - buildkite/just-works#v0.2.0: &github_exchange
@@ -149,7 +149,7 @@ steps:
         command: python3 -B packaging/cli/publish_oci.py versioned dockerhub
         plugins: &dockerhub_auth
           - aws-assume-role-with-web-identity#v1.4.0:
-              role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-dockerhub
+              role-arn: arn:aws:iam::445615400570:role/pipeline-buildkite-bktest-release-cli-dockerhub
               region: us-east-1
               session-tags: [pipeline_id, build_source]
           - aws-ssm#v1.0.0:
@@ -167,7 +167,7 @@ steps:
         command: python3 -B packaging/cli/publish_oci.py versioned ecr
         plugins: &ecr_auth
           - aws-assume-role-with-web-identity#v1.4.0:
-              role-arn: arn:aws:iam::172840064832:role/bktest-release-cli-ecr-public
+              role-arn: arn:aws:iam::172840064832:role/pipeline-buildkite-bktest-release-cli-ecr-public
               region: us-east-1
               session-tags: [pipeline_id, build_source]
 
