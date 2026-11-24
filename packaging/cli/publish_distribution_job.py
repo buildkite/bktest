@@ -56,6 +56,7 @@ def main():
     with approved_input() as args:
         phase = sys.argv[1]
         if phase == 'inputs':
+            Path('dist').mkdir(exist_ok=True)
             subprocess.run([sys.executable, '-B', 'packaging/cli/prepare_publish.py', *args,
                             'dist/cli-distribution'], check=True)
         elif phase in ('files', 'verify-files'):
