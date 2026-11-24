@@ -88,11 +88,31 @@ manual paired publisher with both existing tags, not move the canonical tag.
 
 ### Provision writer access before activation
 
-Configure credentials manually for `bktest-release` in the approved secret
-provider, injected only into the indicated job keys. Do not use shared pipeline
-environment secrets. Require the canonical pipeline identity, protected CLI tag
-ref, and exact job key at the credential provider; verify denials for staging,
-rehearsals, collectors, and manual/API builds before enabling the group.
+The AWS roles and SSM parameters referenced by the YAML must be provisioned
+separately. Do not use shared pipeline environment secrets, the collector role,
+or the archived legacy role. The `aws-assume-role-with-web-identity` step plugin
+obtains AWS credentials; `aws-ssm` loads only that job's named parameters in
+`us-east-1`. Store credentials as `SecureString` values under
+`/pipelines/buildkite/bktest-release/cli/` as named in the pipeline YAML.
+
+For each GitHub job, provision its own App with Contents write and only the
+installations and repositories in the table. Store `app-id`, `installation-id`,
+and `private-key-b64` (base64 of the PEM as one line). The writer container
+uses the key once to mint a short-lived installation token, then starts the
+publisher with that token, not the signing key. Don't store installation tokens
+in SSM. For Docker Hub, populate the `dockerhub/user` and `dockerhub/token`
+parameters. ECR and Buildkite Packages don't read SSM.
+
+In IAM, require the Buildkite OIDC provider, `aud=sts.amazonaws.com`, the
+canonical pipeline UUID and the default signed subject matching
+`organization:buildkite:pipeline:bktest-release:ref:refs/tags/v3.*:commit:*:step:<exact-job-key>`.
+Allow `sts:TagSession` and require the signed `aws:RequestTag/build_source`
+to be `webhook` on the same trust statement. For each shared Docker Hub or
+ECR role, list only its two allowed subjects. Restrict SSM roles to
+`ssm:GetParameters` on the exact parameter ARNs from the job, plus decrypt
+only for those parameters if a customer-managed KMS key is used. Give the ECR
+role only login plus push to the existing repository. Verify the role denies
+staging, rehearsals, collectors, manual/API builds, and other writer steps.
 
 | Job key | Manual setup |
 | --- | --- |
@@ -111,7 +131,8 @@ repositories: permit creation only for approved principals, and protect
 updates/deletions without granting bypass of those protections. Verify all
 legacy writer access is retired before transferring trust. Set up the
 `cli-oci` queue with Python 3.11+, Buildx capable of exporting amd64 and arm64
-OCI archives, Skopeo, and AWS CLI. Keep the `cli-build-oci` job credential-free.
+OCI archives, Skopeo, AWS CLI, and jq. The GitHub writer hosts also need AWS
+CLI and jq for the plugins. Keep the `cli-build-oci` job credential-free.
 Do not configure a queue-wide credential. Enable the group in a reviewed
 change only after a no-public-write rehearsal
 demonstrates the credential boundaries and the release owner accepts recovery.
