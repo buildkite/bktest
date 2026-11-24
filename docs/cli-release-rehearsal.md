@@ -106,7 +106,7 @@ and branch privileges as a workaround. Until Exchange can enforce the
 scopes below, keep the writer group disabled.
 
 In IAM, require the Buildkite OIDC provider, `aud=sts.amazonaws.com`, the
-canonical pipeline UUID and the default signed subject matching
+canonical pipeline UUID in `aws:RequestTag/pipeline_id`, and the default signed subject matching
 `organization:buildkite:pipeline:bktest-release:ref:refs/tags/v3.*:commit:*:step:<exact-job-key>`.
 Allow `sts:TagSession` and require the signed `aws:RequestTag/build_source`
 to be `webhook` on the same trust statement. For each shared Docker Hub or

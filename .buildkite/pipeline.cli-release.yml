@@ -59,7 +59,7 @@ steps:
           - aws-assume-role-with-web-identity#v1.4.0:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-sync-legacy
               region: us-east-1
-              session-tags: [build_source]
+              session-tags: [pipeline_id, build_source]
           - buildkite/just-works#v0.2.0: &github_exchange
               assume-role: false
               ecr: {enabled: false}
@@ -81,7 +81,7 @@ steps:
           - aws-assume-role-with-web-identity#v1.4.0:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-publish-github
               region: us-east-1
-              session-tags: [build_source]
+              session-tags: [pipeline_id, build_source]
           - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
@@ -154,7 +154,7 @@ steps:
           - aws-assume-role-with-web-identity#v1.4.0:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-dockerhub
               region: us-east-1
-              session-tags: [build_source]
+              session-tags: [pipeline_id, build_source]
           - aws-ssm#v1.0.0:
               parameters:
                 CLI_DOCKERHUB_USER: /pipelines/buildkite/bktest-release/cli/dockerhub/user
@@ -172,7 +172,7 @@ steps:
           - aws-assume-role-with-web-identity#v1.4.0:
               role-arn: arn:aws:iam::172840064832:role/bktest-release-cli-ecr-public
               region: us-east-1
-              session-tags: [build_source]
+              session-tags: [pipeline_id, build_source]
 
       - label: ":docker: Publish versioned OCI to Buildkite Packages"
         key: cli-publish-packages-oci
@@ -245,7 +245,7 @@ steps:
           - aws-assume-role-with-web-identity#v1.4.0:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-promote-tap
               region: us-east-1
-              session-tags: [build_source]
+              session-tags: [pipeline_id, build_source]
           - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
@@ -293,7 +293,7 @@ steps:
           - aws-assume-role-with-web-identity#v1.4.0:
               role-arn: arn:aws:iam::445615400570:role/bktest-release-cli-promote-github
               region: us-east-1
-              session-tags: [build_source]
+              session-tags: [pipeline_id, build_source]
           - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
