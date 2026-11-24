@@ -90,15 +90,15 @@ manual paired publisher with both existing tags, not move the canonical tag.
 
 The AWS roles referenced by the YAML must be provisioned separately. Do not
 use shared pipeline environment secrets, the collector role, or the archived
-legacy role. Three roles serve GitHub, Docker Hub, and ECR Public separately.
-The four GitHub jobs share an invoke-only role, then use
-the `just-works` plugin to obtain a short-lived `GH_TOKEN` from Exchange.
+legacy role. CLI writers use one shared pipeline role in Buildkite Dev for
+Exchange and Docker Hub SSM, and one in Buildkite Dist for ECR Public.
+GitHub jobs use `just-works` to obtain a short-lived `GH_TOKEN` from Exchange.
 Do not put a GitHub token or App key in Parameter Store. Docker Hub alone
 uses SSM: populate the two `SecureString` parameters named in the pipeline
 YAML in `us-east-1`. ECR and Buildkite Packages don't read SSM.
 
 Before enabling publication, have the Exchange owners approve enrollment
-for the canonical organization and pipeline IDs. Give the GitHub role
+for the canonical organization and pipeline IDs. Give the Dev role
 `lambda:InvokeFunction` only on the Exchange function and require Exchange
 to select the repository and identity for the signed writer job. A single
 pipeline-wide Exchange grant for the `buildkite` GitHub organization does
@@ -106,17 +106,19 @@ not distinguish these jobs. Do not enroll with the combined repositories
 and branch privileges as a workaround. Until Exchange can enforce the
 scopes below, keep the writer group disabled.
 
-In IAM, require the Buildkite OIDC provider, `aud=sts.amazonaws.com`, the
-canonical pipeline UUID in `aws:RequestTag/pipeline_id`, and the default signed subject matching
-`organization:buildkite:pipeline:bktest-release:ref:refs/tags/v3.*:commit:*:step:<exact-job-key>`.
-Allow `sts:TagSession` and require the signed `aws:RequestTag/build_source`
-to be `webhook` on the same trust statement. List only the four GitHub writer
-subjects on the GitHub role and the two matching subjects on each OCI role.
-Restrict the Docker Hub role to
-`ssm:GetParameters` on the exact parameter ARNs from the job, plus decrypt
-only for those parameters if a customer-managed KMS key is used. Give the ECR
-role only login plus push to the existing repository. Verify the role denies
-staging, rehearsals, collectors, manual/API builds, and other writer steps.
+Both roles use the standard Terraform pipeline role module. IAM checks the
+signed organization and pipeline claims and the `v3.*` build branch pattern;
+Buildkite presents tags as build branches. IAM does not distinguish steps,
+tag refs from same-named branches, or webhook builds from manual/API builds.
+The pipeline's writer group separately checks tag and webhook source and
+uses manual approval gates. Keep the release pipeline restricted to trusted
+operators and protect release tags before enabling writes.
+
+Limit the Dev role's SSM access to `ssm:GetParameters` on the two exact
+Docker Hub parameter ARNs, plus decrypt only for those parameters if a
+customer-managed KMS key is used. Give the Dist role only ECR Public login
+and push to the existing repository. Verify both roles deny other pipelines,
+ordinary main builds, and collector builds.
 
 | Job key | Manual setup |
 | --- | --- |
