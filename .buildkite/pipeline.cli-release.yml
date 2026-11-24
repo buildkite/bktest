@@ -1,4 +1,4 @@
-# Deliberately stages only. Never add credentials to this job.
+# Staging and readback must never receive release credentials.
 steps:
   - label: ":package: Stage both CLI distributions"
     key: cli-stage
@@ -27,3 +27,48 @@ steps:
           environment:
             - BUILDKITE_BUILD_ID
             - BUILDKITE_TAG
+
+  # This route stays off until tag protection, the approvers and the
+  # step-scoped credential are in place. It does not move stable channels.
+  - group: ":github: Versioned CLI releases"
+    if: >-
+      false && pipeline.slug == "bktest-release" && build.source == "webhook" &&
+      build.tag =~ /^v3[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-[0-9A-Za-z-]+([.][0-9A-Za-z-]+)*)?$$/ &&
+      build.env("CLI_RELEASE_GITHUB_ENABLED") == "true"
+    steps:
+      - block: "Publish both versioned CLI GitHub releases?"
+        key: cli-github-approval
+        depends_on: cli-stage-verify
+        allowed_teams: [test-engine]
+        prompt: "Check the reviewed canonical commit, paired legacy tag and retained stage receipt before approving. This does not promote Latest."
+        fields:
+          - text: "Approved archive SHA-256"
+            key: cli-archive-sha256
+            format: "[0-9a-f]{64}"
+          - text: "Approved staging job UUID"
+            key: cli-stage-job
+            format: "[0-9a-f-]{36}"
+          - text: "Approved legacy source commit"
+            key: cli-legacy-source
+            format: "[0-9a-f]{40}"
+
+      - label: ":github: Publish both versioned CLI releases"
+        key: cli-publish-github
+        depends_on: cli-github-approval
+        concurrency: 1
+        concurrency_group: bktest-release/cli-github
+        command: python3 -B packaging/cli/publish_github_job.py
+        plugins:
+          - docker#v5.13.0:
+              image: python:3.13-bookworm
+              mount-buildkite-agent: true
+              propagate-uid-gid: true
+              environment:
+                - BUILDKITE_ORGANIZATION_SLUG
+                - BUILDKITE_PIPELINE_SLUG
+                - BUILDKITE_SOURCE
+                - BUILDKITE_STEP_KEY
+                - BUILDKITE_BUILD_ID
+                - BUILDKITE_TAG
+                - CLI_RELEASE_GITHUB_ENABLED
+                - GH_TOKEN

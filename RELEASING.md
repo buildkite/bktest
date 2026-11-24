@@ -12,8 +12,9 @@ Engine maintainer to complete the release.
 ## CLI releases
 
 The CLI release contract below is a preview. It does not authorize tags,
-publishing, or install-channel changes. The existing `bktec` release process
-remains in place until cutover.
+publishing, or install-channel changes. The old release pipeline is archived;
+do not unblock or retry its historical publisher jobs. The canonical pipeline
+can stage release inputs, but routine publication is not yet enabled.
 
 The plan reserves plain `v3.x.y` and `v3.x.y-rc.N` tags here for the CLI;
 collectors use the prefixed tags below. Each operating system and architecture

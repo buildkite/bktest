@@ -50,19 +50,37 @@ Both GitHub releases are simulated for prereleases; the stage still contains
 Files and packages, but no prerelease registry publication is enabled. A
 pre-existing fake stable pointer is untouched, even with a staged Files archive.
 
-## Hand off an approved stable stage to the existing legacy uploaders
+## Paired GitHub publication (disabled during cutover)
 
-This is a manual runbook, not a pipeline. Local preparation needs no credentials.
-**The upload steps are not runnable with the pipelines as configured.** The
-existing Files jobs depend on the legacy `release` job, which runs GoReleaser,
-and the canonical stage has no writer credentials. Before the legacy writer is
-retired, the release owner must identify and separately approve a way to run
-only the handoff jobs under an authorized legacy release identity, without the
-normal bootstrap. Confirm artifact access and each destination's permissions
-from that execution context. If no such path is available, stop after local
-preparation; do not unblock or reuse the normal release job as a workaround.
+The route is disabled in the pipeline itself. The environment opt-in is
+not a security boundary and cannot enable the route on its own.
 
-Even with that path, do not upload until the release owner authorizes the
+Once enabled, only a plain CLI tag push to `bktest-release` exposes the
+GitHub approval block. An authorized release approver checks the exact
+canonical commit, the corresponding tag and projection in `test-engine-client`,
+and the verifier receipt. Enter the approved archive SHA-256, staging job UUID
+and full legacy commit. Do not supply credentials through approval fields.
+
+The job downloads that exact archive, checks the canonical commit is on `main`,
+and uses the existing dual publisher to verify both GitHub refs and the archive
+before writing. It never creates tags or promotes Latest. After an ambiguous
+result, inspect both releases and read back the assets before retrying with the
+same approval and retained archive. Follow `publish.py --help` if GitHub left an
+empty upload placeholder. Do not rerun staging or move a tag to recover a write.
+
+An existing tag built with staging-only YAML will never acquire a publisher
+on retry. An approved recovery must use the existing build receipt and the
+manual paired publisher with both existing tags, not move the canonical tag.
+
+## Prepare a stable stage for the existing destinations
+
+Local preparation needs no credentials. The transports below record the
+compatibility requirements; **the upload steps are not enabled in the canonical
+pipeline**. The legacy pipeline is archived. Do not unblock or reuse its
+historical jobs. Stop after preparation until the canonical write route and
+its approval and credential policies have been verified.
+
+Do not upload until the release owner authorizes the
 specific version and destinations, verifies both exact-version GitHub releases,
 and confirms no other writer can publish this version. Do not run
 `prepare-release.sh`, `release.sh`, `svu`, or GoReleaser; none should select a
@@ -83,34 +101,13 @@ buildkite-agent artifact download 'dist/cli-release.tar' "$scratch" \
 
 From the canonical checkout, set `ARCHIVE` to that file, and `ARCHIVE_SHA256`,
 `TAG`, and `SOURCE` to the independently approved values. Set `OUT` to a new
-directory under scratch. The landed verifier checks the digest, source, version,
+directory under scratch. The command checks the digest, source, version,
 all members and checksums before any files are copied. This command never calls
 Buildkite or a registry:
 
 ```sh
-PYTHONPATH=packaging/cli python3 -B - \
-  "${ARCHIVE:?}" "${ARCHIVE_SHA256:?}" "${TAG:?}" "${SOURCE:?}" "${OUT:?}" <<'PY'
-from pathlib import Path
-from shutil import copyfile
-import sys
-
-from publish import open_stage, validate_ref
-
-archive, sha, tag, source, out = sys.argv[1:]
-validate_ref(tag, source, mode="stable")
-with open_stage(Path(archive), sha, tag, source) as stage:
-    root = Path(out)
-    root.mkdir(mode=0o700)
-    for name, asset in sorted(stage.assets.items()):
-        if not name.startswith(("files/", "packages/", "image/")):
-            continue
-        path = root / ("dist/buildkite-packages/" + asset.path.name if name.startswith("files/") else name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        copyfile(asset.path, path)
-        if name.startswith("image/") and path.name in ("bktec", "bktest"):
-            path.chmod(0o755)
-        print(f"{asset.sha256}  {path.relative_to(root)}")
-PY
+python3 -B packaging/cli/prepare_publish.py "${ARCHIVE:?}" "${OUT:?}" \
+  --archive-sha256 "${ARCHIVE_SHA256:?}" --tag "${TAG:?}" --source "${SOURCE:?}"
 ```
 
 Retain that digest output with the approval. It covers seven Files artifacts,
@@ -151,9 +148,8 @@ file or packages from the compatibility checkout.
   ```
 
   Its OIDC audience is `https://packages.buildkite.com/buildkite/bktec`. The
-  current Files policy grants `write_packages` to issuer
-  `https://agent.buildkite.com` with organization `buildkite` and pipeline
-  `test-engine-client-release`, not to the canonical stage job. Read back from
+  retired pipeline's Files grant has been removed; do not reuse it. The
+  canonical staging job must not have `write_packages`. Read back from
   `https://packages.buildkite.com/buildkite/bktec/files/<exact filename>` and
   compare bytes by SHA-256, including the checksum file itself.
 - **DEB/RPM:** Use the unchanged legacy `.buildkite/steps/upload-linux-packages.sh`
@@ -166,7 +162,7 @@ file or packages from the compatibility checkout.
   and `test-engine-client-rpm`. The script requests a 180-second agent OIDC token
   for `https://packages.buildkite.com/buildkite/<registry>` and POSTs the file to
   `/v2/packages/organizations/buildkite/registries/<registry>/packages` on
-  `api.buildkite.com`. Verify `write_packages` for the actual legacy release job
+  `api.buildkite.com`. Verify `write_packages` for the approved native release job
   against both existing policies; access to Files does not imply native access.
   Each accepted package can become selectable by unpinned APT/DNF as its index
   updates, independently per architecture and format. Authorize that exposure
@@ -202,14 +198,14 @@ Stop unless the reported platforms are `linux/amd64` and `linux/arm64`, each
 with `[/usr/local/bin/bktec]` as its sole entrypoint. Retain the built images
 and ID files together (use `docker image save` if handing off to another host).
 
-After separate approval, use the existing registry login identities from the
-legacy release job. Do not put credentials on the builder or in the receipt:
+After separate approval, use only the new grants for the approved canonical
+publisher jobs. Do not put credentials on the builder or in the receipt:
 
 | Destination repository | Existing login and permission to verify |
 | --- | --- |
-| `docker.io/buildkite/test-engine-client` | `DOCKERHUB_USER` / `DOCKERHUB_PASSWORD` via the `pipeline-buildkite-test-engine-client-release` SSM role in `445615400570`; verify the account can push to this repository. |
-| `public.ecr.aws/buildkite/test-engine-client` | Existing `pipeline-buildkite-test-engine-client-release` web-identity role in `172840064832`; `aws ecr-public get-login-password --region us-east-1`, Docker user `AWS`; verify public ECR login and push permissions for this repository. |
-| `packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client` | 300-second Buildkite OIDC token for `https://packages.buildkite.com/buildkite/test-engine-client-docker`, Docker user `buildkite`; verify this registry grants the executing legacy release job package-write access. |
+| `docker.io/buildkite/test-engine-client` | Repository-scoped Docker Hub writer; verify it can push only the intended repository. |
+| `public.ecr.aws/buildkite/test-engine-client` | Scoped web-identity role; `aws ecr-public get-login-password --region us-east-1`, Docker user `AWS`; verify public ECR login and push permissions for this repository. |
+| `packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client` | 300-second Buildkite OIDC token for `https://packages.buildkite.com/buildkite/test-engine-client-docker`, Docker user `buildkite`; verify this registry grants only the approved publishing job package-write access. |
 
 For each approved repository (`repo`), check exact existing version and arch
 tags before pushing. Skip only an exact match to a previously recorded digest;
@@ -239,16 +235,12 @@ before authorizing a retry; do not rebuild. Keep `latest` unchanged at all three
 registries. This handoff does not select a version, change a tag policy or move
 a GitHub release or Homebrew pointer.
 
-## Proposed cutover (not enabled by this change)
+## Cutover and operation
 
-1. In `buildkite/saas-iac` `public-tf/pipelines.tf`, retain
-   `pipeline_bktest` on `Open Source`, with its existing branch/PR/fork checks
-   and authorization block. Set `archived = true` on
-   `pipeline_test_engine_client_release` and disable its branch, tag, PR and
-   fork triggers (`build_branches`, `build_tags`, `build_pull_requests`,
-   `build_pull_request_forks` all `false`). Keep the pipeline and build history.
-   Verify no in-flight, blocked, or retryable legacy job can still publish
-   before authorizing a new producer. Do not unblock or cancel any job here.
+1. The legacy release pipeline was archived with its triggers disabled and
+   its bootstrap retired. Its historical jobs are not recovery routes.
+   Verify the remaining legacy package policies and credentials are revoked
+   before granting a canonical writer. Ordinary legacy CI remains unchanged.
 2. Keep the mirror's existing PR, CI, and no-force-push protections in
    `public-tf/repos.tf` (`repo_test_engine_client`). For the generated mirror,
    protect `refs/heads/main` and `refs/tags/v*` from arbitrary writes; restrict
@@ -258,23 +250,18 @@ a GitHub release or Homebrew pointer.
    producer. Disable automatic CI only for unintended generated refs, not the
    source verification needed to update `main`. Do not rely on the old
    `test-splitter` redirect without verifying that status on a compatibility PR.
-3. In `pipeline_bktest_release` (same `public-tf/pipelines.tf`), keep `Open
-   Source Deploy`, tag events on, PR/forks off. After the old producer has
-   stopped, change `branch_configuration` from `main test-collector-*/v*` to
-   `main test-collector-*/v* v*`. This is a trigger filter, not authorization.
+3. `bktest-release` admits `main test-collector-*/v* v3.*` on `Open Source
+   Deploy`, with tag events on and PR/fork events off. This filter is not
+   authorization to publish.
    Have a release owner select an unused version and an approved canonical
    source commit. Verify `build.tag`, not the branch name, and require the
    matching manifest and tag commit. Do not route `bktec-history/v*`,
    collector tags, or untagged builds to the CLI publisher.
-4. A future publish step needs a deployment-team-only `allowed_teams` block
-   after staging, with an explicit dependency on the block and
-   `RELEASE_PUBLISH=true` on that step only. Keep credentials off the stager.
-   Scope credential trust to the `buildkite/bktest-release` pipeline, the
-   approved `refs/tags/v3.*` scope, and the publish step key (e.g. `cli-publish`)
-   using OIDC subject/claims where supported. In `public-tf/registries.tf`,
-   move the `bktec` Files writer policy off `test-engine-client-release`,
-   without granting both producers simultaneous write access. Verify the Docker,
-   DEB/RPM, GitHub and tap permissions independently; none is enabled here.
+4. Keep the credential boundary separate from the approval check. Scope
+   writer trust to the `buildkite/bktest-release` pipeline, approved CLI
+   tag refs and exact publish step using OIDC subject or claims where
+   supported. Do not grant write permissions to staging or readback jobs.
+   Verify Files, Docker, DEB/RPM, GitHub and tap permissions independently.
 5. Test the first authorized prerelease by exact version. Do not move either
    GitHub `latest`, the formula, Docker `latest` at any of the three registries,
    or any stable package channel. Require separate verification before
