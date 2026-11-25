@@ -1,7 +1,6 @@
-"""Project the canonical CLI into the legacy Go module and create its paired tag."""
+"""Prepare the legacy sync PR or tag its verified merge commit."""
 
 import argparse
-import base64
 import importlib.util
 import os
 from pathlib import Path
@@ -10,26 +9,13 @@ import tempfile
 
 from publish import open_stage, validate_ref
 from release_input import approved_input
+from release_pr import ReleasePR, git, git_auth
 
 LEGACY = 'https://github.com/buildkite/test-engine-client.git'
 PROJECTOR = 'c4eccfc3f559a449b0f7018581659cedc1eba5bd'
 
 
-def git(repo, *args, env=None):
-    return subprocess.check_output(['git', '-C', repo, *args], env=env, text=True).strip()
-
-
-def sync(canonical, legacy, projector, tag, source, auth, apply):
-    tag_ref = f'refs/tags/{tag}'
-    expected = projector.expected_tree(canonical, source)
-    existing = git(legacy, 'tag', '--list', tag)
-    if existing:
-        git(legacy, 'checkout', '--detach', f'{tag_ref}^{{commit}}')
-        if projector.committed_projection(legacy, expected) != expected:
-            raise ValueError('existing legacy tag does not match the approved projection')
-        git(legacy, 'merge-base', '--is-ancestor', 'HEAD', 'refs/heads/main')
-        return git(legacy, 'rev-parse', 'HEAD')
-
+def project(canonical, legacy, projector, tag, source, expected):
     previous = (legacy / '.bktest-source').read_text().splitlines()
     prior = previous[-1].removeprefix('commit ')
     validate_ref(tag, source, prior)
@@ -54,18 +40,23 @@ def sync(canonical, legacy, projector, tag, source, auth, apply):
             'user.email=release@buildkite.com', 'commit', '-m', f'Sync CLI source for {tag}')
     if projector.committed_projection(legacy, expected) != expected:
         raise ValueError('generated commit does not match the approved projection')
-    if apply:
-        # No force, and no partial update if the tag suddenly exists or main moved.
-        git(legacy, 'push', '--atomic', LEGACY, 'HEAD:refs/heads/main', f'HEAD:{tag_ref}', env=auth)
-        remote = git(legacy, 'ls-remote', LEGACY, tag_ref, env=auth)
-        if remote != f'{git(legacy, "rev-parse", "HEAD")}\t{tag_ref}':
-            raise ValueError('legacy tag readback differs after the push')
-    return git(legacy, 'rev-parse', 'HEAD')
+
+
+def tag_merge(legacy, projector, expected, commit, tag):
+    git(legacy, 'checkout', '--detach', commit)
+    if projector.committed_projection(legacy, expected) != expected:
+        raise ValueError('merged legacy commit does not match the approved projection')
+    auth = git_auth()
+    tag_ref = f'refs/tags/{tag}'
+    git(legacy, 'push', LEGACY, f'{commit}:{tag_ref}', env=auth)
+    if git(legacy, 'ls-remote', LEGACY, tag_ref, env=auth) != f'{commit}\t{tag_ref}':
+        raise ValueError('legacy tag readback differs after the push')
+    subprocess.run(['buildkite-agent', 'meta-data', 'set', 'cli-legacy-source', commit], check=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--apply', action='store_true')
+    parser.add_argument('action', choices=['prepare', 'tag'])
     args = parser.parse_args()
     canonical = Path.cwd()
     tag = os.environ.get('BUILDKITE_TAG', '')
@@ -83,16 +74,9 @@ def main():
         fetch.append('--unshallow')
     git(canonical, *fetch, 'https://github.com/buildkite/bktest.git', 'refs/heads/main')
     git(canonical, 'merge-base', '--is-ancestor', source, 'FETCH_HEAD')
-    auth = None
-    if args.apply:
-        with approved_input(stable=False) as (archive, _, sha, _, approved_tag, _, approved_source):
-            with open_stage(Path(archive), sha, approved_tag, approved_source):
-                pass
-        token = os.environ['GH_TOKEN']
-        if not token:
-            raise ValueError('missing legacy sync credential')
-        auth = dict(os.environ, GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.https://github.com/.extraheader',
-                    GIT_CONFIG_VALUE_0='Authorization: Basic ' + base64.b64encode(f'x-access-token:{token}'.encode()).decode())
+    with approved_input(stable=False) as (archive, _, sha, _, approved_tag, _, approved_source):
+        with open_stage(Path(archive), sha, approved_tag, approved_source):
+            pass
     with tempfile.TemporaryDirectory() as temp:
         legacy = Path(temp) / 'legacy'
         git(temp, 'clone', '--branch', 'main', LEGACY, str(legacy))
@@ -102,10 +86,16 @@ def main():
         spec = importlib.util.spec_from_file_location('legacy_project', tool)
         projector = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(projector)
-        projected = sync(canonical, legacy, projector, tag, source, auth, args.apply)
-        if args.apply:
-            subprocess.run(['buildkite-agent', 'meta-data', 'set', 'cli-legacy-source', projected], check=True)
-        print(projected)
+        expected = projector.expected_tree(canonical, source)
+        pr = ReleasePR('test-engine-client', 'main', tag)
+        if args.action == 'prepare':
+            # Project on a detached HEAD so the base ref remains the checked-out main tip.
+            git(legacy, 'checkout', '--detach')
+            project(canonical, legacy, projector, tag, source, expected)
+            pr.prepare(legacy)
+        else:
+            commit = pr.merged_commit(legacy)
+            tag_merge(legacy, projector, expected, commit, tag)
 
 
 if __name__ == '__main__':

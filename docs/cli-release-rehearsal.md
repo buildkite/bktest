@@ -58,10 +58,14 @@ not a security boundary and cannot enable the route on its own.
 Once enabled, push an approved, unused CLI tag pointing at the reviewed
 canonical `main` commit. The build compiles and verifies once. At the first
 `test-engine` block, enter the archive SHA-256 and exact stage job UUID from
-the verifier receipt, never credentials. The sync job verifies the archive,
-projects the CLI into `test-engine-client`, and atomically fast-forwards its
-`main` and creates the same tag. It checks the projected bytes before the
-push and reads back the tag. It will not force-push or move an existing tag.
+the verifier receipt, never credentials. The sync job verifies the archive and
+pushes the projected CLI to a release topic branch in `test-engine-client`.
+Open the compare link from the job log, get the sync PR reviewed, and merge it
+through normal legacy CI. Unblock **Merge the legacy sync PR, then continue**.
+The next job finds the merged PR for the prepared branch, checks the merged
+projection on `main` against the approved source, tags that commit, and reads
+the tag back. It will not force-push or move an existing tag. If preparation
+reports that the target already matches, unblock without opening a PR.
 
 The paired publisher uses that exact archive and verified legacy commit,
 checks both refs and publishes both GitHub releases without setting Latest.
@@ -74,8 +78,11 @@ At the stable block, pin the current tap head, legacy GitHub Latest release
 ID, and each registry's OCI Latest digest. List only missing native packages
 after inspecting the signed catalogs. Once the native jobs complete, verify
 the served hashes against the retained archive and confirm the readback block.
-This releases tap and OCI Latest updates, followed by legacy GitHub Latest.
-Canonical GitHub Latest does not move.
+Open the Homebrew compare link from the preparation job, have the formula PR
+reviewed and merged, then unblock **Merge the Homebrew formula PR, then continue**.
+Unblock without a PR only if preparation reports that the tap already matches.
+The build verifies the formula and alias on `master` before moving OCI Latest,
+followed by legacy GitHub Latest. Canonical GitHub Latest does not move.
 
 After an ambiguous
 result, inspect both releases and read back the assets before retrying with the
@@ -97,14 +104,12 @@ Do not put a GitHub token or App key in Parameter Store. Docker Hub alone
 uses SSM: populate the two `SecureString` parameters named in the pipeline
 YAML in `us-east-1`. ECR and Buildkite Packages don't read SSM.
 
-Before enabling publication, have the Exchange owners approve enrollment
-for the canonical organization and pipeline IDs. Give the Dev role
-`lambda:InvokeFunction` only on the Exchange function and require Exchange
-to select the repository and identity for the signed writer job. A single
-pipeline-wide Exchange grant for the `buildkite` GitHub organization does
-not distinguish these jobs. Do not enroll with the combined repositories
-and branch privileges as a workaround. Until Exchange can enforce the
-scopes below, keep the writer group disabled.
+The [Exchange enrollment](https://github.com/buildkite/ops/pull/7082) grants
+`contents: write` and `metadata: read` on `bktest`, `test-engine-client`, and
+`homebrew-buildkite` for the canonical organization and pipeline IDs. It is
+pipeline-wide, not job-scoped. The release jobs use it to push topic branches,
+create legacy tags, and publish releases; it does not bypass GitHub protection
+or allow opening PRs. Release owners open PRs using the generated compare links.
 
 Both roles use the standard Terraform pipeline role module. IAM checks the
 signed organization and pipeline claims, not the branch, tag, build source,
@@ -121,15 +126,14 @@ and push to the existing repository. Verify both roles deny other pipelines.
 
 | Job key | Manual setup |
 | --- | --- |
-| `cli-sync-legacy` | Exchange Contents write for `buildkite/test-engine-client` only. Owners must approve the identity for fast-forwarding legacy `main` and creating CLI tags, not moving or deleting them. |
-| `cli-publish-github` | Exchange Contents write for `buildkite/bktest` and `buildkite/test-engine-client` only, without tag or branch bypass. |
-| `cli-promote-github` | Exchange Contents write for `buildkite/test-engine-client` only, without tag or branch bypass. |
+| `cli-sync-legacy`, `cli-tag-legacy` | Use Exchange to push a legacy topic branch and create the tag after the PR merges, without updating `main` directly or moving/deleting tags. |
+| `cli-publish-github`, `cli-promote-github` | Use Exchange for both versioned releases and legacy GitHub Latest, without a tag or branch bypass. |
 | `cli-files-0` through `cli-files-6` | Files registry `buildkite/bktec`: job-scoped Buildkite OIDC `write_packages` for each Files plugin job, audience `https://packages.buildkite.com/buildkite/bktec`. |
 | `cli-promote-native` | Buildkite OIDC `write_packages` on `test-engine-client-deb` and `test-engine-client-rpm`, with the exact registry URL as audience. Do not expose this grant to the verifier or OCI jobs. |
 | `cli-publish-dockerhub`, `cli-promote-dockerhub` | `CLI_DOCKERHUB_USER` and repository-scoped `CLI_DOCKERHUB_TOKEN` for `buildkite/test-engine-client`. |
 | `cli-publish-ecr`, `cli-promote-ecr` | Short-lived AWS role credentials with ECR Public login and push restricted to the existing `test-engine-client` repository. |
 | `cli-publish-packages-oci`, `cli-promote-packages-oci` | OIDC write to `test-engine-client-docker` with audience `https://packages.buildkite.com/buildkite/test-engine-client-docker`. Configure `CLI_PACKAGES_OCI_CONTROL_TAG` and `CLI_PACKAGES_OCI_CONTROL_DIGEST` with an independently verified existing ref/digest. |
-| `cli-promote-tap` | Exchange Contents write for `buildkite/homebrew-buildkite` only. The tap owners must approve the identity to update `master`; do not relax protection for other actors. |
+| `cli-promote-tap` | Use Exchange to push a tap topic branch. The release owner uses the normal tap PR process to update `master`. |
 
 Use separate creation and immutability rules for `v3.*` on both source
 repositories: permit creation only for approved principals, and protect
@@ -329,12 +333,12 @@ a GitHub release or Homebrew pointer.
 2. Keep the mirror's existing PR, CI, and no-force-push protections in
    `public-tf/repos.tf` (`repo_test_engine_client`). For the generated mirror,
    protect `refs/heads/main` and `refs/tags/v*` from arbitrary writes; restrict
-   updates to the approved compatibility writer/release owners. Check an
-   approved writer can fast-forward without granting broad bypass and that
-   the required legacy CI status (`buildkite/test-engine-client`) still has a
-   producer. Disable automatic CI only for unintended generated refs, not the
-   source verification needed to update `main`. Do not rely on the old
-   `test-splitter` redirect without verifying that status on a compatibility PR.
+   tag creation to approved release identities, with no direct pushes to `main`.
+   Confirm the required legacy CI status (`buildkite/test-engine-client`) still
+   has a producer on the sync PR. Disable automatic CI only for unintended
+   generated refs, not the source verification needed to update `main`. Do not
+   rely on the old `test-splitter` redirect without verifying that status on a
+   compatibility PR.
 3. `bktest-release` admits `main test-collector-*/v* v3.*` on `Open Source
    Deploy`, with tag events on and PR/fork events off. This filter is not
    authorization to publish.
@@ -343,10 +347,9 @@ a GitHub release or Homebrew pointer.
    matching manifest and tag commit. Do not route `bktec-history/v*`,
    collector tags, or untagged builds to the CLI publisher.
 4. Keep the credential boundary separate from the approval check. Scope
-   writer trust to the `buildkite/bktest-release` pipeline, approved CLI
-   tag refs and exact publish step using OIDC subject or claims where
-   supported. Do not grant write permissions to staging or readback jobs.
-   Verify Files, Docker, DEB/RPM, GitHub and tap permissions independently.
+   writer trust to `buildkite/bktest-release` and use tag claims for the package
+   grants. Do not wire credentials into staging or readback jobs. Verify Files,
+   Docker, DEB/RPM, GitHub and tap permissions independently.
 5. Test the first authorized prerelease by exact version. Do not move either
    GitHub `latest`, the formula, Docker `latest` at any of the three registries,
    or any stable package channel. Require separate verification before
