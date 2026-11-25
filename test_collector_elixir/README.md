@@ -2,7 +2,7 @@
 
 The official Elixir adapter for [Buildkite Test Engine](https://buildkite.com/platform/test-engine), which uses an ExUnit formatter to collect information about your tests.
 
-**Supported Elixir versions:** `~> 1.16`
+**Supported Elixir versions:** `~> 1.16` on `main` (Hex `0.3.2` declares `~> 1.13`, though its resolved dependencies require a newer Elixir).
 
 ⚒ **Supported test frameworks:** ExUnit.
 
@@ -10,7 +10,7 @@ The official Elixir adapter for [Buildkite Test Engine](https://buildkite.com/pl
 
 ## 👉 Installing
 
-1. [Create a test suite](https://buildkite.com/docs/test-engine), and copy the API token that it gives you.
+1. [Create a test suite](https://buildkite.com/docs/pipelines/getting-started#add-a-test-suite), and copy the API token that it gives you.
 
 2. Add [`buildkite_test_collector`](https://hex.pm/packages/buildkite_test_collector) to your list of dependencies in `mix.exs`:
 
@@ -24,7 +24,7 @@ The official Elixir adapter for [Buildkite Test Engine](https://buildkite.com/pl
 
 3. Set up your API token.
 
-   In your `config/test.exs` (or other environment configuration as appropriate), configure `:api_key` with your test suite API token. We suggest retrieving the token from the environment and configuring your CI environment accordingly (e.g. via secrets):
+   In your `config/test.exs` (or another config file loaded in `:test`), configure `:api_key` with your test suite API token. We suggest retrieving the token from the environment and configuring your CI environment accordingly (e.g. via secrets):
 
    ```elixir
    import Config
@@ -32,6 +32,8 @@ The official Elixir adapter for [Buildkite Test Engine](https://buildkite.com/pl
    config :buildkite_test_collector,
      api_key: System.get_env("BUILDKITE_ANALYTICS_TOKEN")
    ```
+
+   Mix does not load `config/test.exs` automatically; ensure `config/config.exs` imports it (for example, `if config_env() == :test, do: import_config("test.exs")`) or place this configuration in an already-loaded test config file.
 
    Optional application configuration keys:
    - `:batch_size` — number of test results to buffer before uploading a batch (default: `100`).
@@ -46,7 +48,7 @@ The official Elixir adapter for [Buildkite Test Engine](https://buildkite.com/pl
 
 5. Run your tests.
 
-   Run your tests like normal. The formatter automatically detects Buildkite (`BUILDKITE_BUILD_ID`), CircleCI (`CIRCLE_BUILD_NUM`), and GitHub Actions (`GITHUB_RUN_NUMBER`). For other CI environments, set `CI` to any value; to send results from a local run, set `BUILDKITE_TEST_ANALYTICS_LOCAL` to any value. When none of these variables are set, the formatter logs a warning and does not upload results.
+   Run your tests like normal. The formatter detects environments in this order: Buildkite (`BUILDKITE_BUILD_ID`), CircleCI (`CIRCLE_BUILD_NUM`), GitHub Actions (`GITHUB_RUN_NUMBER`), generic CI (`CI`), and local runs (`BUILDKITE_TEST_ANALYTICS_LOCAL`). Each variable is checked for presence rather than value, so any set CI variable (including `CI=false`) takes precedence over `BUILDKITE_TEST_ANALYTICS_LOCAL`. When none of these variables are set, the formatter logs a warning and does not upload results.
 
    ```sh
    $ mix test
@@ -84,6 +86,9 @@ The function's return value and the detail are passed through unchanged. Annotat
 messages must be in `detail.content`, as required by the [JSON span schema](https://buildkite.com/docs/test-engine/importing-json#json-test-results-data-reference-span-objects).
 A plain string detail does not populate that field. The same detail map applies
 when adding an annotation directly with `BuildkiteTestCollector.Formatter.add_span/2`.
+Published HexDocs for `0.3.2` still type `detail` as `nil | String.t()`, though
+passing `%{content: ...}` works at runtime in `0.3.2` and matches the updated
+`span_detail()` typespec in [`lib/buildkite_test_collector/test_result.ex`](lib/buildkite_test_collector/test_result.ex).
 
 ## 🔜 Roadmap
 
@@ -91,10 +96,12 @@ See the [GitHub 'enhancement' issues](https://github.com/buildkite/bktest/issues
 
 ## ⚒ Developing
 
-After cloning the repository, change into the Elixir collector directory and install the dependencies:
+After cloning the repository, change into the Elixir collector directory, ensure Hex and Rebar are installed, and fetch dependencies:
 
 ```sh
 cd test_collector_elixir
+mix local.hex --force --if-missing
+mix local.rebar --force --if-missing
 mix deps.get
 ```
 
