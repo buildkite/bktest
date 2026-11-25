@@ -142,7 +142,7 @@ define `plugin_initialize`, `plugin_discover`, `plugin_examples`,
 `plugin_command` and `plugin_interpret`, and call `bk_serve`. Each handler
 reads `$BK_PARAMS` and prints its JSON result; `bk_fail` fails a request. The
 library has helpers for globbing, splitting and splicing commands, and reading
-JUnit XML. It needs Bash 4 and `jq`; JUnit XML needs `python3`. To share a Bash
+JUnit XML. It needs Bash 4 and `jq` 1.6 or later; JUnit XML needs `python3`. To share a Bash
 plugin outside this repository, copy the library with it and set
 `BKTEST_RUNNER_PLUGIN_LIB`, or adjust its `source` line.
 

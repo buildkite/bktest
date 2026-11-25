@@ -21,6 +21,6 @@ bktest run --plugin plugins/rspec/bash    # or plugins/rspec/go
 ```
 
 The Bash plugins share [lib/runner-plugin.bash](lib/runner-plugin.bash) and
-need Bash 4 and `jq`; pytest and go test JUnit XML also need `python3`. The Go
+need Bash 4 and `jq` 1.6 or later; pytest and go test JUnit XML also need `python3`. The Go
 plugins use [pkg/runnerplugin](../pkg/runnerplugin) and nothing else from
 bktest.

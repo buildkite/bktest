@@ -153,9 +153,9 @@ plugin_interpret() {
     tests=$(bk_junit_json "$report" 2>/dev/null | jq -c '[.[] | (
       if .classname == "" then .name else
         (.classname | split(".")) as $parts
-        | ([range(0; $parts | length) | select($parts[.] | startswith("test_") or endswith("_test")) | . + 1] | last) as $end
-        | ($end // ([range(0; $parts | length) | select($parts[.] | test("^[A-Z]"))] | first) // ($parts | length)) as $end
-        | ($parts[:$end] | join("/")) + ".py" + ($parts[$end:] | map("::" + .) | join("")) + "::" + .name
+        | ([range(0; $parts | length) | select($parts[.] | startswith("test_") or endswith("_test")) | . + 1] | last) as $stop
+        | ($stop // ([range(0; $parts | length) | select($parts[.] | test("^[A-Z]"))] | first) // ($parts | length)) as $stop
+        | ($parts[:$stop] | join("/")) + ".py" + ($parts[$stop:] | map("::" + .) | join("")) + "::" + .name
       end) as $path
       | {test_case: {identifier: $path, format: "example", scope: .classname, name: .name, path: $path}, status: .result}]')
   else

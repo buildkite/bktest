@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Bash SDK for bktest runner plugins. Requires Bash 4+ and jq.
+# Bash SDK for bktest runner plugins. Requires Bash 4+ and jq 1.6+.
 #
 # Source this file, define handlers, then call bk_serve:
 #
@@ -64,11 +64,9 @@ bk_paths() {
 
 # bk_json_array prints its arguments as a JSON array of strings.
 bk_json_array() {
-  if (($# == 0)); then
-    echo '[]'
-    return
-  fi
-  printf '%s\0' "$@" | jq -sRc 'split("\u0000") | .[:-1]'
+  # The "x" prefix stops jq parsing arguments such as --tag as options. NUL
+  # separators would break on jq 1.6, whose split and regexes mishandle them.
+  jq -nc '$ARGS.positional | map(.[1:])' --args "${@/#/x}"
 }
 
 # bk_command_result prints a command result that runs its arguments.
