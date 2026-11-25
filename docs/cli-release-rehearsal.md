@@ -88,30 +88,56 @@ manual paired publisher with both existing tags, not move the canonical tag.
 
 ### Provision writer access before activation
 
-Configure credentials manually for `bktest-release` in the approved secret
-provider, injected only into the indicated job keys. Do not use shared pipeline
-environment secrets. Require the canonical pipeline identity, protected CLI tag
-ref, and exact job key at the credential provider; verify denials for staging,
-rehearsals, collectors, and manual/API builds before enabling the group.
+The AWS roles referenced by the YAML must be provisioned separately. Do not
+use shared pipeline environment secrets, the collector role, or the archived
+legacy role. CLI writers use one shared pipeline role in Buildkite Dev for
+Exchange and Docker Hub SSM, and one in Buildkite Dist for ECR Public.
+GitHub jobs use `just-works` to obtain a short-lived `GH_TOKEN` from Exchange.
+Do not put a GitHub token or App key in Parameter Store. Docker Hub alone
+uses SSM: populate the two `SecureString` parameters named in the pipeline
+YAML in `us-east-1`. ECR and Buildkite Packages don't read SSM.
+
+Before enabling publication, have the Exchange owners approve enrollment
+for the canonical organization and pipeline IDs. Give the Dev role
+`lambda:InvokeFunction` only on the Exchange function and require Exchange
+to select the repository and identity for the signed writer job. A single
+pipeline-wide Exchange grant for the `buildkite` GitHub organization does
+not distinguish these jobs. Do not enroll with the combined repositories
+and branch privileges as a workaround. Until Exchange can enforce the
+scopes below, keep the writer group disabled.
+
+Both roles use the standard Terraform pipeline role module. IAM checks the
+signed organization and pipeline claims, not the branch, tag, build source,
+or job. Main and collector builds in the same pipeline can also assume these
+roles. The writer group separately checks tag and webhook source and uses
+manual approval gates; these restrict the workflow, not AWS role assumption.
+Keep the release pipeline restricted to trusted operators and protect
+release tags before enabling writes.
+
+Limit the Dev role's SSM access to `ssm:GetParameters` on the two exact
+Docker Hub parameter ARNs, plus decrypt only for those parameters if a
+customer-managed KMS key is used. Give the Dist role only ECR Public login
+and push to the existing repository. Verify both roles deny other pipelines.
 
 | Job key | Manual setup |
 | --- | --- |
-| `cli-sync-legacy` | `CLI_LEGACY_TOKEN`: short-lived GitHub App installation token with Contents write for `buildkite/test-engine-client` only. The repository and organization owners must review a narrow direct-update exception for the app on `main`; current required PR/CI rules do not permit this job. Retain non-fast-forward and deletion protection. |
-| `cli-publish-github` | `GH_TOKEN`: GitHub App installation token with Contents write for only `buildkite/bktest` and `buildkite/test-engine-client`, with no tag or branch bypass. |
-| `cli-promote-github` | `GH_TOKEN`: separate legacy-repo-only Contents write token for the approved promotion job, with no tag or branch bypass. |
+| `cli-sync-legacy` | Exchange Contents write for `buildkite/test-engine-client` only. Owners must approve the identity for fast-forwarding legacy `main` and creating CLI tags, not moving or deleting them. |
+| `cli-publish-github` | Exchange Contents write for `buildkite/bktest` and `buildkite/test-engine-client` only, without tag or branch bypass. |
+| `cli-promote-github` | Exchange Contents write for `buildkite/test-engine-client` only, without tag or branch bypass. |
 | `cli-files-0` through `cli-files-6` | Files registry `buildkite/bktec`: job-scoped Buildkite OIDC `write_packages` for each Files plugin job, audience `https://packages.buildkite.com/buildkite/bktec`. |
 | `cli-promote-native` | Buildkite OIDC `write_packages` on `test-engine-client-deb` and `test-engine-client-rpm`, with the exact registry URL as audience. Do not expose this grant to the verifier or OCI jobs. |
 | `cli-publish-dockerhub`, `cli-promote-dockerhub` | `CLI_DOCKERHUB_USER` and repository-scoped `CLI_DOCKERHUB_TOKEN` for `buildkite/test-engine-client`. |
 | `cli-publish-ecr`, `cli-promote-ecr` | Short-lived AWS role credentials with ECR Public login and push restricted to the existing `test-engine-client` repository. |
 | `cli-publish-packages-oci`, `cli-promote-packages-oci` | OIDC write to `test-engine-client-docker` with audience `https://packages.buildkite.com/buildkite/test-engine-client-docker`. Configure `CLI_PACKAGES_OCI_CONTROL_TAG` and `CLI_PACKAGES_OCI_CONTROL_DIGEST` with an independently verified existing ref/digest. |
-| `cli-promote-tap` | `CLI_TAP_TOKEN`: tap-only GitHub App installation token with Contents write for `buildkite/homebrew-buildkite`. The tap owners must review a narrow direct-update exception on `master`; the current protections must not be silently relaxed. |
+| `cli-promote-tap` | Exchange Contents write for `buildkite/homebrew-buildkite` only. The tap owners must approve the identity to update `master`; do not relax protection for other actors. |
 
 Use separate creation and immutability rules for `v3.*` on both source
 repositories: permit creation only for approved principals, and protect
 updates/deletions without granting bypass of those protections. Verify all
 legacy writer access is retired before transferring trust. Set up the
 `cli-oci` queue with Python 3.11+, Buildx capable of exporting amd64 and arm64
-OCI archives, Skopeo, and AWS CLI. Keep the `cli-build-oci` job credential-free.
+OCI archives, Skopeo, AWS CLI, and jq. The GitHub writer hosts also need AWS
+CLI and jq for the plugins. Keep the `cli-build-oci` job credential-free.
 Do not configure a queue-wide credential. Enable the group in a reviewed
 change only after a no-public-write rehearsal
 demonstrates the credential boundaries and the release owner accepts recovery.
