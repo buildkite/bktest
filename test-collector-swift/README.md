@@ -18,7 +18,7 @@ The collector requires Swift 5.10 or newer. Its macOS deployment target is macOS
 
 ## 👉 Installing
 
-See a working example for [SwiftPM XCTest](https://github.com/buildkite/test-engine-client-examples/tree/main/swift-xctest#readme) or [Xcode unit and UI tests with OpenTelemetry](https://github.com/buildkite/test-engine-client-examples/tree/main/swift-xcuitest#readme).
+See a working example for [SwiftPM XCTest](https://github.com/buildkite/bktest-examples/tree/main/swift-xctest#readme) or [Xcode unit and UI tests with OpenTelemetry](https://github.com/buildkite/bktest-examples/tree/main/swift-xcuitest#readme).
 
 > **OTLP ingestion must be enabled for your Buildkite organization.** The
 > collector sends results only over OTLP. Until ingestion is enabled, every

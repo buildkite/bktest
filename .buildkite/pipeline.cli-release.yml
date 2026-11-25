@@ -56,14 +56,20 @@ steps:
         concurrency_group: bktest-release/cli-legacy-sync
         command: python3 -B packaging/cli/sync_legacy.py --apply
         plugins:
+          - aws-assume-role-with-web-identity#v1.4.0: &dev_role
+              role-arn: arn:aws:iam::445615400570:role/pipeline-buildkite-bktest-release-cli
+              region: us-east-1
+              session-tags: &release_claims [organization_slug, organization_id, pipeline_slug]
+          - buildkite/just-works#v0.2.0: &github_exchange
+              assume-role: false
+              ecr: {enabled: false}
+              ssm: {enabled: false}
+              github: {changes-enabled: true, organization: buildkite}
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true
               propagate-uid-gid: true
-              environment:
-                - BUILDKITE_BUILD_ID
-                - BUILDKITE_TAG
-                - CLI_LEGACY_TOKEN
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG, GH_TOKEN]
 
       - label: ":github: Publish both versioned CLI releases"
         key: cli-publish-github
@@ -72,6 +78,8 @@ steps:
         concurrency_group: bktest-release/cli-github
         command: python3 -B packaging/cli/publish_github_job.py
         plugins:
+          - aws-assume-role-with-web-identity#v1.4.0: *dev_role
+          - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true
@@ -127,7 +135,7 @@ steps:
         key: cli-build-oci
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-github-approval
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         command: python3 -B packaging/cli/publish_oci.py build
         artifact_paths: "dist/cli-oci/*"
 
@@ -135,25 +143,36 @@ steps:
         key: cli-publish-dockerhub
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: [cli-build-oci, cli-publish-github]
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py versioned dockerhub
+        plugins: &dockerhub_auth
+          - aws-assume-role-with-web-identity#v1.4.0: *dev_role
+          - aws-ssm#v1.0.0:
+              parameters:
+                CLI_DOCKERHUB_USER: /pipelines/buildkite/bktest-release/cli/dockerhub/user
+                CLI_DOCKERHUB_TOKEN: /pipelines/buildkite/bktest-release/cli/dockerhub/token
 
       - label: ":docker: Publish versioned OCI to ECR Public"
         key: cli-publish-ecr
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: [cli-build-oci, cli-publish-github]
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py versioned ecr
+        plugins: &ecr_auth
+          - aws-assume-role-with-web-identity#v1.4.0:
+              role-arn: arn:aws:iam::172840064832:role/pipeline-buildkite-bktest-release-cli-ecr-public
+              region: us-east-1
+              session-tags: *release_claims
 
       - label: ":docker: Publish versioned OCI to Buildkite Packages"
         key: cli-publish-packages-oci
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: [cli-build-oci, cli-publish-github]
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py versioned packages
@@ -163,11 +182,11 @@ steps:
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: [cli-files-verify, cli-publish-dockerhub, cli-publish-ecr, cli-publish-packages-oci]
         allowed_teams: [test-engine]
-        prompt: "Verify versioned destinations and the signed native catalogs before authorizing stable exposure."
+        prompt: "Verify versioned destinations and the signed native catalogs before authorizing stable exposure. Before approving bktest, confirm bktec >= 3.6.0 is already indexed for the same format and architecture."
         fields:
-          - text: "Confirmed absent native packages (space-separated deb-amd64 deb-arm64 rpm-amd64 rpm-arm64; enter none if all match)"
+          - text: "Confirmed absent native packages (space-separated package-format-arch, e.g. bktest-deb-amd64; enter none if all match)"
             key: cli-native-missing
-            format: "(none|(deb|rpm)-(amd64|arm64)( (deb|rpm)-(amd64|arm64))*)"
+            format: "(none|(bktec|bktest)-(deb|rpm)-(amd64|arm64)( (bktec|bktest)-(deb|rpm)-(amd64|arm64))*)"
           - text: "Approved current Homebrew tap commit"
             key: cli-tap-head
             format: "[0-9a-f]{40}"
@@ -184,15 +203,16 @@ steps:
             key: cli-github-previous-latest
             format: "[1-9][0-9]*"
 
-      - label: ":linux: Publish stable {{matrix.format}} {{matrix.arch}}"
+      - label: ":linux: Publish stable {{matrix.package}} {{matrix.format}} {{matrix.arch}}"
         key: cli-promote-native
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-stable-approval
         concurrency: 1
         concurrency_group: bktest-release/cli-native
-        command: python3 -B packaging/cli/publish_distribution_job.py native {{matrix.format}} {{matrix.arch}}
+        command: python3 -B packaging/cli/publish_distribution_job.py native {{matrix.package}} {{matrix.format}} {{matrix.arch}}
         matrix:
           setup:
+            package: [bktec, bktest]
             format: [deb, rpm]
             arch: [amd64, arm64]
         plugins:
@@ -207,7 +227,7 @@ steps:
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-promote-native
         allowed_teams: [test-engine]
-        prompt: "Read back all four exact DEB/RPM packages and compare served SHA-256s with the retained archive before allowing Homebrew and Latest promotion."
+        prompt: "Read back both package names for each format and architecture, compare served SHA-256s with the retained archive, and confirm bktest resolves before allowing Homebrew and Latest promotion."
 
       - label: ":brew: Promote official Homebrew formula"
         key: cli-promote-tap
@@ -217,35 +237,39 @@ steps:
         concurrency_group: bktest-release/cli-tap
         command: python3 -B packaging/cli/promote_tap.py
         plugins:
+          - aws-assume-role-with-web-identity#v1.4.0: *dev_role
+          - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true
               propagate-uid-gid: true
-              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG, CLI_TAP_TOKEN]
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG, GH_TOKEN]
 
       - label: ":docker: Promote the verified OCI index on Docker Hub"
         key: cli-promote-dockerhub
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-native-readback
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py latest dockerhub
+        plugins: *dockerhub_auth
 
       - label: ":docker: Promote the verified OCI index on ECR Public"
         key: cli-promote-ecr
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-native-readback
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py latest ecr
+        plugins: *ecr_auth
 
       - label: ":docker: Promote the verified OCI index on Buildkite Packages"
         key: cli-promote-packages-oci
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-native-readback
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py latest packages
@@ -258,6 +282,8 @@ steps:
         concurrency_group: bktest-release/cli-github
         command: python3 -B packaging/cli/promote_github.py
         plugins:
+          - aws-assume-role-with-web-identity#v1.4.0: *dev_role
+          - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true

@@ -64,12 +64,13 @@ def main():
         elif phase == 'native':
             # An operator checks absence using the signed catalog and authorizes
             # one missing package; the endpoint has no dry-run/idempotency key.
-            fmt, arch = sys.argv[2:]
+            package, fmt, arch = sys.argv[2:]
             confirmed = subprocess.check_output(['buildkite-agent', 'meta-data', 'get', 'cli-native-missing'],
                                                 text=True).split()
-            if f'{fmt}-{arch}' in confirmed:
+            if f'{package}-{fmt}-{arch}' in confirmed:
                 subprocess.run([sys.executable, '-B', 'packaging/cli/publish_native.py', *args,
-                                '--format', fmt, '--arch', arch, '--confirmed-missing'], check=True)
+                                '--package', package, '--format', fmt, '--arch', arch, '--confirmed-missing'],
+                               check=True)
         else:
             raise ValueError(f'unknown release phase: {phase}')
 

@@ -35,7 +35,7 @@ import tarfile
 import tempfile
 from typing import Protocol
 
-from stage import TARGETS, VERSION, digest
+from stage import TARGETS, VERSION, digest, native_path
 
 
 @dataclass(frozen=True)
@@ -101,10 +101,12 @@ def open_stage(archive, archive_sha256, tag, source):
                 aliases.append((canonical, f'{image}/bktest', f'{image}/bktec'))
                 for fmt in ('deb', 'rpm'):
                     checksums[legacy_sum].append(f'{legacy}.{fmt}')
-                    aliases.append((f'{legacy}.{fmt}', f'packages/{fmt}/{Path(legacy).name}.{fmt}'))
+                    aliases.append((f'{legacy}.{fmt}', native_path('bktec', version, arch, fmt)))
 
         expected = {'manifest.json', 'tap/Formula/bktec.rb', *checksums,
                     *(f'image/linux_{arch}/Dockerfile' for arch in ('amd64', 'arm64')),
+                    *(native_path('bktest', version, arch, fmt)
+                      for arch in ('amd64', 'arm64') for fmt in ('deb', 'rpm')),
                     *(name for pair in aliases for name in pair)}
         symlinks = {'tap/Aliases/bktest': '../Formula/bktec.rb'}
         directories = {str(p) for name in expected | symlinks.keys() for p in PurePosixPath(name).parents}

@@ -33,7 +33,7 @@ end
 
 #### RSpec
 
-See a [working RSpec example](https://github.com/buildkite/test-engine-client-examples/tree/main/rspec#readme).
+See a [working RSpec example](https://github.com/buildkite/bktest-examples/tree/main/rspec#readme).
 
 Add the following code to your RSpec setup file:
 
@@ -51,7 +51,7 @@ BUILDKITE_ANALYTICS_TOKEN=xyz rspec
 
 #### Minitest
 
-See a [working Minitest example](https://github.com/buildkite/test-engine-client-examples/tree/main/ruby-minitest#readme).
+See a [working Minitest example](https://github.com/buildkite/bktest-examples/tree/main/ruby-minitest#readme).
 
 Add the following code to your Minitest setup file:
 
@@ -69,7 +69,7 @@ BUILDKITE_ANALYTICS_TOKEN=xyz rake
 
 #### Cucumber
 
-See a [working Cucumber example](https://github.com/buildkite/test-engine-client-examples/tree/main/cucumber#readme).
+See a [working Cucumber example](https://github.com/buildkite/bktest-examples/tree/main/cucumber#readme).
 
 Add the following code to your Cucumber setup file:
 
@@ -91,7 +91,7 @@ Add the `BUILDKITE_ANALYTICS_TOKEN` secret to your CI, push your changes to a br
 
 ### OpenTelemetry submission (experimental)
 
-See a [working RSpec OpenTelemetry example](https://github.com/buildkite/test-engine-client-examples/tree/main/rspec-otel#readme).
+See a [working RSpec OpenTelemetry example](https://github.com/buildkite/bktest-examples/tree/main/rspec-otel#readme).
 
 RSpec suites can submit each test execution as an OpenTelemetry trace. Each
 trace is rooted in a `test.execution` span carrying the test's name, location,
