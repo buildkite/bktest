@@ -64,8 +64,12 @@ class OCITest(unittest.TestCase):
         existing = {f'{tag}-amd64': desired[f'{tag}-amd64'], 'latest': digest(b'old')}
 
         def copy(*args):
-            self.assertEqual(args[:4], ('skopeo', 'copy', '--all', '--preserve-digests'))
-            ref = args[-1].rsplit(':', 1)[1]
+            self.assertEqual(args[:3], ('docker', 'run', '--rm'))
+            self.assertIn(f'type=bind,src={temp}/oci,dst=/release/oci,readonly', args)
+            self.assertIn(f'type=bind,src={temp}/auth.json,dst=/release/auth.json,readonly', args)
+            ref = args[-1].removeprefix('docker://docker.io/buildkite/test-engine-client:')
+            self.assertEqual(args[-7:], ('copy', '--all', '--preserve-digests', '--dest-authfile',
+                                         '/release/auth.json', f'oci:/release/oci:{ref}', args[-1]))
             self.assertNotIn(ref, existing)
             existing[ref] = desired[ref]
 

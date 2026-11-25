@@ -21,6 +21,7 @@ ARCHES = ('amd64', 'arm64')
 INDEX = 'application/vnd.oci.image.index.v1+json'
 MANIFEST = 'application/vnd.oci.image.manifest.v1+json'
 PACKAGES_BACKEND = '0191e41f-89fd-7980-ae04-b883e5cbead2'
+SKOPEO_IMAGE = 'quay.io/skopeo/stable@sha256:4531abd9632dca34af50bd524ec46db5bcaec01d3bb0c62dc9916a02b3472bb3'
 REPOS = {
     'dockerhub': 'docker.io/buildkite/test-engine-client',
     'ecr': 'public.ecr.aws/buildkite/test-engine-client',
@@ -183,8 +184,11 @@ def upload(target, root, desired, tag, latest, control):
             continue
         if actual != state[dst]:
             raise ValueError(f'{target}:{dst} moved after preflight')
-        run('skopeo', 'copy', '--all', '--preserve-digests', '--dest-authfile', str(auth),
-            f'oci:{root}:{src}', f'docker://{repo}:{dst}')
+        run('docker', 'run', '--rm',
+            '--mount', f'type=bind,src={root},dst=/release/oci,readonly',
+            '--mount', f'type=bind,src={auth},dst=/release/auth.json,readonly',
+            SKOPEO_IMAGE, 'copy', '--all', '--preserve-digests', '--dest-authfile', '/release/auth.json',
+            f'oci:/release/oci:{src}', f'docker://{repo}:{dst}')
         if current(base, token, dst, target, control) != desired[src]:
             raise ValueError(f'{target}:{dst} digest mismatch after publication')
 
