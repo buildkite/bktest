@@ -138,6 +138,8 @@ type Config struct {
 	TestFilePattern string `json:"-"`
 	// TestRunner is the name of the runner.
 	TestRunner string `json:"-"`
+	// Plugin is the directory of a runner plugin that implements the runner.
+	Plugin string `json:"-"`
 	// TestProcessEnv contains trusted environment overrides added only to test
 	// runner subprocesses. It is populated after validation when a local service
 	// such as the OTLP relay starts.

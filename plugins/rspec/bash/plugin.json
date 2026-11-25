@@ -1,0 +1,5 @@
+{
+  "runner": "rspec",
+  "protocol_version": 1,
+  "command": ["./plugin.bash"]
+}

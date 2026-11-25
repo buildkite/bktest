@@ -1,7 +1,7 @@
 # Public CI: no Test Engine service tokens, no release plugins.
 steps:
   - label: ":golangci-lint: CLI lint"
-    if_changed: &go_paths "{cmd/**,internal/**,go.mod,go.sum,util/**,bin/**,.golangci.yaml,.tool-versions,mise.toml,.buildkite/pipeline.yml,.buildkite/pipeline.cli.yml,.buildkite/cli/**}"
+    if_changed: &go_paths "{cmd/**,internal/**,pkg/**,plugins/**,go.mod,go.sum,util/**,bin/**,.golangci.yaml,.tool-versions,mise.toml,.buildkite/pipeline.yml,.buildkite/pipeline.cli.yml,.buildkite/cli/**}"
     command: golangci-lint run
     plugins:
       - docker#v5.13.0:

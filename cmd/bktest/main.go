@@ -13,6 +13,7 @@ import (
 	"github.com/buildkite/bktest/v3/internal/config"
 	"github.com/buildkite/bktest/v3/internal/debug"
 	"github.com/buildkite/bktest/v3/internal/git"
+	"github.com/buildkite/bktest/v3/internal/pluginhost"
 	"github.com/buildkite/bktest/v3/internal/runnerexec"
 	"github.com/buildkite/bktest/v3/internal/version"
 	"github.com/urfave/cli/v3"
@@ -33,6 +34,10 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
+	if err := applyRunnerPlugin(); err != nil {
+		return err
+	}
+
 	if err := cfg.ValidateForRun(); err != nil {
 		return fmt.Errorf("bktec run: invalid configuration:\n%w", err)
 	}
@@ -45,6 +50,10 @@ func plan(ctx context.Context, cmd *cli.Command) error {
 	debug.SetOutput(os.Stderr)
 
 	if err := applyPlanRequestContext(cmd); err != nil {
+		return err
+	}
+
+	if err := applyRunnerPlugin(); err != nil {
 		return err
 	}
 
@@ -70,6 +79,9 @@ func poolPlan(ctx context.Context, cmd *cli.Command) error {
 	}
 	if cfg.PoolID != "" {
 		return fmt.Errorf("bktec pool plan: --pool-id / BUILDKITE_TEST_ENGINE_POOL_ID is for pool run; omit it to plan a pool")
+	}
+	if cfg.Plugin != "" {
+		return fmt.Errorf("runner plugins don't support Test Scheduler pools yet")
 	}
 	if err := cfg.ValidateForPoolPlan(); err != nil {
 		return fmt.Errorf("bktec pool plan: invalid configuration:\n%w", err)
@@ -106,6 +118,9 @@ func poolExec(ctx context.Context, cmd *cli.Command) error {
 	if err := applyPlanRequestContext(cmd); err != nil {
 		return err
 	}
+	if cfg.Plugin != "" {
+		return fmt.Errorf("runner plugins don't support Test Scheduler pools yet")
+	}
 	if err := cfg.ValidateForPoolExec(); err != nil {
 		return fmt.Errorf("%s: invalid configuration: %w", diagnosticCommandName(cmd), err)
 	}
@@ -124,10 +139,29 @@ func poolConsume(ctx context.Context, cmd *cli.Command) error {
 	if err := applyPlanRequestContext(cmd); err != nil {
 		return err
 	}
+	if cfg.Plugin != "" {
+		return fmt.Errorf("runner plugins don't support Test Scheduler pools yet")
+	}
 	if err := cfg.ValidateForPoolConsume(); err != nil {
 		return fmt.Errorf("%s: invalid configuration: %w", diagnosticCommandName(cmd), err)
 	}
 	return command.PoolConsume(ctx, &cfg, cmd.String("files"), cmd.Int("local-retry-count"))
+}
+
+// applyRunnerPlugin defaults the test runner to the runner plugin's runner
+// name, so --plugin alone selects the runner.
+func applyRunnerPlugin() error {
+	if cfg.Plugin == "" {
+		return nil
+	}
+	manifest, err := pluginhost.LoadManifest(cfg.Plugin)
+	if err != nil {
+		return err
+	}
+	if cfg.TestRunner == "" {
+		cfg.TestRunner = manifest.Runner
+	}
+	return nil
 }
 
 func backfillCommitMetadata(ctx context.Context, cmd *cli.Command) error {

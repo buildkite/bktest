@@ -1,5 +1,6 @@
 # Changelog
 ## Unreleased
+- Add experimental [runner plugins](./docs/runner-plugins.md): `bktest run --plugin <directory>` runs tests with an external Bash or compiled runner plugin instead of a built-in runner. Every built-in runner is available as both a Bash and a Go plugin in `plugins/`.
 
 ## 3.6.1 - 2026-11-24
 - Skip waiting for the Test Scheduler pool to finish when an original Buildkite job's attempts all pass, including after local retries. Retried Buildkite jobs still check for terminal failures in earlier jobs.

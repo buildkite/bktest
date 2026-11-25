@@ -381,6 +381,14 @@ var testRunnerFlag = &cli.StringFlag{
 	Destination: &cfg.TestRunner,
 }
 
+var pluginFlag = &cli.StringFlag{
+	Name:        "plugin",
+	Category:    "TEST RUNNER",
+	Usage:       "Directory of a runner plugin to run the tests with. The test runner defaults to the plugin's runner name",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_PLUGIN"),
+	Destination: &cfg.Plugin,
+}
+
 var resultPathFlag = &cli.StringFlag{
 	Name:        "result-path",
 	Category:    "TEST RUNNER",
@@ -647,6 +655,7 @@ var runnerEnvironmentFlags = []cli.Flag{
 	testFilePatternFlag,
 	testFileExcludePatternFlag,
 	testRunnerFlag,
+	pluginFlag,
 	resultPathFlag,
 	splitByExampleFlag,
 	selectorSplittingCompatibilityFlag,

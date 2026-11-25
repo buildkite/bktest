@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/buildkite/bktest/v3/internal/config"
+	"github.com/buildkite/bktest/v3/internal/debug"
+	"github.com/buildkite/bktest/v3/internal/pluginhost"
 )
 
 func DetectRunner(cfg *config.Config) (TestRunnerWithTargetDiscovery, error) {
@@ -21,6 +23,17 @@ func DetectRunner(cfg *config.Config) (TestRunnerWithTargetDiscovery, error) {
 		testProcessEnv:         cfg.TestProcessEnv,
 		SelectorListPath:       cfg.SelectorListPath,
 		persistentRunner:       cfg.PersistentRunner,
+	}
+
+	if cfg.Plugin != "" {
+		manifest, err := pluginhost.LoadManifest(cfg.Plugin)
+		if err != nil {
+			return nil, err
+		}
+		if manifest.Runner != cfg.TestRunner {
+			return nil, fmt.Errorf("runner plugin %q is for the %q runner, not %q", cfg.Plugin, manifest.Runner, cfg.TestRunner)
+		}
+		return NewPlugin(manifest, runnerConfig, debug.Enabled)
 	}
 
 	switch testRunner := cfg.TestRunner; testRunner {
