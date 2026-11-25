@@ -331,3 +331,41 @@ steps:
       aws ecr-public get-login-password --region us-east-1 |
         docker --config "$$config" login >/dev/null public.ecr.aws --username AWS --password-stdin
       echo 'Dist role and ECR Public login verified'
+
+  - label: "Check GitHub Exchange access without publishing"
+    key: cli-auth-exchange
+    if: *auth_rehearsal
+    agents: {queue: hosted}
+    plugins:
+      - aws-assume-role-with-web-identity#v1.4.0: *dev_role
+      - buildkite/just-works#v0.2.0: *github_exchange
+      - docker#v5.13.0:
+          image: python:3.13-bookworm
+          environment: [GH_TOKEN]
+    command: |
+      set +x
+      python3 -B - <<'PY'
+      import json
+      import os
+      from urllib.request import Request, urlopen
+
+      def get(path):
+          request = Request(f'https://api.github.com/{path}', headers={
+              'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+              'Accept': 'application/vnd.github+json',
+          })
+          with urlopen(request, timeout=30) as response:
+              return json.load(response)
+
+      refs = {'bktest': 'main', 'test-engine-client': 'main', 'homebrew-buildkite': 'master'}
+      access = get('installation/repositories?per_page=100')
+      if access['total_count'] != len(refs) or {repo['full_name'] for repo in access['repositories']} != {
+          f'buildkite/{repo}' for repo in refs
+      }:
+          raise SystemExit('Exchange token did not have exactly the expected repositories')
+      for repo, branch in refs.items():
+          ref = get(f'repos/buildkite/{repo}/git/ref/heads/{branch}')
+          if ref['ref'] != f'refs/heads/{branch}':
+              raise SystemExit(f'Unexpected ref for buildkite/{repo}')
+          print(f'Exchange token can read buildkite/{repo}:{branch}')
+      PY
