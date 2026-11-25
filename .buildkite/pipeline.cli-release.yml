@@ -28,8 +28,8 @@ steps:
             - BUILDKITE_BUILD_ID
             - BUILDKITE_TAG
 
-  # This route stays off until tag protection, the approvers and the
-  # step-scoped credentials are in place.
+  # This route stays off until tag protection, approvers and writer access
+  # are verified.
   - group: ":package: CLI publication and promotion"
     if: >-
       false && pipeline.slug == "bktest-release" && build.source == "webhook" &&
@@ -49,13 +49,13 @@ steps:
             key: cli-stage-job
             format: "[0-9a-f-]{36}"
 
-      - label: ":git: Sync and tag the legacy Go module"
+      - label: ":git: Prepare the legacy sync PR"
         key: cli-sync-legacy
         depends_on: cli-github-approval
         concurrency: 1
         concurrency_group: bktest-release/cli-legacy-sync
-        command: python3 -B packaging/cli/sync_legacy.py --apply
-        plugins:
+        command: python3 -B packaging/cli/sync_legacy.py prepare
+        plugins: &github_writer_plugins
           - aws-assume-role-with-web-identity#v1.4.0: &dev_role
               role-arn: arn:aws:iam::445615400570:role/pipeline-buildkite-bktest-release-cli
               region: us-east-1
@@ -71,9 +71,23 @@ steps:
               propagate-uid-gid: true
               environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG, GH_TOKEN]
 
+      - block: "Merge the legacy sync PR, then continue"
+        key: cli-legacy-merged
+        depends_on: cli-sync-legacy
+        allowed_teams: [test-engine]
+        prompt: "Open the compare link in the preparation job. Continue after normal review, CI and merge, or if preparation reports no changes. The next job verifies the result and tags it, making the legacy Go version available."
+
+      - label: ":git: Verify the legacy merge and create its release tag"
+        key: cli-tag-legacy
+        depends_on: cli-legacy-merged
+        concurrency: 1
+        concurrency_group: bktest-release/cli-legacy-sync
+        command: python3 -B packaging/cli/sync_legacy.py tag
+        plugins: *github_writer_plugins
+
       - label: ":github: Publish both versioned CLI releases"
         key: cli-publish-github
-        depends_on: cli-sync-legacy
+        depends_on: cli-tag-legacy
         concurrency: 1
         concurrency_group: bktest-release/cli-github
         command: python3 -B packaging/cli/publish_github_job.py
@@ -229,26 +243,38 @@ steps:
         allowed_teams: [test-engine]
         prompt: "Read back both package names for each format and architecture, compare served SHA-256s with the retained archive, and confirm bktest resolves before allowing Homebrew and Latest promotion."
 
-      - label: ":brew: Promote official Homebrew formula"
+      - label: ":brew: Prepare the official Homebrew formula PR"
         key: cli-promote-tap
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-native-readback
         concurrency: 1
         concurrency_group: bktest-release/cli-tap
-        command: python3 -B packaging/cli/promote_tap.py
+        command: python3 -B packaging/cli/promote_tap.py prepare
+        plugins: *github_writer_plugins
+
+      - block: "Merge the Homebrew formula PR, then continue"
+        key: cli-tap-merged
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-promote-tap
+        allowed_teams: [test-engine]
+        prompt: "Open the compare link in the preparation job. Continue after normal review and merge, or if preparation reports no changes. The next job verifies the formula and alias on master before moving Latest."
+
+      - label: ":brew: Verify the Homebrew formula on master"
+        key: cli-verify-tap
+        if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
+        depends_on: cli-tap-merged
+        command: python3 -B packaging/cli/promote_tap.py verify
         plugins:
-          - aws-assume-role-with-web-identity#v1.4.0: *dev_role
-          - buildkite/just-works#v0.2.0: *github_exchange
           - docker#v5.13.0:
               image: python:3.13-bookworm
               mount-buildkite-agent: true
               propagate-uid-gid: true
-              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG, GH_TOKEN]
+              environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG]
 
       - label: ":docker: Promote the verified OCI index on Docker Hub"
         key: cli-promote-dockerhub
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
-        depends_on: cli-native-readback
+        depends_on: cli-verify-tap
         agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
@@ -258,7 +284,7 @@ steps:
       - label: ":docker: Promote the verified OCI index on ECR Public"
         key: cli-promote-ecr
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
-        depends_on: cli-native-readback
+        depends_on: cli-verify-tap
         agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
@@ -268,7 +294,7 @@ steps:
       - label: ":docker: Promote the verified OCI index on Buildkite Packages"
         key: cli-promote-packages-oci
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
-        depends_on: cli-native-readback
+        depends_on: cli-verify-tap
         agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
@@ -277,7 +303,7 @@ steps:
       - label: ":github: Promote legacy GitHub Latest"
         key: cli-promote-github
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
-        depends_on: [cli-promote-tap, cli-promote-dockerhub, cli-promote-ecr, cli-promote-packages-oci]
+        depends_on: [cli-promote-dockerhub, cli-promote-ecr, cli-promote-packages-oci]
         concurrency: 1
         concurrency_group: bktest-release/cli-github
         command: python3 -B packaging/cli/promote_github.py
