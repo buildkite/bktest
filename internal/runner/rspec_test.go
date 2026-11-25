@@ -20,7 +20,6 @@ func TestNewRspec(t *testing.T) {
 		input RunnerConfig
 		want  RunnerConfig
 	}{
-		//default
 		{
 			input: RunnerConfig{},
 			want: RunnerConfig{
@@ -31,101 +30,87 @@ func TestNewRspec(t *testing.T) {
 				locationPrefix:         "./",
 			},
 		},
-		// custom
 		{
 			input: RunnerConfig{
-				TestCommand:            "bin/rspec --format documentation {{testExamples}} --format json --out {{resultPath}}",
+				TestCommand:            "bin/rspec --format json --out {{resultPath}}",
 				TestFilePattern:        "spec/models/**/*_spec.rb",
 				TestFileExcludePattern: "spec/features/**/*_spec.rb",
-				RetryTestCommand:       "bin/rspec --fail-fast {{testExamples}}",
-				locationPrefix:         "my/project",
+				RetryTestCommand:       "bin/rspec --only-failures",
+				locationPrefix:         "apps/web/",
 			},
 			want: RunnerConfig{
-				TestCommand:            "bin/rspec --format documentation {{testExamples}} --format json --out {{resultPath}}",
+				TestCommand:            "bin/rspec --format json --out {{resultPath}}",
 				TestFilePattern:        "spec/models/**/*_spec.rb",
 				TestFileExcludePattern: "spec/features/**/*_spec.rb",
-				RetryTestCommand:       "bin/rspec --fail-fast {{testExamples}}",
-				locationPrefix:         "my/project",
-			},
-		},
-		// RetryTestCommand fallback to TestCommand
-		{
-			input: RunnerConfig{
-				TestCommand: "bundle exec --format json --out out.json {{testExamples}}",
-			},
-			want: RunnerConfig{
-				TestCommand:            "bundle exec --format json --out out.json {{testExamples}}",
-				TestFilePattern:        "spec/**/*_spec.rb",
-				TestFileExcludePattern: "",
-				RetryTestCommand:       "bundle exec --format json --out out.json {{testExamples}}",
-				locationPrefix:         "./",
+				RetryTestCommand:       "bin/rspec --only-failures",
+				locationPrefix:         "apps/web/",
 			},
 		},
 	}
 
-	for _, c := range cases {
-		got := NewRspec(c.input)
-		if diff := cmp.Diff(got.RunnerConfig, c.want, cmp.AllowUnexported(RunnerConfig{})); diff != "" {
-			t.Errorf("NewRspec(%v) diff (-got +want):\n%s", c.input, diff)
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		for _, c := range cases {
+			got := loadVariantRunner(t, variant, "rspec", c.input)
+			if diff := cmp.Diff(resolvedRunnerConfig(t, got), c.want, cmp.AllowUnexported(RunnerConfig{})); diff != "" {
+				t.Errorf("Rspec(%v) diff (-got +want):\n%s", c.input, diff)
+			}
 		}
-	}
+	})
 }
 
 func TestRspecRun(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: "rspec --format json --out {{resultPath}}",
-		ResultPath:  "tmp/rspec.json",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "rspec --format json --out {{resultPath}}",
+			ResultPath:  filepath.Join(t.TempDir(), "rspec.json"),
+		})
+
+		testCases := []plan.TestCase{
+			{Path: "./testdata/rspec/spec/spells/expelliarmus_spec.rb"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := rspec.Run(result, testCases, false)
+
+		if err != nil {
+			t.Errorf("Rspec.Run(%v) error = %v", testCases, err)
+		}
+		if len(result.tests) != 2 {
+			t.Errorf("Rspec.Run(%v) len(RunResult.tests) = %d, want 2", testCases, len(result.tests))
+		}
+		if result.Status() != RunStatusPassed {
+			t.Errorf("Rspec.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
+		}
 	})
-
-	t.Cleanup(func() {
-		os.Remove(rspec.ResultPath)
-	})
-
-	testCases := []plan.TestCase{
-		{Path: "./testdata/rspec/spec/spells/expelliarmus_spec.rb"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := rspec.Run(result, testCases, false)
-
-	if err != nil {
-		t.Errorf("Rspec.Run(%v) error = %v", testCases, err)
-	}
-
-	if len(result.tests) != 2 {
-		t.Errorf("Rspec.Run(%v) len(RunResult.tests) = %d, want 2", testCases, len(result.tests))
-	}
-
-	if result.Status() != RunStatusPassed {
-		t.Errorf("Rspec.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
-	}
 }
 
 func TestRspecRun_RetryCommand(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestCommand:      "rspec --invalid-option",
-		RetryTestCommand: "rspec --format json --out {{resultPath}}",
-		ResultPath:       "tmp/rspec.json",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand:      "rspec --invalid-option",
+			RetryTestCommand: "rspec --format json --out {{resultPath}}",
+			ResultPath:       filepath.Join(t.TempDir(), "rspec.json"),
+		})
+
+		testCases := []plan.TestCase{
+			{Path: "./testdata/rspec/spec/spells/expelliarmus_spec.rb"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := rspec.Run(result, testCases, true)
+
+		if err != nil {
+			t.Errorf("Rspec.Run(%v) error = %v", testCases, err)
+		}
+		if result.Status() != RunStatusPassed {
+			t.Errorf("Rspec.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
+		}
 	})
-
-	testCases := []plan.TestCase{
-		{Path: "./testdata/rspec/spec/spells/expelliarmus_spec.rb"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := rspec.Run(result, testCases, true)
-
-	if err != nil {
-		t.Errorf("Rspec.Run(%v) error = %v", testCases, err)
-	}
-
-	if result.Status() != RunStatusPassed {
-		t.Errorf("Rspec.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
-	}
 }
 
 func TestRspecRun_RetryWithGeneratedDescription(t *testing.T) {
-	dir := t.TempDir()
-	spec := filepath.Join(dir, "generated_spec.rb")
-	require.NoError(t, os.WriteFile(spec, []byte(`
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		dir := t.TempDir()
+		spec := filepath.Join(dir, "generated_spec.rb")
+		require.NoError(t, os.WriteFile(spec, []byte(`
 RSpec.describe "generated description" do
   before do
     unless File.exist?(__FILE__ + ".retried")
@@ -138,427 +123,274 @@ RSpec.describe "generated description" do
   it { is_expected.to eq(7) }
 end
 `), 0600))
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: "rspec --format json --out {{resultPath}}",
-		ResultPath:  filepath.Join(dir, "result.json"),
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "rspec --format json --out {{resultPath}}",
+			ResultPath:  filepath.Join(dir, "result.json"),
+		})
+		result := NewRunResult(nil)
+		require.ErrorAs(t, rspec.Run(result, []plan.TestCase{{Path: spec}}, false), new(*exec.ExitError))
+		failed := result.FailedTests()
+		require.Len(t, failed, 1)
+		require.NoError(t, rspec.Run(result, failed, true))
+		require.Equal(t, RunStatusPassed, result.Status())
+		require.Equal(t, RunStatistics{Total: 1, PassedOnRetry: 1}, result.Statistics())
 	})
-	result := NewRunResult(nil)
-	require.ErrorAs(t, rspec.Run(result, []plan.TestCase{{Path: spec}}, false), new(*exec.ExitError))
-	failed := result.FailedTests()
-	require.Len(t, failed, 1)
-	require.NoError(t, rspec.Run(result, failed, true))
-	report, err := rspec.ParseReport(rspec.ResultPath)
-	require.NoError(t, err)
-	require.Len(t, report.Examples, 1)
-	require.Equal(t, failed[0].Identifier, report.Examples[0].ID)
-	require.NotEqual(t, failed[0].Name, report.Examples[0].Description)
-	require.Equal(t, RunStatusPassed, result.Status())
-	require.Equal(t, RunStatistics{Total: 1, PassedOnRetry: 1}, result.Statistics())
 }
 
 func TestRspecRun_TestFailedWithResultFile(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: "rspec --format json --out {{resultPath}}",
-		ResultPath:  "tmp/rspec.json",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "rspec --format json --out {{resultPath}}",
+			ResultPath:  filepath.Join(t.TempDir(), "rspec.json"),
+		})
+
+		testCases := []plan.TestCase{
+			{Path: "./testdata/rspec/spec/failure_spec.rb"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := rspec.Run(result, testCases, false)
+
+		wantFailedTests := []plan.TestCase{
+			{
+				Name:       "fails",
+				Scope:      "Failure",
+				Identifier: "./testdata/rspec/spec/failure_spec.rb[1:1]",
+				Path:       "./testdata/rspec/spec/failure_spec.rb[1:1]",
+			},
+		}
+
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
+		assert.Equal(t, RunStatusFailed, result.Status())
+		if diff := cmp.Diff(result.FailedTests(), wantFailedTests); diff != "" {
+			t.Errorf("FailedTests() diff (-got +want):\n%s", diff)
+		}
 	})
-
-	t.Cleanup(func() {
-		os.Remove(rspec.ResultPath)
-	})
-
-	testCases := []plan.TestCase{
-		{Path: "./testdata/rspec/spec/failure_spec.rb"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := rspec.Run(result, testCases, false)
-
-	wantFailedTests := []plan.TestCase{
-		{
-			Name:       "fails",
-			Scope:      "Failure",
-			Identifier: "./testdata/rspec/spec/failure_spec.rb[1:1]",
-			Path:       "./testdata/rspec/spec/failure_spec.rb[1:1]",
-		},
-	}
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-
-	if result.Status() != RunStatusFailed {
-		t.Errorf("Rspec.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusFailed)
-	}
-
-	if diff := cmp.Diff(result.FailedTests(), wantFailedTests); diff != "" {
-		t.Errorf("Rspec.Run(%v) RunResult.FailedTests() diff (-got +want):\n%s", testCases, diff)
-	}
 }
 
 func TestRspecRun_TestFailedWithoutResultFile(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: "rspec",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "rspec",
+		})
+		testCases := []plan.TestCase{
+			{Path: "./testdata/rspec/spec/failure_spec.rb"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := rspec.Run(result, testCases, false)
+
+		assert.Equal(t, RunStatusUnknown, result.Status())
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
 	})
-
-	t.Cleanup(func() {
-		os.Remove(rspec.ResultPath)
-	})
-
-	testCases := []plan.TestCase{
-		{Path: "./testdata/rspec/spec/failure_spec.rb"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := rspec.Run(result, testCases, false)
-
-	if result.Status() != RunStatusUnknown {
-		t.Errorf("Rspec.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusUnknown)
-	}
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
 }
 
 func TestRspecRun_TestSkipped(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: "rspec --format json --out {{resultPath}} --format progress",
-		ResultPath:  "tmp/rspec.json",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "rspec --format json --out {{resultPath}} --format progress",
+			ResultPath:  filepath.Join(t.TempDir(), "rspec.json"),
+		})
+
+		testCases := []plan.TestCase{
+			{Path: "./testdata/rspec/spec/skipped_spec.rb"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := rspec.Run(result, testCases, false)
+
+		assert.NoError(t, err)
+		assert.Equal(t, RunStatusPassed, result.Status())
+		assert.Equal(t, []plan.TestCase{{Name: "is skipped", Scope: "skipped", Identifier: "./testdata/rspec/spec/skipped_spec.rb[1:1]", Path: "./testdata/rspec/spec/skipped_spec.rb[1:1]"}}, result.SkippedTests())
 	})
-
-	t.Cleanup(func() {
-		os.Remove(rspec.ResultPath)
-	})
-
-	testCases := []plan.TestCase{
-		{Path: "./testdata/rspec/spec/skipped_spec.rb"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := rspec.Run(result, testCases, false)
-
-	if err != nil {
-		t.Errorf("Rspec.Run(%v) error = %v", testCases, err)
-	}
-
-	if result.Status() != RunStatusPassed {
-		t.Errorf("Rspec.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
-	}
-
-	assert.Equal(t, []plan.TestCase{{Name: "is skipped", Scope: "skipped", Identifier: "./testdata/rspec/spec/skipped_spec.rb[1:1]", Path: "./testdata/rspec/spec/skipped_spec.rb[1:1]"}}, result.SkippedTests())
 }
 
 func TestRspecRun_TestExit(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: "rspec --format json --out {{resultPath}} --format progress",
-		ResultPath:  "tmp/rspec.json",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "rspec --format json --out {{resultPath}} --format progress",
+			ResultPath:  filepath.Join(t.TempDir(), "rspec.json"),
+		})
+
+		testCases := []plan.TestCase{
+			{Path: "./testdata/rspec/spec/exit_spec.rb"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := rspec.Run(result, testCases, false)
+
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
+		assert.Equal(t, RunStatusUnknown, result.Status())
 	})
-
-	t.Cleanup(func() {
-		os.Remove(rspec.ResultPath)
-	})
-
-	testCases := []plan.TestCase{
-		{Path: "./testdata/rspec/spec/exit_spec.rb"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := rspec.Run(result, testCases, false)
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-
-	if result.Status() != RunStatusUnknown {
-		t.Errorf("Rspec.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusUnknown)
-	}
 }
 
 func TestRspecRun_ErrorOutsideOfExamples(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: "rspec --format json --out {{resultPath}} --format documentation",
-		ResultPath:  "tmp/rspec.json",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "rspec --format json --out {{resultPath}} --format documentation",
+			ResultPath:  filepath.Join(t.TempDir(), "rspec.json"),
+		})
+
+		testCases := []plan.TestCase{
+			{Path: "./testdata/rspec/spec/bad_syntax_spec.rb"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := rspec.Run(result, testCases, false)
+
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
+		assert.Equal(t, RunStatusError, result.Status())
 	})
-
-	t.Cleanup(func() {
-		os.Remove(rspec.ResultPath)
-	})
-
-	testCases := []plan.TestCase{
-		{Path: "./testdata/rspec/spec/bad_syntax_spec.rb"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := rspec.Run(result, testCases, false)
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-
-	if result.Status() != RunStatusError {
-		t.Errorf("Rspec.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusError)
-	}
 }
 
 func TestRspecRun_CommandFailed(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: "rspec --invalid-option",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "rspec --invalid-option",
+		})
+		result := NewRunResult([]plan.TestCase{})
+		err := rspec.Run(result, nil, false)
+
+		assert.Equal(t, RunStatusUnknown, result.Status())
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
 	})
-	testCases := []plan.TestCase{}
-	result := NewRunResult([]plan.TestCase{})
-	err := rspec.Run(result, testCases, false)
-
-	if result.Status() != RunStatusUnknown {
-		t.Errorf("Rspec.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusUnknown)
-	}
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
 }
 
 func TestRspecRun_SignaledError(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: "./testdata/segv.sh",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "./testdata/segv.sh",
+		})
+		testCases := []plan.TestCase{
+			{Path: "./testdata/rspec/spec/failure_spec.rb"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := rspec.Run(result, testCases, false)
+
+		assert.Equal(t, RunStatusUnknown, result.Status())
+		signalError := new(ProcessSignaledError)
+		require.ErrorAs(t, err, &signalError)
+		assert.Equal(t, syscall.SIGSEGV, signalError.Signal)
 	})
-
-	testCases := []plan.TestCase{
-		{Path: "./testdata/rspec/spec/failure_spec.rb"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := rspec.Run(result, testCases, false)
-
-	if result.Status() != RunStatusUnknown {
-		t.Errorf("Rspec.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusUnknown)
-	}
-
-	signalError := new(ProcessSignaledError)
-	if !errors.As(err, &signalError) {
-		t.Errorf("Rspec.Run(%v) error type = %T (%v), want *ErrProcessSignaled", testCases, err, err)
-	}
-	if signalError.Signal != syscall.SIGSEGV {
-		t.Errorf("Rspec.Run(%v) signal = %d, want %d", testCases, syscall.SIGSEGV, signalError.Signal)
-	}
 }
 
-func TestRspecCommandNameAndArgs_WithPlaceholder(t *testing.T) {
+func TestRspecCommandNameAndArgs(t *testing.T) {
 	testCases := []plan.TestCase{{Path: "spec/models/user_spec.rb"}, {Path: "spec/models/billing_spec.rb"}}
-	testCommand := "bin/rspec --options {{testExamples}} --out {{resultPath}}"
 
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: testCommand,
-		ResultPath:  "tmp/rspec.json",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "bin/rspec --options {{testExamples}} --out {{resultPath}}",
+			ResultPath:  "tmp/rspec.json",
+		})
+		gotName, gotArgs, err := rspec.CommandNameAndArgs(testCases, false)
+		require.NoError(t, err)
+		assert.Equal(t, "bin/rspec", gotName)
+		assert.Equal(t, []string{"--options", "spec/models/user_spec.rb", "spec/models/billing_spec.rb", "--out", "tmp/rspec.json"}, gotArgs)
+
+		rspec2 := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "bin/rspec --options --format",
+		})
+		gotName, gotArgs, err = rspec2.CommandNameAndArgs(testCases, false)
+		require.NoError(t, err)
+		assert.Equal(t, "bin/rspec", gotName)
+		assert.Equal(t, []string{"--options", "--format", "spec/models/user_spec.rb", "spec/models/billing_spec.rb"}, gotArgs)
+
+		rspec3 := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "bin/rspec --options ' {{testExamples}}",
+		})
+		_, _, err = rspec3.CommandNameAndArgs(testCases, false)
+		if !errors.Is(err, shellquote.UnterminatedSingleQuoteError) {
+			t.Errorf("error = %v, want %v", err, shellquote.UnterminatedSingleQuoteError)
+		}
 	})
-
-	gotName, gotArgs, err := rspec.CommandNameAndArgs(testCases, false)
-	if err != nil {
-		t.Errorf("commandNameAndArgs(%v, %q) error = %v", testCases, testCommand, err)
-	}
-
-	wantName := "bin/rspec"
-	wantArgs := []string{"--options", "spec/models/user_spec.rb", "spec/models/billing_spec.rb", "--out", rspec.ResultPath}
-
-	if diff := cmp.Diff(gotName, wantName); diff != "" {
-		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
-	}
-	if diff := cmp.Diff(gotArgs, wantArgs); diff != "" {
-		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
-	}
-}
-
-func TestRspecCommandNameAndArgs_WithoutTestExamplesPlaceholder(t *testing.T) {
-	testCases := []plan.TestCase{{Path: "spec/models/user_spec.rb"}, {Path: "spec/models/billing_spec.rb"}}
-	testCommand := "bin/rspec --options --format"
-
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: testCommand,
-	})
-
-	gotName, gotArgs, err := rspec.CommandNameAndArgs(testCases, false)
-	if err != nil {
-		t.Errorf("commandNameAndArgs(%v, %q) error = %v", testCases, testCommand, err)
-	}
-
-	wantName := "bin/rspec"
-	wantArgs := []string{"--options", "--format", "spec/models/user_spec.rb", "spec/models/billing_spec.rb"}
-
-	if diff := cmp.Diff(gotName, wantName); diff != "" {
-		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
-	}
-	if diff := cmp.Diff(gotArgs, wantArgs); diff != "" {
-		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
-	}
-}
-
-func TestRspecCommandNameAndArgs_InvalidTestCommand(t *testing.T) {
-	testCases := []plan.TestCase{{Path: "spec/models/user_spec.rb"}, {Path: "spec/models/billing_spec.rb"}}
-	testCommand := "bin/rspec --options ' {{testExamples}}"
-
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: testCommand,
-	})
-
-	gotName, gotArgs, err := rspec.CommandNameAndArgs(testCases, false)
-
-	wantName := ""
-	wantArgs := []string{}
-
-	if diff := cmp.Diff(gotName, wantName); diff != "" {
-		t.Errorf("commandNameAndArgs() diff (-got +want):\n%s", diff)
-	}
-	if diff := cmp.Diff(gotArgs, wantArgs); diff != "" {
-		t.Errorf("commandNameAndArgs() diff (-got +want):\n%s", diff)
-	}
-	if !errors.Is(err, shellquote.UnterminatedSingleQuoteError) {
-		t.Errorf("commandNameAndArgs() error = %v, want %v", err, shellquote.UnterminatedSingleQuoteError)
-	}
 }
 
 func TestRspecDiscoverTestTargets(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestFilePattern: "testdata/rspec/spec/spells/**/*_spec.rb",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestFilePattern: "testdata/rspec/spec/spells/**/*_spec.rb",
+		})
+
+		got, err := rspec.DiscoverTestTargets()
+		require.NoError(t, err)
+
+		want := []string{"testdata/rspec/spec/spells/expelliarmus_spec.rb"}
+		if diff := cmp.Diff(got, want); diff != "" {
+			t.Errorf("DiscoverTestTargets() diff (-got +want):\n%s", diff)
+		}
 	})
-
-	got, err := rspec.DiscoverTestTargets()
-	if err != nil {
-		t.Errorf("Rspec.DiscoverTestTargets() error = %v", err)
-	}
-
-	want := []string{"testdata/rspec/spec/spells/expelliarmus_spec.rb"}
-
-	if diff := cmp.Diff(got, want); diff != "" {
-		t.Errorf("Rspec.DiscoverTestTargets() diff (-got +want):\n%s", diff)
-	}
 }
 
 func TestRspecGetExamples(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: "rspec",
-	})
-	files := []string{"./testdata/rspec/spec/spells/expelliarmus_spec.rb"}
-	got, err := rspec.GetExamples(files)
-
-	want := []plan.TestCase{
-		{
-			Identifier: "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:1]",
-			Name:       "disarms the opponent",
-			Path:       "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:1]",
-			Scope:      "Expelliarmus",
-		},
-		{
-			Identifier: "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:2]",
-			Name:       "knocks the wand out of the opponents hand",
-			Path:       "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:2]",
-			Scope:      "Expelliarmus",
-		},
-	}
-
-	if err != nil {
-		t.Errorf("Rspec.GetExamples(%q) error = %v", files, err)
-	}
-
-	if diff := cmp.Diff(got, want); diff != "" {
-		t.Errorf("Rspec.GetExamples(%q) diff (-got +want):\n%s", files, diff)
-	}
-}
-
-func TestRspecGetExamples_WithOtherFormatters(t *testing.T) {
-	files := []string{"./testdata/rspec/spec/spells/expelliarmus_spec.rb"}
-	want := []plan.TestCase{
-		{
-			Identifier: "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:1]",
-			Name:       "disarms the opponent",
-			Path:       "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:1]",
-			Scope:      "Expelliarmus",
-		},
-		{
-			Identifier: "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:2]",
-			Name:       "knocks the wand out of the opponents hand",
-			Path:       "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:2]",
-			Scope:      "Expelliarmus",
-		},
-	}
-
-	// Create a temporary file to store the JSON output of the rspec dry run.
-	// So we don't end up with a lot of files after running this test.
-	// We'll clean up the file after the test.
-	f, err := os.CreateTemp("", "rspec.json")
-	if err != nil {
-		t.Errorf("os.CreateTemp() error = %v", err)
-	}
-	defer f.Close()
-	defer os.Remove(f.Name())
-	withOtherJSON := "rspec --format json --out " + f.Name()
-
-	commands := []string{"rspec --format documentation", "rspec --format html", withOtherJSON}
-	for _, command := range commands {
-		rspec := NewRspec(RunnerConfig{
-			TestCommand: command,
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantExampleRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "rspec",
 		})
+		files := []string{"./testdata/rspec/spec/spells/expelliarmus_spec.rb"}
 		got, err := rspec.GetExamples(files)
+		require.NoError(t, err)
 
-		t.Run(command, func(t *testing.T) {
-
-			if err != nil {
-				t.Errorf("Rspec.GetExamples(%q) error = %v", files, err)
-			}
-
-			if diff := cmp.Diff(got, want); diff != "" {
-				t.Errorf("Rspec.GetExamples(%q) diff (-got +want):\n%s", files, diff)
-			}
-		})
-	}
+		want := []plan.TestCase{
+			{
+				Identifier: "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:1]",
+				Name:       "disarms the opponent",
+				Path:       "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:1]",
+				Scope:      "Expelliarmus",
+			},
+			{
+				Identifier: "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:2]",
+				Name:       "knocks the wand out of the opponents hand",
+				Path:       "./testdata/rspec/spec/spells/expelliarmus_spec.rb[1:2]",
+				Scope:      "Expelliarmus",
+			},
+		}
+		if diff := cmp.Diff(got, want); diff != "" {
+			t.Errorf("GetExamples() diff (-got +want):\n%s", diff)
+		}
+	})
 }
 
 func TestRspecGetExamples_WithSharedExamples(t *testing.T) {
-	rspec := NewRspec(RunnerConfig{
-		TestCommand: "rspec",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		rspec := loadVariantExampleRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand: "rspec",
+		})
+		files := []string{"./testdata/rspec/spec/specs_with_shared_examples_spec.rb"}
+		got, err := rspec.GetExamples(files)
+		require.NoError(t, err)
+
+		want := []plan.TestCase{
+			{
+				Identifier: "./testdata/rspec/spec/specs_with_shared_examples_spec.rb[1:1:1]",
+				Name:       "behaves like a shared example",
+				Path:       "./testdata/rspec/spec/specs_with_shared_examples_spec.rb[1:1:1]",
+				Scope:      "Specs with shared examples behaves like shared",
+			},
+		}
+		if diff := cmp.Diff(got, want); diff != "" {
+			t.Errorf("GetExamples() diff (-got +want):\n%s", diff)
+		}
 	})
-	files := []string{"./testdata/rspec/spec/specs_with_shared_examples_spec.rb"}
-	got, err := rspec.GetExamples(files)
-
-	want := []plan.TestCase{
-		{
-			Identifier: "./testdata/rspec/spec/specs_with_shared_examples_spec.rb[1:1:1]",
-			Name:       "behaves like a shared example",
-			Path:       "./testdata/rspec/spec/specs_with_shared_examples_spec.rb[1:1:1]",
-			Scope:      "Specs with shared examples behaves like shared",
-		},
-	}
-
-	if err != nil {
-		t.Errorf("Rspec.GetExamples(%q) error = %v", files, err)
-	}
-
-	if diff := cmp.Diff(got, want); diff != "" {
-		t.Errorf("Rspec.GetExamples(%q) diff (-got +want):\n%s", files, diff)
-	}
 }
 
 func TestParseNativeRSpecReport(t *testing.T) {
-	got, err := ParseNativeReport("rspec-json", []byte(`{"examples":[
-		{"id":"./spec/owning_spec.rb[1:1]","file_path":"./spec/shared.rb","line_number":12,"description":"works","full_description":"Shared works","status":"pending"},
-		{"file_path":"./spec/fallback_spec.rb","line_number":7,"description":"fails","full_description":"Fallback fails","status":"failed"}
-	],"summary":{"example_count":2,"errors_outside_of_examples_count":1}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := ParsedReport{ErrorsOutsideTests: true, Tests: []ReportedTest{
-		{TestCase: plan.TestCase{Identifier: "spec/owning_spec.rb[1:1]", Path: "spec/owning_spec.rb[1:1]", Name: "works", Scope: "Shared"}, Status: TestStatusSkipped, Selector: "spec/owning_spec.rb", Location: "spec/shared.rb:12"},
-		{TestCase: plan.TestCase{Path: "spec/fallback_spec.rb:7", Name: "fails", Scope: "Fallback"}, Status: TestStatusFailed, Selector: "spec/fallback_spec.rb", Location: "spec/fallback_spec.rb:7"},
-	}}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Fatalf("parsed report (-want +got):\n%s", diff)
-	}
-	if _, err := ParseNativeReport("not-rspec-json", []byte(`{"examples":[],"summary":{"example_count":0}}`)); err == nil {
-		t.Fatal("unsupported report format accepted")
-	}
-}
-
-func TestRspecExamplePrimarySelector(t *testing.T) {
-	for _, tc := range []struct {
-		name, id, filePath, want string
-	}{
-		{"shared example", "./spec/specs_with_shared_examples_spec.rb[1:1:1]", "./spec/shared_examples.rb", "./spec/specs_with_shared_examples_spec.rb"},
-		{"ordinary example", "./spec/a_spec.rb[1:2]", "./spec/a_spec.rb", "./spec/a_spec.rb"},
-		{"bracket in filename", "./spec/a[variant]_spec.rb[1:2]", "./spec/a[variant]_spec.rb", "./spec/a[variant]_spec.rb"},
-		{"missing id", "", "./spec/a_spec.rb", "./spec/a_spec.rb"},
-		{"invalid id", "./spec/a_spec.rb[not-a-location]", "./spec/a_spec.rb", "./spec/a_spec.rb"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := (RspecExample{ID: tc.id, FilePath: tc.filePath}).PrimarySelector(); got != tc.want {
-				t.Fatalf("primary selector=%q, want %q", got, tc.want)
-			}
-		})
-	}
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		got, err := ParseNativeReportWithOptions("rspec-json", []byte(`{"examples":[
+			{"id":"./spec/owning_spec.rb[1:1]","file_path":"./spec/shared.rb","line_number":12,"description":"works","full_description":"Shared works","status":"pending"},
+			{"file_path":"./spec/fallback_spec.rb","line_number":7,"description":"fails","full_description":"Fallback fails","status":"failed"}
+		],"summary":{"example_count":2,"errors_outside_of_examples_count":1}}`), nil, variant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ParsedReport{ErrorsOutsideTests: true, Tests: []ReportedTest{
+			{TestCase: plan.TestCase{Identifier: "spec/owning_spec.rb[1:1]", Path: "spec/owning_spec.rb[1:1]", Name: "works", Scope: "Shared"}, Status: TestStatusSkipped, Selector: "spec/owning_spec.rb", Location: "spec/shared.rb:12"},
+			{TestCase: plan.TestCase{Path: "spec/fallback_spec.rb:7", Name: "fails", Scope: "Fallback"}, Status: TestStatusFailed, Selector: "spec/fallback_spec.rb", Location: "spec/fallback_spec.rb:7"},
+		}}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("parsed report (-want +got):\n%s", diff)
+		}
+		if _, err := ParseNativeReportWithOptions("not-rspec-json", []byte(`{"examples":[],"summary":{"example_count":0}}`), nil, variant); err == nil {
+			t.Fatal("unsupported report format accepted")
+		}
+	})
 }

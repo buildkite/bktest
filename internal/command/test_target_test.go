@@ -11,7 +11,7 @@ import (
 )
 
 type targetDiscoveryTestRunner struct {
-	runner.Jest
+	runner.TestRunner
 	targets         []string
 	discoveryCalls  int
 	selectorSupport bool

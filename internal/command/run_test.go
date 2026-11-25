@@ -262,7 +262,7 @@ func TestFormatBytes(t *testing.T) {
 }
 
 func TestRunTestsWithRetry(t *testing.T) {
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand: "rspec --format json --out {{resultPath}}",
 		ResultPath:  "tmp/rspec.json",
 	})
@@ -276,7 +276,7 @@ func TestRunTestsWithRetry(t *testing.T) {
 	testResult, err := runTestsWithRetry(context.Background(), nil, &config.Config{}, testRunner, &testCases, maxRetries, []plan.TestCase{}, &timeline, true, false)
 
 	t.Cleanup(func() {
-		os.Remove(testRunner.ResultPath)
+		os.Remove(testRunner.ResultFilePath())
 	})
 
 	if err != nil {
@@ -301,7 +301,7 @@ func TestRunTestsWithRetry(t *testing.T) {
 }
 
 func TestRunTestsWithRetry_TestPassedAfterRetry(t *testing.T) {
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand: "rspec --format json --out {{resultPath}}",
 		// Simulate test passing on the second retry
 		RetryTestCommand: "./testdata/retry.sh rspec --format json --out {{resultPath}}",
@@ -320,7 +320,7 @@ func TestRunTestsWithRetry_TestPassedAfterRetry(t *testing.T) {
 	testResult, err := runTestsWithRetry(context.Background(), nil, &config.Config{}, testRunner, &testCases, maxRetries, []plan.TestCase{}, &timeline, true, false)
 
 	t.Cleanup(func() {
-		os.Remove(testRunner.ResultPath)
+		os.Remove(testRunner.ResultFilePath())
 	})
 
 	if err != nil {
@@ -382,7 +382,7 @@ describe('a', () => {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
 	t.Chdir(dir)
 
-	testRunner := runner.NewJest(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "jest", runner.RunnerConfig{
 		TestCommand:      jest + " --runTestsByPath {{testExamples}} --json --testLocationInResults --outputFile {{resultPath}}",
 		RetryTestCommand: jest + " --runTestsByPath {{testExamples}} --testNamePattern '{{testNamePattern}}' --json --testLocationInResults --outputFile {{resultPath}}",
 		ResultPath:       "jest.json",
@@ -589,7 +589,7 @@ test('independent', () => {});
 }
 
 func TestRunTestsWithRetry_TestFailedAfterRetry(t *testing.T) {
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand:      "rspec --format json --out {{resultPath}}",
 		RetryTestCommand: "rspec --format json --out {{resultPath}}",
 		ResultPath:       "tmp/rspec.json",
@@ -607,7 +607,7 @@ func TestRunTestsWithRetry_TestFailedAfterRetry(t *testing.T) {
 	testResult, err := runTestsWithRetry(context.Background(), nil, &config.Config{}, testRunner, &testCases, maxRetries, []plan.TestCase{}, &timeline, true, false)
 
 	t.Cleanup(func() {
-		os.Remove(testRunner.ResultPath)
+		os.Remove(testRunner.ResultFilePath())
 	})
 
 	exitErr := new(exec.ExitError)
@@ -648,7 +648,7 @@ func TestRunTestsWithRetry_TestFailedAfterRetry(t *testing.T) {
 }
 
 func TestRunTestsWithRetry_NoRetryForMutedTest(t *testing.T) {
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand:      "rspec --format json --out {{resultPath}}  --format documentation",
 		ResultPath:       "tmp/rspec.json",
 		RetryTestCommand: "rspec --format json --out {{resultPath}}",
@@ -671,7 +671,7 @@ func TestRunTestsWithRetry_NoRetryForMutedTest(t *testing.T) {
 	testResult, err := runTestsWithRetry(context.Background(), nil, &config.Config{}, testRunner, &testCases, maxRetries, mutedTests, &timeline, false, false)
 
 	t.Cleanup(func() {
-		os.Remove(testRunner.ResultPath)
+		os.Remove(testRunner.ResultFilePath())
 	})
 
 	exitErr := new(exec.ExitError)
@@ -695,7 +695,7 @@ func TestRunTestsWithRetry_NoRetryForMutedTest(t *testing.T) {
 }
 
 func TestRunTestsWithRetry_RetryForMutedTest(t *testing.T) {
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand:      "rspec --format json --out {{resultPath}}  --format documentation",
 		ResultPath:       "tmp/rspec.json",
 		RetryTestCommand: "rspec --format json --out {{resultPath}}",
@@ -717,7 +717,7 @@ func TestRunTestsWithRetry_RetryForMutedTest(t *testing.T) {
 	testResult, err := runTestsWithRetry(context.Background(), nil, &config.Config{}, testRunner, &testCases, maxRetries, mutedTests, &timeline, true, false)
 
 	t.Cleanup(func() {
-		os.Remove(testRunner.ResultPath)
+		os.Remove(testRunner.ResultFilePath())
 	})
 
 	assert.Error(t, err)
@@ -757,7 +757,7 @@ func TestRunTestsWithRetry_RetryForMutedTest(t *testing.T) {
 }
 
 func TestRunTestsWithRetry_ExecError(t *testing.T) {
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand: "foobar",
 	})
 	testCases := []plan.TestCase{
@@ -777,7 +777,7 @@ func TestRunTestsWithRetry_ExecError(t *testing.T) {
 }
 
 func TestRunTestsWithRetry_CommandError(t *testing.T) {
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand: "rspec --invalid-option",
 	})
 	maxRetries := 2
@@ -810,7 +810,7 @@ func TestRunTestsWithRetry_CommandError(t *testing.T) {
 }
 
 func TestRunTestsWithRetry_RunResultError(t *testing.T) {
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand:      "rspec --format json --out {{resultPath}}",
 		RetryTestCommand: "rspec --format json --out {{resultPath}}",
 		ResultPath:       "tmp/rspec.json",
@@ -828,7 +828,7 @@ func TestRunTestsWithRetry_RunResultError(t *testing.T) {
 	testResult, err := runTestsWithRetry(context.Background(), nil, &config.Config{}, testRunner, &testCases, maxRetries, []plan.TestCase{}, &timeline, true, false)
 
 	t.Cleanup(func() {
-		os.Remove(testRunner.ResultPath)
+		os.Remove(testRunner.ResultFilePath())
 	})
 
 	exitErr := new(exec.ExitError)
@@ -865,7 +865,7 @@ func TestRunTestsWithRetry_TestFileErrored(t *testing.T) {
 	}
 	t.Chdir(dir)
 
-	testRunner := runner.NewJest(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "jest", runner.RunnerConfig{
 		TestCommand: filepath.Join(modules, ".bin", "jest") + " --runTestsByPath {{testExamples}} --json --outputFile {{resultPath}}",
 		// Runs only the retried test's file, so the retry passes.
 		RetryTestCommand: filepath.Join(modules, ".bin", "jest") + " --runTestsByPath {{testExamples}} --testNamePattern '{{testNamePattern}}' --json --outputFile {{resultPath}}",
@@ -885,7 +885,7 @@ func TestRunTestsWithRetry_TestFileErrored(t *testing.T) {
 func TestRunTestsWithRetry_GoTestBuildFailed(t *testing.T) {
 	t.Chdir("../runner/testdata/go")
 
-	testRunner := runner.NewGoTest(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "gotest", runner.RunnerConfig{
 		ResultPath: filepath.Join(t.TempDir(), "gotest.xml"),
 	})
 	maxRetries := 2
@@ -915,7 +915,7 @@ func TestRunTestsWithRetry_GoTestBuildFailed(t *testing.T) {
 
 func TestFetchOrCreateTestPlan(t *testing.T) {
 	files := []string{"apple"}
-	testRunner := runner.Rspec{}
+	testRunner := mustDetectRunnerNoPrefix(t, "rspec", config.Config{})
 
 	// mock server to return a test plan
 	response := `{
@@ -1018,7 +1018,7 @@ func TestFetchOrCreateTestPlanPlanningSummary(t *testing.T) {
 			client := api.NewClient(api.ClientConfig{ServerBaseURL: svr.URL})
 			getStderr := captureStderr(t)
 			printPlanningRequest(os.Stderr, cfg)
-			p, raw, err := fetchOrCreateTestPlan(context.Background(), client, cfg, []string{"apple", "banana"}, runner.Rspec{})
+			p, raw, err := fetchOrCreateTestPlan(context.Background(), client, cfg, []string{"apple", "banana"}, mustDetectRunnerNoPrefix(t, "rspec", config.Config{}))
 			stderr := getStderr()
 			if err != nil {
 				t.Fatal(err)
@@ -1098,7 +1098,7 @@ func requestMetadata(t *testing.T, body []byte) map[string]any {
 
 func TestFetchOrCreateTestPlan_CollectsGitMetadataWhenSelectionActive(t *testing.T) {
 	files := []string{"apple"}
-	testRunner := runner.Rspec{}
+	testRunner := mustDetectRunnerNoPrefix(t, "rspec", config.Config{})
 
 	svr, getBody := captureRequestBody(t)
 
@@ -1135,7 +1135,7 @@ func TestFetchOrCreateTestPlan_CollectsGitMetadataWhenSelectionActive(t *testing
 
 func TestFetchOrCreateTestPlan_NoGitMetadataWithoutSelection(t *testing.T) {
 	files := []string{"apple"}
-	testRunner := runner.Rspec{}
+	testRunner := mustDetectRunnerNoPrefix(t, "rspec", config.Config{})
 
 	svr, getBody := captureRequestBody(t)
 
@@ -1229,7 +1229,7 @@ func TestFetchOrCreateTestPlan_CachedPlan(t *testing.T) {
 	})
 
 	tests := []string{"banana"}
-	testRunner := runner.Rspec{}
+	testRunner := mustDetectRunnerNoPrefix(t, "rspec", config.Config{})
 
 	want := plan.TestPlan{
 		Tasks: map[string]*plan.Task{
@@ -1252,7 +1252,7 @@ func TestFetchOrCreateTestPlan_CachedPlan(t *testing.T) {
 
 func TestFetchOrCreateTestPlan_PlanError(t *testing.T) {
 	files := []string{"apple", "banana", "cherry", "mango"}
-	TestRunner := runner.Rspec{}
+	TestRunner := mustDetectRunnerNoPrefix(t, "rspec", config.Config{})
 
 	// mock server to return an error plan
 	response := `{
@@ -1315,7 +1315,7 @@ func TestFetchOrCreateTestPlan_ZeroMatchSelection(t *testing.T) {
 			cfg := config.Config{Parallelism: 2, Identifier: "identifier", ServerBaseURL: svr.URL}
 			apiClient := api.NewClient(api.ClientConfig{ServerBaseURL: cfg.ServerBaseURL})
 
-			got, raw, err := fetchOrCreateTestPlan(context.Background(), apiClient, &cfg, []string{"apple", "banana"}, runner.Rspec{})
+			got, raw, err := fetchOrCreateTestPlan(context.Background(), apiClient, &cfg, []string{"apple", "banana"}, mustDetectRunnerNoPrefix(t, "rspec", config.Config{}))
 			if err != nil {
 				t.Fatalf("fetchOrCreateTestPlan() error = %v", err)
 			}
@@ -1374,7 +1374,7 @@ func TestRun_ZeroMatchSelection(t *testing.T) {
 
 func TestFetchOrCreateTestPlan_InternalServerError(t *testing.T) {
 	files := []string{"red", "orange", "yellow", "green", "blue", "indigo", "violet"}
-	testRunner := runner.Rspec{}
+	testRunner := mustDetectRunnerNoPrefix(t, "rspec", config.Config{})
 
 	// mock server to return a 500 Internal Server Error
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1421,7 +1421,7 @@ func TestFetchOrCreateTestPlan_SelectorOptInFallbackUsesPathTasks(t *testing.T) 
 		"github.com/buildkite/test-engine-client/internal/api",
 		"github.com/buildkite/test-engine-client/internal/runner",
 	}
-	testRunner := runner.NewGoTest(runner.RunnerConfig{})
+	testRunner := mustDetectFromRunnerConfig(t, "gotest", runner.RunnerConfig{})
 
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -1466,7 +1466,7 @@ func TestFetchOrCreateTestPlan_SelectorOptInFallbackUsesPathTasks(t *testing.T) 
 
 func TestFetchOrCreateTestPlan_BadRequest(t *testing.T) {
 	files := []string{"apple", "banana"}
-	testRunner := runner.Rspec{}
+	testRunner := mustDetectRunnerNoPrefix(t, "rspec", config.Config{})
 
 	// mock server to return 400 Bad Request with JSON body
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1504,7 +1504,7 @@ func TestFetchOrCreateTestPlan_BadRequest(t *testing.T) {
 
 func TestFetchOrCreateTestPlan_BillingError(t *testing.T) {
 	files := []string{"apple", "banana"}
-	testRunner := runner.Rspec{}
+	testRunner := mustDetectRunnerNoPrefix(t, "rspec", config.Config{})
 
 	// mock server to return 403 with a billing error
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1545,7 +1545,7 @@ func TestFetchOrCreateTestPlan_BillingError(t *testing.T) {
 
 func TestFetchOrCreateTestPlan_AuthError(t *testing.T) {
 	files := []string{"apple", "banana"}
-	testRunner := runner.Rspec{}
+	testRunner := mustDetectRunnerNoPrefix(t, "rspec", config.Config{})
 
 	// mock server to return 401 Unauthorized
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1582,7 +1582,7 @@ func TestFetchOrCreateTestPlan_AuthError(t *testing.T) {
 
 func TestFetchOrCreateTestPlan_ForbiddenError(t *testing.T) {
 	files := []string{"apple", "banana"}
-	testRunner := runner.Rspec{}
+	testRunner := mustDetectRunnerNoPrefix(t, "rspec", config.Config{})
 
 	// mock server to return 403 with a non-billing forbidden error
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1714,7 +1714,7 @@ func TestSendMetadata_Unauthorized(t *testing.T) {
 }
 
 func TestRunTestsWithRetry_NoTestCases_Success(t *testing.T) {
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand: "rspec --format json --out {{resultPath}}",
 		ResultPath:  "tmp/rspec.json",
 	})
@@ -1766,7 +1766,7 @@ func TestTrimTaskLocationPrefix_SkipsSelectorTasks(t *testing.T) {
 }
 
 func TestRunTestsWithRetry_NoTestCases_Error(t *testing.T) {
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand: "rspec --format json --out {{resultPath}}",
 		ResultPath:  "tmp/rspec.json",
 	})
@@ -1812,7 +1812,7 @@ func TestRunTestsWithRetry_UploadsResults(t *testing.T) {
 	}))
 	defer uploadSvr.Close()
 
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand: "rspec --format json --out {{resultPath}}",
 		ResultPath:  "tmp/rspec-upload-test.json",
 	})
@@ -1827,7 +1827,7 @@ func TestRunTestsWithRetry_UploadsResults(t *testing.T) {
 	}
 	apiClient := api.NewClient(api.ClientConfig{UploadBaseURL: uploadSvr.URL})
 
-	t.Cleanup(func() { os.Remove(testRunner.ResultPath) })
+	t.Cleanup(func() { os.Remove(testRunner.ResultFilePath()) })
 
 	_, err := runTestsWithRetry(context.Background(), apiClient, cfg, testRunner, &testCases, 0, []plan.TestCase{}, &timeline, true, false)
 	assert.NoError(t, err)
@@ -1844,7 +1844,7 @@ func TestRunTestsWithRetry_SkipsUploadWhenNoToken(t *testing.T) {
 	}))
 	defer uploadSvr.Close()
 
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand: "rspec --format json --out {{resultPath}}",
 		ResultPath:  "tmp/rspec-no-token-test.json",
 	})
@@ -1857,7 +1857,7 @@ func TestRunTestsWithRetry_SkipsUploadWhenNoToken(t *testing.T) {
 		UploadToken:   "",
 	}
 
-	t.Cleanup(func() { os.Remove(testRunner.ResultPath) })
+	t.Cleanup(func() { os.Remove(testRunner.ResultFilePath()) })
 
 	_, err := runTestsWithRetry(context.Background(), nil, cfg, testRunner, &testCases, 0, []plan.TestCase{}, &timeline, true, false)
 	assert.NoError(t, err)
@@ -1872,7 +1872,7 @@ func TestRunTestsWithRetry_SkipsUploadWhenUploadResultsFalse(t *testing.T) {
 	}))
 	defer uploadSvr.Close()
 
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand: "rspec --format json --out {{resultPath}}",
 		ResultPath:  "tmp/rspec-no-upload-test.json",
 	})
@@ -1885,7 +1885,7 @@ func TestRunTestsWithRetry_SkipsUploadWhenUploadResultsFalse(t *testing.T) {
 		UploadToken:   "test-token",
 	}
 
-	t.Cleanup(func() { os.Remove(testRunner.ResultPath) })
+	t.Cleanup(func() { os.Remove(testRunner.ResultFilePath()) })
 
 	_, err := runTestsWithRetry(context.Background(), nil, cfg, testRunner, &testCases, 0, []plan.TestCase{}, &timeline, true, false)
 	assert.NoError(t, err)
@@ -1899,7 +1899,7 @@ func TestRunTestsWithRetry_UploadErrorDoesNotFailBuild(t *testing.T) {
 	}))
 	defer uploadSvr.Close()
 
-	testRunner := runner.NewRspec(runner.RunnerConfig{
+	testRunner := mustDetectFromRunnerConfig(t, "rspec", runner.RunnerConfig{
 		TestCommand: "rspec --format json --out {{resultPath}}",
 		ResultPath:  "tmp/rspec-upload-error-test.json",
 	})
@@ -1914,7 +1914,7 @@ func TestRunTestsWithRetry_UploadErrorDoesNotFailBuild(t *testing.T) {
 	}
 	apiClient := api.NewClient(api.ClientConfig{UploadBaseURL: uploadSvr.URL})
 
-	t.Cleanup(func() { os.Remove(testRunner.ResultPath) })
+	t.Cleanup(func() { os.Remove(testRunner.ResultFilePath()) })
 
 	result, err := runTestsWithRetry(context.Background(), apiClient, cfg, testRunner, &testCases, 0, []plan.TestCase{}, &timeline, true, false)
 	assert.NoError(t, err)

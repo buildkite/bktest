@@ -20,7 +20,6 @@ import (
 	"github.com/buildkite/bktest/v3/internal/debug"
 	"github.com/buildkite/bktest/v3/internal/git"
 	"github.com/buildkite/bktest/v3/internal/plan"
-	"github.com/buildkite/bktest/v3/internal/runner"
 	"github.com/buildkite/bktest/v3/internal/version"
 	"github.com/google/go-cmp/cmp"
 )
@@ -967,7 +966,7 @@ func TestGitMetadataCollectionGate(t *testing.T) {
 		},
 		"run": func(t *testing.T, cfg *config.Config) error {
 			client := api.NewClient(api.ClientConfig{ServerBaseURL: cfg.ServerBaseURL, OrganizationSlug: cfg.OrganizationSlug})
-			_, _, err := fetchOrCreateTestPlan(context.Background(), client, cfg, []string{"apple"}, runner.Rspec{})
+			_, _, err := fetchOrCreateTestPlan(context.Background(), client, cfg, []string{"apple"}, mustDetectRunnerNoPrefix(t, "rspec", config.Config{}))
 			return err
 		},
 		"pool": func(t *testing.T, cfg *config.Config) error {
