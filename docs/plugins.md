@@ -113,7 +113,7 @@ go test -race ./internal/plugin/... ./pkg/plugin/... ./internal/runner/... ./int
 Run the end-to-end CLI integration test across all 9 runners × both Go and Bash variants:
 
 ```bash
-go test -race -v -tags=integration ./internal/integration/... -run TestAllRunnerPluginsE2E
+go test -race -v -tags=plugin_e2e ./internal/integration/... -run TestAllRunnerPluginsE2E
 ```
 
 Or run the standalone demo script against the repository suites or a local `buildkite/bktest-examples` checkout:

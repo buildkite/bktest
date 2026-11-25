@@ -257,6 +257,7 @@ func (p *PluginRunner) Run(result *RunResult, testCases []plan.TestCase, retry b
 		return err
 	}
 
+	// #nosec G204 -- executes configured test runner command
 	cmd := exec.Command(prep.Command, prep.Args...)
 	overrides := map[string]string{
 		"BUILDKITE_ANALYTICS_TOKEN": p.UploadToken(),

@@ -18,6 +18,7 @@ func (p *LoadedPlugin) Invoke(operation string, request any, response any) error
 		return fmt.Errorf("encode %s request for plugin %q: %w", operation, p.Manifest.Name, err)
 	}
 
+	// #nosec G204 -- invokes resolved plugin executable with protocol operation
 	cmd := exec.Command(p.Executable, operation)
 	cmd.Stdin = bytes.NewReader(payload)
 

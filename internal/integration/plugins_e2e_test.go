@@ -1,4 +1,4 @@
-//go:build !windows && integration
+//go:build !windows && plugin_e2e
 
 package integration
 
