@@ -1,5 +1,6 @@
 # Changelog
 ## Unreleased
+- Add `apt install bktest` and `dnf install bktest` in the existing package registries. Existing `bktec` installs and upgrades continue to work.
 
 ## 3.6.1 - 2026-11-24
 - Skip waiting for the Test Scheduler pool to finish when an original Buildkite job's attempts all pass, including after local retries. Retried Buildkite jobs still check for terminal failures in earlier jobs.

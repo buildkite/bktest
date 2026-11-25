@@ -4,6 +4,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
 import json
 from pathlib import Path
+import subprocess
+import sys
 import tarfile
 import tempfile
 from threading import Thread
@@ -139,7 +141,7 @@ class PublicationTest(unittest.TestCase):
         def package(command, *, check):
             config = json.loads(command[command.index('--config') + 1].read_text())
             target = command[command.index('--target') + 1]
-            target.write_text(f'{config["arch"]} {target.suffix} package fixture')
+            target.write_text(f'{config["name"]} {config["arch"]} {target.suffix} package fixture')
 
         directory = root / 'stage'
         with patch('stage.subprocess.run', side_effect=package):
@@ -172,6 +174,16 @@ class PublicationTest(unittest.TestCase):
         with publish.open_stage(self.archive, digest(self.archive), self.tag, CANONICAL) as release, redirect_stdout(io.StringIO()):
             destinations = tuple(GitHubRelease(repo, LEGACY, TOKEN, api=self.origin, uploads=self.origin) for repo in REPOS)
             publish.reconcile(release, destinations, apply=apply)
+
+    def test_native_dry_run_selects_exact_metapackage(self):
+        script = Path(__file__).with_name('publish_native.py')
+        args = [sys.executable, '-B', str(script), str(self.archive), '--archive-sha256', digest(self.archive),
+                '--tag', self.tag, '--source', CANONICAL, '--format', 'rpm', '--arch', 'arm64']
+        for package in ('bktest', 'bktec'):
+            name = f'{package}_{self.version}_linux_arm64.rpm'
+            expected = digest(self.directory / 'packages' / 'rpm' / name)
+            self.assertEqual(subprocess.check_output([*args, '--package', package], text=True).strip(),
+                             f'{name} sha256:{expected}')
 
     def test_resume_draft_and_verify_exact_inventory_in_both_repositories(self):
         self.run_driver()

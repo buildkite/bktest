@@ -29,7 +29,7 @@ checkout or reselect the version in the compatibility repository.
 | --- | --- |
 | `github/bktest/` and `github/test-engine-client/` | Both GitHub releases; each has its own names and checksums and both get `manifest.json`. Retain the old release's direct DEB/RPM downloads. Set explicit target commits: canonical source and the generated compatibility commit respectively. |
 | `files/` | Buildkite Packages `buildkite/bktec`, using its exact versioned `.bin`/`.exe`/checksum names. Not a stable channel update. |
-| `packages/deb/` and `packages/rpm/` | `test-engine-client-deb` and `test-engine-client-rpm`, retaining package `bktec` with both commands. |
+| `packages/deb/` and `packages/rpm/` | `test-engine-client-deb` and `test-engine-client-rpm`. The `bktec` package owns both commands; the `bktest` metapackage depends on it. |
 | `image/linux_{amd64,arm64}/` | Build contexts for `buildkite/test-engine-client`, `public.ecr.aws/buildkite/test-engine-client`, and `packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client`. Both commands are installed; keep `/usr/local/bin/bktec` as the entrypoint. Build local OCI images from the contexts before checking a container off. |
 | `tap/` | Replace `Formula/bktec.rb` in `buildkite/homebrew-buildkite` and add `Aliases/bktest -> ../Formula/bktec.rb`. Keep `bktec` the sole owning formula. |
 
@@ -224,20 +224,27 @@ file or packages from the compatibility checkout.
   canonical staging job must not have `write_packages`. Read back from
   `https://packages.buildkite.com/buildkite/bktec/files/<exact filename>` and
   compare bytes by SHA-256, including the checksum file itself.
-- **DEB/RPM:** Run the canonical native handoff with one format and architecture:
+- **DEB/RPM:** Run the canonical native handoff for one package, format, and architecture:
 
   ```sh
   python3 -B packaging/cli/publish_native.py "$ARCHIVE" \
     --archive-sha256 "$ARCHIVE_SHA256" --tag "$TAG" --source "$SOURCE" \
-    --format deb --arch arm64
+    --package bktest --format deb --arch arm64
   ```
 
   This verifies the full archive and reports the exact package and digest.
   Only add `--confirmed-missing` in an approved writer job after confirming
   the package is absent and approving exposure in the signed index. The command
   sends one POST and does not retry; verify the result separately, even on success.
-  Keep the package name `bktec` and existing registries `test-engine-client-deb`
-  and `test-engine-client-rpm`. The command uses the legacy endpoint and a 180-second agent OIDC token
+  Both names go to the existing `test-engine-client-deb` and `test-engine-client-rpm`
+  registries. Before approving a `bktest` metapackage, confirm `bktec` >= 3.6.0 is
+  already indexed for that format and architecture. The stable approval field takes
+  exact space-separated `package-format-arch` entries (such as `bktest-deb-arm64`),
+  or `none` if all eight packages match. Verify all eight served hashes, and check
+  that `apt install bktest` and `dnf install bktest` resolve before switching the
+  public install instructions. Existing `bktec` installs and repository URLs do not change.
+
+  The command uses the legacy endpoint and a 180-second agent OIDC token
   for `https://packages.buildkite.com/buildkite/<registry>` and POSTs the file to
   `/v2/packages/organizations/buildkite/registries/<registry>/packages` on
   `api.buildkite.com`. Verify `write_packages` for the approved native release job
