@@ -31,9 +31,8 @@ steps:
   - label: "Smoke-test OCI export without publishing"
     key: cli-oci-smoke
     if: >-
-      pipeline.slug == "bktest-release" && build.branch == "main" &&
-      build.tag == null && build.source != "webhook" &&
-      build.env("CLI_RELEASE_OCI_SMOKE") == "true"
+      pipeline.slug == "bktest-release" && build.branch == "rehearse-hosted-cli-oci" &&
+      build.tag == null && build.source == "ui"
     depends_on: cli-stage-verify
     agents: {queue: hosted}
     command: |
