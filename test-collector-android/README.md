@@ -20,7 +20,7 @@ or otherwise on your local machine.
 
 ### Step 3 - Unit Test Collector
 
-See a [working Android JVM unit test example](https://github.com/buildkite/test-engine-client-examples/tree/main/android#readme).
+See a [working Android JVM unit test example](https://github.com/buildkite/bktest-examples/tree/main/android#readme).
 
 In your app-level build.gradle.kts, add the following plugin:
 

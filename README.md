@@ -93,7 +93,7 @@ the generated legacy Go source in
 [buildkite/test-engine-client](https://github.com/buildkite/test-engine-client).
 See [CLI development](#development) to build and test in this checkout.
 Contribute pipeline examples and the Tests plugin in their own repositories:
-[test-engine-client-examples](https://github.com/buildkite/test-engine-client-examples)
+[bktest-examples](https://github.com/buildkite/bktest-examples)
 and [tests-buildkite-plugin](https://github.com/buildkite-plugins/tests-buildkite-plugin).
 
 Issues and pull requests are welcome right here! A PR touching one
@@ -402,7 +402,7 @@ bundle exec rspec --format progress --format json --out {{resultPath}} {{testExa
 
 `bktec` replaces `{{testExamples}}` with the tests assigned to the current parallel job and `{{resultPath}}` with the configured result path. Other runners may need different result output settings or commands; see the [runner guides](#runner-guides) before adapting this example.
 
-For complete Buildkite pipeline examples across supported runners, see the [test-engine-client-examples repository](https://github.com/buildkite/test-engine-client-examples).
+For complete Buildkite pipeline examples across supported runners, see the [bktest-examples repository](https://github.com/buildkite/bktest-examples).
 
 ## Check that it worked
 
@@ -850,7 +850,7 @@ To pass additional metadata or override auto-collected values, see the
 - Use `BUILDKITE_TEST_ENGINE_DEBUG_ENABLED=true` when troubleshooting authentication, uneven splits, or runner command issues.
 - Run `bktec --help`, `bktec run --help`, or `bktec plan --help` for the current CLI options.
 
-You can also find example configurations and usage instructions for each test runner in the [examples repository](https://github.com/buildkite/test-engine-client-examples).
+You can also find example configurations and usage instructions for each test runner in the [examples repository](https://github.com/buildkite/bktest-examples).
 
 ### Runner guides
 
