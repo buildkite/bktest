@@ -28,6 +28,36 @@ steps:
             - BUILDKITE_BUILD_ID
             - BUILDKITE_TAG
 
+  - label: "Smoke-test OCI export without publishing"
+    key: cli-oci-smoke
+    if: pipeline.slug == "bktest-release" && build.branch == "rehearse-hosted-cli-oci" && build.tag == null && build.source != "webhook"
+    depends_on: cli-stage-verify
+    agents: {queue: hosted}
+    command: |
+      set -eu
+      if command -v skopeo >/dev/null; then
+        skopeo --version
+      else
+        echo 'Skopeo is not installed on this worker'
+      fi
+      tmp=$$(mktemp -d)
+      trap 'rm -rf "$$tmp"' EXIT
+      buildkite-agent artifact download dist/cli-release.tar "$$tmp" --step cli-stage
+      mkdir "$$tmp/context"
+      tar -xf "$$tmp/dist/cli-release.tar" -C "$$tmp/context"
+      docker buildx version
+      docker buildx inspect --bootstrap
+      for arch in amd64 arm64; do
+        docker buildx build --platform "linux/$$arch" \
+          --provenance=false --sbom=false \
+          --output "type=oci,dest=$$tmp/linux_$$arch.tar" \
+          "$$tmp/context/image/linux_$$arch"
+        test -s "$$tmp/linux_$$arch.tar"
+        tar -tf "$$tmp/linux_$$arch.tar" > "$$tmp/linux_$$arch.members"
+        grep -Fx index.json "$$tmp/linux_$$arch.members"
+        echo "OCI export passed: linux/$$arch"
+      done
+
   # This route stays off until tag protection, the approvers and the
   # step-scoped credentials are in place.
   - group: ":package: CLI publication and promotion"
