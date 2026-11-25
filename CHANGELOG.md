@@ -1,5 +1,6 @@
 # Changelog
 ## Unreleased
+- ⚠️ **BREAKING:** `bktec pool run` no longer creates or reuses the pool itself, so a build plans its pool once instead of once per worker. Create the pool with `bktec pool plan` and pass its ID with `--pool-id` or `BUILDKITE_TEST_ENGINE_POOL_ID`, along with `BUILDKITE_TEST_ENGINE_POOL_FALLBACK` so workers can still fall back; see [Create the pool](./docs/pool-run.md#create-the-pool-with-bktec-pool-plan).
 
 ## 3.6.1 - 2026-11-24
 - Skip waiting for the Test Scheduler pool to finish when an original Buildkite job's attempts all pass, including after local retries. Retried Buildkite jobs still check for terminal failures in earlier jobs.

@@ -319,9 +319,9 @@ func TestPoolPlanFallsBackOnlyWhenSchedulerUnavailable(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			// Like bktec plan: size the build at --max-parallelism, and leave the
-			// pool ID empty so workers try Test Scheduler again themselves.
-			require.JSONEq(t, `{"BUILDKITE_TEST_ENGINE_POOL_ID":"","BUILDKITE_TEST_ENGINE_PARALLELISM":"10"}`, buf.String())
+			// Like bktec plan: size the build at --max-parallelism, and tell
+			// workers to run their share of a local split.
+			require.JSONEq(t, `{"BUILDKITE_TEST_ENGINE_POOL_ID":"","BUILDKITE_TEST_ENGINE_POOL_FALLBACK":"true","BUILDKITE_TEST_ENGINE_PARALLELISM":"10"}`, buf.String())
 			output := stderr()
 			require.Contains(t, output, tc.wantWarning)
 			require.Contains(t, output, "Using local fallback")
