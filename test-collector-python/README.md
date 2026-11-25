@@ -11,7 +11,7 @@ The official Python adapter for [Buildkite Test Engine](https://buildkite.com/pl
 
 ## 👉 Installing
 
-See a [working pytest example](https://github.com/buildkite/test-engine-client-examples/tree/main/pytest#readme).
+See a [working pytest example](https://github.com/buildkite/bktest-examples/tree/main/pytest#readme).
 
 1. [Create a test suite](https://buildkite.com/docs/test-engine), and copy the API token that it gives you.
 
@@ -66,7 +66,7 @@ lose automatic Buildkite build association, but the build URL remains independen
 
 ## 🏷️ Filtering Tests by Tags
 
-See a [working pytest tag filtering example](https://github.com/buildkite/test-engine-client-examples/tree/main/pytest-tag-filters#readme).
+See a [working pytest tag filtering example](https://github.com/buildkite/bktest-examples/tree/main/pytest-tag-filters#readme).
 
 You can filter which tests to run based on execution tags using the `--tag-filters` option.
 
@@ -152,7 +152,7 @@ Run metadata overrides are listed [above](#-run-metadata-overrides) and apply to
 
 ## 🔭 OpenTelemetry submission (experimental)
 
-See a [working pytest OpenTelemetry example](https://github.com/buildkite/test-engine-client-examples/tree/main/pytest-otel#readme).
+See a [working pytest OpenTelemetry example](https://github.com/buildkite/bktest-examples/tree/main/pytest-otel#readme).
 
 The collector can send each test to Test Engine as an OpenTelemetry `test.execution` span over OTLP instead of the JSON upload, with your tests' own OpenTelemetry spans nested under it. Install the optional dependencies and switch it on:
 
