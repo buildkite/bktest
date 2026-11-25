@@ -28,12 +28,11 @@ steps:
             - BUILDKITE_BUILD_ID
             - BUILDKITE_TAG
 
-  # This route stays off until tag protection, approvers and writer access
-  # are verified.
+  # Enable GitHub-only release candidates first. Stable tags still stage only.
   - group: ":package: CLI publication and promotion"
     if: >-
-      false && pipeline.slug == "bktest-release" && build.source == "webhook" &&
-      build.tag =~ /^v3[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-[0-9A-Za-z-]+([.][0-9A-Za-z-]+)*)?$$/ &&
+      pipeline.slug == "bktest-release" && build.source == "webhook" &&
+      build.tag =~ /^v3[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)-rc[.](0|[1-9][0-9]*)$$/ &&
       build.env("CLI_RELEASE_GITHUB_ENABLED") == "true"
     steps:
       - block: "Sync the legacy Go module and publish versioned CLI releases?"
