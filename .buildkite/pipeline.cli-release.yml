@@ -28,7 +28,7 @@ steps:
             - BUILDKITE_BUILD_ID
             - BUILDKITE_TAG
 
-  - label: "Smoke-test OCI export without publishing"
+  - label: "Smoke-test OCI export and copy without publishing"
     key: cli-oci-smoke
     if: >-
       pipeline.slug == "bktest-release" && build.branch == "rehearse-hosted-cli-oci" &&
@@ -37,11 +37,6 @@ steps:
     agents: {queue: hosted}
     command: |
       set -eu
-      if command -v skopeo >/dev/null; then
-        skopeo --version
-      else
-        echo 'Skopeo is not installed on this worker'
-      fi
       tmp=$$(mktemp -d)
       trap 'rm -rf "$$tmp"' EXIT
       buildkite-agent artifact download dist/cli-release.tar "$$tmp" --step cli-stage
@@ -59,6 +54,36 @@ steps:
         grep -Fx index.json "$$tmp/linux_$$arch.members"
         echo "OCI export passed: linux/$$arch"
       done
+      PYTHONPATH=packaging/cli python3 -B - "$$tmp" <<'PY'
+      import json
+      from pathlib import Path
+      import sys
+
+      from publish_oci import ARCHES, SKOPEO_IMAGE, digest, layout, run
+
+      tmp = Path(sys.argv[1])
+      source, destination = tmp / 'oci', tmp / 'copied'
+      tag = 'rehearsal'
+      refs = layout(source, [tmp / f'linux_{arch}.tar' for arch in ARCHES], tag)
+      destination.mkdir()
+      auth = tmp / 'auth.json'
+      auth.touch(mode=0o600)
+      auth.write_text('{"auths":{}}')
+      run('docker', 'run', '--rm', '--network', 'none',
+          '--mount', f'type=bind,src={source},dst=/release/oci,readonly',
+          '--mount', f'type=bind,src={auth},dst=/release/auth.json,readonly',
+          '--mount', f'type=bind,src={destination},dst=/output',
+          SKOPEO_IMAGE, 'copy', '--all', '--preserve-digests', '--dest-authfile', '/release/auth.json',
+          f'oci:/release/oci:{tag}', f'oci:/output:{tag}')
+      copied, = json.loads((destination / 'index.json').read_bytes())['manifests']
+      if copied['digest'] != refs[tag]:
+          raise ValueError('copied OCI index differs from source')
+      for ref, expected in refs.items():
+          blob = destination / 'blobs/sha256' / expected.removeprefix('sha256:')
+          if digest(blob.read_bytes()) != expected:
+              raise ValueError(f'copied OCI manifest differs: {ref}')
+      print(f'Local copy preserved both architectures and index {refs[tag]}')
+      PY
 
   # This route stays off until tag protection, the approvers and the
   # step-scoped credentials are in place.
