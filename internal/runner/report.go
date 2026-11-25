@@ -1,9 +1,8 @@
 package runner
 
 import (
-	"fmt"
-
 	"github.com/buildkite/bktest/v3/internal/plan"
+	hostplugin "github.com/buildkite/bktest/v3/internal/plugin"
 )
 
 // ReportedTest is a native result mapped to a bktec test case. Parsers normalize
@@ -35,21 +34,18 @@ type ParsedReport struct {
 	UnselectedTests bool
 }
 
-// ParseNativeReport selects the runner's parser using the reported format.
-// A completed protocol envelope only means the runner produced a report.
+// ParseNativeReport delegates parsing of a native runner report to the plugin
+// declaring support for format.
 func ParseNativeReport(format string, data []byte) (ParsedReport, error) {
-	switch format {
-	case "rspec-json":
-		return parseRSpecBatchReport(data)
-	case "jest-json":
-		return parseJestBatchReport(data)
-	case "playwright-json":
-		return parsePlaywrightBatchReport(data)
-	case "pytest-json":
-		return parsePytestJSONBatchReport(data)
-	case "pytest-junit":
-		return parsePytestJUnitBatchReport(data)
-	default:
-		return ParsedReport{}, fmt.Errorf("unsupported runner report format %q", format)
+	return ParseNativeReportWithOptions(format, data, nil, "")
+}
+
+// ParseNativeReportWithOptions delegates report parsing to a matching plugin
+// discovered in dirs with optional variant preference ("go" or "bash").
+func ParseNativeReportWithOptions(format string, data []byte, dirs []string, variant string) (ParsedReport, error) {
+	loaded, err := hostplugin.ResolveByReportFormat(format, dirs, variant)
+	if err != nil {
+		return ParsedReport{}, err
 	}
+	return ParseBatchReportWithPlugin(loaded, format, data)
 }

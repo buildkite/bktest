@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 
+	"github.com/buildkite/bktest/v3/internal/config"
 	"github.com/buildkite/bktest/v3/internal/runner"
 )
 
@@ -31,24 +33,30 @@ func printRow(runners []runner.TestRunner, featureName string, featureValueFunc 
 }
 
 func main() {
-	runnerConfig := runner.RunnerConfig{
-		TestCommand: "foo",
+	runnerNames := []string{
+		"rspec",
+		"jest",
+		"vitest",
+		"playwright",
+		"cypress",
+		"pytest",
+		"gotest",
+		"cucumber",
+		"custom",
 	}
 
-	// NewCustom() method signature is incompatible with the other runners,
-	// drop the second return value
-	custom, _ := runner.NewCustom(runnerConfig)
-
-	runners := []runner.TestRunner{
-		runner.NewRspec(runnerConfig),
-		runner.NewJest(runnerConfig),
-		runner.NewVitest(runnerConfig),
-		runner.NewPlaywright(runnerConfig),
-		runner.NewCypress(runnerConfig),
-		runner.NewPytest(runnerConfig),
-		runner.NewGoTest(runnerConfig),
-		runner.NewCucumber(runnerConfig),
-		custom,
+	runners := make([]runner.TestRunner, 0, len(runnerNames))
+	for _, name := range runnerNames {
+		cfg := config.New()
+		cfg.TestRunner = name
+		cfg.TestCommand = "foo"
+		cfg.TestFilePattern = "**/*_test.*"
+		r, err := runner.DetectRunner(&cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load runner plugin %q: %v\n", name, err)
+			os.Exit(1)
+		}
+		runners = append(runners, r)
 	}
 
 	headings := []string{"Feature"}

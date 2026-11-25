@@ -57,7 +57,7 @@ func (c *Config) validate() error {
 
 	c.validateAPI("")
 
-	if c.TestRunner == "" {
+	if c.TestRunner == "" && c.PluginPath == "" {
 		c.errs.appendFieldError("BUILDKITE_TEST_ENGINE_TEST_RUNNER", "must not be blank")
 	}
 
@@ -72,7 +72,7 @@ func (c *Config) validate() error {
 		}
 	}
 
-	if c.TagFilters != "" && c.TestRunner != "pytest" {
+	if c.TagFilters != "" && c.TestRunner != "pytest" && c.PluginPath == "" && !strings.Contains(c.TestRunner, "/") && !strings.Contains(c.TestRunner, `\`) {
 		c.errs.appendFieldError(
 			"BUILDKITE_TEST_ENGINE_TAG_FILTERS",
 			"tag filtering is only supported for the pytest test runner",

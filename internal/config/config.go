@@ -86,6 +86,14 @@ type Config struct {
 	// PersistentRunner is set by pool exec, where a persistent runner such as
 	// buildkite-pytest runs the tests instead of the test commands.
 	PersistentRunner bool `json:"-"`
+	// PluginPath is an explicit path to a plugin directory (including
+	// subdirectories or "root//subdir" syntax) or standalone executable.
+	PluginPath string `json:"-"`
+	// PluginDirs are directories whose subdirectories are scanned for plugins.
+	PluginDirs []string `json:"-"`
+	// PluginVariant optionally selects a plugin kind ("go" or "bash") when
+	// multiple variants of the same runner are available in PluginDirs.
+	PluginVariant string `json:"-"`
 	// PlanOut is the full test plan output path for run and plan. Only plan
 	// supports "-" for stdout. Run marks local fallback plans with fallback: true.
 	PlanOut string `json:"-"`

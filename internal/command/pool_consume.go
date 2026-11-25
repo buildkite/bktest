@@ -119,14 +119,12 @@ func consumeBatches(ctx context.Context, source *poolSource, run func(ctx contex
 // the batch report. Failures without a usable report are errored results.
 func runPoolCommand(ctx context.Context, testRunner runner.TestRunner, batch runnerexec.Batch, retry bool) runnerexec.Result {
 	format := testRunner.ResultFormat()
-	_, pytest := testRunner.(runner.Pytest)
-	if pytest {
-		// pytest's ResultFormat is for uploads, and is empty when
-		// buildkite-test-collector uploads its JSON report itself.
-		format = "pytest-json"
-		if testRunner.ResultFormat() == "junit" {
-			format = "pytest-junit"
+	nonRetryableExitCodes := false
+	if batchRunner, ok := testRunner.(runner.BatchReportRunner); ok {
+		if batchFmt := batchRunner.BatchReportFormat(); batchFmt != "" {
+			format = batchFmt
 		}
+		nonRetryableExitCodes = batchRunner.PoolNonRetryableExitCodes()
 	}
 	errored := func(message string, args ...any) runnerexec.Result {
 		fmt.Printf("Buildkite Test Engine Client: "+message+"\n", args...)
@@ -154,7 +152,7 @@ func runPoolCommand(ctx context.Context, testRunner runner.TestRunner, batch run
 	}
 	// Like bktec run, pytest exiting other than for failed tests, such as when
 	// it's interrupted, is an error even if the report has failed tests.
-	if exitCode := new(exec.ExitError); pytest && errors.As(exitErr, &exitCode) && exitCode.ExitCode() != 1 {
+	if exitCode := new(exec.ExitError); nonRetryableExitCodes && errors.As(exitErr, &exitCode) && exitCode.ExitCode() != 1 {
 		return errored("%s exited with %v", testRunner.Name(), exitErr)
 	}
 	if exitErr != nil {

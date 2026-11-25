@@ -482,8 +482,16 @@ func uploadResults(ctx context.Context, apiClient *api.Client, cfg *config.Confi
 	if _, err := os.Stat(testRunner.ResultFilePath()); err != nil {
 		return
 	}
+	runnerName := cfg.TestRunner
+	if runnerName == "" || strings.Contains(runnerName, "/") || strings.Contains(runnerName, `\`) {
+		if cfg.PluginPath != "" || runnerName != "" {
+			if idProvider, ok := testRunner.(runner.RunnerIDProvider); ok && idProvider.RunnerID() != "" {
+				runnerName = idProvider.RunnerID()
+			}
+		}
+	}
 	fmt.Println("Buildkite Test Engine Client: Uploading test results to Test Engine")
-	if err := apiClient.UploadTestResults(ctx, cfg.UploadToken, testRunner.ResultFilePath(), format, cfg.TestRunner, testRunner.LocationPrefix(), cfg.UploadTags); err != nil {
+	if err := apiClient.UploadTestResults(ctx, cfg.UploadToken, testRunner.ResultFilePath(), format, runnerName, testRunner.LocationPrefix(), cfg.UploadTags); err != nil {
 		fmt.Printf("Buildkite Test Engine Client: Failed to upload test results to Test Engine: %v\n", err)
 	}
 }
