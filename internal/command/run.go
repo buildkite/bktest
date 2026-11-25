@@ -53,6 +53,9 @@ func Run(ctx context.Context, cfg *config.Config, testListFilename string) error
 	if err != nil {
 		return fmt.Errorf("unsupported value for BUILDKITE_TEST_ENGINE_TEST_RUNNER: %w", err)
 	}
+	if closer, ok := testRunner.(io.Closer); ok {
+		defer closer.Close()
+	}
 
 	testTargets, err := getTestTargets(cfg, testRunner, testListFilename)
 	if err != nil {

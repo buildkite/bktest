@@ -1,0 +1,5 @@
+{
+  "runner": "cucumber",
+  "protocol_version": 1,
+  "command": ["./bktest-runner-cucumber"]
+}

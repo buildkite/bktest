@@ -1,0 +1,5 @@
+{
+  "runner": "vitest",
+  "protocol_version": 1,
+  "command": ["./bktest-runner-vitest"]
+}

@@ -18,6 +18,12 @@ func BuildCommand(runner TestRunner, testCases []plan.TestCase, retry bool) (*ex
 		return nil, fmt.Errorf("failed to build command: %w", err)
 	}
 
+	return commandWithEnvironment(runner, commandName, commandArgs), nil
+}
+
+// commandWithEnvironment returns the test command with the environment
+// overrides bktest gives every test process.
+func commandWithEnvironment(runner TestRunner, commandName string, commandArgs []string) *exec.Cmd {
 	cmd := exec.Command(commandName, commandArgs...)
 
 	overrides := map[string]string{
@@ -29,8 +35,7 @@ func BuildCommand(runner TestRunner, testCases []plan.TestCase, retry bool) (*ex
 		}
 	}
 	cmd.Env = environmentWithOverrides(os.Environ(), overrides)
-
-	return cmd, nil
+	return cmd
 }
 
 func environmentWithOverrides(environment []string, overrides map[string]string) []string {
