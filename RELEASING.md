@@ -14,14 +14,13 @@ stages and verifies one build of the reviewed canonical commit, distributed
 under both executable names. The legacy release pipeline is archived; do not
 unblock or retry its historical publisher jobs.
 
-**Routine publication is not yet enabled.** After activation, the first
-release approval allows the pipeline to sync and tag the legacy Go module
-and publish both versioned GitHub releases from the retained build. Stable
-releases also publish versioned Files and images, then require separate
-approval before publishing native packages or updating Homebrew and Latest.
-Prereleases do not move the stable channels. Treat both tags and all published
-versions as immutable. Follow the [CLI release runbook](docs/cli-release-rehearsal.md)
-for the approvals, credential setup, and recovery procedure.
+With `CLI_RELEASE_GITHUB_ENABLED=true` on `bktest-release`, a `v3.x.y-rc.N`
+tag push starts the GitHub-only release candidate workflow. After the release
+approval and the reviewed legacy sync PR, it tags the legacy Go module and
+publishes both GitHub prereleases from the retained build. Stable tags still
+only stage artifacts; no registry, Homebrew, or Latest pointer moves on an RC.
+Treat both tags and all published versions as immutable. Follow the
+[CLI release runbook](docs/cli-release-rehearsal.md) for approvals and recovery.
 
 ## Shared release contract
 

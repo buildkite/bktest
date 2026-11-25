@@ -50,12 +50,13 @@ Both GitHub releases are simulated for prereleases; the stage still contains
 Files and packages, but no prerelease registry publication is enabled. A
 pre-existing fake stable pointer is untouched, even with a staged Files archive.
 
-## Automated tag workflow (disabled during cutover)
+## GitHub-only release candidate workflow
 
-The route is disabled in the pipeline itself. The environment opt-in is
-not a security boundary and cannot enable the route on its own.
+Set `CLI_RELEASE_GITHUB_ENABLED=true` on `bktest-release` after verifying RC
+writer access and tag protection. Only a `v3.x.y-rc.N` tag webhook can enter
+the publish group. Stable tags and other prereleases still only stage.
 
-Once enabled, push an approved, unused CLI tag pointing at the reviewed
+Once opted in, push an approved, unused RC tag pointing at the reviewed
 canonical `main` commit. The build compiles and verifies once. At the first
 `test-engine` block, enter the archive SHA-256 and exact stage job UUID from
 the verifier receipt, never credentials. The sync job verifies the archive and
@@ -69,10 +70,14 @@ reports that the target already matches, unblock without opening a PR.
 
 The paired publisher uses that exact archive and verified legacy commit,
 checks both refs and publishes both GitHub releases without setting Latest.
-Stable builds then publish and read back the seven versioned Files and the
-two OCI architecture aliases and multi-arch index in all three registries.
-Prereleases stop after both GitHub releases. The legacy stable Go discovery
-path can change as soon as its tag is created; approve that at the first block.
+Verify both prereleases and their assets by exact version. No stable channel moves.
+
+### Stable promotion (not enabled)
+
+After a separate stable activation, stable builds publish and read back the
+seven versioned Files and the two OCI architecture aliases and multi-arch
+index in all three registries. The legacy stable Go discovery path can change
+as soon as its tag is created; approve that at the first block.
 
 At the stable block, pin the current tap head, legacy GitHub Latest release
 ID, and each registry's OCI Latest digest. List only missing native packages
