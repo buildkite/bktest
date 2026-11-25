@@ -21,6 +21,10 @@ def digest(path):
         return hashlib.file_digest(data, "sha256").hexdigest()
 
 
+def native_path(package, version, arch, fmt):
+    return f"packages/{fmt}/{package}_{version}_linux_{arch}.{fmt}"
+
+
 def stage(version, source, payloads, out):
     if not re.fullmatch(VERSION, version) or not re.fullmatch(r"[a-f0-9]{40}", source):
         raise ValueError("expected a CLI v3 version (without v) and full source SHA")
@@ -86,18 +90,23 @@ def stage(version, source, payloads, out):
                 contents=[dict(src=str(payload.resolve()), dst=f"/usr/bin/{name}", file_info={"mode": 493})
                           for name in ("bktest", "bktec")],
             )
+            metapackage = dict(package, name="bktest", provides=[], contents=[], overrides={
+                "deb": {"depends": ["bktec (>= 3.6.0)"]},
+                "rpm": {"depends": ["bktec >= 3.6.0"]},
+            })
             with tempfile.TemporaryDirectory(dir=out) as temp:
                 config = Path(temp) / "nfpm.yaml"
-                config.write_text(json.dumps(package))  # JSON is valid YAML.
-                for fmt in ("deb", "rpm"):
-                    name = f"bktec_{version}_linux_{arch}.{fmt}"
-                    relative = f"packages/{fmt}/{name}"
-                    path = out / relative
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    subprocess.run(["nfpm", "package", "--config", config, "--packager", fmt,
-                                    "--target", path], check=True)
-                    assets[relative] = digest(path)
-                    write(f"github/test-engine-client/{name}", copy=path)
+                for metadata in (package, metapackage):
+                    config.write_text(json.dumps(metadata))  # JSON is valid YAML.
+                    for fmt in ("deb", "rpm"):
+                        relative = native_path(metadata["name"], version, arch, fmt)
+                        path = out / relative
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        subprocess.run(["nfpm", "package", "--config", config, "--packager", fmt,
+                                        "--target", path], check=True)
+                        assets[relative] = digest(path)
+                        if metadata is package:
+                            write(f"github/test-engine-client/{path.name}", copy=path)
 
     for directory, name in (("github/bktest", f"bktest_{version}_checksums.txt"),
                             ("github/test-engine-client", f"bktec_{version}_checksums.txt"),

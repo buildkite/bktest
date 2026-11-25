@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 
 from publish import open_stage, validate_ref
+from stage import native_path
 
 
 def main():
@@ -14,6 +15,7 @@ def main():
     parser.add_argument('--archive-sha256', required=True)
     parser.add_argument('--tag', required=True)
     parser.add_argument('--source', required=True)
+    parser.add_argument('--package', choices=('bktec', 'bktest'), default='bktec')
     parser.add_argument('--format', required=True, choices=('deb', 'rpm'))
     parser.add_argument('--arch', required=True, choices=('amd64', 'arm64'))
     parser.add_argument('--confirmed-missing', action='store_true',
@@ -22,9 +24,8 @@ def main():
     validate_ref(args.tag, args.source, mode='stable')
     fmt = args.format
     with open_stage(args.archive, args.archive_sha256, args.tag, args.source) as stage:
-        name = f'bktec_{stage.version}_linux_{args.arch}.{fmt}'
-        asset = stage.assets[f'packages/{fmt}/{name}']
-        print(f'{name} sha256:{asset.sha256}', flush=True)
+        asset = stage.assets[native_path(args.package, stage.version, args.arch, fmt)]
+        print(f'{asset.path.name} sha256:{asset.sha256}', flush=True)
         if not args.confirmed_missing:
             return
         audience = f'https://packages.buildkite.com/buildkite/test-engine-client-{fmt}'
