@@ -134,10 +134,12 @@ and push to the existing repository. Verify both roles deny other pipelines.
 Use separate creation and immutability rules for `v3.*` on both source
 repositories: permit creation only for approved principals, and protect
 updates/deletions without granting bypass of those protections. Verify all
-legacy writer access is retired before transferring trust. Set up the
-`cli-oci` queue with Python 3.11+, Buildx capable of exporting amd64 and arm64
-OCI archives, Skopeo, AWS CLI, and jq. The GitHub writer hosts also need AWS
-CLI and jq for the plugins. Keep the `cli-build-oci` job credential-free.
+legacy writer access is retired before transferring trust. The OCI jobs use
+the existing `hosted` queue. Before enabling publication, verify that Buildx
+can export amd64 and arm64 OCI archives there without pushing. The OCI jobs
+need Python 3.11+, and the copy jobs need Skopeo, AWS CLI, and jq for publishing
+and authentication. The GitHub writer hosts also need AWS CLI and jq for the
+plugins. Keep the `cli-build-oci` job credential-free.
 Do not configure a queue-wide credential. Enable the group in a reviewed
 change only after a no-public-write rehearsal
 demonstrates the credential boundaries and the release owner accepts recovery.
