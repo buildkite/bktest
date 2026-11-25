@@ -1,0 +1,10 @@
+{
+  "protocol_version": 1,
+  "name": "custom",
+  "display_name": "Custom test runner",
+  "kind": "go",
+  "entrypoint": "./bktest-plugin-custom",
+  "build": {
+    "go_package": "."
+  }
+}

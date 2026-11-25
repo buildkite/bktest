@@ -1,0 +1,7 @@
+{
+  "protocol_version": 1,
+  "name": "vitest",
+  "display_name": "Vitest",
+  "kind": "bash",
+  "entrypoint": "./plugin.sh"
+}

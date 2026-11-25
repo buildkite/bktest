@@ -1,0 +1,10 @@
+{
+  "protocol_version": 1,
+  "name": "cypress",
+  "display_name": "Cypress",
+  "kind": "go",
+  "entrypoint": "./bktest-plugin-cypress",
+  "build": {
+    "go_package": "."
+  }
+}

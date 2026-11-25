@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Builds all Go runner plugins into their subdirectories (matching each
+# plugin.json entrypoint) and validates all Bash runner plugins.
+#
+# Usage:
+#   bin/build-plugins            # builds Go plugins in place under plugins/go/<name>/
+#   bin/build-plugins --check    # also runs configure smoke checks on all 18 plugins
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CHECK=false
+if [[ "${1:-}" == "--check" ]]; then
+  CHECK=true
+fi
+
+RUNNERS=(cucumber custom cypress gotest jest playwright pytest rspec vitest)
+
+echo "Building Go plugins..."
+for r in "${RUNNERS[@]}"; do
+  dir="$REPO_ROOT/plugins/go/$r"
+  out="$dir/bktest-plugin-$r"
+  (cd "$REPO_ROOT" && go build -o "$out" "./plugins/go/$r")
+  echo "  built plugins/go/$r/bktest-plugin-$r"
+done
+
+echo "Validating Bash plugins..."
+for r in "${RUNNERS[@]}"; do
+  script="$REPO_ROOT/plugins/bash/$r/plugin.sh"
+  bash -n "$script"
+  chmod +x "$script"
+  echo "  ok    plugins/bash/$r/plugin.sh"
+done
+
+if [[ "$CHECK" == "true" ]]; then
+  echo "Running configure smoke checks across all 18 plugins..."
+  for variant in go bash; do
+    for r in "${RUNNERS[@]}"; do
+      if [[ "$variant" == "go" ]]; then
+        exe="$REPO_ROOT/plugins/go/$r/bktest-plugin-$r"
+      else
+        exe="$REPO_ROOT/plugins/bash/$r/plugin.sh"
+      fi
+      if [[ "$r" == "custom" ]]; then
+        req='{"protocol_version":1,"config":{"test_command":"echo {{testExamples}}","test_file_pattern":"*.test"}}'
+      else
+        req='{"protocol_version":1,"config":{}}'
+      fi
+      name="$(printf '%s' "$req" | "$exe" configure | jq -r '.name')"
+      printf '  %-4s %-10s -> %s\n' "$variant" "$r" "$name"
+    done
+  done
+fi

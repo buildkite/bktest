@@ -1,0 +1,11 @@
+{
+  "protocol_version": 1,
+  "name": "playwright",
+  "display_name": "Playwright",
+  "kind": "go",
+  "entrypoint": "./bktest-plugin-playwright",
+  "build": {
+    "go_package": "."
+  },
+  "report_formats": ["playwright-json"]
+}

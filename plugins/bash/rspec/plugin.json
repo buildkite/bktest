@@ -1,0 +1,8 @@
+{
+  "protocol_version": 1,
+  "name": "rspec",
+  "display_name": "RSpec",
+  "kind": "bash",
+  "entrypoint": "./plugin.sh",
+  "report_formats": ["rspec-json"]
+}

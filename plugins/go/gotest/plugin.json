@@ -1,0 +1,10 @@
+{
+  "protocol_version": 1,
+  "name": "gotest",
+  "display_name": "gotest",
+  "kind": "go",
+  "entrypoint": "./bktest-plugin-gotest",
+  "build": {
+    "go_package": "."
+  }
+}

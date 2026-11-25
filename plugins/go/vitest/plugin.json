@@ -1,0 +1,10 @@
+{
+  "protocol_version": 1,
+  "name": "vitest",
+  "display_name": "Vitest",
+  "kind": "go",
+  "entrypoint": "./bktest-plugin-vitest",
+  "build": {
+    "go_package": "."
+  }
+}
