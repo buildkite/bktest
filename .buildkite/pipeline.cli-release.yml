@@ -28,63 +28,6 @@ steps:
             - BUILDKITE_BUILD_ID
             - BUILDKITE_TAG
 
-  - label: "Smoke-test OCI export and copy without publishing"
-    key: cli-oci-smoke
-    if: >-
-      pipeline.slug == "bktest-release" && build.branch == "rehearse-hosted-cli-oci" &&
-      build.tag == null && build.source == "ui"
-    depends_on: cli-stage-verify
-    agents: {queue: hosted}
-    command: |
-      set -eu
-      tmp=$$(mktemp -d)
-      trap 'rm -rf "$$tmp"' EXIT
-      buildkite-agent artifact download dist/cli-release.tar "$$tmp" --step cli-stage
-      mkdir "$$tmp/context"
-      tar -xf "$$tmp/dist/cli-release.tar" -C "$$tmp/context"
-      docker buildx version
-      docker buildx inspect --bootstrap
-      for arch in amd64 arm64; do
-        docker buildx build --platform "linux/$$arch" \
-          --provenance=false --sbom=false \
-          --output "type=oci,dest=$$tmp/linux_$$arch.tar" \
-          "$$tmp/context/image/linux_$$arch"
-        test -s "$$tmp/linux_$$arch.tar"
-        tar -tf "$$tmp/linux_$$arch.tar" > "$$tmp/linux_$$arch.members"
-        grep -Fx index.json "$$tmp/linux_$$arch.members"
-        echo "OCI export passed: linux/$$arch"
-      done
-      PYTHONPATH=packaging/cli python3 -B - "$$tmp" <<'PY'
-      import json
-      from pathlib import Path
-      import sys
-
-      from publish_oci import ARCHES, SKOPEO_IMAGE, digest, layout, run
-
-      tmp = Path(sys.argv[1])
-      source, destination = tmp / 'oci', tmp / 'copied'
-      tag = 'rehearsal'
-      refs = layout(source, [tmp / f'linux_{arch}.tar' for arch in ARCHES], tag)
-      destination.mkdir()
-      auth = tmp / 'auth.json'
-      auth.touch(mode=0o600)
-      auth.write_text('{"auths":{}}')
-      run('docker', 'run', '--rm', '--network', 'none',
-          '--mount', f'type=bind,src={source},dst=/release/oci,readonly',
-          '--mount', f'type=bind,src={auth},dst=/release/auth.json,readonly',
-          '--mount', f'type=bind,src={destination},dst=/output',
-          SKOPEO_IMAGE, 'copy', '--all', '--preserve-digests', '--dest-authfile', '/release/auth.json',
-          f'oci:/release/oci:{tag}', f'oci:/output:{tag}')
-      copied, = json.loads((destination / 'index.json').read_bytes())['manifests']
-      if copied['digest'] != refs[tag]:
-          raise ValueError('copied OCI index differs from source')
-      for ref, expected in refs.items():
-          blob = destination / 'blobs/sha256' / expected.removeprefix('sha256:')
-          if digest(blob.read_bytes()) != expected:
-              raise ValueError(f'copied OCI manifest differs: {ref}')
-      print(f'Local copy preserved both architectures and index {refs[tag]}')
-      PY
-
   # This route stays off until tag protection, the approvers and the
   # step-scoped credentials are in place.
   - group: ":package: CLI publication and promotion"
@@ -345,3 +288,46 @@ steps:
               mount-buildkite-agent: true
               propagate-uid-gid: true
               environment: [BUILDKITE_BUILD_ID, BUILDKITE_TAG, GH_TOKEN]
+
+  - label: "Check Dev role, SSM, and Docker Hub login without publishing"
+    key: cli-auth-dockerhub
+    if: &auth_rehearsal >-
+      pipeline.slug == "bktest-release" && build.branch == "rehearse-hosted-cli-oci" &&
+      build.tag == null && build.source == "ui"
+    agents: {queue: hosted}
+    plugins: *dockerhub_auth
+    command: |
+      set +x
+      set -euo pipefail
+      arn=$$(aws sts get-caller-identity --query Arn --output text)
+      case "$$arn" in
+        arn:aws:sts::445615400570:assumed-role/pipeline-buildkite-bktest-release-cli/*) ;;
+        *) echo 'Unexpected Dev role identity' >&2; exit 1 ;;
+      esac
+      test -n "$${CLI_DOCKERHUB_USER:-}" && test -n "$${CLI_DOCKERHUB_TOKEN:-}" || {
+        echo 'Docker Hub parameters missing or empty' >&2; exit 1;
+      }
+      config=$$(mktemp -d)
+      trap 'rm -rf "$$config"' EXIT
+      printf '%s\n' "$$CLI_DOCKERHUB_TOKEN" |
+        docker --config "$$config" login >/dev/null --username "$$CLI_DOCKERHUB_USER" --password-stdin
+      echo 'Dev role, both SSM parameters, and Docker Hub login verified'
+
+  - label: "Check Dist role and ECR Public login without publishing"
+    key: cli-auth-ecr
+    if: *auth_rehearsal
+    agents: {queue: hosted}
+    plugins: *ecr_auth
+    command: |
+      set +x
+      set -euo pipefail
+      arn=$$(aws sts get-caller-identity --query Arn --output text)
+      case "$$arn" in
+        arn:aws:sts::172840064832:assumed-role/pipeline-buildkite-bktest-release-cli-ecr-public/*) ;;
+        *) echo 'Unexpected Dist role identity' >&2; exit 1 ;;
+      esac
+      config=$$(mktemp -d)
+      trap 'rm -rf "$$config"' EXIT
+      aws ecr-public get-login-password --region us-east-1 |
+        docker --config "$$config" login >/dev/null public.ecr.aws --username AWS --password-stdin
+      echo 'Dist role and ECR Public login verified'
