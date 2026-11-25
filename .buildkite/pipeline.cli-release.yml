@@ -135,7 +135,7 @@ steps:
         key: cli-build-oci
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-github-approval
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         command: python3 -B packaging/cli/publish_oci.py build
         artifact_paths: "dist/cli-oci/*"
 
@@ -143,7 +143,7 @@ steps:
         key: cli-publish-dockerhub
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: [cli-build-oci, cli-publish-github]
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py versioned dockerhub
@@ -158,7 +158,7 @@ steps:
         key: cli-publish-ecr
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: [cli-build-oci, cli-publish-github]
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py versioned ecr
@@ -172,7 +172,7 @@ steps:
         key: cli-publish-packages-oci
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: [cli-build-oci, cli-publish-github]
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py versioned packages
@@ -248,7 +248,7 @@ steps:
         key: cli-promote-dockerhub
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-native-readback
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py latest dockerhub
@@ -258,7 +258,7 @@ steps:
         key: cli-promote-ecr
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-native-readback
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py latest ecr
@@ -268,7 +268,7 @@ steps:
         key: cli-promote-packages-oci
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-native-readback
-        agents: {queue: cli-oci}
+        agents: {queue: hosted}
         concurrency: 1
         concurrency_group: bktest-release/cli-oci
         command: python3 -B packaging/cli/publish_oci.py latest packages
