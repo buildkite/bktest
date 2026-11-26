@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -252,6 +253,9 @@ func getExamplesWithPrefix(filePaths []string, testRunner runner.TestRunner) ([]
 	}
 
 	examples, err := discoverer.GetExamples(trimmedPaths)
+	if errors.Is(err, runner.ErrNoExampleDiscovery) {
+		return nil, fmt.Errorf("runner %q advertises split by example but does not implement example discovery", testRunner.Name())
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get examples: %w", err)
 	}

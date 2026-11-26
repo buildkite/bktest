@@ -915,7 +915,7 @@ func TestRunTestsWithRetry_GoTestBuildFailed(t *testing.T) {
 
 func TestFetchOrCreateTestPlan(t *testing.T) {
 	files := []string{"apple"}
-	testRunner := runner.Rspec{}
+	testRunner := runner.NewRspec(runner.RunnerConfig{})
 
 	// mock server to return a test plan
 	response := `{
@@ -1018,7 +1018,7 @@ func TestFetchOrCreateTestPlanPlanningSummary(t *testing.T) {
 			client := api.NewClient(api.ClientConfig{ServerBaseURL: svr.URL})
 			getStderr := captureStderr(t)
 			printPlanningRequest(os.Stderr, cfg)
-			p, raw, err := fetchOrCreateTestPlan(context.Background(), client, cfg, []string{"apple", "banana"}, runner.Rspec{})
+			p, raw, err := fetchOrCreateTestPlan(context.Background(), client, cfg, []string{"apple", "banana"}, runner.NewRspec(runner.RunnerConfig{}))
 			stderr := getStderr()
 			if err != nil {
 				t.Fatal(err)
@@ -1098,7 +1098,7 @@ func requestMetadata(t *testing.T, body []byte) map[string]any {
 
 func TestFetchOrCreateTestPlan_CollectsGitMetadataWhenSelectionActive(t *testing.T) {
 	files := []string{"apple"}
-	testRunner := runner.Rspec{}
+	testRunner := runner.NewRspec(runner.RunnerConfig{})
 
 	svr, getBody := captureRequestBody(t)
 
@@ -1135,7 +1135,7 @@ func TestFetchOrCreateTestPlan_CollectsGitMetadataWhenSelectionActive(t *testing
 
 func TestFetchOrCreateTestPlan_NoGitMetadataWithoutSelection(t *testing.T) {
 	files := []string{"apple"}
-	testRunner := runner.Rspec{}
+	testRunner := runner.NewRspec(runner.RunnerConfig{})
 
 	svr, getBody := captureRequestBody(t)
 
@@ -1229,7 +1229,7 @@ func TestFetchOrCreateTestPlan_CachedPlan(t *testing.T) {
 	})
 
 	tests := []string{"banana"}
-	testRunner := runner.Rspec{}
+	testRunner := runner.NewRspec(runner.RunnerConfig{})
 
 	want := plan.TestPlan{
 		Tasks: map[string]*plan.Task{
@@ -1252,7 +1252,7 @@ func TestFetchOrCreateTestPlan_CachedPlan(t *testing.T) {
 
 func TestFetchOrCreateTestPlan_PlanError(t *testing.T) {
 	files := []string{"apple", "banana", "cherry", "mango"}
-	TestRunner := runner.Rspec{}
+	TestRunner := runner.NewRspec(runner.RunnerConfig{})
 
 	// mock server to return an error plan
 	response := `{
@@ -1315,7 +1315,7 @@ func TestFetchOrCreateTestPlan_ZeroMatchSelection(t *testing.T) {
 			cfg := config.Config{Parallelism: 2, Identifier: "identifier", ServerBaseURL: svr.URL}
 			apiClient := api.NewClient(api.ClientConfig{ServerBaseURL: cfg.ServerBaseURL})
 
-			got, raw, err := fetchOrCreateTestPlan(context.Background(), apiClient, &cfg, []string{"apple", "banana"}, runner.Rspec{})
+			got, raw, err := fetchOrCreateTestPlan(context.Background(), apiClient, &cfg, []string{"apple", "banana"}, runner.NewRspec(runner.RunnerConfig{}))
 			if err != nil {
 				t.Fatalf("fetchOrCreateTestPlan() error = %v", err)
 			}
@@ -1374,7 +1374,7 @@ func TestRun_ZeroMatchSelection(t *testing.T) {
 
 func TestFetchOrCreateTestPlan_InternalServerError(t *testing.T) {
 	files := []string{"red", "orange", "yellow", "green", "blue", "indigo", "violet"}
-	testRunner := runner.Rspec{}
+	testRunner := runner.NewRspec(runner.RunnerConfig{})
 
 	// mock server to return a 500 Internal Server Error
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1466,7 +1466,7 @@ func TestFetchOrCreateTestPlan_SelectorOptInFallbackUsesPathTasks(t *testing.T) 
 
 func TestFetchOrCreateTestPlan_BadRequest(t *testing.T) {
 	files := []string{"apple", "banana"}
-	testRunner := runner.Rspec{}
+	testRunner := runner.NewRspec(runner.RunnerConfig{})
 
 	// mock server to return 400 Bad Request with JSON body
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1504,7 +1504,7 @@ func TestFetchOrCreateTestPlan_BadRequest(t *testing.T) {
 
 func TestFetchOrCreateTestPlan_BillingError(t *testing.T) {
 	files := []string{"apple", "banana"}
-	testRunner := runner.Rspec{}
+	testRunner := runner.NewRspec(runner.RunnerConfig{})
 
 	// mock server to return 403 with a billing error
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1545,7 +1545,7 @@ func TestFetchOrCreateTestPlan_BillingError(t *testing.T) {
 
 func TestFetchOrCreateTestPlan_AuthError(t *testing.T) {
 	files := []string{"apple", "banana"}
-	testRunner := runner.Rspec{}
+	testRunner := runner.NewRspec(runner.RunnerConfig{})
 
 	// mock server to return 401 Unauthorized
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1582,7 +1582,7 @@ func TestFetchOrCreateTestPlan_AuthError(t *testing.T) {
 
 func TestFetchOrCreateTestPlan_ForbiddenError(t *testing.T) {
 	files := []string{"apple", "banana"}
-	testRunner := runner.Rspec{}
+	testRunner := runner.NewRspec(runner.RunnerConfig{})
 
 	// mock server to return 403 with a non-billing forbidden error
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

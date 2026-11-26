@@ -23,6 +23,7 @@ import (
 	"github.com/buildkite/bktest/v3/internal/api"
 	"github.com/buildkite/bktest/v3/internal/config"
 	"github.com/buildkite/bktest/v3/internal/plan"
+	"github.com/buildkite/bktest/v3/internal/runner"
 	"github.com/buildkite/bktest/v3/internal/runnerexec"
 	"github.com/buildkite/bktest/v3/internal/version"
 	"github.com/urfave/cli/v3"
@@ -794,7 +795,7 @@ func TestPoolExecRequestsNoLeaseBeforeRunnerConnects(t *testing.T) {
 		return r, nil
 	}}
 	opts := runnerexec.Options{StartupTimeout: 500 * time.Millisecond, BatchTimeout: time.Second, ShutdownTimeout: time.Second}
-	err := runPool(context.Background(), f, api.Pool{ID: "pool", State: "consuming"}, 0, 0, log.New(io.Discard, "", 0), func(ctx context.Context, source *poolSource) error {
+	err := runPool(context.Background(), f, api.Pool{ID: "pool", State: "consuming"}, 0, 0, log.New(io.Discard, "", 0), runner.ParseNativeReport, func(ctx context.Context, source *poolSource) error {
 		return runnerexec.Run(ctx, exec.Command("sleep", "60"), source, opts)
 	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "runner startup timeout") {

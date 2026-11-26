@@ -53,6 +53,10 @@ func NewPluginRunner(plugin pluginhost.Plugin, r RunnerConfig) (*PluginRunner, e
 		_ = p.Close()
 		return nil, err
 	}
+	if p.info.Features.SplitByExample && !p.supports(runnerplugin.OpDiscoverExamples) {
+		_ = p.Close()
+		return nil, fmt.Errorf("runner %q supports split by example but does not implement %s", p.info.Name, runnerplugin.OpDiscoverExamples)
+	}
 	resolved := p.info.Config
 	p.TestCommand = resolved.TestCommand
 	p.RetryTestCommand = resolved.RetryTestCommand
@@ -155,9 +159,13 @@ func (p *PluginRunner) DiscoverTestTargets() ([]string, error) {
 	return files, nil
 }
 
+// ErrNoExampleDiscovery is returned by GetExamples for a runner plugin
+// that doesn't implement example discovery.
+var ErrNoExampleDiscovery = errors.New("the runner does not implement example discovery")
+
 func (p *PluginRunner) GetExamples(files []string) ([]plan.TestCase, error) {
 	if !p.supports(runnerplugin.OpDiscoverExamples) {
-		return nil, fmt.Errorf("runner %q does not implement example discovery", p.Name())
+		return nil, ErrNoExampleDiscovery
 	}
 	response, err := p.plugin.DiscoverExamples(runnerplugin.DiscoverExamplesRequest{
 		ProtocolVersion: runnerplugin.ProtocolVersion,
@@ -291,10 +299,14 @@ func (p *PluginRunner) ParseBatchReport(format string, data []byte) (ParsedRepor
 	if !p.supports(runnerplugin.OpParseBatchReport) {
 		return ParsedReport{}, fmt.Errorf("unsupported runner report format %q", format)
 	}
+	return parseBatchReport(p.plugin, p.pluginConfig(), p.stateDir, format, data)
+}
+
+func parseBatchReport(plugin pluginhost.Plugin, config runnerplugin.Config, stateDir, format string, data []byte) (ParsedReport, error) {
 	// Plugins read the report from a file, like the reports they interpret
 	// after a test command. A file also suits a script better than a large
 	// JSON string.
-	file, err := os.CreateTemp(p.stateDir, "batch-report-*")
+	file, err := os.CreateTemp(stateDir, "batch-report-*")
 	if err != nil {
 		return ParsedReport{}, err
 	}
@@ -306,10 +318,10 @@ func (p *PluginRunner) ParseBatchReport(format string, data []byte) (ParsedRepor
 	if err != nil {
 		return ParsedReport{}, err
 	}
-	response, err := p.plugin.ParseBatchReport(runnerplugin.ParseBatchReportRequest{
+	response, err := plugin.ParseBatchReport(runnerplugin.ParseBatchReportRequest{
 		ProtocolVersion: runnerplugin.ProtocolVersion,
-		Config:          p.pluginConfig(),
-		StateDir:        p.stateDir,
+		Config:          config,
+		StateDir:        stateDir,
 		Format:          format,
 		ReportPath:      file.Name(),
 	})

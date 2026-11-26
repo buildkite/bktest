@@ -28,7 +28,40 @@ import (
 
 // TestPoolConsumeJest runs real Jest commands against a fake Scheduler: a new
 // command per lease and per local retry round, with muting and accounting.
-func TestPoolConsumeJest(t *testing.T) {
+func TestPoolConsumeJest(t *testing.T) { testPoolConsumeJest(t, "") }
+
+// TestPoolConsumeJestRunnerPlugin requires the same outcome when an external
+// runner plugin prepares the commands and parses their reports.
+func TestPoolConsumeJestRunnerPlugin(t *testing.T) {
+	plugins, err := filepath.Abs(filepath.Join("..", "..", "plugins", "jest"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("bash", func(t *testing.T) {
+		if _, err := exec.LookPath("jq"); err != nil {
+			t.Skip("the Bash runner plugins need jq")
+		}
+		testPoolConsumeJest(t, filepath.Join(plugins, "bash"))
+	})
+	t.Run("go", func(t *testing.T) {
+		dir := t.TempDir()
+		build := exec.Command("go", "build", "-o", filepath.Join(dir, "bktest-runner-jest"), ".")
+		build.Dir = filepath.Join(plugins, "go")
+		if out, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("go build: %v\n%s", err, out)
+		}
+		manifest, err := os.ReadFile(filepath.Join(plugins, "go", "plugin.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "plugin.json"), manifest, 0600); err != nil {
+			t.Fatal(err)
+		}
+		testPoolConsumeJest(t, dir)
+	})
+}
+
+func testPoolConsumeJest(t *testing.T, runnerPlugin string) {
 	jest, err := filepath.Abs(filepath.Join("..", "runner", "testdata", "node_modules", ".bin", "jest"))
 	if err != nil {
 		t.Fatal(err)
@@ -127,6 +160,7 @@ test('renders twice', () => {})`,
 	cfg := config.New()
 	cfg.PoolID, cfg.OrganizationSlug, cfg.SuiteSlug, cfg.TestRunner = "existing", "org", "suite", "jest"
 	cfg.ServerBaseURL, cfg.UploadBaseURL, cfg.AccessToken, cfg.OIDC = server.URL, server.URL, "header.payload.signature", false
+	cfg.RunnerPlugin = runnerPlugin
 	cfg.ResultPath = filepath.Join(dir, "jest.json")
 	cfg.UploadResults, cfg.UploadToken = true, "upload-token"
 	cfg.TestCommand = jest + " --runTestsByPath {{testExamples}} --json --testLocationInResults --outputFile {{resultPath}}"

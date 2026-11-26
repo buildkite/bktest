@@ -863,6 +863,7 @@ You can also find example configurations and usage instructions for each test ru
 - [RSpec](./docs/rspec.md)
 - [Cucumber](./docs/cucumber.md)
 - [Custom Test Runner](./docs/custom-test-runner.md)
+- [Runner plugins](./docs/runner-plugins.md) (experimental): replace a built-in runner or add your own
 
 ### Debugging
 

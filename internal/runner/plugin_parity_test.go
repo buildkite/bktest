@@ -199,8 +199,6 @@ func (sc parityScenario) newRunner(t *testing.T, variant string) (parityRunner, 
 	t.Helper()
 	var plugin pluginhost.Plugin
 	switch variant {
-	case "old":
-		return oldBuiltinRunner(t, sc.runner, sc.config)
 	case "built-in":
 		newHandler, ok := runners.Builtin[sc.runner]
 		if !ok {

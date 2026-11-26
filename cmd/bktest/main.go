@@ -13,8 +13,11 @@ import (
 	"github.com/buildkite/bktest/v3/internal/config"
 	"github.com/buildkite/bktest/v3/internal/debug"
 	"github.com/buildkite/bktest/v3/internal/git"
+	"github.com/buildkite/bktest/v3/internal/pluginhost"
 	"github.com/buildkite/bktest/v3/internal/runnerexec"
+	"github.com/buildkite/bktest/v3/internal/runners"
 	"github.com/buildkite/bktest/v3/internal/version"
+	"github.com/buildkite/bktest/v3/pkg/runnerplugin"
 	"github.com/urfave/cli/v3"
 )
 
@@ -33,6 +36,10 @@ func run(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
+	if err := applyRunnerPlugin(); err != nil {
+		return err
+	}
+
 	if err := cfg.ValidateForRun(); err != nil {
 		return fmt.Errorf("bktec run: invalid configuration:\n%w", err)
 	}
@@ -45,6 +52,10 @@ func plan(ctx context.Context, cmd *cli.Command) error {
 	debug.SetOutput(os.Stderr)
 
 	if err := applyPlanRequestContext(cmd); err != nil {
+		return err
+	}
+
+	if err := applyRunnerPlugin(); err != nil {
 		return err
 	}
 
@@ -70,6 +81,9 @@ func poolPlan(ctx context.Context, cmd *cli.Command) error {
 	}
 	if cfg.PoolID != "" {
 		return fmt.Errorf("bktec pool plan: --pool-id / BUILDKITE_TEST_ENGINE_POOL_ID is for pool run; omit it to plan a pool")
+	}
+	if err := applyRunnerPlugin(); err != nil {
+		return err
 	}
 	if err := cfg.ValidateForPoolPlan(); err != nil {
 		return fmt.Errorf("bktec pool plan: invalid configuration:\n%w", err)
@@ -103,6 +117,9 @@ func poolExec(ctx context.Context, cmd *cli.Command) error {
 	}
 	debug.SetDebug(cmd.Root().Bool("debug"))
 	debug.SetOutput(os.Stderr)
+	if err := applyRunnerPlugin(); err != nil {
+		return err
+	}
 	if err := cfg.ValidateForPoolExec(); err != nil {
 		return fmt.Errorf("%s: invalid configuration: %w", diagnosticCommandName(cmd), err)
 	}
@@ -118,10 +135,49 @@ func poolConsume(ctx context.Context, cmd *cli.Command) error {
 	}
 	debug.SetDebug(cmd.Root().Bool("debug"))
 	debug.SetOutput(os.Stderr)
+	if err := applyRunnerPlugin(); err != nil {
+		return err
+	}
 	if err := cfg.ValidateForPoolConsume(); err != nil {
 		return fmt.Errorf("%s: invalid configuration: %w", diagnosticCommandName(cmd), err)
 	}
 	return command.PoolConsume(ctx, &cfg, cmd.String("files"), cmd.Int("local-retry-count"))
+}
+
+// applyRunnerPlugin defaults the test runner to the runner plugin's runner
+// name, so --runner-plugin alone selects the runner, before the
+// configuration is validated for that runner.
+func applyRunnerPlugin() error {
+	if cfg.RunnerPlugin == "" {
+		return nil
+	}
+	manifest, err := pluginhost.LoadManifest(cfg.RunnerPlugin)
+	if err != nil {
+		return err
+	}
+	if cfg.TestRunner == "" {
+		cfg.TestRunner = manifest.Runner
+	}
+	return nil
+}
+
+// serveRunnerPlugin answers one runner plugin operation with a built-in
+// runner, the way an external plugin's executable does. It shows plugin
+// authors what bktest's own runners answer, and lets a plugin.json point at
+// bktest itself.
+func serveRunnerPlugin(ctx context.Context, cmd *cli.Command) error {
+	if cmd.Args().Len() != 2 {
+		return cli.Exit("usage: bktest tools runner-plugin <runner> <operation>", 2)
+	}
+	newHandler, ok := runners.Builtin[cmd.Args().Get(0)]
+	if !ok {
+		return cli.Exit(fmt.Sprintf("no built-in test runner %q", cmd.Args().Get(0)), 2)
+	}
+	if err := runnerplugin.ServeOperation(newHandler(), cmd.Args().Get(1), os.Stdin, os.Stdout); err != nil {
+		// The response on stdout says why.
+		return cli.Exit("", 1)
+	}
+	return nil
 }
 
 func backfillCommitMetadata(ctx context.Context, cmd *cli.Command) error {

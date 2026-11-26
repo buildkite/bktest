@@ -29,20 +29,3 @@ type TestRunnerWithTargetDiscovery interface {
 	TestRunner
 	TestTargetDiscoverer
 }
-
-var (
-	_ TestTargetDiscoverer = (*Custom)(nil)
-	_ TestTargetDiscoverer = (*Cucumber)(nil)
-	_ TestTargetDiscoverer = (*Cypress)(nil)
-	_ TestTargetDiscoverer = (*GoTest)(nil)
-	_ TestTargetDiscoverer = (*Jest)(nil)
-	_ TestTargetDiscoverer = (*Playwright)(nil)
-	_ TestTargetDiscoverer = (*Pytest)(nil)
-	_ TestTargetDiscoverer = (*Rspec)(nil)
-	_ TestTargetDiscoverer = (*Vitest)(nil)
-
-	_ ExampleDiscoverer = (*Cucumber)(nil)
-	_ ExampleDiscoverer = (*Playwright)(nil)
-	_ ExampleDiscoverer = (*Pytest)(nil)
-	_ ExampleDiscoverer = (*Rspec)(nil)
-)

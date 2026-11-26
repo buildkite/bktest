@@ -25,7 +25,7 @@ agents:
 
 steps:
   - label: ":pipeline: bktest CLI"
-    if_changed: "{cmd/**,internal/**,go.mod,go.sum,util/**,bin/**,.golangci.yaml,.tool-versions,mise.toml,packaging/**,.buildkite/pipeline.yml,.buildkite/pipeline.release.yml,.buildkite/pipeline.cli*.yml,.buildkite/cli/**,test-collector-ruby/**,test-collector-python/**}"
+    if_changed: "{cmd/**,internal/**,pkg/**,plugins/**,go.mod,go.sum,util/**,bin/**,.golangci.yaml,.tool-versions,mise.toml,packaging/**,.buildkite/pipeline.yml,.buildkite/pipeline.release.yml,.buildkite/pipeline.cli*.yml,.buildkite/cli/**,test-collector-ruby/**,test-collector-python/**}"
     command: "[ ! -f go.mod ] || buildkite-agent pipeline upload .buildkite/pipeline.cli.yml"
 
   - label: ":pipeline: test-collector-ruby"

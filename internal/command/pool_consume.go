@@ -38,11 +38,18 @@ func PoolConsume(ctx context.Context, cfg *config.Config, files string, retries 
 	if err != nil {
 		return err
 	}
+	defer runner.Close(testRunner)
+	announceRunnerPlugin(testRunner)
 	if cfg.UploadResults && cfg.UploadToken == "" {
 		fmt.Println("Buildkite Test Engine Client: Warning: upload-results is enabled but no upload token was provided. Test results will not be uploaded.")
 	}
 	uploads := api.NewClient(api.ClientConfig{ServerBaseURL: cfg.ServerBaseURL, UploadBaseURL: cfg.UploadBaseURL, OrganizationSlug: cfg.OrganizationSlug})
-	return poolWork(ctx, cfg, files, retries, func(ctx context.Context, source *poolSource) error {
+	// The runner that prepared the test command parses its report.
+	parse := reportParser(runner.ParseNativeReport)
+	if parser, ok := testRunner.(runner.BatchReportParser); ok {
+		parse = parser.ParseBatchReport
+	}
+	return poolWork(ctx, cfg, files, retries, parse, func(ctx context.Context, source *poolSource) error {
 		return consumeBatches(ctx, source, func(ctx context.Context, batch runnerexec.Batch, retry bool) runnerexec.Result {
 			result := runPoolCommand(ctx, testRunner, batch, retry)
 			if ctx.Err() == nil {
@@ -119,15 +126,14 @@ func consumeBatches(ctx context.Context, source *poolSource, run func(ctx contex
 // the batch report. Failures without a usable report are errored results.
 func runPoolCommand(ctx context.Context, testRunner runner.TestRunner, batch runnerexec.Batch, retry bool) runnerexec.Result {
 	format := testRunner.ResultFormat()
-	_, pytest := testRunner.(runner.Pytest)
-	if pytest {
-		// pytest's ResultFormat is for uploads, and is empty when
-		// buildkite-test-collector uploads its JSON report itself.
-		format = "pytest-json"
-		if testRunner.ResultFormat() == "junit" {
-			format = "pytest-junit"
-		}
+	parse := reportParser(runner.ParseNativeReport)
+	if parser, ok := testRunner.(runner.BatchReportParser); ok {
+		// The report format can differ from the format for uploads: pytest
+		// has none when buildkite-test-collector uploads its JSON itself.
+		format = parser.BatchReportFormat()
+		parse = parser.ParseBatchReport
 	}
+	pytest := testRunner.Name() == "pytest"
 	errored := func(message string, args ...any) runnerexec.Result {
 		fmt.Printf("Buildkite Test Engine Client: "+message+"\n", args...)
 		return runnerexec.Result{Status: "errored", ReportFormat: format}
@@ -160,7 +166,7 @@ func runPoolCommand(ctx context.Context, testRunner runner.TestRunner, batch run
 	if exitErr != nil {
 		// Like bktec run, a non-zero exit fails the batch even if every test
 		// passed, such as when Jest's coverage threshold isn't met.
-		parsed, err := runner.ParseNativeReport(format, report)
+		parsed, err := parse(format, report)
 		if err == nil && !parsed.ErrorsOutsideTests && len(parsed.ErroredFiles) == 0 && !slices.ContainsFunc(parsed.Tests, func(test runner.ReportedTest) bool { return test.Status == runner.TestStatusFailed }) {
 			return errored("%s exited with %v but reported no failed tests", testRunner.Name(), exitErr)
 		}

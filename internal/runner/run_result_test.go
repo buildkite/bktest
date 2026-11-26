@@ -332,13 +332,3 @@ func TestOnlyMutedFailures(t *testing.T) {
 		t.Errorf("OnlyMutedFailures() is %v, want %v", r.OnlyMutedFailures(), false)
 	}
 }
-
-func TestParseTestEngineTestResult(t *testing.T) {
-	results, err := parseTestEngineTestResult("testdata/test-engine-result.json")
-	if err != nil {
-		t.Errorf("parseTestEngineTestResult() error = %v", err)
-	}
-	if len(results) != 2 {
-		t.Errorf("len(results) = %d, want 2", len(results))
-	}
-}

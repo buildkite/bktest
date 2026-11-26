@@ -24,13 +24,6 @@ type RunnerConfig struct {
 	persistentRunner bool
 }
 
-// splitBySelectorList reports whether the runner is splitting work using a
-// user-provided selector list instead of discovered test files. In this mode
-// test file discovery is skipped, so TestFilePattern isn't required.
-func (rc RunnerConfig) splitBySelectorList() bool {
-	return rc.SelectorListPath != ""
-}
-
 func (rc RunnerConfig) LocationPrefix() string {
 	return rc.locationPrefix
 }

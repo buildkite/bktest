@@ -1,4 +1,4 @@
-package runner
+package runnerplugin
 
 import (
 	"os"
@@ -33,7 +33,7 @@ const exampleJUnitXMLWithError = `<?xml version="1.0" encoding="UTF-8"?>
 	</testsuite>
 </testsuites>`
 
-func TestLoadAndParseJUnitXML(t *testing.T) {
+func TestReadJUnitXML(t *testing.T) {
 	tmpfile, err := os.CreateTemp("", "junit.*.xml")
 	require.NoError(t, err)
 	defer os.Remove(tmpfile.Name()) // clean up
@@ -43,37 +43,37 @@ func TestLoadAndParseJUnitXML(t *testing.T) {
 	err = tmpfile.Close()
 	require.NoError(t, err)
 
-	results, err := loadAndParseJUnitXML(tmpfile.Name())
+	results, err := ReadJUnitXML(tmpfile.Name())
 	require.NoError(t, err)
 
 	require.Len(t, results, 4)
 
 	assert.Equal(t, "github.com/buildkite/test-engine-client/v2/internal/debug", results[0].Classname)
 	assert.Equal(t, "TestPrintf", results[0].Name)
-	assert.Equal(t, TestStatusFailed, results[0].Result)
+	assert.Equal(t, StatusFailed, results[0].Result)
 	assert.NotNil(t, results[0].Failure)
 	assert.Nil(t, results[0].Skipped)
 
 	assert.Equal(t, "github.com/buildkite/test-engine-client/v2/internal/debug", results[1].Classname)
 	assert.Equal(t, "TestPrintf_disabled", results[1].Name)
-	assert.Equal(t, TestStatusPassed, results[1].Result)
+	assert.Equal(t, StatusPassed, results[1].Result)
 	assert.Nil(t, results[1].Failure)
 	assert.Nil(t, results[1].Skipped)
 
 	assert.Equal(t, "github.com/buildkite/test-engine-client/v2/internal/debug", results[2].Classname)
 	assert.Equal(t, "TestPrintln", results[2].Name)
-	assert.Equal(t, TestStatusPassed, results[2].Result)
+	assert.Equal(t, StatusPassed, results[2].Result)
 	assert.Nil(t, results[2].Failure)
 	assert.Nil(t, results[2].Skipped)
 
 	assert.Equal(t, "github.com/buildkite/test-engine-client/v2/internal/debug", results[3].Classname)
 	assert.Equal(t, "TestPrintln_disabled", results[3].Name)
-	assert.Equal(t, TestStatusPassed, results[3].Result)
+	assert.Equal(t, StatusPassed, results[3].Result)
 	assert.Nil(t, results[3].Failure)
 	assert.Nil(t, results[3].Skipped)
 }
 
-func TestLoadAndParseJUnitXML_Error(t *testing.T) {
+func TestReadJUnitXML_Error(t *testing.T) {
 	tmpfile, err := os.CreateTemp("", "junit.*.xml")
 	require.NoError(t, err)
 	defer os.Remove(tmpfile.Name())
@@ -83,20 +83,20 @@ func TestLoadAndParseJUnitXML_Error(t *testing.T) {
 	err = tmpfile.Close()
 	require.NoError(t, err)
 
-	results, err := loadAndParseJUnitXML(tmpfile.Name())
+	results, err := ReadJUnitXML(tmpfile.Name())
 	require.NoError(t, err)
 
 	require.Len(t, results, 2)
 
 	assert.Equal(t, "TestSetupCrash", results[0].Name)
-	assert.Equal(t, TestStatusFailed, results[0].Result)
+	assert.Equal(t, StatusFailed, results[0].Result)
 	assert.Nil(t, results[0].Failure)
 	assert.NotNil(t, results[0].Error)
 	assert.Equal(t, "panic in setup", results[0].Error.Message)
 	assert.Equal(t, "RuntimeError", results[0].Error.Type)
 
 	assert.Equal(t, "TestOK", results[1].Name)
-	assert.Equal(t, TestStatusPassed, results[1].Result)
+	assert.Equal(t, StatusPassed, results[1].Result)
 	assert.Nil(t, results[1].Failure)
 	assert.Nil(t, results[1].Error)
 }

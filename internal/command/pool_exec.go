@@ -30,7 +30,8 @@ func PoolExec(ctx context.Context, cfg *config.Config, files string, argv []stri
 	if len(argv) == 0 {
 		return errors.New("pool exec requires a runner executable")
 	}
-	return poolWork(ctx, cfg, files, retries, func(ctx context.Context, source *poolSource) error {
+	// The persistent runners report in the formats of bktec's own runners.
+	return poolWork(ctx, cfg, files, retries, runner.ParseNativeReport, func(ctx context.Context, source *poolSource) error {
 		// #nosec G204 G702 -- the runner executable and arguments are explicitly supplied by the CLI user after --.
 		cmd := exec.Command(argv[0], argv[1:]...)
 		// Leave Stdin nil, like pool consume: exec.Cmd then gives the runner
@@ -50,10 +51,13 @@ var errPoolPlanFellBack = errors.New("bktec pool plan fell back to a local split
 // poolRunner runs the batches a pool source offers until the source finishes.
 type poolRunner func(context.Context, *poolSource) error
 
+// reportParser parses the report of a batch that a poolRunner ran.
+type reportParser func(format string, report []byte) (runner.ParsedReport, error)
+
 // poolWork fetches the pool bktec pool plan created, then runs this worker's
 // leases with run. Workers never create pools, so that a build plans its pool
 // once instead of once per worker.
-func poolWork(ctx context.Context, cfg *config.Config, files string, retries int, run poolRunner) error {
+func poolWork(ctx context.Context, cfg *config.Config, files string, retries int, parse reportParser, run poolRunner) error {
 	if retries < 0 {
 		return errors.New("local retry count must not be negative")
 	}
@@ -62,7 +66,7 @@ func poolWork(ctx context.Context, cfg *config.Config, files string, retries int
 	}
 	if cfg.PoolFallback {
 		printWarn("Pool Plan Fallback", "bktec pool plan did not create a test pool")
-		return runStaticSplit(ctx, cfg, errPoolPlanFellBack, files, retries, run)
+		return runStaticSplit(ctx, cfg, errPoolPlanFellBack, files, retries, parse, run)
 	}
 	printPlanningBanner(os.Stderr)
 	var mint func(context.Context) (string, error)
@@ -72,7 +76,7 @@ func poolWork(ctx context.Context, cfg *config.Config, files string, retries int
 	client := api.NewClient(api.ClientConfig{OrganizationSlug: cfg.OrganizationSlug, ServerBaseURL: cfg.ServerBaseURL, TokenProvider: refreshingPoolToken(cfg.AccessToken, mint, cfg.OIDCLifetime)})
 	pool, err := ResolvePool(ctx, cfg, files, client, true)
 	if err != nil {
-		return poolExecFallback(ctx, cfg, err, files, retries, run)
+		return poolExecFallback(ctx, cfg, err, files, retries, parse, run)
 	}
 	switch pool.State {
 	case "populating", "consuming", "consumed":
@@ -120,24 +124,24 @@ func poolWork(ctx context.Context, cfg *config.Config, files string, retries int
 		return fmt.Errorf("test pool %s is missing its muted tests snapshot", pool.ID)
 	}
 	debug.Printf("Pool ready (state=%s); starting runner", pool.State)
-	return runPool(ctx, client, pool, retries, cfg.JobRetryCount, leaseLog, run, checkJob)
+	return runPool(ctx, client, pool, retries, cfg.JobRetryCount, leaseLog, parse, run, checkJob)
 }
 
 // poolExecFallback runs this job's share of a static split when Test Scheduler
 // is unavailable before leasing starts, like bktec run's local fallback. Once
 // leasing has started, other workers may already have run some tests, so
 // failures after that point are never recovered this way.
-func poolExecFallback(ctx context.Context, cfg *config.Config, err error, files string, retries int, run poolRunner) error {
+func poolExecFallback(ctx context.Context, cfg *config.Config, err error, files string, retries int, parse reportParser, run poolRunner) error {
 	if !poolSchedulerUnavailable(ctx, err) {
 		return poolFatal(err)
 	}
 	warnPoolFallback(err)
-	return runStaticSplit(ctx, cfg, err, files, retries, run)
+	return runStaticSplit(ctx, cfg, err, files, retries, parse, run)
 }
 
 // runStaticSplit runs this job's share of a local split of the tests, after
 // err stopped the pool from being used.
-func runStaticSplit(ctx context.Context, cfg *config.Config, err error, files string, retries int, run poolRunner) error {
+func runStaticSplit(ctx context.Context, cfg *config.Config, err error, files string, retries int, parse reportParser, run poolRunner) error {
 	if cfg.Parallelism < 1 || cfg.NodeIndex < 0 || cfg.NodeIndex >= cfg.Parallelism {
 		return fmt.Errorf("%w; cannot fall back to a static split: BUILDKITE_PARALLEL_JOB (%d) must be less than BUILDKITE_PARALLEL_JOB_COUNT (%d)", err, cfg.NodeIndex, cfg.Parallelism)
 	}
@@ -145,6 +149,8 @@ func runStaticSplit(ctx context.Context, cfg *config.Config, err error, files st
 	if detectErr != nil {
 		return fmt.Errorf("%w; cannot fall back to a static split: %w", err, detectErr)
 	}
+	defer runner.Close(testRunner)
+	announceRunnerPlugin(testRunner)
 	targets, discoverErr := getTestTargets(cfg, testRunner, files)
 	if discoverErr != nil {
 		return fmt.Errorf("%w; cannot fall back to a static split: %w", err, discoverErr)
@@ -171,7 +177,7 @@ func runStaticSplit(ctx context.Context, cfg *config.Config, err error, files st
 	}
 	// Local leases are an implementation detail; like bktec run, show only the
 	// runner's output and the final result.
-	return runPool(ctx, scheduler, api.Pool{ID: "fallback", State: "consuming"}, retries, cfg.JobRetryCount, log.New(io.Discard, "", 0), run, nil)
+	return runPool(ctx, scheduler, api.Pool{ID: "fallback", State: "consuming"}, retries, cfg.JobRetryCount, log.New(io.Discard, "", 0), parse, run, nil)
 }
 
 // fallbackLeaseTTL is how long a local fallback lease stays owned between
@@ -210,11 +216,12 @@ func (f *fallbackScheduler) CompleteLease(context.Context, string, string, []api
 
 func (f *fallbackScheduler) ReleaseLease(context.Context, string, string) error { return nil }
 
-func runPool(ctx context.Context, client poolScheduler, pool api.Pool, retries, jobRetryCount int, leases *log.Logger, run poolRunner, checkJob func(context.Context) (bool, error)) error {
+func runPool(ctx context.Context, client poolScheduler, pool api.Pool, retries, jobRetryCount int, leases *log.Logger, parse reportParser, run poolRunner, checkJob func(context.Context) (bool, error)) error {
 	fmt.Println("+++ Buildkite Test Engine Client: Running tests")
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	source := newPoolSource(cancel)
+	source.parseReport = parse
 	source.leaseLog = leases
 	source.connected = make(chan struct{})
 	done := make(chan struct{})

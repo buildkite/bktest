@@ -1,10 +1,6 @@
 package runner
 
-import (
-	"fmt"
-
-	"github.com/buildkite/bktest/v3/internal/plan"
-)
+import "github.com/buildkite/bktest/v3/internal/plan"
 
 // ReportedTest is a native result mapped to a bktec test case. Parsers normalize
 // identities to match the selectors sent to the Scheduler. Selector identifies
@@ -35,21 +31,10 @@ type ParsedReport struct {
 	UnselectedTests bool
 }
 
-// ParseNativeReport selects the runner's parser using the reported format.
-// A completed protocol envelope only means the runner produced a report.
-func ParseNativeReport(format string, data []byte) (ParsedReport, error) {
-	switch format {
-	case "rspec-json":
-		return parseRSpecBatchReport(data)
-	case "jest-json":
-		return parseJestBatchReport(data)
-	case "playwright-json":
-		return parsePlaywrightBatchReport(data)
-	case "pytest-json":
-		return parsePytestJSONBatchReport(data)
-	case "pytest-junit":
-		return parsePytestJUnitBatchReport(data)
-	default:
-		return ParsedReport{}, fmt.Errorf("unsupported runner report format %q", format)
-	}
+// BatchReportParser is implemented by runners that parse the reports of
+// their own test commands for Test Scheduler pools.
+type BatchReportParser interface {
+	// BatchReportFormat is the format of the report at the result path.
+	BatchReportFormat() string
+	ParseBatchReport(format string, data []byte) (ParsedReport, error)
 }

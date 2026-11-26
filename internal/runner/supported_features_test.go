@@ -3,6 +3,8 @@ package runner
 import (
 	"slices"
 	"testing"
+
+	"github.com/buildkite/bktest/v3/pkg/runnerplugin"
 )
 
 func TestSupportedFeatures_SplitBySelectorSupportedRunners(t *testing.T) {
@@ -71,7 +73,7 @@ func TestSupportedFeatures_SplitByExampleRequiresExampleDiscoverer(t *testing.T)
 		t.Fatalf("NewCustom() error = %v", err)
 	}
 
-	runners := []TestRunner{
+	runners := []*PluginRunner{
 		custom,
 		NewRspec(runnerConfig),
 		NewJest(runnerConfig),
@@ -84,7 +86,7 @@ func TestSupportedFeatures_SplitByExampleRequiresExampleDiscoverer(t *testing.T)
 	}
 
 	for _, testRunner := range runners {
-		_, implementsExampleDiscovery := testRunner.(ExampleDiscoverer)
+		implementsExampleDiscovery := testRunner.supports(runnerplugin.OpDiscoverExamples)
 		if got := testRunner.SupportedFeatures().SplitByExample; got != implementsExampleDiscovery {
 			t.Errorf("%s SplitByExample = %v, implements ExampleDiscoverer = %v", testRunner.Name(), got, implementsExampleDiscovery)
 		}

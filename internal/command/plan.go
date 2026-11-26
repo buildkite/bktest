@@ -41,8 +41,13 @@ func Plan(ctx context.Context, cfg *config.Config, testFileList string, outputFo
 
 	testRunner, err := runner.DetectRunner(cfg)
 	if err != nil {
+		if cfg.RunnerPlugin != "" {
+			return err
+		}
 		return fmt.Errorf("unsupported value for BUILDKITE_TEST_ENGINE_TEST_RUNNER: %w", err)
 	}
+	defer runner.Close(testRunner)
+	announceRunnerPlugin(testRunner)
 
 	testTargets, err := getTestTargets(cfg, testRunner, testFileList)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/buildkite/bktest/v3/internal/plan"
+	rspecrunner "github.com/buildkite/bktest/v3/internal/runners/rspec"
 	"github.com/google/go-cmp/cmp"
 	"github.com/kballard/go-shellquote"
 	"github.com/stretchr/testify/assert"
@@ -147,7 +148,7 @@ end
 	failed := result.FailedTests()
 	require.Len(t, failed, 1)
 	require.NoError(t, rspec.Run(result, failed, true))
-	report, err := rspec.ParseReport(rspec.ResultPath)
+	report, err := rspecrunner.ReadReport(rspec.ResultPath)
 	require.NoError(t, err)
 	require.Len(t, report.Examples, 1)
 	require.Equal(t, failed[0].Identifier, report.Examples[0].ID)
@@ -542,23 +543,5 @@ func TestParseNativeRSpecReport(t *testing.T) {
 	}
 	if _, err := ParseNativeReport("not-rspec-json", []byte(`{"examples":[],"summary":{"example_count":0}}`)); err == nil {
 		t.Fatal("unsupported report format accepted")
-	}
-}
-
-func TestRspecExamplePrimarySelector(t *testing.T) {
-	for _, tc := range []struct {
-		name, id, filePath, want string
-	}{
-		{"shared example", "./spec/specs_with_shared_examples_spec.rb[1:1:1]", "./spec/shared_examples.rb", "./spec/specs_with_shared_examples_spec.rb"},
-		{"ordinary example", "./spec/a_spec.rb[1:2]", "./spec/a_spec.rb", "./spec/a_spec.rb"},
-		{"bracket in filename", "./spec/a[variant]_spec.rb[1:2]", "./spec/a[variant]_spec.rb", "./spec/a[variant]_spec.rb"},
-		{"missing id", "", "./spec/a_spec.rb", "./spec/a_spec.rb"},
-		{"invalid id", "./spec/a_spec.rb[not-a-location]", "./spec/a_spec.rb", "./spec/a_spec.rb"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := (RspecExample{ID: tc.id, FilePath: tc.filePath}).PrimarySelector(); got != tc.want {
-				t.Fatalf("primary selector=%q, want %q", got, tc.want)
-			}
-		})
 	}
 }
