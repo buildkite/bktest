@@ -26,13 +26,32 @@ class OCITest(unittest.TestCase):
             self.assertEqual(manifest(repo, 'latest', login(repo))[1], {'manifests': []})
             self.assertEqual(docker.call_args.kwargs['input'], 'fixture\n')
 
-    def test_conflicting_arch_tag_stops_before_any_push(self):
+    def test_retry_keeps_published_tags_and_pushes_only_missing_ones(self):
         repo = 'docker.io/buildkite/test-engine-client'
         tag = 'v3.7.4'
-        existing = {'latest': ('old', {}), f'{tag}-arm64': ('arm', {'config': {'digest': 'old-image'}})}
+        # The first attempt pushed arm64 from a build that differs from this retry's.
+        registry = {'latest': ('sha256:old', {}),
+                    f'{tag}-arm64': ('sha256:arm', {'config': {'digest': 'first-arm-image'}})}
+        images = {'amd64': 'retry-amd-image', 'arm64': 'retry-arm-image'}
 
-        with patch('publish_oci.manifest', side_effect=lambda _, ref, *args, **kw: existing.get(ref, (None, None))), \
-                patch('publish_oci.docker') as docker:
-            with self.assertRaisesRegex(ValueError, 'different image contents'):
-                versions(repo, tag, 'token', {'amd64': 'amd-image', 'arm64': 'arm-image'})
-            docker.assert_not_called()
+        def docker(*command, **kwargs):
+            if command[0] == 'push':
+                registry[command[1].rsplit(':', 1)[1]] = ('sha256:amd', {'config': {'digest': 'retry-amd-image'}})
+            elif command[:3] == ('buildx', 'imagetools', 'create'):
+                registry[tag] = ('sha256:index', {'manifests': [
+                    {'platform': {'os': 'linux', 'architecture': ref.rsplit('-', 1)[1]},
+                     'digest': registry[ref][0]} for ref in (f'{tag}-amd64', f'{tag}-arm64')]})
+
+        def read(_, ref, *args, **kwargs):
+            return registry.get(ref, (None, None))
+
+        with patch('publish_oci.manifest', side_effect=read), patch('publish_oci.docker', side_effect=docker) as calls:
+            self.assertEqual(versions(repo, tag, 'token', images),
+                             ('sha256:old', {'amd64': 'sha256:amd', 'arm64': 'sha256:arm'}))
+            pushed = [call.args[1] for call in calls.call_args_list if call.args[0] == 'push']
+            self.assertEqual(pushed, [f'{repo}:{tag}-amd64'])
+
+            # A registry that already has the complete version is left alone.
+            calls.reset_mock()
+            versions(repo, tag, 'token', images)
+            calls.assert_not_called()

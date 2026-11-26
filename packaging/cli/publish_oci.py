@@ -91,13 +91,13 @@ def versions(repo, tag, token, images):
     version_digest, _ = manifest(repo, tag, token, missing=True)
     pending = {}
     children = {}
+    # A retry rebuilds the images, so keep tags an earlier attempt already pushed
+    # instead of comparing them with this attempt's build.
     for arch, image in images.items():
         ref = f'{tag}-{arch}'
-        children[arch], existing = manifest(repo, ref, token, missing=True)
-        if existing is None:
+        children[arch], _ = manifest(repo, ref, token, missing=True)
+        if children[arch] is None:
             pending[arch] = image
-        elif existing['config']['digest'] != image:
-            raise ValueError(f'{repo}:{ref} already exists with different image contents')
     if version_digest is not None:
         if pending:
             raise ValueError(f'{repo}:{tag} exists but its architecture tags are incomplete')
