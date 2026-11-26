@@ -1,83 +1,38 @@
 import io
 import os
-from pathlib import Path
-import tarfile
-import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
-from publish_oci import ARCHES, MANIFEST, PACKAGES_BACKEND, current, digest, encode, layout, upload
+from publish_oci import login, manifest, versions
 
 
 class OCITest(unittest.TestCase):
-    def test_layout_preserves_platform_manifests(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            archives, expected = [], {}
-            for arch in ARCHES:
-                archive = root / f'{arch}.tar'
-                archives.append(archive)
-                with tarfile.open(archive, 'w') as tar:
-                    def add(name, data):
-                        member = tarfile.TarInfo(name)
-                        member.size = len(data)
-                        tar.addfile(member, io.BytesIO(data))
+    def test_ecr_reads_use_the_push_credential(self):
+        repo = 'public.ecr.aws/buildkite/test-engine-client'
 
-                    def blob(data, media_type):
-                        sha = digest(data)
-                        add('blobs/sha256/' + sha[7:], data)
-                        return {'digest': sha, 'size': len(data), 'mediaType': media_type}
+        def read(request, **kwargs):
+            if request.get_header('Authorization') != 'Bearer QVdTOmZpeHR1cmU=':  # base64 of AWS:fixture
+                raise HTTPError(request.full_url, 429, 'anonymous rate limit', None, io.BytesIO())
+            self.assertEqual(request.full_url, 'https://public.ecr.aws/v2/buildkite/test-engine-client/manifests/latest')
+            return io.BytesIO(b'{"manifests": []}')
 
-                    config = blob(encode({'os': 'linux', 'architecture': arch,
-                                          'config': {'Entrypoint': ['/usr/local/bin/bktec']}}),
-                                  'application/vnd.oci.image.config.v1+json')
-                    manifest = blob(encode({'schemaVersion': 2, 'config': config, 'layers': []}), MANIFEST)
-                    add('index.json', encode({'manifests': [manifest]}))
-                    expected[f'v3.7.4-{arch}'] = manifest['digest']
-            refs = layout(root / 'oci', archives, 'v3.7.4')
-            self.assertEqual({k: refs[k] for k in expected}, expected)
-            self.assertEqual(digest((root / 'oci/blobs/sha256' / refs['v3.7.4'][7:]).read_bytes()), refs['v3.7.4'])
-            with self.assertRaisesRegex(ValueError, 'platform'):
-                layout(root / 'swapped', reversed(archives), 'v3.7.4')
+        with patch.dict(os.environ, {f'ECR_{key}': 'fixture' for key in (
+                'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN')}), \
+                patch('publish_oci.output', return_value='fixture'), \
+                patch('publish_oci.docker') as docker, \
+                patch('publish_oci.build_opener', return_value=SimpleNamespace(open=read)):
+            self.assertEqual(manifest(repo, 'latest', login(repo))[1], {'manifests': []})
+            self.assertEqual(docker.call_args.kwargs['input'], 'fixture\n')
 
-    def test_empty_packages_404_requires_matching_control_and_catalog(self):
-        base = 'https://registry.invalid/v2/image'
-        control = ('v3.5.0', digest(b'known manifest'))
-        catalog = {'name': PACKAGES_BACKEND, 'tags': ['v3.5.0', 'v3.6.0', 'v3.6.1']}
-        with patch('publish_oci.http', side_effect=[
-                (404, b'', None), (200, b'known manifest', None), (200, encode(catalog), None),
-                (200, encode(catalog | {'tags': ['v3.6.0', 'v3.6.1']}), None),
-                (200, encode(catalog | {'tags': []}), None)]):
-            self.assertIsNone(current(base, 'fixture', 'v3.7.4', 'packages', control))
-        with patch('publish_oci.http', side_effect=[(404, b'', None), (200, b'wrong manifest', None)]):
-            with self.assertRaisesRegex(ValueError, 'control'):
-                current(base, 'fixture', 'v3.7.4', 'packages', control)
-        with patch('publish_oci.http', side_effect=[
-                (404, b'', None), (200, b'known manifest', None),
-                (200, encode(catalog | {'name': 'another registry'}), None)]):
-            with self.assertRaisesRegex(ValueError, 'inconclusive'):
-                current(base, 'fixture', 'v3.7.4', 'packages', control)
-
-    def test_versioned_upload_skips_exact_matches_and_does_not_move_latest(self):
+    def test_conflicting_arch_tag_stops_before_any_push(self):
+        repo = 'docker.io/buildkite/test-engine-client'
         tag = 'v3.7.4'
-        desired = {f'{tag}-amd64': digest(b'A'), f'{tag}-arm64': digest(b'B'), tag: digest(b'AB')}
-        existing = {f'{tag}-amd64': desired[f'{tag}-amd64'], 'latest': digest(b'old')}
+        existing = {'latest': ('old', {}), f'{tag}-arm64': ('arm', {'config': {'digest': 'old-image'}})}
 
-        def copy(*args):
-            self.assertEqual(args[:3], ('docker', 'run', '--rm'))
-            self.assertIn(f'type=bind,src={temp}/oci,dst=/release/oci,readonly', args)
-            self.assertIn(f'type=bind,src={temp}/auth.json,dst=/release/auth.json,readonly', args)
-            ref = args[-1].removeprefix('docker://docker.io/buildkite/test-engine-client:')
-            self.assertEqual(args[-7:], ('copy', '--all', '--preserve-digests', '--dest-authfile',
-                                         '/release/auth.json', f'oci:/release/oci:{ref}', args[-1]))
-            self.assertNotIn(ref, existing)
-            existing[ref] = desired[ref]
-
-        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {
-                'CLI_DOCKERHUB_USER': 'fixture', 'CLI_DOCKERHUB_TOKEN': 'fixture'}), \
-                patch('publish_oci.read_auth', return_value=('fixture', 'fixture')), \
-                patch('publish_oci.current', side_effect=lambda _, __, ref, *args: existing.get(ref)), \
-                patch('publish_oci.run', side_effect=copy) as write:
-            upload('dockerhub', Path(temp) / 'oci', desired, tag, latest=False, control=None)
-            self.assertEqual(write.call_count, 2)
-            self.assertEqual(existing, desired | {'latest': digest(b'old')})
+        with patch('publish_oci.manifest', side_effect=lambda _, ref, *args, **kw: existing.get(ref, (None, None))), \
+                patch('publish_oci.docker') as docker:
+            with self.assertRaisesRegex(ValueError, 'different image contents'):
+                versions(repo, tag, 'token', {'amd64': 'amd-image', 'arm64': 'arm-image'})
+            docker.assert_not_called()

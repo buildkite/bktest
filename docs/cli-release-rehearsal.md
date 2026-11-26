@@ -33,13 +33,13 @@ checkout or reselect the version in the compatibility repository.
 | `image/linux_{amd64,arm64}/` | Build contexts for `buildkite/test-engine-client`, `public.ecr.aws/buildkite/test-engine-client`, and `packages.buildkite.com/buildkite/test-engine-client-docker/test-engine-client`. Both commands are installed; keep `/usr/local/bin/bktec` as the entrypoint. Build local OCI images from the contexts before checking a container off. |
 | `tap/` | Replace `Formula/bktec.rb` in `buildkite/homebrew-buildkite` and add `Aliases/bktest -> ../Formula/bktec.rb`. Keep `bktec` the sole owning formula. |
 
-The staging job uploads `dist/cli-release.tar`. A separate, credential-free
-job downloads it from the staging job, verifies the members, and uploads
-`dist/cli-release-receipt.json` with the build and staging job IDs, tag, source,
-and archive and manifest SHA-256s. A receipt with a null tag is a rehearsal,
-not a release input. Review the receipt before approving a release. The jobs
-use the receipt from the same build to select and verify the archive. If there
-is more than one verifier receipt, they stop rather than choose a retry.
+The credential-free staging job verifies `dist/cli-release.tar` locally and
+uploads it alongside `dist/cli-release-receipt.json`. The receipt records the
+build and staging job IDs, tag, source, and archive and manifest SHA-256s.
+A receipt with a null tag is a rehearsal, not a release input. Review the
+receipt before approving a release. Publishers verify the downloaded archive
+against the receipt from the same staging job. If there is more than one
+stage receipt, they stop rather than choose a retry.
 For a local release simulation, `packaging/cli/rehearse.py` takes the stage, a
 fake destination directory, and explicit `--tag`, `--source` and `--approve`
 arguments. It cannot contact a registry. It reserves the version with the
@@ -59,41 +59,39 @@ and stable writer access and tag protection. Only `v3.x.y-rc.N` and `v3.x.y`
 tag webhooks can enter the publish group. Other prereleases only stage.
 
 Once opted in, push an approved, unused RC tag pointing at the reviewed
-canonical `main` commit. The build compiles and verifies once. Review the
-receipt in **Verify retained CLI stage**, then unblock **Sync the legacy Go
-module and publish versioned CLI releases?** to approve that build. The sync
-job verifies the archive, pushes the projected CLI to a release branch in
-`test-engine-client`, and opens the sync PR. Use the URL in **Merge the legacy
-sync PR, then continue** to find it, or use the direct PR URL in the sync job
-log. Get the PR reviewed and merged through normal legacy CI before unblocking.
+canonical `main` commit. The build compiles and verifies once. The sync job
+verifies the archive, pushes the projected CLI to a release branch in
+`test-engine-client`, and opens the sync PR. Use the direct PR link in the
+build summary or the sync job log. Get the PR reviewed and merged through
+normal legacy CI before unblocking.
 The next job finds the merged PR for the prepared branch, checks the merged
 projection on `main` against the approved source, tags that commit, and reads
 the tag back. It will not force-push or move an existing tag. If preparation
 reports that the target already matches, unblock without opening a PR.
 
-The paired publisher uses that exact archive and verified legacy commit,
-checks both refs and publishes both GitHub releases without setting Latest.
+The same job uses that exact archive and verified legacy commit, checks both
+refs and publishes both GitHub releases without setting Latest.
 Verify both prereleases and their assets by exact version. No stable channel moves.
 
 ### Stable promotion
 
 For a stable release, push a new plain `v3.x.y` tag on the reviewed canonical
-commit with stable publishing enabled. Do not retag or edit an RC. Stable
-builds publish and read back the seven versioned Files and the two OCI
-architecture aliases and multi-arch index in all three registries. Use the
-same confirmation-only first block after reviewing the receipt. The legacy
-stable Go discovery path can change
-as soon as its tag is created; the first approval covers that change.
+commit with stable publishing enabled. Do not retag or edit an RC. The only
+manual Buildkite actions are to unblock after the legacy sync and Homebrew PRs
+merge. The build summary links to both PRs and neither block has form fields.
+If preparation reports the target already matches, unblock without a PR.
 
-At the stable block, pin the current tap head, legacy GitHub Latest release
-ID, and each registry's OCI Latest digest. List only missing native packages
-after inspecting the signed catalogs. Once the native jobs complete, verify
-the served hashes against the retained archive and confirm the readback block.
-The Homebrew job opens the formula PR. Find it using the URL in **Merge the
-Homebrew formula PR, then continue**. Have it reviewed and merged before unblocking.
-Unblock without a PR only if preparation reports that the tap already matches.
-The build verifies the formula and alias on `master` before moving OCI Latest,
-followed by legacy GitHub Latest. Canonical GitHub Latest does not move.
+After the legacy sync, the build publishes both GitHub releases and the seven
+versioned Files. It checks existing Files against the staged hashes and waits
+for uploads of missing Files to succeed. It then uses the signed APT and RPM
+indexes to publish missing packages and verify the served hashes, waiting for
+`bktec` before publishing its `bktest` metapackage. It then opens the Homebrew
+formula PR.
+After verifying the merge, one job builds an image per architecture, pushes
+both images to all three registries, and verifies each versioned multi-arch
+index before moving any OCI Latest tag. It authenticates ECR manifest reads
+with the same credential used for push. Legacy GitHub Latest moves last;
+canonical GitHub Latest does not move.
 
 After an ambiguous
 result, inspect both releases and read back the assets before retrying with the
@@ -140,24 +138,21 @@ and push to the existing repository. Verify both roles deny other pipelines.
 
 | Job key | Manual setup |
 | --- | --- |
-| `cli-sync-legacy`, `cli-tag-legacy` | Use Exchange to push the legacy topic branch, open its PR, and create the tag after a human merges the PR, without updating `main` directly or moving/deleting tags. |
-| `cli-publish-github`, `cli-promote-github` | Use Exchange for both versioned releases and legacy GitHub Latest, without a tag or branch bypass. |
+| `cli-sync-legacy` | Use Exchange to push the legacy topic branch and open its PR without updating `main` directly. |
+| `cli-publish-github` | Use Exchange to create the legacy tag after a human merges the PR and publish both versioned releases, without a tag or branch bypass. |
+| `cli-promote-github` | Use Exchange to promote legacy GitHub Latest. |
 | `cli-files-0` through `cli-files-6` | Files registry `buildkite/bktec`: job-scoped Buildkite OIDC `write_packages` for each Files plugin job, audience `https://packages.buildkite.com/buildkite/bktec`. |
 | `cli-promote-native` | Buildkite OIDC `write_packages` on `test-engine-client-deb` and `test-engine-client-rpm`, with the exact registry URL as audience. Do not expose this grant to the verifier or OCI jobs. |
-| `cli-publish-dockerhub`, `cli-promote-dockerhub` | `CLI_DOCKERHUB_USER` and repository-scoped `CLI_DOCKERHUB_TOKEN` for `buildkite/test-engine-client`. |
-| `cli-publish-ecr`, `cli-promote-ecr` | Short-lived AWS role credentials with ECR Public login and push restricted to the existing `test-engine-client` repository. |
-| `cli-publish-packages-oci`, `cli-promote-packages-oci` | OIDC write to `test-engine-client-docker` with audience `https://packages.buildkite.com/buildkite/test-engine-client-docker`. Configure `CLI_PACKAGES_OCI_CONTROL_TAG` and `CLI_PACKAGES_OCI_CONTROL_DIGEST` with an independently verified existing ref/digest. |
+| `cli-publish-packages-oci` | Docker Hub credentials from Dev SSM, separate Dist role credentials for ECR Public, and Buildkite OIDC read/write to `test-engine-client-docker` with audience `https://packages.buildkite.com/buildkite/test-engine-client-docker`. |
 | `cli-promote-tap` | Use Exchange to push a tap topic branch and open the formula PR. A human merges it into `master` after review and CI. |
 
 Use separate creation and immutability rules for `v3.*` on both source
 repositories: permit creation only for approved principals, and protect
 updates/deletions without granting bypass of those protections. Verify all
-legacy writer access is retired before transferring trust. The OCI jobs use
-the existing `hosted` queue. Before enabling publication, verify that Buildx
-can export amd64 and arm64 OCI archives there without pushing. The OCI jobs
-need Python 3.11+. The copy jobs run Skopeo in Docker, so the worker doesn't
-need Skopeo installed. The copy and GitHub writer jobs need AWS CLI and jq for
-authentication. Keep the `cli-build-oci` job credential-free.
+legacy writer access is retired before transferring trust. The image job uses
+the existing `hosted` queue and needs Python 3.11+, AWS CLI, jq, Docker and
+Buildx with amd64 and arm64 build support. The native publisher uses `gpg` and
+`gpgv` to verify repository metadata before deciding whether a package exists.
 Do not configure a queue-wide credential. Enable the group in a reviewed
 change only after a no-public-write rehearsal
 demonstrates the credential boundaries and the release owner accepts recovery.
@@ -256,11 +251,10 @@ file or packages from the compatibility checkout.
   sends one POST and does not retry; verify the result separately, even on success.
   Both names go to the existing `test-engine-client-deb` and `test-engine-client-rpm`
   registries. Before approving a `bktest` metapackage, confirm `bktec` >= 3.6.0 is
-  already indexed for that format and architecture. The stable approval field takes
-  exact space-separated `package-format-arch` entries (such as `bktest-deb-arm64`),
-  or `none` if all eight packages match. Verify all eight served hashes, and check
-  that `apt install bktest` and `dnf install bktest` resolve before switching the
-  public install instructions. Existing `bktec` installs and repository URLs do not change.
+  already indexed for that format and architecture. Verify all eight served
+  hashes, and check that `apt install bktest` and `dnf install bktest` resolve
+  before switching the public install instructions. Existing `bktec` installs
+  and repository URLs do not change.
 
   The command uses the legacy endpoint and a 180-second agent OIDC token
   for `https://packages.buildkite.com/buildkite/<registry>` and POSTs the file to
@@ -362,8 +356,8 @@ a GitHub release or Homebrew pointer.
    collector tags, or untagged builds to the CLI publisher.
 4. Keep the credential boundary separate from the approval check. Scope
    writer trust to `buildkite/bktest-release` and use tag claims for the package
-   grants. Do not wire credentials into staging or readback jobs. Verify Files,
-   Docker, DEB/RPM, GitHub and tap permissions independently.
+   grants. Do not wire writer credentials into staging or standalone verification
+   jobs. Verify Files, Docker, DEB/RPM, GitHub and tap permissions independently.
 5. Test the first authorized prerelease by exact version. Do not move either
    GitHub `latest`, the formula, Docker `latest` at any of the three registries,
    or any stable package channel. Require separate verification before

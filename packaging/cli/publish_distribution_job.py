@@ -11,10 +11,11 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 
 from publish import open_stage
+from publish_native import publish_pair
 from release_input import approved_input
 
 
-def files(args, verify):
+def files(args):
     archive, _, sha, _, tag, _, source = args
     build = os.environ['BUILDKITE_BUILD_ID']
     steps = []
@@ -29,7 +30,7 @@ def files(args, verify):
                     if hashlib.file_digest(response, 'sha256').hexdigest() != asset.sha256:
                         raise ValueError(f'published Files digest conflict: {basename}')
             except HTTPError as error:
-                if error.code != 404 or verify:
+                if error.code != 404:
                     raise
                 path = f'dist/cli-distribution/dist/buildkite-packages/{basename}'
                 matches = subprocess.check_output(['buildkite-agent', 'artifact', 'search', '--build', build,
@@ -59,18 +60,13 @@ def main():
             Path('dist').mkdir(exist_ok=True)
             subprocess.run([sys.executable, '-B', 'packaging/cli/prepare_publish.py', *args,
                             'dist/cli-distribution'], check=True)
-        elif phase in ('files', 'verify-files'):
-            files(args, verify=phase == 'verify-files')
+        elif phase == 'files':
+            files(args)
         elif phase == 'native':
-            # An operator checks absence using the signed catalog and authorizes
-            # one missing package; the endpoint has no dry-run/idempotency key.
-            package, fmt, arch = sys.argv[2:]
-            confirmed = subprocess.check_output(['buildkite-agent', 'meta-data', 'get', 'cli-native-missing'],
-                                                text=True).split()
-            if f'{package}-{fmt}-{arch}' in confirmed:
-                subprocess.run([sys.executable, '-B', 'packaging/cli/publish_native.py', *args,
-                                '--package', package, '--format', fmt, '--arch', arch, '--confirmed-missing'],
-                               check=True)
+            fmt, arch = sys.argv[2:]
+            archive, _, sha, _, tag, _, source = args
+            with open_stage(Path(archive), sha, tag, source) as stage:
+                publish_pair(stage, fmt, arch)
         else:
             raise ValueError(f'unknown release phase: {phase}')
 

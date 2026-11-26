@@ -1,4 +1,4 @@
-"""Publish paired GitHub releases after the restricted release block."""
+"""Tag the reviewed legacy merge and publish paired GitHub releases."""
 
 import os
 import subprocess
@@ -17,16 +17,12 @@ def main():
         raise ValueError('requires the enabled GitHub publish step on a canonical release tag webhook')
     if not env.get('GH_TOKEN'):
         raise ValueError('the release publishing credential is not available to this job')
+    subprocess.run([sys.executable, '-B', 'packaging/cli/sync_legacy.py', 'tag'], check=True)
     legacy = subprocess.check_output(['buildkite-agent', 'meta-data', 'get', 'cli-legacy-source'], text=True).strip()
     with approved_input(stable=False) as args:
         _, _, _, _, tag, _, source = args
         mode = 'prerelease' if '-' in tag else 'stable'
         validate_ref(tag, source, legacy, mode=mode)
-        fetch = ['git', 'fetch', '--no-tags']
-        if subprocess.check_output(['git', 'rev-parse', '--is-shallow-repository'], text=True).strip() == 'true':
-            fetch.append('--unshallow')
-        subprocess.run([*fetch, 'https://github.com/buildkite/bktest.git', 'refs/heads/main'], check=True)
-        subprocess.run(['git', 'merge-base', '--is-ancestor', source, 'FETCH_HEAD'], check=True)
         subprocess.run([sys.executable, '-B', 'packaging/cli/publish.py', *args,
                         '--legacy-source', legacy, '--mode', mode, '--apply'], check=True)
 
