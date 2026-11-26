@@ -1,0 +1,5 @@
+{
+  "runner": "playwright",
+  "protocol_version": 1,
+  "command": ["./bktest-runner-playwright"]
+}

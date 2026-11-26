@@ -1,0 +1,5 @@
+{
+  "runner": "pytest",
+  "protocol_version": 1,
+  "command": ["./bktest-runner-pytest"]
+}

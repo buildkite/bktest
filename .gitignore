@@ -42,3 +42,4 @@ internal/runner/testdata/cucumber/cucumber.json
 /bktec
 
 internal/runner/testdata/*/tmp/
+plugins/*/go/bktest-runner-*
