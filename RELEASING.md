@@ -17,8 +17,9 @@ unblock or retry its historical publisher jobs.
 With `CLI_RELEASE_GITHUB_ENABLED=true` on `bktest-release`, a `v3.x.y-rc.N`
 tag push starts the GitHub-only release candidate workflow. After the release
 approval and the reviewed legacy sync PR, it tags the legacy Go module and
-publishes both GitHub prereleases from the retained build. Stable tags still
-only stage artifacts; no registry, Homebrew, or Latest pointer moves on an RC.
+publishes both GitHub prereleases from the retained build. A plain `v3.x.y`
+tag starts the stable workflow, with separate approvals for publishing and
+promotion. No registry, Homebrew, or Latest pointer moves on an RC.
 Treat both tags and all published versions as immutable. Follow the
 [CLI release runbook](docs/cli-release-rehearsal.md) for approvals and recovery.
 
