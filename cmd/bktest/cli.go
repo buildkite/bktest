@@ -381,6 +381,14 @@ var testRunnerFlag = &cli.StringFlag{
 	Destination: &cfg.TestRunner,
 }
 
+var runnerPluginFlag = &cli.StringFlag{
+	Name:        "runner-plugin",
+	Category:    "TEST RUNNER",
+	Usage:       "Directory of a runner plugin, or its plugin.json, to run the tests with instead of a built-in test runner. The test runner defaults to the plugin's runner name",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_RUNNER_PLUGIN"),
+	Destination: &cfg.RunnerPlugin,
+}
+
 var resultPathFlag = &cli.StringFlag{
 	Name:        "result-path",
 	Category:    "TEST RUNNER",
@@ -647,6 +655,7 @@ var runnerEnvironmentFlags = []cli.Flag{
 	testFilePatternFlag,
 	testFileExcludePatternFlag,
 	testRunnerFlag,
+	runnerPluginFlag,
 	resultPathFlag,
 	splitByExampleFlag,
 	selectorSplittingCompatibilityFlag,
@@ -940,6 +949,12 @@ var cliCommand = &cli.Command{
 					Usage:  "Collect historical git commit metadata and upload to Buildkite",
 					Action: backfillCommitMetadata,
 					Flags:  backfillCommitMetadataFlags(),
+				},
+				{
+					Name:      "runner-plugin",
+					Usage:     "Run one runner plugin operation of a built-in test runner: JSON request on stdin, JSON response on stdout",
+					ArgsUsage: "<runner> <operation>",
+					Action:    serveRunnerPlugin,
 				},
 			},
 		},

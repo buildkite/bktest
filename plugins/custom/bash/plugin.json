@@ -1,0 +1,5 @@
+{
+  "runner": "custom",
+  "protocol_version": 1,
+  "command": ["./plugin.bash"]
+}

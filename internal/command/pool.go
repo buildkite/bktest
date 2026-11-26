@@ -95,6 +95,8 @@ func poolPlanRequest(ctx context.Context, cfg *config.Config, testFileList strin
 	if err != nil {
 		return api.PoolPlanParams{}, err
 	}
+	defer runner.Close(testRunner)
+	announceRunnerPlugin(testRunner)
 	targets, err := getTestTargets(cfg, testRunner, testFileList)
 	if err != nil {
 		return api.PoolPlanParams{}, err

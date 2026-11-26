@@ -967,7 +967,7 @@ func TestGitMetadataCollectionGate(t *testing.T) {
 		},
 		"run": func(t *testing.T, cfg *config.Config) error {
 			client := api.NewClient(api.ClientConfig{ServerBaseURL: cfg.ServerBaseURL, OrganizationSlug: cfg.OrganizationSlug})
-			_, _, err := fetchOrCreateTestPlan(context.Background(), client, cfg, []string{"apple"}, runner.Rspec{})
+			_, _, err := fetchOrCreateTestPlan(context.Background(), client, cfg, []string{"apple"}, runner.NewRspec(runner.RunnerConfig{}))
 			return err
 		},
 		"pool": func(t *testing.T, cfg *config.Config) error {

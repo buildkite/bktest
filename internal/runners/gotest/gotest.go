@@ -1,0 +1,422 @@
+// Package gotest is the runner plugin for go test.
+package gotest
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"github.com/buildkite/bktest/v3/pkg/runnerplugin"
+	"github.com/kballard/go-shellquote"
+)
+
+type handler struct{}
+
+// New returns the go test handler.
+func New() runnerplugin.Handler { return handler{} }
+
+var (
+	_ runnerplugin.TargetDiscoverer   = handler{}
+	_ runnerplugin.AttemptInterpreter = handler{}
+)
+
+const (
+	goTestResultFormatJUnit   = "junit"
+	goTestResultFormatGoJSONL = "go-jsonl"
+)
+
+func (handler) Configure(request runnerplugin.ConfigureRequest) (runnerplugin.ConfigureResponse, error) {
+	c := request.Config
+	if c.TestCommand == "" {
+		c.TestCommand = "gotestsum --jsonfile={{resultPath}} {{packages}}"
+	}
+
+	if c.RetryTestCommand == "" {
+		c.RetryTestCommand = c.TestCommand
+	}
+
+	return runnerplugin.ConfigureResponse{
+		Name:   "gotest",
+		Config: c,
+		Features: runnerplugin.Features{
+			SplitByFile:     false,
+			SplitByExample:  false,
+			SplitBySelector: true,
+			FilterTestFiles: false,
+			FilterTestByTag: false,
+			AutoRetry:       true,
+			Mute:            true,
+			Skip:            false,
+		},
+		ResultFormat: resultFormat(c),
+	}, nil
+}
+
+// resultFormat is the format of the report the test command writes.
+func resultFormat(c runnerplugin.Config) string {
+	if commandProducesGoJSONL(c.TestCommand) {
+		return goTestResultFormatGoJSONL
+	}
+	return goTestResultFormatJUnit
+}
+
+func commandProducesGoJSONL(command string) bool {
+	args, err := shellquote.Split(command)
+	if err != nil {
+		return strings.Contains(command, "--jsonfile") || strings.Contains(command, "-json")
+	}
+	return isGoTestJSONCommand(args) || goJSONLFileArg(args) != ""
+}
+
+// PrepareAttempt returns the configured command for the specified packages.
+// When the command is `go test -json`, its stdout is the report.
+func (handler) PrepareAttempt(request runnerplugin.PrepareAttemptRequest) (runnerplugin.PrepareAttemptResponse, error) {
+	args, err := commandNameAndArgs(request.Config, request.TestCases, request.Retry)
+	if err != nil {
+		return runnerplugin.PrepareAttemptResponse{}, err
+	}
+	response := runnerplugin.PrepareAttemptResponse{Argv: args}
+	if capturesGoJSONLStdout(request.Config, args) {
+		response.StdoutPath = request.Config.ResultPath
+	}
+	return response, nil
+}
+
+// InterpretAttempt reads the report of the configured command.
+func (handler) InterpretAttempt(request runnerplugin.InterpretAttemptRequest) (runnerplugin.InterpretAttemptResponse, error) {
+	var response runnerplugin.InterpretAttemptResponse
+
+	// go test output does not differentiate build fail or test fail. They both return 1
+	// What is even more bizarre is that even when go test failed on compilation, it will still generate an output xml
+	// file that says "TestMain" failed..
+	if exitCode := request.ExitCodeOr(0); exitCode != 0 && exitCode != 1 {
+		return response, nil
+	}
+
+	if parseErr := parseResults(&response, request.Config); parseErr != nil {
+		// We don't want to fail the build if we fail to parse the report,
+		// therefore the attempt's error stays the command error (which can be nil), instead of the parse error.
+		response.Messages = append(response.Messages, fmt.Sprintf("Buildkite Test Engine Client: Failed to read Go test output, tests will not be retried: %v", parseErr))
+	}
+
+	return response, nil
+}
+
+func capturesGoJSONLStdout(c runnerplugin.Config, args []string) bool {
+	return resultFormat(c) == goTestResultFormatGoJSONL && isGoTestJSONCommand(args) && goJSONLFileArg(args) == ""
+}
+
+func parseResults(response *runnerplugin.InterpretAttemptResponse, c runnerplugin.Config) error {
+	switch format := resultFormat(c); format {
+	case goTestResultFormatJUnit:
+		return parseJUnitResults(response, c.ResultPath)
+	case goTestResultFormatGoJSONL:
+		return parseGoJSONLResults(response, c.ResultPath)
+	default:
+		return fmt.Errorf("unsupported Go test result format %q", format)
+	}
+}
+
+func parseJUnitResults(response *runnerplugin.InterpretAttemptResponse, resultPath string) error {
+	testResults, parseErr := runnerplugin.ReadJUnitXML(resultPath)
+	if parseErr != nil {
+		return parseErr
+	}
+
+	for _, test := range testResults {
+		// A package that fails to build is reported by gotestsum as a synthetic
+		// testcase named "TestMain" with an empty classname, whose failure
+		// message contains "[build failed]" (printed by the go tool itself).
+		// A build failure cannot be fixed by retrying, so treat it as an error
+		// outside of the tests instead of recording it as a test result.
+		// Recording it would select it for retry, where its empty package path
+		// would silently drop it from the retry command, allowing the build
+		// failure to go unnoticed.
+		if isBuildFailure(test) {
+			response.RunError = fmt.Sprintf("go test failed to build %s", test.SuiteName)
+			continue
+		}
+
+		response.Tests = append(response.Tests, runnerplugin.TestResult{
+			TestCase: runnerplugin.TestCase{
+				Format: runnerplugin.FormatExample,
+				Scope:  test.Classname,
+				Name:   test.Name,
+				// This is the special thing about go test support.
+				Path: test.Classname,
+			},
+			Status: test.Result,
+		})
+	}
+
+	return nil
+}
+
+type goJSONLTestEvent struct {
+	Action      string `json:"Action"`
+	Package     string `json:"Package"`
+	Test        string `json:"Test"`
+	Output      string `json:"Output"`
+	FailedBuild string `json:"FailedBuild"`
+}
+
+func parseGoJSONLResults(response *runnerplugin.InterpretAttemptResponse, resultPath string) error {
+	events, err := loadGoJSONLTestEvents(resultPath)
+	if err != nil {
+		return err
+	}
+
+	packageOutputs := map[string]string{}
+	packageFailed := map[string]bool{}
+	packageBuildFailed := map[string]bool{}
+	packageHasFailedTest := map[string]bool{}
+	testStatuses := map[string]string{}
+	testCases := map[string]runnerplugin.TestCase{}
+
+	for _, event := range events {
+		if event.Package == "" {
+			continue
+		}
+		if event.Output != "" {
+			packageOutputs[event.Package] += event.Output
+		}
+		if event.Test == "" {
+			if event.Action == "fail" {
+				packageFailed[event.Package] = true
+				if event.FailedBuild != "" {
+					packageBuildFailed[event.Package] = true
+				}
+			}
+			continue
+		}
+
+		status, ok := goJSONLActionStatus(event.Action)
+		if !ok {
+			continue
+		}
+
+		key := event.Package + "/" + event.Test
+		if testStatuses[key] != runnerplugin.StatusFailed {
+			testStatuses[key] = status
+		}
+		if status == runnerplugin.StatusFailed {
+			packageHasFailedTest[event.Package] = true
+		}
+		testCases[key] = runnerplugin.TestCase{
+			Format: runnerplugin.FormatExample,
+			Scope:  event.Package,
+			Name:   event.Test,
+			Path:   event.Package,
+		}
+	}
+
+	for key, testCase := range testCases {
+		response.Tests = append(response.Tests, runnerplugin.TestResult{TestCase: testCase, Status: testStatuses[key]})
+	}
+
+	for pkg := range packageFailed {
+		if packageBuildFailed[pkg] || strings.Contains(packageOutputs[pkg], "[build failed]") {
+			response.RunError = fmt.Sprintf("go test failed to build %s", pkg)
+			continue
+		}
+
+		if !packageHasFailedTest[pkg] {
+			response.Tests = append(response.Tests, runnerplugin.TestResult{
+				TestCase: runnerplugin.TestCase{
+					Format: runnerplugin.FormatExample,
+					Scope:  pkg,
+					Name:   "TestMain",
+					Path:   pkg,
+				},
+				Status: runnerplugin.StatusFailed,
+			})
+		}
+	}
+
+	return nil
+}
+
+func loadGoJSONLTestEvents(path string) ([]goJSONLTestEvent, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read go jsonl: %w", err)
+	}
+	defer file.Close()
+
+	var events []goJSONLTestEvent
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var event goJSONLTestEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			return nil, fmt.Errorf("failed to parse go jsonl: %w", err)
+		}
+		events = append(events, event)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read go jsonl: %w", err)
+	}
+	if len(events) == 0 {
+		return nil, fmt.Errorf("failed to parse go jsonl: no events found")
+	}
+
+	return events, nil
+}
+
+func goJSONLActionStatus(action string) (string, bool) {
+	switch action {
+	case "pass":
+		return runnerplugin.StatusPassed, true
+	case "fail":
+		return runnerplugin.StatusFailed, true
+	case "skip":
+		return runnerplugin.StatusSkipped, true
+	default:
+		return runnerplugin.StatusUnknown, false
+	}
+}
+
+// isBuildFailure reports whether a JUnit testcase is gotestsum's synthetic
+// representation of a Go package that failed to build. The "TestMain" name and
+// empty classname signature is also produced by package-level failures such as
+// a crashing TestMain or a test timeout, so the failure content is checked for
+// the "[build failed]" marker to identify build failures specifically.
+func isBuildFailure(test runnerplugin.JUnitTestCase) bool {
+	return test.Name == "TestMain" &&
+		test.Classname == "" &&
+		test.Failure != nil &&
+		strings.Contains(test.Failure.Content, "[build failed]")
+}
+
+// DiscoverTargets discovers the Go packages that contain tests and returns
+// their import paths to be used as discovery targets.
+//
+// "File" does not exist as a first level concept in Go projects, so a package
+// import path is the smallest unit we can split on. The returned import paths
+// are sent to the test plan API as selector values.
+//
+// We use a format template so `go list` only emits packages that actually have
+// test files (_test.go). Packages with zero tests would otherwise be sent to the
+// test plan API as split units that run no tests, taking up a bin packing slot
+// for nothing.
+func (handler) DiscoverTargets(request runnerplugin.DiscoverTargetsRequest) (runnerplugin.DiscoverTargetsResponse, error) {
+	var response runnerplugin.DiscoverTargetsResponse
+	request.Config.Debugf("Discovering Go packages with tests using `go list`")
+	cmd := exec.Command("go", "list", "-f", "{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}", "./...")
+	output, err := cmd.Output()
+	if err != nil {
+		// Handle stderr for better error messages
+		if ee, ok := err.(*exec.ExitError); ok {
+			return response, fmt.Errorf("go list failed: %w\nstderr:\n%s", err, string(ee.Stderr))
+		}
+		return response, fmt.Errorf("failed to run go list: %w", err)
+	}
+	packages := strings.Split(strings.TrimSpace(string(output)), "\n")
+	// Packages without tests produce an empty line in the output, so filter them out.
+	validPackages := []string{}
+	for _, pkg := range packages {
+		if pkg != "" {
+			validPackages = append(validPackages, pkg)
+		}
+	}
+	request.Config.Debugf("Discovered %d packages with tests", len(validPackages))
+	if len(validPackages) == 0 {
+		return response, fmt.Errorf("no Go packages with tests found using `go list`")
+	}
+	response.Targets = validPackages
+	return response, nil
+}
+
+// commandNameAndArgs returns the words of the test command for the packages
+// of the test cases.
+func commandNameAndArgs(c runnerplugin.Config, testCases []runnerplugin.TestCase, retry bool) ([]string, error) {
+	packages, err := getPackages(c, testCases)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate test package list: %w", err)
+	}
+
+	cmd := c.TestCommand
+	if retry {
+		cmd = c.RetryTestCommand
+	}
+
+	concatenatedPackages := strings.Join(packages, " ")
+
+	if strings.Contains(cmd, "{{packages}}") {
+		cmd = strings.Replace(cmd, "{{packages}}", concatenatedPackages, 1)
+	} else {
+		cmd = cmd + " " + concatenatedPackages
+	}
+
+	cmd = strings.Replace(cmd, "{{resultPath}}", c.ResultPath, 1)
+
+	return shellquote.Split(cmd)
+}
+
+func hasGoTestJSONArg(args []string) bool {
+	for _, arg := range args {
+		if arg == "-json" {
+			return true
+		}
+	}
+	return false
+}
+
+func goJSONLFileArg(args []string) string {
+	for i, arg := range args {
+		if arg == "--jsonfile" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(arg, "--jsonfile=") {
+			return strings.TrimPrefix(arg, "--jsonfile=")
+		}
+	}
+	return ""
+}
+
+func isGoTestJSONCommand(args []string) bool {
+	return len(args) >= 3 && filepath.Base(args[0]) == "go" && args[1] == "test" && hasGoTestJSONArg(args)
+}
+
+// Pluck unique packages from test cases
+func getPackages(c runnerplugin.Config, testCases []runnerplugin.TestCase) ([]string, error) {
+	packages := make([]string, 0, len(testCases))
+
+	packagesSeen := map[string]bool{}
+	for _, tc := range testCases {
+		packageName := packageFromTestCase(tc)
+		if packageName == "" {
+			continue
+		}
+		if !packagesSeen[packageName] {
+			packages = append(packages, packageName)
+			packagesSeen[packageName] = true
+		}
+	}
+	if len(packages) == 0 {
+		// The likelihood of this is very low
+		return nil, fmt.Errorf("unable to extract package names from test plan")
+	}
+	c.Debugf("Packages: %v", packages)
+
+	return packages, nil
+}
+
+func packageFromTestCase(tc runnerplugin.TestCase) string {
+	if tc.Format == runnerplugin.FormatSelector && tc.Value != "" {
+		return tc.Value
+	}
+	if tc.Value != "" && tc.Path == "" {
+		return tc.Value
+	}
+	return tc.Path
+}

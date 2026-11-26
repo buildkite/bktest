@@ -1,6 +1,7 @@
 # Changelog
 ## Unreleased
 - ⚠️ **BREAKING:** `bktec pool run` now requires a pool created once by `bktec pool plan`, instead of each worker creating the pool itself. Pass the pool to workers with `--pool-id` or `BUILDKITE_TEST_ENGINE_POOL_ID`, along with `BUILDKITE_TEST_ENGINE_POOL_FALLBACK`; see [Create the pool](./docs/pool-run.md#create-the-pool-with-bktec-pool-plan).
+- Add experimental [runner plugins](./docs/runner-plugins.md): `--runner-plugin` runs tests with an external plugin instead of a built-in test runner. The built-in runners are unchanged, and are available as example Go and Bash plugins in [`plugins/`](./plugins).
 - Add `apt install bktest` and `dnf install bktest` in the existing package registries. Existing `bktec` installs and upgrades continue to work.
 
 ## 3.6.1 - 2026-11-24

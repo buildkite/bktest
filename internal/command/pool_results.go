@@ -17,6 +17,8 @@ type poolResults struct {
 	broken       []bool
 	reportErrors []bool
 	muted        []plan.TestCase
+	// parse parses a batch's report.
+	parse reportParser
 }
 
 type poolReportedTest struct {
@@ -25,7 +27,7 @@ type poolReportedTest struct {
 }
 
 func newPoolResults(attempts []api.LeaseAttempt, muted []plan.TestCase) *poolResults {
-	r := &poolResults{attempts: attempts, muted: muted, reported: make([]map[string]runner.ReportedTest, len(attempts)), broken: make([]bool, len(attempts)), reportErrors: make([]bool, len(attempts))}
+	r := &poolResults{attempts: attempts, muted: muted, parse: runner.ParseNativeReport, reported: make([]map[string]runner.ReportedTest, len(attempts)), broken: make([]bool, len(attempts)), reportErrors: make([]bool, len(attempts))}
 	for i := range attempts {
 		r.reported[i] = map[string]runner.ReportedTest{}
 	}
@@ -82,7 +84,7 @@ func (r *poolResults) absorb(tests []plan.TestCase, owners []int, retry bool, re
 		bad()
 		return nil, nil
 	}
-	report, err := runner.ParseNativeReport(result.ReportFormat, result.Report)
+	report, err := r.parse(result.ReportFormat, result.Report)
 	if err != nil {
 		bad()
 		return nil, nil

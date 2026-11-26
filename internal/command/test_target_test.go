@@ -11,7 +11,7 @@ import (
 )
 
 type targetDiscoveryTestRunner struct {
-	runner.Jest
+	*runner.PluginRunner
 	targets         []string
 	discoveryCalls  int
 	selectorSupport bool
@@ -85,6 +85,7 @@ func TestGetTestTargets(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			testRunner := &targetDiscoveryTestRunner{
+				PluginRunner:    runner.NewJest(runner.RunnerConfig{}),
 				targets:         []string{"discovered-a", "discovered-b"},
 				selectorSupport: test.selectorSupport,
 			}

@@ -1,0 +1,5 @@
+{
+  "runner": "jest",
+  "protocol_version": 1,
+  "command": ["./bktest-runner-jest"]
+}

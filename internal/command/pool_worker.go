@@ -58,6 +58,8 @@ type poolSource struct {
 	// so a runner that never starts doesn't hold tests other workers could
 	// run. Nil doesn't wait.
 	connected chan struct{}
+	// parseReport parses the reports of the runner's batches.
+	parseReport reportParser
 	// Worker goroutine only; inputs to leasePrefetch.schedule.
 	pace                float64       // actual runtime / duration estimate; 0 until observed
 	lastAcquireDuration time.Duration // how long the last lease request took
@@ -88,6 +90,7 @@ func newPoolSource(cancel context.CancelFunc) *poolSource {
 		starts:        make(chan batchStart, 1),
 		cancel:        cancel,
 		leaseLog:      leaseLog,
+		parseReport:   runner.ParseNativeReport,
 		reportedTests: make(map[string]poolReportedTest),
 		erroredWork:   make(map[string]api.LeaseAttempt),
 	}
@@ -574,6 +577,7 @@ func (s *poolSource) executeLease(ctx context.Context, client poolScheduler, poo
 	defer func() { next = prefetch.finish(s, client, pool.ID, err == nil) }()
 	defer lease.stop()
 	results := newPoolResults(lease.Attempts, pool.MutedTests)
+	results.parse = s.parseReport
 	defer func() {
 		s.mu.Lock()
 		owned := lease.owned && time.Now().Before(lease.expires)

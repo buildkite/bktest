@@ -65,8 +65,8 @@ func TestCreateRequestParams(t *testing.T) {
 		fmt.Fprint(w, `
 {
 	"tests": [
-		{ "path": "testdata/rspec/spec/fruits/banana_spec.rb", "reason": "slow file" },
-		{ "path": "testdata/rspec/spec/fruits/fig_spec.rb", "reason": "slow file" }
+		{ "path": "./testdata/rspec/spec/fruits/banana_spec.rb", "reason": "slow file" },
+		{ "path": "./testdata/rspec/spec/fruits/fig_spec.rb", "reason": "slow file" }
 	]
 }`)
 	}))
@@ -94,11 +94,9 @@ func TestCreateRequestParams(t *testing.T) {
 		"testdata/rspec/spec/fruits/grape_spec.rb",
 	}
 
-	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.Rspec{
-		RunnerConfig: runner.RunnerConfig{
-			TestCommand: "rspec",
-		},
-	})
+	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.NewRspec(runner.RunnerConfig{
+		TestCommand: "rspec",
+	}))
 	if err != nil {
 		t.Errorf("createRequestParam() error = %v", err)
 	}
@@ -159,7 +157,7 @@ func TestCreateRequestParams_NonRSpec(t *testing.T) {
 	defer svr.Close()
 
 	runners := []runner.TestRunner{
-		runner.Jest{}, runner.Cypress{},
+		runner.NewJest(runner.RunnerConfig{}), runner.NewCypress(runner.RunnerConfig{}),
 	}
 
 	for _, r := range runners {
@@ -659,13 +657,13 @@ func TestShouldFilterAndSplitSelectorFiles(t *testing.T) {
 		},
 		{
 			name:       "pytest selector-backed files support slow-file expansion when split by example is enabled",
-			testRunner: runner.Pytest{},
+			testRunner: runner.NewPytest(runner.RunnerConfig{}),
 			split:      true,
 			want:       true,
 		},
 		{
 			name:       "pytest selector-backed files support skipped-test expansion",
-			testRunner: runner.Pytest{},
+			testRunner: runner.NewPytest(runner.RunnerConfig{}),
 			want:       true,
 		},
 	}
@@ -845,7 +843,7 @@ func TestCreateRequestParams_WithSelectionAndMetadata_NonRSpec(t *testing.T) {
 		"testdata/fruits/banana.spec.js",
 	}
 
-	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.Jest{})
+	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.NewJest(runner.RunnerConfig{}))
 	if err != nil {
 		t.Errorf("createRequestParam() error = %v", err)
 	}
@@ -1011,7 +1009,7 @@ func (r metadataTestRunner) CommandNameAndArgs(testCases []plan.TestCase, retry 
 }
 
 type mismatchedExampleRunner struct {
-	runner.Jest
+	*runner.PluginRunner
 }
 
 func (m mismatchedExampleRunner) SupportedFeatures() runner.SupportedFeatures {
@@ -1019,7 +1017,7 @@ func (m mismatchedExampleRunner) SupportedFeatures() runner.SupportedFeatures {
 }
 
 func TestGetExamplesWithPrefix_RequiresExampleDiscoverer(t *testing.T) {
-	_, err := getExamplesWithPrefix([]string{"example.spec.js"}, mismatchedExampleRunner{})
+	_, err := getExamplesWithPrefix([]string{"example.spec.js"}, mismatchedExampleRunner{runner.NewJest(runner.RunnerConfig{})})
 	want := `runner "Jest" advertises split by example but does not implement example discovery`
 	if err == nil || err.Error() != want {
 		t.Errorf("getExamplesWithPrefix() error = %v, want %q", err, want)
@@ -1055,7 +1053,7 @@ func TestCreateRequestParams_FilterTestsError(t *testing.T) {
 		"grape_spec.rb",
 	}
 
-	_, err := createRequestParam(context.Background(), &cfg, files, *client, runner.Rspec{})
+	_, err := createRequestParam(context.Background(), &cfg, files, *client, runner.NewRspec(runner.RunnerConfig{}))
 
 	if err.Error() != "filter tests: forbidden" {
 		t.Errorf("createRequestParam() error = %v, want forbidden error", err)
@@ -1093,11 +1091,9 @@ func TestCreateRequestParams_NoFilteredFiles(t *testing.T) {
 		"testdata/rspec/spec/fruits/grape_spec.rb",
 	}
 
-	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.Rspec{
-		RunnerConfig: runner.RunnerConfig{
-			TestCommand: "rspec",
-		},
-	})
+	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.NewRspec(runner.RunnerConfig{
+		TestCommand: "rspec",
+	}))
 	if err != nil {
 		t.Errorf("createRequestParam() error = %v", err)
 	}
@@ -1145,12 +1141,10 @@ func TestCreateRequestParams_WithTagFilters(t *testing.T) {
 		"../runner/testdata/pytest/spells/test_expelliarmus.py",
 	}
 
-	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.Pytest{
-		RunnerConfig: runner.RunnerConfig{
-			TestCommand: "pytest",
-			TagFilters:  "team:frontend",
-		},
-	})
+	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.NewPytest(runner.RunnerConfig{
+		TestCommand: "pytest",
+		TagFilters:  "team:frontend",
+	}))
 	if err != nil {
 		t.Errorf("createRequestParam() error = %v", err)
 	}
@@ -1209,12 +1203,10 @@ func TestCreateRequestParams_SelectorSplittingWithTagFilters(t *testing.T) {
 		"../runner/testdata/pytest/spells/test_expelliarmus.py",
 	}
 
-	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.Pytest{
-		RunnerConfig: runner.RunnerConfig{
-			TestCommand: "pytest",
-			TagFilters:  "team:frontend",
-		},
-	})
+	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.NewPytest(runner.RunnerConfig{
+		TestCommand: "pytest",
+		TagFilters:  "team:frontend",
+	}))
 	if err != nil {
 		t.Errorf("createRequestParam() error = %v", err)
 	}
@@ -1277,11 +1269,9 @@ func TestCreateRequestParams_WithTagFilters_NonPytest(t *testing.T) {
 		"testdata/rspec/spec/fruits/banana_spec.rb",
 	}
 
-	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.Rspec{
-		RunnerConfig: runner.RunnerConfig{
-			TestCommand: "rspec",
-		},
-	})
+	got, err := createRequestParam(context.Background(), &cfg, files, *client, runner.NewRspec(runner.RunnerConfig{
+		TestCommand: "rspec",
+	}))
 	if err != nil {
 		t.Errorf("createRequestParam() error = %v", err)
 	}
