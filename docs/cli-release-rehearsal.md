@@ -55,8 +55,8 @@ pre-existing fake stable pointer is untouched, even with a staged Files archive.
 ## GitHub-only release candidate workflow
 
 Set `CLI_RELEASE_GITHUB_ENABLED=true` on `bktest-release` after verifying RC
-writer access and tag protection. Only a `v3.x.y-rc.N` tag webhook can enter
-the publish group. Stable tags and other prereleases still only stage.
+and stable writer access and tag protection. Only `v3.x.y-rc.N` and `v3.x.y`
+tag webhooks can enter the publish group. Other prereleases only stage.
 
 Once opted in, push an approved, unused RC tag pointing at the reviewed
 canonical `main` commit. The build compiles and verifies once. Review the
@@ -75,12 +75,14 @@ The paired publisher uses that exact archive and verified legacy commit,
 checks both refs and publishes both GitHub releases without setting Latest.
 Verify both prereleases and their assets by exact version. No stable channel moves.
 
-### Stable promotion (not enabled)
+### Stable promotion
 
-After a separate stable activation, stable builds publish and read back the
-seven versioned Files and the two OCI architecture aliases and multi-arch
-index in all three registries. Use the same confirmation-only first block
-after reviewing the receipt. The legacy stable Go discovery path can change
+For a stable release, push a new plain `v3.x.y` tag on the reviewed canonical
+commit with stable publishing enabled. Do not retag or edit an RC. Stable
+builds publish and read back the seven versioned Files and the two OCI
+architecture aliases and multi-arch index in all three registries. Use the
+same confirmation-only first block after reviewing the receipt. The legacy
+stable Go discovery path can change
 as soon as its tag is created; the first approval covers that change.
 
 At the stable block, pin the current tap head, legacy GitHub Latest release
@@ -163,10 +165,10 @@ demonstrates the credential boundaries and the release owner accepts recovery.
 ## Prepare a stable stage for the existing destinations
 
 Local preparation needs no credentials. The transports below record the
-compatibility requirements; **the upload steps are not enabled in the canonical
-pipeline**. The legacy pipeline is archived. Do not unblock or reuse its
-historical jobs. Stop after preparation until the canonical write route and
-its approval and credential policies have been verified.
+compatibility requirements. Use the canonical pipeline for routine publishing.
+The legacy pipeline is archived. Do not unblock or reuse its historical jobs.
+Stop after preparation until the canonical write route and its approval and
+credential policies have been verified.
 
 Do not upload until the release owner authorizes the
 specific version and destinations, verifies both exact-version GitHub releases,
