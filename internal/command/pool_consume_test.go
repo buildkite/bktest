@@ -21,7 +21,6 @@ import (
 	"github.com/buildkite/bktest/v3/internal/api"
 	"github.com/buildkite/bktest/v3/internal/config"
 	"github.com/buildkite/bktest/v3/internal/plan"
-	"github.com/buildkite/bktest/v3/internal/runner"
 	"github.com/buildkite/bktest/v3/internal/runnerexec"
 	"github.com/urfave/cli/v3"
 )
@@ -474,7 +473,7 @@ func TestRunPoolCommandRequiresUsableReport(t *testing.T) {
 			if err := os.WriteFile(resultPath, []byte(`{"testResults":[]}`), 0600); err != nil {
 				t.Fatal(err)
 			}
-			testRunner := runner.NewJest(runner.RunnerConfig{
+			testRunner := mustDetectRunner(t, "jest", config.Config{
 				TestCommand: fmt.Sprintf("sh -c %q sh {{testExamples}} {{resultPath}}", tc.script),
 				ResultPath:  resultPath,
 			})

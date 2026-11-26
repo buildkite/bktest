@@ -30,19 +30,15 @@ type TestRunnerWithTargetDiscovery interface {
 	TestTargetDiscoverer
 }
 
-var (
-	_ TestTargetDiscoverer = (*Custom)(nil)
-	_ TestTargetDiscoverer = (*Cucumber)(nil)
-	_ TestTargetDiscoverer = (*Cypress)(nil)
-	_ TestTargetDiscoverer = (*GoTest)(nil)
-	_ TestTargetDiscoverer = (*Jest)(nil)
-	_ TestTargetDiscoverer = (*Playwright)(nil)
-	_ TestTargetDiscoverer = (*Pytest)(nil)
-	_ TestTargetDiscoverer = (*Rspec)(nil)
-	_ TestTargetDiscoverer = (*Vitest)(nil)
+// RunnerIDProvider optionally supplies the canonical runner identifier
+// (e.g. "rspec", "pytest") for API requests when loaded via a plugin path.
+type RunnerIDProvider interface {
+	RunnerID() string
+}
 
-	_ ExampleDiscoverer = (*Cucumber)(nil)
-	_ ExampleDiscoverer = (*Playwright)(nil)
-	_ ExampleDiscoverer = (*Pytest)(nil)
-	_ ExampleDiscoverer = (*Rspec)(nil)
-)
+// BatchReportRunner optionally describes how a runner's output is interpreted
+// in Test Scheduler pool consume mode.
+type BatchReportRunner interface {
+	BatchReportFormat() string
+	PoolNonRetryableExitCodes() bool
+}

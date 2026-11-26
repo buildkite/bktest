@@ -151,28 +151,30 @@ func TestEnvironmentWithOverridesReplacesInheritedValues(t *testing.T) {
 }
 
 func TestBuildCommandUsesTestProcessEnvironment(t *testing.T) {
-	testRunner := NewRspec(RunnerConfig{
-		TestCommand:    "echo {{testExamples}}",
-		uploadToken:    "upstream-token",
-		testProcessEnv: map[string]string{"BUILDKITE_TESTS_OTLP_TOKEN": "local-token", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:1234/v1/traces"},
-	})
-	cmd, err := BuildCommand(testRunner, nil, false)
-	if err != nil {
-		t.Fatalf("BuildCommand() error = %v", err)
-	}
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		testRunner := loadVariantRunner(t, variant, "rspec", RunnerConfig{
+			TestCommand:    "echo {{testExamples}}",
+			uploadToken:    "upstream-token",
+			testProcessEnv: map[string]string{"BUILDKITE_TESTS_OTLP_TOKEN": "local-token", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:1234/v1/traces"},
+		})
+		cmd, err := BuildCommand(testRunner, nil, false)
+		if err != nil {
+			t.Fatalf("BuildCommand() error = %v", err)
+		}
 
-	values := make(map[string]string)
-	for _, entry := range cmd.Env {
-		key, value, _ := strings.Cut(entry, "=")
-		values[key] = value
-	}
-	if got := values["BUILDKITE_ANALYTICS_TOKEN"]; got != "upstream-token" {
-		t.Errorf("BUILDKITE_ANALYTICS_TOKEN = %q, want upstream-token", got)
-	}
-	if got := values["BUILDKITE_TESTS_OTLP_TOKEN"]; got != "local-token" {
-		t.Errorf("BUILDKITE_TESTS_OTLP_TOKEN = %q, want local-token", got)
-	}
-	if got := values["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]; got != "http://127.0.0.1:1234/v1/traces" {
-		t.Errorf("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = %q", got)
-	}
+		values := make(map[string]string)
+		for _, entry := range cmd.Env {
+			key, value, _ := strings.Cut(entry, "=")
+			values[key] = value
+		}
+		if got := values["BUILDKITE_ANALYTICS_TOKEN"]; got != "upstream-token" {
+			t.Errorf("BUILDKITE_ANALYTICS_TOKEN = %q, want upstream-token", got)
+		}
+		if got := values["BUILDKITE_TESTS_OTLP_TOKEN"]; got != "local-token" {
+			t.Errorf("BUILDKITE_TESTS_OTLP_TOKEN = %q, want local-token", got)
+		}
+		if got := values["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]; got != "http://127.0.0.1:1234/v1/traces" {
+			t.Errorf("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = %q", got)
+		}
+	})
 }

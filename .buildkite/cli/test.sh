@@ -14,6 +14,7 @@ case "$1" in
       (cd internal/runner/testdata/playwright && yarn playwright install --with-deps)
       mkdir -p dist/coverage
       go test -race -count=1 -coverprofile=dist/coverage/cover.out ./...
+      go test -race -count=1 -tags=plugin_e2e ./internal/integration/...
       go tool cover -html dist/coverage/cover.out -o dist/coverage/cover.html
     fi
     ;;

@@ -1,0 +1,11 @@
+{
+  "protocol_version": 1,
+  "name": "rspec",
+  "display_name": "RSpec",
+  "kind": "go",
+  "entrypoint": "./bktest-plugin-rspec",
+  "build": {
+    "go_package": "."
+  },
+  "report_formats": ["rspec-json"]
+}

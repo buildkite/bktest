@@ -41,4 +41,7 @@ internal/runner/testdata/cucumber/cucumber.json
 /bktest
 /bktec
 
+# Prebuilt Go runner plugins (built on demand or via bin/build-plugins)
+plugins/go/*/bktest-plugin-*
+
 internal/runner/testdata/*/tmp/

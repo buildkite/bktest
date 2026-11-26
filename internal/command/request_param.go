@@ -109,6 +109,15 @@ func createRequestParam(ctx context.Context, cfg *config.Config, testTargets []s
 		return api.TestPlanParams{}, err
 	}
 
+	runnerName := cfg.TestRunner
+	if runnerName == "" || strings.Contains(runnerName, "/") || strings.Contains(runnerName, `\`) {
+		if cfg.PluginPath != "" || runnerName != "" {
+			if idProvider, ok := runner.(interface{ RunnerID() string }); ok && idProvider.RunnerID() != "" {
+				runnerName = idProvider.RunnerID()
+			}
+		}
+	}
+
 	params := api.TestPlanParams{
 		Identifier:     cfg.Identifier,
 		Parallelism:    cfg.Parallelism,
@@ -117,7 +126,7 @@ func createRequestParam(ctx context.Context, cfg *config.Config, testTargets []s
 		Branch:         cfg.Branch,
 		Selection:      buildSelectionParams(cfg.SelectionStrategy, cfg.SelectionParams),
 		Metadata:       cfg.Metadata,
-		Runner:         cfg.TestRunner,
+		Runner:         runnerName,
 		Tests:          testParams,
 		LocationPrefix: cfg.LocationPrefix,
 	}
@@ -143,8 +152,7 @@ func requestTestParams(ctx context.Context, cfg *config.Config, client api.Clien
 	}
 
 	// If tag filtering is enabled, we must split all files to allow to enable filtering.
-	// Tag filtering is currently only supported for pytest.
-	if cfg.TagFilters != "" && runner.Name() == "pytest" {
+	if cfg.TagFilters != "" && features.FilterTestByTag {
 		return expandAllTargets(targets, runner)
 	}
 

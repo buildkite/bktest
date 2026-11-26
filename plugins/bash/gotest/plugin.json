@@ -1,0 +1,7 @@
+{
+  "protocol_version": 1,
+  "name": "gotest",
+  "display_name": "gotest",
+  "kind": "bash",
+  "entrypoint": "./plugin.sh"
+}

@@ -376,9 +376,33 @@ var testFileExcludePatternFlag = &cli.StringFlag{
 var testRunnerFlag = &cli.StringFlag{
 	Name:        "test-runner",
 	Category:    "TEST RUNNER",
-	Usage:       "Test runner",
+	Usage:       "Test runner name or path to a runner plugin directory/executable",
 	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_TEST_RUNNER"),
 	Destination: &cfg.TestRunner,
+}
+
+var pluginFlag = &cli.StringFlag{
+	Name:        "plugin",
+	Category:    "TEST RUNNER",
+	Usage:       "Path to a runner plugin directory (including subdirectories or root//subdir) or executable",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_PLUGIN"),
+	Destination: &cfg.PluginPath,
+}
+
+var pluginDirFlag = &cli.StringSliceFlag{
+	Name:        "plugin-dir",
+	Category:    "TEST RUNNER",
+	Usage:       "Directory (searched recursively across subdirectories) containing runner plugins",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_PLUGIN_DIR"),
+	Destination: &cfg.PluginDirs,
+}
+
+var pluginVariantFlag = &cli.StringFlag{
+	Name:        "plugin-variant",
+	Category:    "TEST RUNNER",
+	Usage:       "Preferred plugin implementation variant when discovering plugins (e.g. go or bash)",
+	Sources:     cli.EnvVars("BUILDKITE_TEST_ENGINE_PLUGIN_VARIANT"),
+	Destination: &cfg.PluginVariant,
 }
 
 var resultPathFlag = &cli.StringFlag{
@@ -647,6 +671,9 @@ var runnerEnvironmentFlags = []cli.Flag{
 	testFilePatternFlag,
 	testFileExcludePatternFlag,
 	testRunnerFlag,
+	pluginFlag,
+	pluginDirFlag,
+	pluginVariantFlag,
 	resultPathFlag,
 	splitByExampleFlag,
 	selectorSplittingCompatibilityFlag,

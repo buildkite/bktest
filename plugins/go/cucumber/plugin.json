@@ -1,0 +1,10 @@
+{
+  "protocol_version": 1,
+  "name": "cucumber",
+  "display_name": "Cucumber",
+  "kind": "go",
+  "entrypoint": "./bktest-plugin-cucumber",
+  "build": {
+    "go_package": "."
+  }
+}

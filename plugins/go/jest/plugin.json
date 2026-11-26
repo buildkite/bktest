@@ -1,0 +1,11 @@
+{
+  "protocol_version": 1,
+  "name": "jest",
+  "display_name": "Jest",
+  "kind": "go",
+  "entrypoint": "./bktest-plugin-jest",
+  "build": {
+    "go_package": "."
+  },
+  "report_formats": ["jest-json"]
+}

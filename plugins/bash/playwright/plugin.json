@@ -1,0 +1,8 @@
+{
+  "protocol_version": 1,
+  "name": "playwright",
+  "display_name": "Playwright",
+  "kind": "bash",
+  "entrypoint": "./plugin.sh",
+  "report_formats": ["playwright-json"]
+}

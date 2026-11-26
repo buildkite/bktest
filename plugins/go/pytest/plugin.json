@@ -1,0 +1,11 @@
+{
+  "protocol_version": 1,
+  "name": "pytest",
+  "display_name": "pytest",
+  "kind": "go",
+  "entrypoint": "./bktest-plugin-pytest",
+  "build": {
+    "go_package": "."
+  },
+  "report_formats": ["pytest-json", "pytest-junit"]
+}

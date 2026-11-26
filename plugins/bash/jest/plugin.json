@@ -1,0 +1,8 @@
+{
+  "protocol_version": 1,
+  "name": "jest",
+  "display_name": "Jest",
+  "kind": "bash",
+  "entrypoint": "./plugin.sh",
+  "report_formats": ["jest-json"]
+}

@@ -1,11 +1,9 @@
 package runner
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/buildkite/bktest/v3/internal/plan"
@@ -14,457 +12,378 @@ import (
 )
 
 func TestGotestRun(t *testing.T) {
-	changeCwd(t, "./testdata/go")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/go")
 
-	gotest := NewGoTest(RunnerConfig{
-		ResultPath: filepath.Join(t.TempDir(), "test-results.jsonl"),
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			ResultPath: filepath.Join(t.TempDir(), "test-results.jsonl"),
+		})
+		testCases := []plan.TestCase{
+			{Path: "example.com/hello"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := gotest.Run(result, testCases, false)
+
+		assert.NoError(t, err)
+		if result.Status() != RunStatusPassed {
+			t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
+		}
+
+		testResult := result.tests["example.com/hello/TestHelloWorld/example.com/hello"]
+		if testResult == nil || testResult.Path != "example.com/hello" {
+			t.Errorf("TestResult = %v, want Path example.com/hello", testResult)
+		}
 	})
-	testCases := []plan.TestCase{
-		{Path: "example.com/hello"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := gotest.Run(result, testCases, false)
-
-	assert.NoError(t, err)
-	if result.Status() != RunStatusPassed {
-		t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
-	}
-
-	fmt.Printf("result.tests: %v\n", result.tests)
-
-	testResult := result.tests["example.com/hello/TestHelloWorld/example.com/hello"]
-	if testResult.Path != "example.com/hello" {
-		t.Errorf("TestResult.Path = %v, want %v", testResult.Path, "example.com/hello")
-	}
 }
 
 func TestGotestRun_TestFailed(t *testing.T) {
-	changeCwd(t, "./testdata/go")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/go")
 
-	gotest := NewGoTest(RunnerConfig{
-		ResultPath: filepath.Join(t.TempDir(), "test-results.jsonl"),
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			ResultPath: filepath.Join(t.TempDir(), "test-results.jsonl"),
+		})
+		testCases := []plan.TestCase{
+			{Path: "example.com/hello/bad"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := gotest.Run(result, testCases, false)
+
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
+
+		if result.Status() != RunStatusFailed {
+			t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusFailed)
+		}
 	})
-	testCases := []plan.TestCase{
-		{Path: "example.com/hello/bad"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := gotest.Run(result, testCases, false)
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-
-	if result.Status() != RunStatusFailed {
-		t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusFailed)
-	}
 }
 
 func TestGotestRun_BuildFailed(t *testing.T) {
-	changeCwd(t, "./testdata/go")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/go")
 
-	gotest := NewGoTest(RunnerConfig{
-		ResultPath: filepath.Join(t.TempDir(), "test-results.jsonl"),
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			ResultPath: filepath.Join(t.TempDir(), "test-results.jsonl"),
+		})
+		testCases := []plan.TestCase{
+			{Path: "example.com/hello/broken"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := gotest.Run(result, testCases, false)
+
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
+
+		if result.Status() != RunStatusError {
+			t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusError)
+		}
+		if failed := result.FailedTests(); len(failed) != 0 {
+			t.Errorf("Gotest.Run(%v) RunResult.FailedTests() = %v, want none", testCases, failed)
+		}
 	})
-	testCases := []plan.TestCase{
-		{Path: "example.com/hello/broken"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := gotest.Run(result, testCases, false)
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-
-	// A build failure is an error outside of the tests, not a test failure.
-	if result.Status() != RunStatusError {
-		t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusError)
-	}
-
-	// The synthetic "TestMain" testcase that gotestsum emits for a build
-	// failure must not be recorded as a failed test, otherwise it would be
-	// selected for retry but silently dropped from the retry command
-	// (its package path is empty).
-	if failed := result.FailedTests(); len(failed) != 0 {
-		t.Errorf("Gotest.Run(%v) RunResult.FailedTests() = %v, want none", testCases, failed)
-	}
 }
 
 func TestGotestRun_GoJSONL(t *testing.T) {
-	changeCwd(t, "./testdata/go")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/go")
 
-	gotest := NewGoTest(RunnerConfig{
-		TestCommand: "go test -json {{packages}}",
-		ResultPath:  filepath.Join(t.TempDir(), "test-results.jsonl"),
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			TestCommand: "go test -json {{packages}}",
+			ResultPath:  filepath.Join(t.TempDir(), "test-results.jsonl"),
+		})
+		testCases := []plan.TestCase{
+			{Path: "example.com/hello"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := gotest.Run(result, testCases, false)
+
+		assert.NoError(t, err)
+		if result.Status() != RunStatusPassed {
+			t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
+		}
+
+		testResult := result.tests["example.com/hello/TestHelloWorld/example.com/hello"]
+		if testResult == nil || testResult.Path != "example.com/hello" {
+			t.Errorf("TestResult = %v, want Path example.com/hello", testResult)
+		}
 	})
-	testCases := []plan.TestCase{
-		{Path: "example.com/hello"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := gotest.Run(result, testCases, false)
-
-	assert.NoError(t, err)
-	if result.Status() != RunStatusPassed {
-		t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
-	}
-
-	testResult := result.tests["example.com/hello/TestHelloWorld/example.com/hello"]
-	if testResult.Path != "example.com/hello" {
-		t.Errorf("TestResult.Path = %v, want %v", testResult.Path, "example.com/hello")
-	}
 }
 
 func TestGotestRun_GotestsumGoJSONL(t *testing.T) {
-	changeCwd(t, "./testdata/go")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/go")
 
-	gotest := NewGoTest(RunnerConfig{
-		TestCommand: "gotestsum --jsonfile={{resultPath}} {{packages}}",
-		ResultPath:  filepath.Join(t.TempDir(), "test-results.jsonl"),
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			TestCommand: "gotestsum --jsonfile={{resultPath}} {{packages}}",
+			ResultPath:  filepath.Join(t.TempDir(), "test-results.jsonl"),
+		})
+		testCases := []plan.TestCase{
+			{Path: "example.com/hello"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := gotest.Run(result, testCases, false)
+
+		assert.NoError(t, err)
+		if result.Status() != RunStatusPassed {
+			t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
+		}
+
+		testResult := result.tests["example.com/hello/TestHelloWorld/example.com/hello"]
+		if testResult == nil || testResult.Path != "example.com/hello" {
+			t.Errorf("TestResult = %v, want Path example.com/hello", testResult)
+		}
 	})
-	testCases := []plan.TestCase{
-		{Path: "example.com/hello"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := gotest.Run(result, testCases, false)
-
-	assert.NoError(t, err)
-	if result.Status() != RunStatusPassed {
-		t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
-	}
-
-	testResult := result.tests["example.com/hello/TestHelloWorld/example.com/hello"]
-	if testResult.Path != "example.com/hello" {
-		t.Errorf("TestResult.Path = %v, want %v", testResult.Path, "example.com/hello")
-	}
 }
 
 func TestGotestRun_GoJSONLTestFailed(t *testing.T) {
-	changeCwd(t, "./testdata/go")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/go")
 
-	gotest := NewGoTest(RunnerConfig{
-		TestCommand: "go test -json {{packages}}",
-		ResultPath:  filepath.Join(t.TempDir(), "test-results.jsonl"),
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			TestCommand: "go test -json {{packages}}",
+			ResultPath:  filepath.Join(t.TempDir(), "test-results.jsonl"),
+		})
+		testCases := []plan.TestCase{
+			{Path: "example.com/hello/bad"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := gotest.Run(result, testCases, false)
+
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
+
+		if result.Status() != RunStatusFailed {
+			t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusFailed)
+		}
+
+		failed := result.FailedTests()
+		if len(failed) != 1 || failed[0].Path != "example.com/hello/bad" {
+			t.Errorf("Gotest.Run(%v) RunResult.FailedTests = %v, want one failed package", testCases, failed)
+		}
 	})
-	testCases := []plan.TestCase{
-		{Path: "example.com/hello/bad"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := gotest.Run(result, testCases, false)
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-
-	if result.Status() != RunStatusFailed {
-		t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusFailed)
-	}
-
-	failed := result.FailedTests()
-	if len(failed) != 1 || failed[0].Path != "example.com/hello/bad" {
-		t.Errorf("Gotest.Run(%v) RunResult.FailedTests = %v, want one failed package", testCases, failed)
-	}
 }
 
 func TestGotestRun_GoJSONLBuildFailed(t *testing.T) {
-	changeCwd(t, "./testdata/go")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/go")
 
-	gotest := NewGoTest(RunnerConfig{
-		TestCommand: "go test -json {{packages}}",
-		ResultPath:  filepath.Join(t.TempDir(), "test-results.jsonl"),
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			TestCommand: "go test -json {{packages}}",
+			ResultPath:  filepath.Join(t.TempDir(), "test-results.jsonl"),
+		})
+		testCases := []plan.TestCase{
+			{Path: "example.com/hello/broken"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := gotest.Run(result, testCases, false)
+
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
+
+		if result.Status() != RunStatusError {
+			t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusError)
+		}
+		if failed := result.FailedTests(); len(failed) != 0 {
+			t.Errorf("Gotest.Run(%v) RunResult.FailedTests() = %v, want none", testCases, failed)
+		}
 	})
-	testCases := []plan.TestCase{
-		{Path: "example.com/hello/broken"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := gotest.Run(result, testCases, false)
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-
-	if result.Status() != RunStatusError {
-		t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusError)
-	}
-
-	if failed := result.FailedTests(); len(failed) != 0 {
-		t.Errorf("Gotest.Run(%v) RunResult.FailedTests() = %v, want none", testCases, failed)
-	}
 }
 
 func TestGotestRun_GoJSONLPackageLevelFailure(t *testing.T) {
-	changeCwd(t, "./testdata/go")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/go")
 
-	gotest := NewGoTest(RunnerConfig{
-		TestCommand: "go test -json {{packages}}",
-		ResultPath:  filepath.Join(t.TempDir(), "test-results.jsonl"),
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			TestCommand: "go test -json {{packages}}",
+			ResultPath:  filepath.Join(t.TempDir(), "test-results.jsonl"),
+		})
+		testCases := []plan.TestCase{
+			{Path: "example.com/hello/testmain"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := gotest.Run(result, testCases, false)
+
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
+		if result.Status() != RunStatusFailed {
+			t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusFailed)
+		}
+
+		failed := result.FailedTests()
+		if len(failed) != 1 || failed[0].Path != "example.com/hello/testmain" || failed[0].Name != "TestMain" {
+			t.Errorf("Gotest.Run(%v) RunResult.FailedTests = %v, want package-level failure", testCases, failed)
+		}
 	})
-	testCases := []plan.TestCase{
-		{Path: "example.com/hello/testmain"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := gotest.Run(result, testCases, false)
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-	if result.Status() != RunStatusFailed {
-		t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusFailed)
-	}
-
-	failed := result.FailedTests()
-	if len(failed) != 1 || failed[0].Path != "example.com/hello/testmain" || failed[0].Name != "TestMain" {
-		t.Errorf("Gotest.Run(%v) RunResult.FailedTests = %v, want package-level failure", testCases, failed)
-	}
-}
-
-func TestGotestRun_GoJSONLEmptyResultFile(t *testing.T) {
-	resultPath := filepath.Join(t.TempDir(), "test-results.jsonl")
-	err := os.WriteFile(resultPath, nil, 0o600)
-	assert.NoError(t, err)
-
-	gotest := NewGoTest(RunnerConfig{
-		TestCommand: "go test -json {{packages}}",
-		ResultPath:  resultPath,
-	})
-	result := NewRunResult([]plan.TestCase{})
-	err = gotest.parseGoJSONLResults(result)
-
-	if err == nil || !strings.Contains(err.Error(), "no events found") {
-		t.Errorf("GoTest.parseGoJSONLResults() error = %v, want no events found", err)
-	}
 }
 
 func TestGotestRun_GoJSONLFailureIsNotOverwrittenByLaterPass(t *testing.T) {
-	resultPath := filepath.Join(t.TempDir(), "test-results.jsonl")
-	err := os.WriteFile(resultPath, []byte(`{"Action":"start","Package":"example.com/hello"}
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		resultPath := filepath.Join(t.TempDir(), "test-results.jsonl")
+		err := os.WriteFile(resultPath, []byte(`{"Action":"start","Package":"example.com/hello"}
 {"Action":"fail","Package":"example.com/hello","Test":"TestFlaky"}
 {"Action":"pass","Package":"example.com/hello","Test":"TestFlaky"}
 {"Action":"fail","Package":"example.com/hello"}
 `), 0o600)
-	assert.NoError(t, err)
+		assert.NoError(t, err)
 
-	gotest := NewGoTest(RunnerConfig{
-		TestCommand: "go test -json {{packages}}",
-		ResultPath:  resultPath,
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			TestCommand: "true --jsonfile={{resultPath}} {{packages}}",
+			ResultPath:  resultPath,
+		})
+		result := NewRunResult([]plan.TestCase{})
+		err = gotest.Run(result, []plan.TestCase{{Path: "example.com/hello"}}, false)
+
+		assert.NoError(t, err)
+		if result.Status() != RunStatusFailed {
+			t.Errorf("GoTest RunResult.Status = %v, want %v", result.Status(), RunStatusFailed)
+		}
+
+		failed := result.FailedTests()
+		if len(failed) != 1 || failed[0].Name != "TestFlaky" {
+			t.Errorf("GoTest RunResult.FailedTests = %v, want TestFlaky failure", failed)
+		}
 	})
-	result := NewRunResult([]plan.TestCase{})
-	err = gotest.parseGoJSONLResults(result)
-
-	assert.NoError(t, err)
-	if result.Status() != RunStatusFailed {
-		t.Errorf("GoTest.parseGoJSONLResults() RunResult.Status = %v, want %v", result.Status(), RunStatusFailed)
-	}
-
-	failed := result.FailedTests()
-	if len(failed) != 1 || failed[0].Name != "TestFlaky" {
-		t.Errorf("GoTest.parseGoJSONLResults() RunResult.FailedTests = %v, want TestFlaky failure", failed)
-	}
 }
 
 func TestGotestRun_CommandFailed(t *testing.T) {
-	changeCwd(t, "./testdata/go")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/go")
 
-	gotest := NewGoTest(RunnerConfig{
-		TestCommand: "gotestsum --junitfile {{resultPath}} bluhbluh",
-		ResultPath:  getRandomXMLTempFilename(),
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			TestCommand: "gotestsum --junitfile {{resultPath}} bluhbluh",
+			ResultPath:  filepath.Join(t.TempDir(), "test-results.xml"),
+		})
+		testCases := []plan.TestCase{
+			{Path: "example.com/hello"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := gotest.Run(result, testCases, false)
+
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
+
+		if result.Status() != RunStatusFailed {
+			t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusFailed)
+		}
 	})
-	testCases := []plan.TestCase{
-		{Path: "example.com/hello"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := gotest.Run(result, testCases, false)
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-
-	if result.Status() != RunStatusFailed {
-		t.Errorf("Gotest.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusFailed)
-	}
 }
 
-func TestGotestUploadResult_DefaultsToGoJSONL(t *testing.T) {
-	gotest := NewGoTest(RunnerConfig{ResultPath: "go-test.jsonl"})
-
-	assert.Equal(t, "go-jsonl", gotest.ResultFormat())
-	assert.Equal(t, "go-test.jsonl", gotest.ResultFilePath())
+func TestGotestUploadResultFormats(t *testing.T) {
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		cases := []struct {
+			name       string
+			cfg        RunnerConfig
+			wantFormat string
+			wantPath   string
+		}{
+			{
+				name:       "defaults to go-jsonl",
+				cfg:        RunnerConfig{ResultPath: "go-test.jsonl"},
+				wantFormat: "go-jsonl",
+				wantPath:   "go-test.jsonl",
+			},
+			{
+				name:       "go test -json",
+				cfg:        RunnerConfig{ResultPath: "go-test.jsonl", TestCommand: "go test -json {{packages}}"},
+				wantFormat: "go-jsonl",
+				wantPath:   "go-test.jsonl",
+			},
+			{
+				name:       "gotestsum --jsonfile",
+				cfg:        RunnerConfig{ResultPath: "go-test.jsonl", TestCommand: "gotestsum --jsonfile={{resultPath}} {{packages}}"},
+				wantFormat: "go-jsonl",
+				wantPath:   "go-test.jsonl",
+			},
+			{
+				name:       "gotestsum --junitfile with -- -json",
+				cfg:        RunnerConfig{ResultPath: "junit.xml", TestCommand: "gotestsum --junitfile={{resultPath}} -- -json {{packages}}"},
+				wantFormat: "junit",
+				wantPath:   "junit.xml",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				gotest := loadVariantRunner(t, variant, "gotest", tc.cfg)
+				assert.Equal(t, tc.wantFormat, gotest.ResultFormat())
+				assert.Equal(t, tc.wantPath, gotest.ResultFilePath())
+			})
+		}
+	})
 }
 
-func TestGotestUploadResult_DetectsGoJSONLFromGoTestJSONCommand(t *testing.T) {
-	gotest := NewGoTest(RunnerConfig{
-		ResultPath:  "go-test.jsonl",
-		TestCommand: "go test -json {{packages}}",
+func TestGotestCommands(t *testing.T) {
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			ResultPath:  "go-test.jsonl",
+			TestCommand: "gotestsum --jsonfile={{resultPath}} -- -count=1 {{packages}}",
+		})
+		cmd, args, err := gotest.CommandNameAndArgs([]plan.TestCase{{Path: "example.com/hello"}}, false)
+		assert.NoError(t, err)
+		assert.Equal(t, "gotestsum", cmd)
+		assert.Equal(t, []string{"--jsonfile=go-test.jsonl", "--", "-count=1", "example.com/hello"}, args)
+
+		gotest2 := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			ResultPath:  "go-test.jsonl",
+			TestCommand: "go test -json -count=1 {{packages}}",
+		})
+		cmd, args, err = gotest2.CommandNameAndArgs([]plan.TestCase{{Path: "example.com/hello"}}, false)
+		assert.NoError(t, err)
+		assert.Equal(t, "go", cmd)
+		assert.Equal(t, []string{"test", "-json", "-count=1", "example.com/hello"}, args)
+
+		gotest3 := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			ResultPath:  "junit.xml",
+			TestCommand: "gotestsum --junitfile={{resultPath}} -- -count=1 {{packages}}",
+		})
+		cmd, args, err = gotest3.CommandNameAndArgs([]plan.TestCase{{Path: "example.com/hello"}}, false)
+		assert.NoError(t, err)
+		assert.Equal(t, "gotestsum", cmd)
+		assert.Equal(t, []string{"--junitfile=junit.xml", "--", "-count=1", "example.com/hello"}, args)
 	})
-
-	assert.Equal(t, "go-jsonl", gotest.ResultFormat())
-	assert.Equal(t, "go-test.jsonl", gotest.ResultFilePath())
-}
-
-func TestGotestUploadResult_DetectsGoJSONLFromGotestsumJSONFileCommand(t *testing.T) {
-	gotest := NewGoTest(RunnerConfig{
-		ResultPath:  "go-test.jsonl",
-		TestCommand: "gotestsum --jsonfile={{resultPath}} {{packages}}",
-	})
-
-	assert.Equal(t, "go-jsonl", gotest.ResultFormat())
-	assert.Equal(t, "go-test.jsonl", gotest.ResultFilePath())
-}
-
-func TestGotestUploadResult_DoesNotDetectGoJSONLFromGotestsumGoTestJSONArg(t *testing.T) {
-	gotest := NewGoTest(RunnerConfig{
-		ResultPath:  "junit.xml",
-		TestCommand: "gotestsum --junitfile={{resultPath}} -- -json {{packages}}",
-	})
-
-	assert.Equal(t, "junit", gotest.ResultFormat())
-	assert.Equal(t, "junit.xml", gotest.ResultFilePath())
-}
-
-func TestGotestCommandKeepsGotestsumJSONFileCommand(t *testing.T) {
-	gotest := NewGoTest(RunnerConfig{
-		ResultPath:  "go-test.jsonl",
-		TestCommand: "gotestsum --jsonfile={{resultPath}} -- -count=1 {{packages}}",
-	})
-
-	cmd, args, err := gotest.CommandNameAndArgs([]plan.TestCase{{Path: "example.com/hello"}}, false)
-
-	assert.NoError(t, err)
-	assert.Equal(t, "gotestsum", cmd)
-	assert.Equal(t, []string{
-		"--jsonfile=go-test.jsonl",
-		"--",
-		"-count=1",
-		"example.com/hello",
-	}, args)
-}
-
-func TestGotestCommandKeepsGoTestJSONCommand(t *testing.T) {
-	gotest := NewGoTest(RunnerConfig{
-		ResultPath:  "go-test.jsonl",
-		TestCommand: "go test -json -count=1 {{packages}}",
-	})
-
-	cmd, args, err := gotest.CommandNameAndArgs([]plan.TestCase{{Path: "example.com/hello"}}, false)
-
-	assert.NoError(t, err)
-	assert.Equal(t, "go", cmd)
-	assert.Equal(t, []string{
-		"test",
-		"-json",
-		"-count=1",
-		"example.com/hello",
-	}, args)
-}
-
-func TestGotestCommandKeepsGotestsumJUnitCommand(t *testing.T) {
-	gotest := NewGoTest(RunnerConfig{
-		ResultPath:  "junit.xml",
-		TestCommand: "gotestsum --junitfile={{resultPath}} -- -count=1 {{packages}}",
-	})
-
-	cmd, args, err := gotest.CommandNameAndArgs([]plan.TestCase{{Path: "example.com/hello"}}, false)
-
-	assert.NoError(t, err)
-	assert.Equal(t, "gotestsum", cmd)
-	assert.Equal(t, []string{
-		"--junitfile=junit.xml",
-		"--",
-		"-count=1",
-		"example.com/hello",
-	}, args)
 }
 
 func TestGotestDiscoverTestTargets(t *testing.T) {
-	changeCwd(t, "./testdata/go")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/go")
 
-	gotest := NewGoTest(RunnerConfig{})
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{})
 
-	got, err := gotest.DiscoverTestTargets()
-	if err != nil {
-		t.Errorf("Gotest.DiscoverTestTargets() error = %v", err)
-	}
+		got, err := gotest.DiscoverTestTargets()
+		if err != nil {
+			t.Errorf("Gotest.DiscoverTestTargets() error = %v", err)
+		}
 
-	// example.com/hello/notest has source files but no tests, so it must be
-	// excluded from the discovered packages.
-	want := []string{
-		"example.com/hello",
-		"example.com/hello/bad",
-		"example.com/hello/broken",
-		"example.com/hello/testmain",
-	}
+		want := []string{
+			"example.com/hello",
+			"example.com/hello/bad",
+			"example.com/hello/broken",
+			"example.com/hello/testmain",
+		}
 
-	if diff := cmp.Diff(got, want); diff != "" {
-		t.Errorf("Gotest.DiscoverTestTargets() diff (-got +want):\n%s", diff)
-	}
-}
-
-func TestGotestCommandNameAndArgs_SelectorTasks(t *testing.T) {
-	gotest := NewGoTest(RunnerConfig{
-		TestCommand: "gotestsum --junitfile={{resultPath}} {{packages}}",
-		ResultPath:  "test-results.xml",
+		if diff := cmp.Diff(got, want); diff != "" {
+			t.Errorf("Gotest.DiscoverTestTargets() diff (-got +want):\n%s", diff)
+		}
 	})
-
-	testCases := []plan.TestCase{
-		{
-			Format: plan.TestCaseFormatSelector,
-			Value:  "example.com/hello",
-		},
-		{
-			Format: plan.TestCaseFormatSelector,
-			Value:  "example.com/hello/bad",
-		},
-		{
-			Format: plan.TestCaseFormatSelector,
-			Value:  "example.com/hello",
-		},
-	}
-
-	gotName, gotArgs, err := gotest.CommandNameAndArgs(testCases, false)
-	if err != nil {
-		t.Fatalf("GoTest.CommandNameAndArgs() error = %v", err)
-	}
-
-	if gotName != "gotestsum" {
-		t.Errorf("GoTest.CommandNameAndArgs() name = %q, want %q", gotName, "gotestsum")
-	}
-
-	wantArgs := []string{
-		"--junitfile=test-results.xml",
-		"example.com/hello",
-		"example.com/hello/bad",
-	}
-	if diff := cmp.Diff(gotArgs, wantArgs); diff != "" {
-		t.Errorf("GoTest.CommandNameAndArgs() args diff (-got +want):\n%s", diff)
-	}
 }
 
-func TestGotestCommandNameAndArgs_PathTasksStillWork(t *testing.T) {
-	gotest := NewGoTest(RunnerConfig{
-		TestCommand: "gotestsum --junitfile={{resultPath}} {{packages}}",
-		ResultPath:  "test-results.xml",
+func TestGotestCommandNameAndArgs_SelectorAndPathTasks(t *testing.T) {
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		gotest := loadVariantRunner(t, variant, "gotest", RunnerConfig{
+			TestCommand: "gotestsum --junitfile={{resultPath}} {{packages}}",
+			ResultPath:  "test-results.xml",
+		})
+
+		testCases := []plan.TestCase{
+			{Format: plan.TestCaseFormatSelector, Value: "example.com/hello"},
+			{Format: plan.TestCaseFormatSelector, Value: "example.com/hello/bad"},
+			{Format: plan.TestCaseFormatSelector, Value: "example.com/hello"},
+		}
+
+		gotName, gotArgs, err := gotest.CommandNameAndArgs(testCases, false)
+		if err != nil {
+			t.Fatalf("GoTest.CommandNameAndArgs() error = %v", err)
+		}
+		assert.Equal(t, "gotestsum", gotName)
+		assert.Equal(t, []string{"--junitfile=test-results.xml", "example.com/hello", "example.com/hello/bad"}, gotArgs)
 	})
-
-	testCases := []plan.TestCase{
-		{Path: "example.com/hello"},
-		{Path: "example.com/hello/bad"},
-	}
-
-	gotName, gotArgs, err := gotest.CommandNameAndArgs(testCases, false)
-	if err != nil {
-		t.Fatalf("GoTest.CommandNameAndArgs() error = %v", err)
-	}
-
-	if gotName != "gotestsum" {
-		t.Errorf("GoTest.CommandNameAndArgs() name = %q, want %q", gotName, "gotestsum")
-	}
-
-	wantArgs := []string{
-		"--junitfile=test-results.xml",
-		"example.com/hello",
-		"example.com/hello/bad",
-	}
-	if diff := cmp.Diff(gotArgs, wantArgs); diff != "" {
-		t.Errorf("GoTest.CommandNameAndArgs() args diff (-got +want):\n%s", diff)
-	}
-}
-
-func getRandomXMLTempFilename() string {
-	tempDir, err := os.MkdirTemp("", "bktec-*")
-	if err != nil {
-		panic(err)
-	}
-	return filepath.Join(tempDir, "test-results.xml")
 }

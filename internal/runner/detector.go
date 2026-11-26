@@ -1,11 +1,13 @@
 package runner
 
 import (
-	"fmt"
-
 	"github.com/buildkite/bktest/v3/internal/config"
+	hostplugin "github.com/buildkite/bktest/v3/internal/plugin"
 )
 
+// DetectRunner resolves and configures a runner plugin from cfg.
+// All built-in runners (rspec, jest, vitest, cypress, playwright, pytest,
+// gotest, cucumber, custom) are implemented as external plugins.
 func DetectRunner(cfg *config.Config) (TestRunnerWithTargetDiscovery, error) {
 	runnerConfig := RunnerConfig{
 		TestRunner: cfg.TestRunner,
@@ -23,27 +25,25 @@ func DetectRunner(cfg *config.Config) (TestRunnerWithTargetDiscovery, error) {
 		persistentRunner:       cfg.PersistentRunner,
 	}
 
-	switch testRunner := cfg.TestRunner; testRunner {
-	case "rspec":
-		return NewRspec(runnerConfig), nil
-	case "jest":
-		return NewJest(runnerConfig), nil
-	case "vitest":
-		return NewVitest(runnerConfig), nil
-	case "cypress":
-		return NewCypress(runnerConfig), nil
-	case "playwright":
-		return NewPlaywright(runnerConfig), nil
-	case "pytest":
-		return NewPytest(runnerConfig), nil
-	case "gotest":
-		return NewGoTest(runnerConfig), nil
-	case "cucumber":
-		return NewCucumber(runnerConfig), nil
-	case "custom":
-		return NewCustom(runnerConfig)
-	default:
-		// Update the error message to include the new runner
-		return nil, fmt.Errorf("runner value %q is invalid, possible values are 'rspec', 'jest', 'vitest', 'cypress', 'playwright', 'pytest', 'gotest', 'cucumber', or 'custom'", testRunner)
+	loaded, err := hostplugin.Resolve(hostplugin.ResolveOptions{
+		PluginPath:    cfg.PluginPath,
+		TestRunner:    cfg.TestRunner,
+		PluginDirs:    cfg.PluginDirs,
+		PluginVariant: cfg.PluginVariant,
+	})
+	if err != nil {
+		return nil, err
 	}
+
+	return NewPluginRunner(loaded, runnerConfig)
+}
+
+// DetectRunnerFromPlugin loads a specific plugin path (directory, subdirectory,
+// "root//subdir", or executable) and configures it with rc.
+func DetectRunnerFromPlugin(pluginRef string, rc RunnerConfig) (TestRunnerWithTargetDiscovery, error) {
+	loaded, err := hostplugin.Load(pluginRef)
+	if err != nil {
+		return nil, err
+	}
+	return NewPluginRunner(loaded, rc)
 }

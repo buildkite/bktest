@@ -1,9 +1,10 @@
 package runner
 
 import (
-	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -11,366 +12,244 @@ import (
 
 	"github.com/buildkite/bktest/v3/internal/plan"
 	"github.com/google/go-cmp/cmp"
+	"github.com/kballard/go-shellquote"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPlaywrightRun(t *testing.T) {
-	changeCwd(t, "./testdata/playwright")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/playwright")
 
-	playwright := NewPlaywright(RunnerConfig{
-		TestCommand: "yarn run playwright test",
-		ResultPath:  "test-results/results.json",
+		playwright := loadVariantRunner(t, variant, "playwright", RunnerConfig{
+			TestCommand: "yarn run playwright test",
+			ResultPath:  "test-results/results.json",
+		})
+
+		testCases := []plan.TestCase{
+			{Path: "./testdata/playwright/tests/example.spec.js"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := playwright.Run(result, testCases, false)
+
+		assert.NoError(t, err)
+		assert.Len(t, result.tests, 5)
+		assert.Equal(t, RunStatusPassed, result.Status())
 	})
-
-	testCases := []plan.TestCase{
-		{Path: "./testdata/playwright/tests/example.spec.js"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := playwright.Run(result, testCases, false)
-
-	if err != nil {
-		t.Errorf("Playwright.Run(%v) error = %v", testCases, err)
-	}
-
-	// 2 tests in 2 projects, plus the setup project's test.
-	if len(result.tests) != 5 {
-		t.Errorf("Playwright.Run(%v) len(RunResult.tests) = %d, want 5", testCases, len(result.tests))
-	}
-
-	if result.Status() != RunStatusPassed {
-		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
-	}
 }
 
 func TestPlaywrightRun_TestFailed(t *testing.T) {
-	changeCwd(t, "./testdata/playwright")
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/playwright")
 
-	playwright := NewPlaywright(RunnerConfig{
-		ResultPath: "test-results/results.json",
-	})
-
-	t.Cleanup(func() {
-		os.Remove(playwright.ResultPath)
-	})
-
-	testCases := []plan.TestCase{
-		{Path: "./tests/failed.spec.js"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := playwright.Run(result, testCases, false)
-
-	wantFailedTests := []plan.TestCase{
-		{
-			Scope: " chromium failed.spec.js test group failed",
-			Path:  "failed.spec.js:5",
-			Name:  "failed",
-		},
-		{
-			Scope: " firefox failed.spec.js test group failed",
-			Path:  "failed.spec.js:5",
-			Name:  "failed",
-		},
-		{
-			Scope: " chromium failed.spec.js timed out",
-			Path:  "failed.spec.js:14",
-			Name:  "timed out",
-		},
-		{
-			Scope: " firefox failed.spec.js timed out",
-			Path:  "failed.spec.js:14",
-			Name:  "timed out",
-		},
-	}
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-
-	if result.Status() != RunStatusFailed {
-		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusFailed)
-	}
-
-	// Sort the failed tests by scope and name when comparing
-	sorter := cmp.Transformer("Sort", func(in []plan.TestCase) []plan.TestCase {
-		out := append([]plan.TestCase(nil), in...) // Copy input to avoid mutating it
-		slices.SortFunc(out, func(a, b plan.TestCase) int {
-			return strings.Compare(a.Scope+"/"+a.Name, b.Scope+"/"+b.Name)
+		playwright := loadVariantRunner(t, variant, "playwright", RunnerConfig{
+			ResultPath: "test-results/results.json",
 		})
-		return out
-	})
+		t.Cleanup(func() { os.Remove(playwright.ResultFilePath()) })
 
-	if diff := cmp.Diff(result.FailedTests(), wantFailedTests, sorter); diff != "" {
-		t.Errorf("Playwright.Run(%v) RunResult.FailedTests() diff (-got +want):\n%s", testCases, diff)
-	}
+		testCases := []plan.TestCase{
+			{Path: "./tests/failed.spec.js"},
+		}
+		result := NewRunResult([]plan.TestCase{})
+		err := playwright.Run(result, testCases, false)
+
+		wantFailedTests := []plan.TestCase{
+			{Scope: " chromium failed.spec.js test group failed", Path: "failed.spec.js:5", Name: "failed"},
+			{Scope: " firefox failed.spec.js test group failed", Path: "failed.spec.js:5", Name: "failed"},
+			{Scope: " chromium failed.spec.js timed out", Path: "failed.spec.js:14", Name: "timed out"},
+			{Scope: " firefox failed.spec.js timed out", Path: "failed.spec.js:14", Name: "timed out"},
+		}
+
+		exitError := new(exec.ExitError)
+		assert.ErrorAs(t, err, &exitError)
+		assert.Equal(t, RunStatusFailed, result.Status())
+
+		sorter := cmp.Transformer("Sort", func(in []plan.TestCase) []plan.TestCase {
+			out := append([]plan.TestCase(nil), in...)
+			slices.SortFunc(out, func(a, b plan.TestCase) int {
+				return strings.Compare(a.Scope+"/"+a.Name, b.Scope+"/"+b.Name)
+			})
+			return out
+		})
+		if diff := cmp.Diff(result.FailedTests(), wantFailedTests, sorter); diff != "" {
+			t.Errorf("FailedTests() diff (-got +want):\n%s", diff)
+		}
+	})
 }
 
-func TestPlaywrightRun_TestSkipped(t *testing.T) {
-	changeCwd(t, "./testdata/playwright")
+func TestPlaywrightRun_NotRunVsSkippedAndLoadErrors(t *testing.T) {
+	// Deterministic fixture-backed test exercising Playwright's subtle accounting
+	// semantics in BOTH Go and Bash plugins without requiring browsers:
+	// 1. Failure-induced skip (status=skipped, expectedStatus=passed) -> not_run
+	// 2. Intentional skip (status=skipped, expectedStatus=skipped) -> skipped
+	// 3. File-load error in requested file -> erroredFiles + immediate rerun of remaining files
+	// 4. Error outside requested files -> fatal run error (non-retryable)
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		dir := t.TempDir()
+		changeCwd(t, dir)
 
-	playwright := NewPlaywright(RunnerConfig{
-		TestCommand: "yarn run playwright test",
-		ResultPath:  "test-results/results.json",
+		// Case A: intentional skip vs not_run
+		reportA := filepath.Join(dir, "report-a.json")
+		require.NoError(t, os.WriteFile(reportA, []byte(`{
+			"suites": [{
+				"title": "serial.spec.js",
+				"specs": [
+					{"file":"serial.spec.js","line":3,"title":"intentional skip","ok":true,"tests":[{"projectName":"chromium","status":"skipped","expectedStatus":"skipped"}]},
+					{"file":"serial.spec.js","line":7,"title":"skipped after failure","ok":true,"tests":[{"projectName":"chromium","status":"skipped","expectedStatus":"passed"}]}
+				]
+			}]
+		}`), 0o600))
+
+		pwA := loadVariantRunner(t, variant, "playwright", RunnerConfig{
+			TestCommand: "true {{testExamples}}",
+			ResultPath:  reportA,
+		})
+		resA := NewRunResult(nil)
+		require.NoError(t, pwA.Run(resA, []plan.TestCase{{Path: "serial.spec.js"}}, false))
+		assert.Equal(t, RunStatusFailed, resA.Status())
+		assert.Len(t, resA.SkippedTests(), 1)
+		assert.Equal(t, "intentional skip", resA.SkippedTests()[0].Name)
+		assert.Len(t, resA.NotRunTests(), 1)
+		assert.Equal(t, "skipped after failure", resA.NotRunTests()[0].Name)
+
+		// Case B: file-load error reruns remaining files
+		reportB := filepath.Join(dir, "report-b.json")
+		errFileAbs := filepath.Join(dir, "tests", "error.spec.js")
+		scriptB := filepath.Join(dir, "pw-sim.sh")
+		require.NoError(t, os.WriteFile(scriptB, []byte(fmt.Sprintf(`#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ "$arg" == *"error.spec.js"* ]]; then
+    cat > %q <<'JSON'
+{"suites":[],"errors":[{"message":"SyntaxError","location":{"file":%q}}]}
+JSON
+    exit 1
+  fi
+done
+cat > %q <<'JSON'
+{"suites":[{"title":"example.spec.js","specs":[{"file":"example.spec.js","line":4,"title":"passes","ok":true,"tests":[{"projectName":"chromium","status":"expected","expectedStatus":"passed"}]}]}],"errors":[]}
+JSON
+exit 0
+`, reportB, errFileAbs, reportB)), 0o755))
+
+		pwB := loadVariantRunner(t, variant, "playwright", RunnerConfig{
+			TestCommand: shellquote.Join(scriptB, "{{testExamples}}"),
+			ResultPath:  reportB,
+		})
+		resB := NewRunResult(nil)
+		err := pwB.Run(resB, []plan.TestCase{{Path: "./tests/example.spec.js"}, {Path: "./tests/error.spec.js"}}, false)
+		assert.ErrorAs(t, err, new(*exec.ExitError))
+		assert.Equal(t, RunStatusError, resB.Status())
+		assert.True(t, resB.Retryable())
+		assert.Equal(t, []string{"tests/error.spec.js"}, resB.ErroredFiles())
+		assert.Equal(t, 1, resB.Statistics().PassedOnFirstRun)
+
+		// Case C: error outside requested files (global setup error) -> fatal non-retryable error
+		resC := NewRunResult(nil)
+		err = pwB.Run(resC, []plan.TestCase{{Path: "./tests/example.spec.js"}, {Path: "error.spec.js"}}, false)
+		assert.ErrorAs(t, err, new(*exec.ExitError))
+		assert.Equal(t, RunStatusError, resC.Status())
+		assert.False(t, resC.Retryable())
 	})
-
-	testCases := []plan.TestCase{
-		{Path: "./testdata/playwright/tests/skipped.spec.js"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := playwright.Run(result, testCases, false)
-
-	if err != nil {
-		t.Errorf("Playwright.Run(%v) error = %v", testCases, err)
-	}
-
-	if result.Status() != RunStatusPassed {
-		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusPassed)
-	}
-
-	test := result.tests[" chromium skipped.spec.js it is skipped/it is skipped/skipped.spec.js:4"]
-	if test.Status != TestStatusSkipped {
-		t.Errorf("Playwright.Run(%v) test.Status = %v, want %v", testCases, test.Status, TestStatusSkipped)
-	}
-}
-
-func TestPlaywrightRun_Error(t *testing.T) {
-	changeCwd(t, "./testdata/playwright")
-
-	playwright := NewPlaywright(RunnerConfig{
-		ResultPath: "test-results/results.json",
-	})
-
-	testCases := []plan.TestCase{
-		{Path: "./tests/example.spec.js"},
-		{Path: "./tests/error.spec.js"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := playwright.Run(result, testCases, false)
-
-	// error.spec.js doesn't load, so Playwright runs no tests. The command
-	// fails even though example.spec.js passes when it runs again without it.
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-
-	if result.Status() != RunStatusError {
-		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusError)
-	}
-	if diff := cmp.Diff(result.ErroredFiles(), []string{"tests/error.spec.js"}); diff != "" {
-		t.Errorf("Playwright.Run(%v) RunResult.ErroredFiles() diff (-got +want):\n%s", testCases, diff)
-	}
-	if !result.Retryable() {
-		t.Errorf("Playwright.Run(%v) RunResult.Retryable = false, want true", testCases)
-	}
-	// 2 tests in 2 projects, plus the setup project's test.
-	if stats := result.Statistics(); stats.PassedOnFirstRun != 5 || stats.Total != 5 {
-		t.Errorf("Playwright.Run(%v) RunResult.Statistics = %+v, want 5 passed", testCases, stats)
-	}
-}
-
-func TestPlaywrightRun_ErrorOutsideTestFiles(t *testing.T) {
-	changeCwd(t, "./testdata/playwright")
-
-	playwright := NewPlaywright(RunnerConfig{
-		ResultPath: "test-results/results.json",
-	})
-
-	// error.spec.js isn't given to the command as itself, so its load error
-	// can't be attributed to one of the command's files.
-	testCases := []plan.TestCase{
-		{Path: "./tests/example.spec.js"},
-		{Path: "error"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := playwright.Run(result, testCases, false)
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
-
-	if result.Retryable() {
-		t.Errorf("Playwright.Run(%v) RunResult.Retryable = true, want false", testCases)
-	}
-	if len(result.tests) != 0 {
-		t.Errorf("Playwright.Run(%v) len(RunResult.tests) = %d, want 0", testCases, len(result.tests))
-	}
-}
-
-func TestPlaywrightRun_CommandFailed(t *testing.T) {
-	playwright := NewPlaywright(RunnerConfig{
-		TestCommand: "npx playwright test --oops",
-	})
-
-	testCases := []plan.TestCase{
-		{Path: "./doesnt-matter.spec.js"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := playwright.Run(result, testCases, false)
-
-	if result.Status() != RunStatusUnknown {
-		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusUnknown)
-	}
-
-	exitError := new(exec.ExitError)
-	assert.ErrorAs(t, err, &exitError)
 }
 
 func TestPlaywrightRun_SignaledError(t *testing.T) {
-	playwright := NewPlaywright(RunnerConfig{
-		TestCommand: "./testdata/segv.sh --outputFile {{resultPath}}",
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		playwright := loadVariantRunner(t, variant, "playwright", RunnerConfig{
+			TestCommand: "./testdata/segv.sh --outputFile {{resultPath}}",
+		})
+
+		result := NewRunResult([]plan.TestCase{})
+		err := playwright.Run(result, []plan.TestCase{{Path: "./doesnt-matter.spec.js"}}, false)
+
+		assert.Equal(t, RunStatusUnknown, result.Status())
+		signalError := new(ProcessSignaledError)
+		require.ErrorAs(t, err, &signalError)
+		assert.Equal(t, syscall.SIGSEGV, signalError.Signal)
 	})
-
-	testCases := []plan.TestCase{
-		{Path: "./doesnt-matter.spec.js"},
-	}
-	result := NewRunResult([]plan.TestCase{})
-	err := playwright.Run(result, testCases, false)
-
-	if result.Status() != RunStatusUnknown {
-		t.Errorf("Playwright.Run(%v) RunResult.Status = %v, want %v", testCases, result.Status(), RunStatusUnknown)
-	}
-
-	signalError := new(ProcessSignaledError)
-	if !errors.As(err, &signalError) {
-		t.Errorf("Playwright.Run(%v) error type = %T (%v), want *ErrProcessSignaled", testCases, err, err)
-	}
-	if signalError.Signal != syscall.SIGSEGV {
-		t.Errorf("Playwright.Run(%v) signal = %d, want %d", testCases, syscall.SIGSEGV, signalError.Signal)
-	}
 }
 
-func TestPlaywrightCommandNameAndArgs_WithPlaceholder(t *testing.T) {
+func TestPlaywrightCommandNameAndArgs(t *testing.T) {
 	testCases := []plan.TestCase{{Path: "tests/example.spec.js"}, {Path: "tests/failed.spec.js"}}
-	testCommand := "npx playwright test {{testExamples}}"
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		pw := loadVariantRunner(t, variant, "playwright", RunnerConfig{
+			TestCommand: "npx playwright test {{testExamples}}",
+		})
+		gotName, gotArgs, err := pw.CommandNameAndArgs(testCases, false)
+		require.NoError(t, err)
+		assert.Equal(t, "npx", gotName)
+		assert.Equal(t, []string{"playwright", "test", "tests/example.spec.js", "tests/failed.spec.js"}, gotArgs)
 
-	rspec := NewPlaywright(RunnerConfig{
-		TestCommand: testCommand,
+		pw2 := loadVariantRunner(t, variant, "playwright", RunnerConfig{
+			TestCommand: "npx playwright test",
+		})
+		gotName, gotArgs, err = pw2.CommandNameAndArgs(testCases, false)
+		require.NoError(t, err)
+		assert.Equal(t, "npx", gotName)
+		assert.Equal(t, []string{"playwright", "test", "tests/example.spec.js", "tests/failed.spec.js"}, gotArgs)
 	})
-
-	gotName, gotArgs, err := rspec.CommandNameAndArgs(testCases, false)
-	if err != nil {
-		t.Errorf("commandNameAndArgs(%v, %q) error = %v", testCases, testCommand, err)
-	}
-
-	wantName := "npx"
-	wantArgs := []string{"playwright", "test", "tests/example.spec.js", "tests/failed.spec.js"}
-
-	if diff := cmp.Diff(gotName, wantName); diff != "" {
-		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
-	}
-	if diff := cmp.Diff(gotArgs, wantArgs); diff != "" {
-		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
-	}
-}
-
-func TestPlaywrightCommandNameAndArgs_WithoutPlaceholder(t *testing.T) {
-	testCases := []plan.TestCase{{Path: "tests/example.spec.js"}, {Path: "tests/failed.spec.js"}}
-	testCommand := "npx playwright test"
-
-	rspec := NewPlaywright(RunnerConfig{
-		TestCommand: testCommand,
-	})
-
-	gotName, gotArgs, err := rspec.CommandNameAndArgs(testCases, false)
-	if err != nil {
-		t.Errorf("commandNameAndArgs(%v, %q) error = %v", testCases, testCommand, err)
-	}
-
-	wantName := "npx"
-	wantArgs := []string{"playwright", "test", "tests/example.spec.js", "tests/failed.spec.js"}
-
-	if diff := cmp.Diff(gotName, wantName); diff != "" {
-		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
-	}
-	if diff := cmp.Diff(gotArgs, wantArgs); diff != "" {
-		t.Errorf("commandNameAndArgs(%v, %q) diff (-got +want):\n%s", testCases, testCommand, diff)
-	}
 }
 
 func TestPlaywrightDiscoverTestTargets(t *testing.T) {
-	changeCwd(t, "./testdata/playwright")
-	playwright := NewPlaywright(RunnerConfig{})
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		changeCwd(t, "./testdata/playwright")
+		playwright := loadVariantRunner(t, variant, "playwright", RunnerConfig{})
 
-	got, err := playwright.DiscoverTestTargets()
-	if err != nil {
-		t.Errorf("Playwright.DiscoverTestTargets() error = %v", err)
-	}
+		got, err := playwright.DiscoverTestTargets()
+		require.NoError(t, err)
 
-	want := []string{
-		"tests/error.spec.js",
-		"tests/example.spec.js",
-		"tests/failed.spec.js",
-		"tests/skipped.spec.js",
-	}
-
-	if diff := cmp.Diff(got, want); diff != "" {
-		t.Errorf("Playwright.DiscoverTestTargets() diff (-got +want):\n%s", diff)
-	}
-}
-
-func TestPlaywrightGetExamples(t *testing.T) {
-	changeCwd(t, "./testdata/playwright")
-
-	playwright := NewPlaywright(RunnerConfig{
-		TestCommand: "npx playwright test",
+		want := []string{
+			"tests/error.spec.js",
+			"tests/example.spec.js",
+			"tests/failed.spec.js",
+			"tests/skipped.spec.js",
+		}
+		if diff := cmp.Diff(got, want); diff != "" {
+			t.Errorf("DiscoverTestTargets() diff (-got +want):\n%s", diff)
+		}
 	})
-
-	files := []string{"tests/example.spec.js"}
-	got, err := playwright.GetExamples(files)
-	if err != nil {
-		t.Fatalf("Playwright.GetExamples(%v) error = %v", files, err)
-	}
-
-	// example.spec.js has 2 tests in a "home page" describe block.
-	// With 2 projects (chromium, firefox), we expect 4 test cases, plus the
-	// setup project's test, which Playwright lists whichever files are given.
-	want := []plan.TestCase{
-		{
-			Name:  "set up app",
-			Path:  "app.setup.js:3",
-			Scope: " setup app.setup.js set up app",
-		},
-		{
-			Name:  "has title",
-			Path:  "example.spec.js:4",
-			Scope: " chromium example.spec.js home page has title",
-		},
-		{
-			Name:  "has title",
-			Path:  "example.spec.js:4",
-			Scope: " firefox example.spec.js home page has title",
-		},
-		{
-			Name:  "says hello",
-			Path:  "example.spec.js:10",
-			Scope: " chromium example.spec.js home page says hello",
-		},
-		{
-			Name:  "says hello",
-			Path:  "example.spec.js:10",
-			Scope: " firefox example.spec.js home page says hello",
-		},
-	}
-
-	// Sort both slices by scope for consistent comparison
-	sorter := cmp.Transformer("Sort", func(in []plan.TestCase) []plan.TestCase {
-		out := append([]plan.TestCase(nil), in...)
-		slices.SortFunc(out, func(a, b plan.TestCase) int {
-			return strings.Compare(a.Scope, b.Scope)
-		})
-		return out
-	})
-
-	if diff := cmp.Diff(got, want, sorter); diff != "" {
-		t.Errorf("Playwright.GetExamples(%v) diff (-got +want):\n%s", files, diff)
-	}
 }
 
 func TestPlaywrightGetExamples_EmptyFiles(t *testing.T) {
-	playwright := NewPlaywright(RunnerConfig{})
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		playwright := loadVariantExampleRunner(t, variant, "playwright", RunnerConfig{})
+		got, err := playwright.GetExamples([]string{})
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+}
 
-	got, err := playwright.GetExamples([]string{})
-	if err != nil {
-		t.Errorf("Playwright.GetExamples([]) error = %v", err)
-	}
+func TestParseNativePlaywrightReport(t *testing.T) {
+	workDir, err := os.Getwd()
+	require.NoError(t, err)
+	rootDir := filepath.Join(workDir, "tests")
 
-	if len(got) != 0 {
-		t.Errorf("Playwright.GetExamples([]) = %v, want empty slice", got)
-	}
+	forEachPluginVariant(t, func(t *testing.T, variant string) {
+		data := []byte(fmt.Sprintf(`{
+			"config": {"rootDir": %q},
+			"suites": [{
+				"title": "example.spec.js",
+				"specs": [{
+					"file": "example.spec.js",
+					"line": 4,
+					"title": "works",
+					"ok": true,
+					"tests": [
+						{"projectName": "chromium", "status": "expected", "expectedStatus": "passed"},
+						{"projectName": "firefox", "status": "skipped", "expectedStatus": "passed"}
+					]
+				}]
+			}],
+			"errors": []
+		}`, rootDir))
+
+		got, err := ParseNativeReportWithOptions("playwright-json", data, nil, variant)
+		require.NoError(t, err)
+		assert.True(t, got.UnselectedTests)
+		assert.Equal(t, []string{"tests/example.spec.js"}, got.ErroredFiles)
+		assert.Len(t, got.Tests, 2)
+		assert.Equal(t, " chromium example.spec.js works", got.Tests[0].TestCase.Scope)
+		assert.Equal(t, TestStatusPassed, got.Tests[0].Status)
+		assert.Equal(t, " firefox example.spec.js works", got.Tests[1].TestCase.Scope)
+		assert.Equal(t, TestStatusSkipped, got.Tests[1].Status)
+	})
 }
