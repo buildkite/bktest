@@ -39,32 +39,25 @@ steps:
         key: cli-github-approval
         depends_on: cli-stage-verify
         allowed_teams: [test-engine]
-        prompt: "Check the reviewed canonical commit and retained stage receipt before approving legacy sync, same-version tag and versioned publishing. This does not promote Latest."
-        fields:
-          - text: "Approved archive SHA-256"
-            key: cli-archive-sha256
-            format: "[0-9a-f]{64}"
-          - text: "Approved staging job UUID"
-            key: cli-stage-job
-            format: "[0-9a-f-]{36}"
+        prompt: "Review the canonical commit and the receipt in Verify retained CLI stage. Approve legacy sync, same-version tag and versioned publishing using that build's verified archive. This does not promote Latest."
 
-      - label: ":git: Prepare the legacy sync PR"
+      - label: ":git: Open the legacy sync PR"
         key: cli-sync-legacy
         depends_on: cli-github-approval
         concurrency: 1
         concurrency_group: bktest-release/cli-legacy-sync
         command: python3 -B packaging/cli/sync_legacy.py prepare
-        plugins: &github_writer_plugins
+        plugins: &github_pr_plugins
           - aws-assume-role-with-web-identity#v1.4.0: &dev_role
               role-arn: arn:aws:iam::445615400570:role/pipeline-buildkite-bktest-release-cli
               region: us-east-1
               session-tags: &release_claims [organization_slug, organization_id, pipeline_slug]
-          - buildkite/just-works#v0.2.0: &github_exchange
+          - buildkite/just-works#v0.2.0:
               assume-role: false
               ecr: {enabled: false}
               ssm: {enabled: false}
-              github: {changes-enabled: true, organization: buildkite}
-          - docker#v5.13.0:
+              github: {changes-enabled: true, organization: buildkite-release-prs}
+          - docker#v5.13.0: &github_writer_docker
               image: python:3.13-bookworm
               mount-buildkite-agent: true
               propagate-uid-gid: true
@@ -74,7 +67,13 @@ steps:
         key: cli-legacy-merged
         depends_on: cli-sync-legacy
         allowed_teams: [test-engine]
-        prompt: "Open the compare link in the preparation job. Continue after normal review, CI and merge, or if preparation reports no changes. The next job verifies the result and tags it, making the legacy Go version available."
+        # Keep the head filter in sync with ReleasePR in packaging/cli/release_pr.py.
+        prompt: |-
+          If preparation opened a PR, find it at:
+          https://github.com/buildkite/test-engine-client/pulls?q=is%3Apr+head%3Abktest-release%2F${BUILDKITE_TAG}-${BUILDKITE_BUILD_ID}
+
+          Continue after review, CI and merge, or if preparation reports no changes.
+          The next job verifies the result and tags it, making the legacy Go version available.
 
       - label: ":git: Verify the legacy merge and create its release tag"
         key: cli-tag-legacy
@@ -82,7 +81,14 @@ steps:
         concurrency: 1
         concurrency_group: bktest-release/cli-legacy-sync
         command: python3 -B packaging/cli/sync_legacy.py tag
-        plugins: *github_writer_plugins
+        plugins:
+          - aws-assume-role-with-web-identity#v1.4.0: *dev_role
+          - buildkite/just-works#v0.2.0: &github_exchange
+              assume-role: false
+              ecr: {enabled: false}
+              ssm: {enabled: false}
+              github: {changes-enabled: true, organization: buildkite}
+          - docker#v5.13.0: *github_writer_docker
 
       - label: ":github: Publish both versioned CLI releases"
         key: cli-publish-github
@@ -242,21 +248,27 @@ steps:
         allowed_teams: [test-engine]
         prompt: "Read back both package names for each format and architecture, compare served SHA-256s with the retained archive, and confirm bktest resolves before allowing Homebrew and Latest promotion."
 
-      - label: ":brew: Prepare the official Homebrew formula PR"
+      - label: ":brew: Open the official Homebrew formula PR"
         key: cli-promote-tap
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-native-readback
         concurrency: 1
         concurrency_group: bktest-release/cli-tap
         command: python3 -B packaging/cli/promote_tap.py prepare
-        plugins: *github_writer_plugins
+        plugins: *github_pr_plugins
 
       - block: "Merge the Homebrew formula PR, then continue"
         key: cli-tap-merged
         if: build.tag =~ /^v3[.][0-9]+[.][0-9]+$$/
         depends_on: cli-promote-tap
         allowed_teams: [test-engine]
-        prompt: "Open the compare link in the preparation job. Continue after normal review and merge, or if preparation reports no changes. The next job verifies the formula and alias on master before moving Latest."
+        # Keep the head filter in sync with ReleasePR in packaging/cli/release_pr.py.
+        prompt: |-
+          If preparation opened a PR, find it at:
+          https://github.com/buildkite/homebrew-buildkite/pulls?q=is%3Apr+head%3Abktest-release%2F${BUILDKITE_TAG}-${BUILDKITE_BUILD_ID}
+
+          Continue after review, CI and merge, or if preparation reports no changes.
+          The next job verifies the formula and alias on master before moving Latest.
 
       - label: ":brew: Verify the Homebrew formula on master"
         key: cli-verify-tap

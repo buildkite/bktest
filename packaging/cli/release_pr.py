@@ -6,7 +6,7 @@ import os
 import re
 import subprocess
 from urllib.parse import urlencode
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 from uuid import UUID
 
 
@@ -31,8 +31,10 @@ class ReleasePR:
     def __init__(self, name, base, tag):
         self.name = name
         self.base = base
+        self.tag = tag
         self.branch = f'bktest-release/{tag}-{UUID(os.environ["BUILDKITE_BUILD_ID"])}'
         self.url = f'https://github.com/buildkite/{name}'
+        self.pulls_url = f'https://api.github.com/repos/buildkite/{name}/pulls'
         self.prepared_key = f'cli-{name}-prepared'
 
     def prepare(self, repo):
@@ -48,21 +50,46 @@ class ReleasePR:
                 head = existing
             else:
                 git(repo, 'push', self.url + '.git', f'{head}:{ref}', env=git_auth())
-            print(f'Open a PR: {self.url}/compare/{self.base}...{self.branch}?expand=1')
+            print(f'Review and merge: {self.open_pull_request(head)}')
             prepared = head
         subprocess.run(['buildkite-agent', 'meta-data', 'set', self.prepared_key, prepared], check=True)
+
+    def pull_requests(self, state):
+        # The handoff repositories are public, so lookups don't need credentials.
+        query = urlencode({'state': state, 'base': self.base, 'head': f'buildkite:{self.branch}'})
+        with urlopen(f'{self.pulls_url}?{query}', timeout=30) as response:
+            return json.load(response)
+
+    def matches(self, pr, head):
+        return (pr['base']['ref'] == self.base and pr['head']['ref'] == self.branch and pr['head']['sha'] == head and
+                (pr['head']['repo'] or {}).get('full_name') == f'buildkite/{self.name}')
+
+    def open_pull_request(self, head):
+        # Reuse the prepared PR on retry; don't replace a closed, unmerged PR.
+        pulls = self.pull_requests('all')
+        if pulls:
+            if len(pulls) != 1 or not (pulls[0]['state'] == 'open' or pulls[0]['merged_at']):
+                raise ValueError(f'{self.name}: expected at most one open or merged release PR')
+            pr = pulls[0]
+        else:
+            body = {'title': f'Update for CLI release {self.tag}', 'head': self.branch, 'base': self.base,
+                    'body': f'Prepared by the CLI release build for `{self.tag}`. After review, CI and merge, unblock the release build.'}
+            request = Request(self.pulls_url, data=json.dumps(body).encode(), headers={
+                'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+                'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json',
+            })
+            with urlopen(request, timeout=30) as response:
+                pr = json.load(response)
+        if not self.matches(pr, head):
+            raise ValueError(f'{self.name}: release PR does not match the prepared branch and commit')
+        return f'{self.url}/pull/{pr["number"]}'
 
     def merged_commit(self, repo):
         prepared = metadata(self.prepared_key)
         if prepared.startswith('none:'):
             commit = prepared.removeprefix('none:')
         else:
-            # Both handoff repositories are public; no Pull requests permission is needed to read a PR.
-            query = urlencode({'state': 'closed', 'base': self.base, 'head': f'buildkite:{self.branch}'})
-            with urlopen(f'https://api.github.com/repos/buildkite/{self.name}/pulls?{query}', timeout=30) as response:
-                merges = [pr for pr in json.load(response) if pr['merged_at'] and pr['base']['ref'] == self.base and
-                          pr['head']['ref'] == self.branch and pr['head']['sha'] == prepared and
-                          (pr['head']['repo'] or {}).get('full_name') == f'buildkite/{self.name}']
+            merges = [pr for pr in self.pull_requests('closed') if pr['merged_at'] and self.matches(pr, prepared)]
             if len(merges) != 1:
                 raise ValueError(f'{self.name}: expected the prepared release branch merged into {self.base}')
             commit = merges[0]['merge_commit_sha']

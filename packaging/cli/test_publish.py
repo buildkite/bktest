@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import publish
 from publish_github import GitHubRelease
+from release_input import approved_input
 from stage import digest, stage
 
 
@@ -330,6 +331,57 @@ class PublicationTest(unittest.TestCase):
         self.assertEqual(set(self.releases), set(REPOS))
         self.assertTrue(all(release['prerelease'] and not release['draft'] for release in self.releases.values()))
         self.assertNotIn('releases/latest', [path for _, path in self.reads])
+
+    def test_release_uses_only_the_current_builds_verified_receipt(self):
+        build = 'b861d2bd-33f7-441c-9ced-89f205327ae8'
+        verifier = 'db6c4c93-3a8e-4f5a-a221-b02c21709ed5'
+        stage_job = 'e871c4f2-b203-4cf7-b7a1-217c8317962a'
+        receipt_path = 'dist/cli-release-receipt.json'
+
+        for tag in (self.tag, self.tag + '-rc.2'):
+            with self.subTest(tag=tag), tempfile.TemporaryDirectory() as temp:
+                archive, _ = self.make_archive(Path(temp), tag[1:])
+                receipt = dict(build_id=build, tag=tag, source=CANONICAL,
+                               stage_job_id=stage_job, archive_sha256=digest(archive))
+                retried = False
+
+                def search(command, *, text):
+                    if command == ['git', 'rev-parse', 'HEAD']:
+                        return CANONICAL + '\n'
+                    self.assertEqual(command[:3], ['buildkite-agent', 'artifact', 'search'])
+                    self.assertEqual(command[command.index('--build') + 1], build)
+                    self.assertEqual(command[command.index('--step') + 1], 'cli-stage-verify')
+                    matches = [f'{verifier} {receipt_path}']
+                    if retried and '--include-retried-jobs' in command:
+                        matches.append(f'{stage_job} {receipt_path}')
+                    return '\n'.join(matches)
+
+                def download(command, *, check):
+                    self.assertEqual(command[:3], ['buildkite-agent', 'artifact', 'download'])
+                    self.assertEqual(command[command.index('--build') + 1], build)
+                    job = command[command.index('--step') + 1]
+                    path, destination = command[-2:]
+                    output = Path(destination) / path
+                    output.parent.mkdir(exist_ok=True)
+                    if (job, path) == (verifier, receipt_path):
+                        output.write_text(json.dumps(receipt))
+                    else:
+                        self.assertEqual((job, path), (stage_job, 'dist/cli-release.tar'))
+                        output.write_bytes(archive.read_bytes())
+
+                with (patch.dict('os.environ', {'BUILDKITE_TAG': tag, 'BUILDKITE_BUILD_ID': build}, clear=True),
+                      patch('release_input.subprocess.check_output', side_effect=search),
+                      patch('release_input.subprocess.run', side_effect=download)):
+                    stable = '-' not in tag
+                    with approved_input(stable=stable) as (path, _, sha, _, selected_tag, _, source):
+                        with publish.open_stage(Path(path), sha, selected_tag, source) as release:
+                            self.assertEqual(release.archive_sha256, digest(archive))
+                    receipt['build_id'] = 'ee64d297-b4d1-443a-a149-4a305f7c2dd2'
+                    with self.assertRaisesRegex(ValueError, 'does not match this build'), approved_input(stable=stable):
+                        self.fail('accepted a receipt from a different build')
+                    retried = True
+                    with self.assertRaisesRegex(ValueError, 'expected exactly one'), approved_input(stable=stable):
+                        self.fail('selected a receipt after a verifier retry')
 
 
 if __name__ == '__main__':

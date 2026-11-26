@@ -40,6 +40,12 @@ class ReleasePRTest(unittest.TestCase):
             pr = ReleasePR('test-engine-client', 'main', tag)
             pr.url = str(root / 'legacy')
             metadata = {}
+            pulls = []
+            pr_response = {
+                'number': 42, 'state': 'open', 'merged_at': None,
+                'base': {'ref': 'main'},
+                'head': {'ref': pr.branch, 'sha': prepared, 'repo': {'full_name': 'buildkite/test-engine-client'}},
+            }
             real_run = subprocess.run
 
             def record(args, **kwargs):
@@ -48,21 +54,30 @@ class ReleasePRTest(unittest.TestCase):
                 else:
                     return real_run(args, **kwargs)
 
-            with patch.object(subprocess, 'run', side_effect=record):
+            def github(request, *, timeout):
+                if isinstance(request, str):
+                    return io.StringIO(json.dumps(pulls))
+                self.assertEqual(request.get_method(), 'POST')
+                self.assertEqual(request.full_url, 'https://api.github.com/repos/buildkite/test-engine-client/pulls')
+                self.assertEqual(request.get_header('Authorization'), 'Bearer test-token')
+                data = json.loads(request.data)
+                self.assertEqual((data['base'], data['head']), ('main', pr.branch))
+                self.assertFalse(pulls, 'retry must not create another PR')
+                pulls.append(pr_response)
+                return io.StringIO(json.dumps(pr_response))
+
+            with (patch.object(subprocess, 'run', side_effect=record),
+                  patch.object(release_pr, 'urlopen', side_effect=github)):
                 pr.prepare(work)
-                self.assertIn(f'/compare/main...{pr.branch}?expand=1', output.getvalue())
+                git(work, 'fetch', 'origin')
+                pr.prepare(work)
+                self.assertIn('/pull/42', output.getvalue())
+                self.assertEqual(len(pulls), 1)
                 self.assertEqual(git(origin, 'rev-parse', 'refs/heads/main'), base)
                 self.assertEqual(git(origin, 'rev-parse', f'refs/heads/{pr.branch}'), prepared)
                 self.assertEqual(git(origin, 'tag', '--list'), '')
 
-                pr_response = {
-                    'merged_at': None,
-                    'base': {'ref': 'main'},
-                    'head': {'ref': pr.branch, 'sha': prepared, 'repo': {'full_name': 'buildkite/test-engine-client'}},
-                }
-                with patch.object(release_pr, 'metadata', side_effect=metadata.__getitem__), patch.object(
-                    release_pr, 'urlopen', side_effect=lambda *args, **kwargs: io.StringIO(json.dumps([pr_response])),
-                ):
+                with patch.object(release_pr, 'metadata', side_effect=metadata.__getitem__):
                     with self.assertRaisesRegex(ValueError, 'expected the prepared release branch'):
                         pr.merged_commit(work)
 
@@ -71,7 +86,7 @@ class ReleasePRTest(unittest.TestCase):
                     git(work, 'cherry-pick', prepared)
                     git(work, 'commit', '--amend', '-m', 'Reviewed legacy sync (#42)')
                     merged = git(work, 'rev-parse', 'HEAD')
-                    pr_response.update(merged_at='2026-11-25T00:00:00Z', merge_commit_sha=merged)
+                    pr_response.update(state='closed', merged_at='2026-11-25T00:00:00Z', merge_commit_sha=merged)
                     with self.assertRaises(subprocess.CalledProcessError):
                         pr.merged_commit(origin)
                     pr_response['head']['sha'] = base
