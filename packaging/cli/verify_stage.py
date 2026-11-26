@@ -21,7 +21,7 @@ def main():
         raise ValueError('release tag does not point at the verifier checkout')
 
     archive = Path('dist/cli-release.tar')
-    with open_stage(archive, digest(archive), tag or 'v3.0.0-rehearsal', source) as stage:
+    with open_stage(archive, digest(archive), tag or 'v3.0.0-dev', source) as stage:
         receipt = dict(tag=tag, source=source, build_id=build_id, stage_job_id=stage_job_id,
                        archive_sha256=stage.archive_sha256,
                        manifest_sha256=stage.assets['manifest.json'].sha256)

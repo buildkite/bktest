@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""Prepare or upload one approved stable DEB/RPM asset from a retained archive."""
+"""Publish missing stable DEB/RPM packages and verify them in the signed indexes."""
 
-import argparse
 import gzip
 import hashlib
 from pathlib import Path
@@ -12,7 +11,7 @@ import time
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
-from publish import open_stage, validate_ref
+from publish import open_stage
 from stage import native_path
 
 
@@ -105,28 +104,3 @@ def publish_pair(stage, fmt, arch):
                     raise ValueError(f'{asset.path.name} not indexed yet; verify upload before retrying')
             print(f'Verified {asset.path.name} sha256:{asset.sha256}', flush=True)
 
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('archive', type=Path)
-    parser.add_argument('--archive-sha256', required=True)
-    parser.add_argument('--tag', required=True)
-    parser.add_argument('--source', required=True)
-    parser.add_argument('--package', choices=('bktec', 'bktest'), default='bktec')
-    parser.add_argument('--format', required=True, choices=('deb', 'rpm'))
-    parser.add_argument('--arch', required=True, choices=('amd64', 'arm64'))
-    parser.add_argument('--confirmed-missing', action='store_true',
-                        help='make one write after approval of signed-index exposure and exact absence')
-    args = parser.parse_args()
-    validate_ref(args.tag, args.source, mode='stable')
-    fmt = args.format
-    with open_stage(args.archive, args.archive_sha256, args.tag, args.source) as stage:
-        asset = stage.assets[native_path(args.package, stage.version, args.arch, fmt)]
-        print(f'{asset.path.name} sha256:{asset.sha256}', flush=True)
-        if args.confirmed_missing:
-            upload(asset, fmt, f'https://packages.buildkite.com/buildkite/test-engine-client-{fmt}')
-            print('Read back exact served bytes and the signed index before another write; do not blindly retry.')
-
-
-if __name__ == '__main__':
-    main()
