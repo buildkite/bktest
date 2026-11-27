@@ -249,7 +249,7 @@ Requires Playwright 1.41.2 or later.
 
 No fixture or test changes are needed. Durations include steps outside
 Playwright's test timer, but not upload latency. Interrupted attempts are skipped.
-Expected failures remain failures, as in JSON mode.
+Expected failures are reported as passed in both modes. Tests expected to be skipped stay skipped; if they do not skip, they are reported as unknown.
 
 Quoted API values and older parenthesized API arguments are replaced with
 `[REDACTED]` in step names. User-written `test.step` titles and assertion/error
