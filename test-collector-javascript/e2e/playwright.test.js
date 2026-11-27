@@ -548,7 +548,7 @@ describe('examples/playwright in OTel mode', () => {
     expect(statuses('fails')).toEqual(['fail']);
     expect(statuses('skipped')).toEqual(['skipped']);
     expect(statuses('passes on retry')).toEqual(['fail', 'pass']);
-    expect(statuses('expected failure')).toEqual(['fail']);
+    expect(statuses('expected failure')).toEqual(['pass']);
     expect(statuses('unexpected pass')).toEqual(['pass']);
     expect(statuses('times out')).toEqual(['fail']);
     expect(statuses('first')).toEqual(['fail']);
@@ -575,6 +575,9 @@ describe('examples/playwright in OTel mode', () => {
     expect(json.code).toBe(result.code);
     expect(records).toHaveLength(13);
     expect(spans.map(spanRecord).map(identity).sort()).toEqual(records.map(identity).sort());
+    const results = name => records.filter(record => record.name === name).map(record => record.result).sort();
+    expect(results('expected failure')).toEqual(['passed']);
+    expect(results('unexpected pass')).toEqual(['passed']);
   }, 60000);
 
   test('ignores hostile OTEL configuration without losing results or tags', async () => {

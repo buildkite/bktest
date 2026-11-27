@@ -243,8 +243,8 @@ class PlaywrightBuildkiteTestEngineReporter {
       const record = this.testEngineRecord(test, result);
       const attempt = this._attempts.get(testResult);
       record.id = attempt?.id || randomUUID();
-      // Cancellation is not a test failure; JSON retains its historical 'unknown'.
-      if (result.status === 'interrupted') record.result = 'skipped';
+      // Cancellation is not a test failure; a test expected to be skipped stays unknown.
+      if (result.status === 'interrupted' && test.expectedStatus !== 'skipped') record.result = 'skipped';
       const { line, column } = test.location;
       const startTime = testResult.startTime.getTime();
       const handle = attempt?.handle || this._session.startTestSpan(record, { line, column, startTime });
@@ -288,7 +288,7 @@ class PlaywrightBuildkiteTestEngineReporter {
       'scope': scope,
       'location': location,
       'file_name': fileName,
-      'result': this.testEngineResult(testResult.status),
+      'result': this.testEngineResult(testResult.status, test.expectedStatus),
       'failure_reason': this.testEngineFailureReason(testResult),
       'failure_expanded': this.testEngineFailureExpanded(testResult),
       'history': {
@@ -300,7 +300,7 @@ class PlaywrightBuildkiteTestEngineReporter {
     };
   }
 
-  testEngineResult(status) {
+  testEngineResult(status, expectedStatus) {
     // Playwright test statuses:
     // - failed
     // - interrupted
@@ -314,6 +314,9 @@ class PlaywrightBuildkiteTestEngineReporter {
     // - pending
     // - skipped
     // - unknown
+    if (expectedStatus === 'failed' && status === 'failed') return 'passed';
+    if (expectedStatus === 'skipped') return status === 'skipped' ? 'skipped' : 'unknown';
+
     return {
       failed: 'failed',
       interrupted: 'unknown',
