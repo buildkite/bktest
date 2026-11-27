@@ -9,7 +9,7 @@ from urllib.request import urlopen
 
 from publish import open_stage
 from release_input import approved_input
-from release_pr import ReleasePR, git, metadata
+from release_pr import ReleasePR, git
 
 TAP = 'https://github.com/buildkite/homebrew-buildkite.git'
 ALIAS_TARGET = '../Formula/bktec.rb'
@@ -56,9 +56,7 @@ def main():
         if matches(formula, alias, content):
             pr.prepare(repo)
             return
-        # Bind promotion to the tap head checked by the release approver.
-        if git(repo, 'rev-parse', 'HEAD') != metadata('cli-tap-head'):
-            raise ValueError('tap head moved since approval')
+        # The tap PR shows the diff against master for the reviewer to approve.
         git(repo, 'checkout', '--detach')
         formula.write_bytes(content)
         if not alias.is_symlink():

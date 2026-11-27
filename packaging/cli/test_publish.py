@@ -1,27 +1,81 @@
 import base64
-from contextlib import redirect_stdout
+from contextlib import chdir, redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import io
 import json
 from pathlib import Path
 import subprocess
-import sys
 import tarfile
 import tempfile
 from threading import Thread
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import publish
+import verify_stage
 from publish_github import GitHubRelease
+from publish_native import publish_pair
 from release_input import approved_input
-from stage import digest, stage
+from stage import digest, native_path, stage
 
 
 CANONICAL, LEGACY, ANNOTATED = '1' * 40, '2' * 40, '3' * 40
 REPOS = {'bktest': CANONICAL, 'test-engine-client': LEGACY}
 TOKEN = 'loopback-fixture-only'
+
+
+class NativePublicationTest(unittest.TestCase):
+    def test_existing_dependency_is_not_reuploaded_and_metapackage_is_read_back(self):
+        assets = {native_path(name, '3.7.4', 'arm64', 'deb'): SimpleNamespace(
+            path=Path(f'{name}.deb'), sha256='known hash') for name in ('bktec', 'bktest')}
+        stage = SimpleNamespace(version='3.7.4', assets=assets)
+        indexed = {'bktec'}
+        downloaded = []
+
+        def lookup(_, __, ___, ____, package, *args):
+            if package not in indexed:
+                return False
+            downloaded.append(package)
+            return True
+
+        def upload(asset, *args):
+            self.assertEqual(asset.path.name, 'bktest.deb')
+            self.assertEqual(downloaded, ['bktec'])
+            indexed.add('bktest')
+
+        with patch('publish_native.read', return_value=b'fixture key'), \
+                patch('publish_native.subprocess.run'), patch('publish_native.time.sleep'), \
+                patch('publish_native.indexed', side_effect=lookup), patch('publish_native.upload', side_effect=upload):
+            publish_pair(stage, 'deb', 'arm64')
+        self.assertEqual(downloaded, ['bktec', 'bktest'])
+
+    def test_upload_poll_retries_unreadable_index_but_not_conflicts(self):
+        assets = {native_path(name, '3.7.4', 'arm64', 'rpm'): SimpleNamespace(
+            path=Path(f'{name}.rpm'), sha256='known hash') for name in ('bktec', 'bktest')}
+        stage = SimpleNamespace(version='3.7.4', assets=assets)
+        unreadable = subprocess.CalledProcessError(2, 'gpgv')
+        conflict = ValueError('published package differs')
+        for results in ([False, unreadable, True, True], [False, unreadable, conflict]):
+            polls = iter(results)
+
+            def lookup(*args):
+                result = next(polls)
+                if isinstance(result, Exception):
+                    raise result
+                return result
+
+            with self.subTest(results=results), redirect_stdout(io.StringIO()), \
+                    patch('publish_native.read', return_value=b'fixture key'), \
+                    patch('publish_native.subprocess.run'), patch('publish_native.time.sleep'), \
+                    patch('publish_native.upload') as upload, patch('publish_native.indexed', side_effect=lookup):
+                if results[-1] is conflict:
+                    with self.assertRaisesRegex(ValueError, 'differs'):
+                        publish_pair(stage, 'rpm', 'arm64')
+                else:
+                    publish_pair(stage, 'rpm', 'arm64')
+                upload.assert_called_once()
 
 
 class ReleaseApi(BaseHTTPRequestHandler):
@@ -176,16 +230,6 @@ class PublicationTest(unittest.TestCase):
             destinations = tuple(GitHubRelease(repo, LEGACY, TOKEN, api=self.origin, uploads=self.origin) for repo in REPOS)
             publish.reconcile(release, destinations, apply=apply)
 
-    def test_native_dry_run_selects_exact_metapackage(self):
-        script = Path(__file__).with_name('publish_native.py')
-        args = [sys.executable, '-B', str(script), str(self.archive), '--archive-sha256', digest(self.archive),
-                '--tag', self.tag, '--source', CANONICAL, '--format', 'rpm', '--arch', 'arm64']
-        for package in ('bktest', 'bktec'):
-            name = f'{package}_{self.version}_linux_arm64.rpm'
-            expected = digest(self.directory / 'packages' / 'rpm' / name)
-            self.assertEqual(subprocess.check_output([*args, '--package', package], text=True).strip(),
-                             f'{name} sha256:{expected}')
-
     def test_resume_draft_and_verify_exact_inventory_in_both_repositories(self):
         self.run_driver()
         self.assertEqual(self.writes, [])
@@ -334,15 +378,23 @@ class PublicationTest(unittest.TestCase):
 
     def test_release_uses_only_the_current_builds_verified_receipt(self):
         build = 'b861d2bd-33f7-441c-9ced-89f205327ae8'
-        verifier = 'db6c4c93-3a8e-4f5a-a221-b02c21709ed5'
         stage_job = 'e871c4f2-b203-4cf7-b7a1-217c8317962a'
+        retry_job = 'db6c4c93-3a8e-4f5a-a221-b02c21709ed5'
         receipt_path = 'dist/cli-release-receipt.json'
 
         for tag in (self.tag, self.tag + '-rc.2'):
             with self.subTest(tag=tag), tempfile.TemporaryDirectory() as temp:
-                archive, _ = self.make_archive(Path(temp), tag[1:])
-                receipt = dict(build_id=build, tag=tag, source=CANONICAL,
-                               stage_job_id=stage_job, archive_sha256=digest(archive))
+                root = Path(temp)
+                fixture, _ = self.make_archive(root, tag[1:])
+                archive = root / 'dist/cli-release.tar'
+                archive.parent.mkdir()
+                fixture.rename(archive)
+                with (chdir(root), redirect_stdout(io.StringIO()),
+                      patch.dict('os.environ', {'BUILDKITE_TAG': tag, 'BUILDKITE_BUILD_ID': build,
+                                                'BUILDKITE_JOB_ID': stage_job}, clear=True),
+                      patch('verify_stage.subprocess.check_output', return_value=CANONICAL + '\n')):
+                    verify_stage.main()
+                receipt = json.loads((root / receipt_path).read_text())
                 retried = False
 
                 def search(command, *, text):
@@ -350,10 +402,10 @@ class PublicationTest(unittest.TestCase):
                         return CANONICAL + '\n'
                     self.assertEqual(command[:3], ['buildkite-agent', 'artifact', 'search'])
                     self.assertEqual(command[command.index('--build') + 1], build)
-                    self.assertEqual(command[command.index('--step') + 1], 'cli-stage-verify')
-                    matches = [f'{verifier} {receipt_path}']
+                    self.assertEqual(command[command.index('--step') + 1], 'cli-stage')
+                    matches = [f'{stage_job} {receipt_path}']
                     if retried and '--include-retried-jobs' in command:
-                        matches.append(f'{stage_job} {receipt_path}')
+                        matches.append(f'{retry_job} {receipt_path}')
                     return '\n'.join(matches)
 
                 def download(command, *, check):
@@ -363,7 +415,7 @@ class PublicationTest(unittest.TestCase):
                     path, destination = command[-2:]
                     output = Path(destination) / path
                     output.parent.mkdir(exist_ok=True)
-                    if (job, path) == (verifier, receipt_path):
+                    if (job, path) == (stage_job, receipt_path):
                         output.write_text(json.dumps(receipt))
                     else:
                         self.assertEqual((job, path), (stage_job, 'dist/cli-release.tar'))
@@ -376,12 +428,16 @@ class PublicationTest(unittest.TestCase):
                     with approved_input(stable=stable) as (path, _, sha, _, selected_tag, _, source):
                         with publish.open_stage(Path(path), sha, selected_tag, source) as release:
                             self.assertEqual(release.archive_sha256, digest(archive))
+                    receipt['stage_job_id'] = retry_job
+                    with self.assertRaisesRegex(ValueError, 'does not match this build'), approved_input(stable=stable):
+                        self.fail('accepted a receipt pointing to another job')
+                    receipt['stage_job_id'] = stage_job
                     receipt['build_id'] = 'ee64d297-b4d1-443a-a149-4a305f7c2dd2'
                     with self.assertRaisesRegex(ValueError, 'does not match this build'), approved_input(stable=stable):
                         self.fail('accepted a receipt from a different build')
                     retried = True
                     with self.assertRaisesRegex(ValueError, 'expected exactly one'), approved_input(stable=stable):
-                        self.fail('selected a receipt after a verifier retry')
+                        self.fail('selected a receipt after a staging retry')
 
 
 if __name__ == '__main__':

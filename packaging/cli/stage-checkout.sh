@@ -16,7 +16,7 @@ if [[ -n "$tag" ]]; then
     exit 1
   }
 else
-  version=3.0.0-rehearsal
+  version=3.0.0-dev
 fi
 
 export SOURCE_DATE_EPOCH

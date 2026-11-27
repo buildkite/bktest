@@ -40,7 +40,7 @@ class ReleasePR:
     def prepare(self, repo):
         head = git(repo, 'rev-parse', 'HEAD')
         if head == git(repo, 'rev-parse', f'refs/heads/{self.base}'):
-            print(f'{self.name}:{self.base} already matches. Continue without a PR.')
+            message = f'{self.name}:{self.base} already matches. Continue without a PR.'
             prepared = f'none:{head}'
         else:
             ref = f'refs/heads/{self.branch}'
@@ -50,9 +50,12 @@ class ReleasePR:
                 head = existing
             else:
                 git(repo, 'push', self.url + '.git', f'{head}:{ref}', env=git_auth())
-            print(f'Review and merge: {self.open_pull_request(head)}')
+            url = self.open_pull_request(head)
+            message = f'Review and merge: [{self.name} #{url.rsplit("/", 1)[-1]}]({url})'
             prepared = head
+        print(message)
         subprocess.run(['buildkite-agent', 'meta-data', 'set', self.prepared_key, prepared], check=True)
+        subprocess.run(['buildkite-agent', 'annotate', message, '--context', self.prepared_key], check=True)
 
     def pull_requests(self, state):
         # The handoff repositories are public, so lookups don't need credentials.

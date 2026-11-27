@@ -40,6 +40,7 @@ class ReleasePRTest(unittest.TestCase):
             pr = ReleasePR('test-engine-client', 'main', tag)
             pr.url = str(root / 'legacy')
             metadata = {}
+            annotations = {}
             pulls = []
             pr_response = {
                 'number': 42, 'state': 'open', 'merged_at': None,
@@ -51,6 +52,8 @@ class ReleasePRTest(unittest.TestCase):
             def record(args, **kwargs):
                 if args[:3] == ['buildkite-agent', 'meta-data', 'set']:
                     metadata[args[3]] = args[4]
+                elif args[:2] == ['buildkite-agent', 'annotate']:
+                    annotations[args[4]] = args[2]
                 else:
                     return real_run(args, **kwargs)
 
@@ -72,6 +75,9 @@ class ReleasePRTest(unittest.TestCase):
                 git(work, 'fetch', 'origin')
                 pr.prepare(work)
                 self.assertIn('/pull/42', output.getvalue())
+                self.assertEqual(list(annotations.values()), [
+                    f'Review and merge: [test-engine-client #42]({pr.url}/pull/42)',
+                ])
                 self.assertEqual(len(pulls), 1)
                 self.assertEqual(git(origin, 'rev-parse', 'refs/heads/main'), base)
                 self.assertEqual(git(origin, 'rev-parse', f'refs/heads/{pr.branch}'), prepared)
