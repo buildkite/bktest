@@ -1,3 +1,4 @@
+from contextlib import redirect_stdout
 import io
 import os
 from types import SimpleNamespace
@@ -55,3 +56,28 @@ class OCITest(unittest.TestCase):
             calls.reset_mock()
             versions(repo, tag, 'token', images)
             calls.assert_not_called()
+
+    def test_containerd_store_push_indexes_the_platform_manifest(self):
+        repo = 'docker.io/buildkite/test-engine-client'
+        tag = 'v3.7.4'
+        registry = {'latest': ('sha256:old', {})}
+        # With the containerd image store, the local image ID is the pushed one-platform index.
+        images = {arch: f'sha256:{arch}-index' for arch in ('amd64', 'arm64')}
+
+        def docker(*command, **kwargs):
+            if command[0] == 'push':
+                arch = command[1].rsplit('-', 1)[1]
+                registry[f'{tag}-{arch}'] = (f'sha256:{arch}-index', {'manifests': [
+                    {'platform': {'os': 'linux', 'architecture': arch}, 'digest': f'sha256:{arch}-manifest'}]})
+            elif command[:3] == ('buildx', 'imagetools', 'create'):
+                registry[tag] = ('sha256:index', {'manifests': [
+                    {'platform': {'os': 'linux', 'architecture': arch}, 'digest': source.split('@')[1]}
+                    for arch, source in zip(('amd64', 'arm64'), command[5:])]})
+
+        def read(_, ref, *args, **kwargs):
+            return registry.get(ref, (None, None))
+
+        with patch('publish_oci.manifest', side_effect=read), patch('publish_oci.docker', side_effect=docker), \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(versions(repo, tag, 'token', images)[1],
+                             {'amd64': 'sha256:amd64-manifest', 'arm64': 'sha256:arm64-manifest'})

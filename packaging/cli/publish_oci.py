@@ -11,7 +11,7 @@ import sys
 import tempfile
 from urllib.error import HTTPError
 from urllib.parse import urlencode
-from urllib.request import build_opener, Request, urlopen
+from urllib.request import build_opener, Request
 
 from promote_github import check_latest
 from publish_github import NoRedirect
@@ -85,6 +85,15 @@ def manifest(repo, ref, token, *, missing=False):
     return 'sha256:' + hashlib.sha256(data).hexdigest(), json.loads(data)
 
 
+def platform_manifest(repo, ref, token, *, missing=False):
+    # With the containerd image store, Docker pushes a one-platform index.
+    digest, data = manifest(repo, ref, token, missing=missing)
+    if data and 'manifests' in data:
+        child, = data['manifests']
+        return child['digest'], [digest]
+    return digest, [digest, data and data['config']['digest']]
+
+
 def versions(repo, tag, token, images):
     # Verify a known tag first: Packages returns an empty 404 for absent tags.
     previous, _ = manifest(repo, 'latest', token)
@@ -95,7 +104,7 @@ def versions(repo, tag, token, images):
     # instead of comparing them with this attempt's build.
     for arch, image in images.items():
         ref = f'{tag}-{arch}'
-        children[arch], _ = manifest(repo, ref, token, missing=True)
+        children[arch], _ = platform_manifest(repo, ref, token, missing=True)
         if children[arch] is None:
             pending[arch] = image
     if version_digest is not None:
@@ -107,8 +116,9 @@ def versions(repo, tag, token, images):
         ref = f'{tag}-{arch}'
         docker('tag', image, f'{repo}:{ref}')
         docker('push', f'{repo}:{ref}')
-        children[arch], existing = manifest(repo, ref, token)
-        if existing['config']['digest'] != image:
+        # The local image ID is the config digest, or the pushed digest with containerd.
+        children[arch], ids = platform_manifest(repo, ref, token)
+        if image not in ids:
             raise ValueError(f'{repo}:{ref} differs from the pushed image')
     create_index(repo, tag, children)
     verify_index(repo, tag, token, children)
@@ -128,6 +138,18 @@ def verify_index(repo, ref, token, children):
         raise ValueError(f'{repo}:{ref} does not serve the two published platform images')
     print(f'{repo}:{ref} {digest}', flush=True)
     return digest
+
+
+def latest_release():
+    # Read the redirect instead of the API, which is rate limited without a token.
+    try:
+        build_opener(NoRedirect()).open('https://github.com/buildkite/test-engine-client/releases/latest', timeout=45)
+    except HTTPError as error:
+        with error:
+            location = error.headers.get('Location', '')
+        if error.code == 302 and '/releases/tag/' in location:
+            return location.rsplit('/releases/tag/', 1)[1]
+    raise ValueError('could not read the legacy GitHub Latest release')
 
 
 def main():
@@ -150,10 +172,12 @@ def main():
         # Use an isolated Docker login store only after both images are built.
         config = Path(temp) / 'docker'
         config.mkdir(mode=0o700)
+        plugins = Path.home() / '.docker' / 'cli-plugins'
+        if plugins.is_dir():
+            (config / 'cli-plugins').symlink_to(plugins)
         os.environ['DOCKER_CONFIG'] = str(config)
+        check_latest(latest_release(), tag)
         published = {repo: versions(repo, tag, login(repo), images) for repo in REPOS}
-        with urlopen('https://api.github.com/repos/buildkite/test-engine-client/releases/latest', timeout=45) as latest:
-            check_latest(json.load(latest)['tag_name'], tag)
         for repo, (previous, refs) in published.items():
             token = login(repo)  # Refresh short-lived Packages credentials before promotion.
             expected = verify_index(repo, tag, token, refs)

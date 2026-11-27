@@ -51,6 +51,32 @@ class NativePublicationTest(unittest.TestCase):
             publish_pair(stage, 'deb', 'arm64')
         self.assertEqual(downloaded, ['bktec', 'bktest'])
 
+    def test_upload_poll_retries_unreadable_index_but_not_conflicts(self):
+        assets = {native_path(name, '3.7.4', 'arm64', 'rpm'): SimpleNamespace(
+            path=Path(f'{name}.rpm'), sha256='known hash') for name in ('bktec', 'bktest')}
+        stage = SimpleNamespace(version='3.7.4', assets=assets)
+        unreadable = subprocess.CalledProcessError(2, 'gpgv')
+        conflict = ValueError('published package differs')
+        for results in ([False, unreadable, True, True], [False, unreadable, conflict]):
+            polls = iter(results)
+
+            def lookup(*args):
+                result = next(polls)
+                if isinstance(result, Exception):
+                    raise result
+                return result
+
+            with self.subTest(results=results), redirect_stdout(io.StringIO()), \
+                    patch('publish_native.read', return_value=b'fixture key'), \
+                    patch('publish_native.subprocess.run'), patch('publish_native.time.sleep'), \
+                    patch('publish_native.upload') as upload, patch('publish_native.indexed', side_effect=lookup):
+                if results[-1] is conflict:
+                    with self.assertRaisesRegex(ValueError, 'differs'):
+                        publish_pair(stage, 'rpm', 'arm64')
+                else:
+                    publish_pair(stage, 'rpm', 'arm64')
+                upload.assert_called_once()
+
 
 class ReleaseApi(BaseHTTPRequestHandler):
     def log_message(self, *args):

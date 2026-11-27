@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Publish missing stable DEB/RPM packages and verify them in the signed indexes."""
 
 import gzip
@@ -11,7 +10,6 @@ import time
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
-from publish import open_stage
 from stage import native_path
 
 
@@ -29,7 +27,8 @@ def catalog(registry, fmt, arch, scratch):
         path = f'main/binary-{arch}/Packages.gz'
         checksum, = re.findall(rf'^ ([0-9a-f]{{64}}) +\d+ {re.escape(path)}$',
                                signed.split('\nSHA256:\n')[1], re.MULTILINE)
-        data = read(f'{base}/dists/any/{path}')
+        # Fetch by hash so a re-index between the two reads cannot mismatch.
+        data = read(f'{base}/dists/any/main/binary-{arch}/by-hash/SHA256/{checksum}')
         if hashlib.sha256(data).hexdigest() != checksum:
             raise ValueError('DEB index differs from signed SHA-256')
         for paragraph in gzip.decompress(data).decode().split('\n\n'):
@@ -50,9 +49,9 @@ def catalog(registry, fmt, arch, scratch):
         raise ValueError('RPM index differs from signed SHA-256')
     for entry in ElementTree.fromstring(gzip.decompress(data)).findall('{*}package'):
         if entry.findtext('{*}arch') == rpm_arch:
+            # The RPM index only has SHA-1 package checksums; indexed() checks the downloaded bytes.
             yield (entry.findtext('{*}name'), entry.find('{*}version').attrib['ver'],
-                   f'{base}/{entry.find("{*}location").attrib["href"]}',
-                   entry.findtext('{*}checksum[@type="sha256"]'))
+                   f'{base}/{entry.find("{*}location").attrib["href"]}', None)
 
 
 def indexed(registry, fmt, arch, scratch, package, version, expected):
@@ -98,8 +97,12 @@ def publish_pair(stage, fmt, arch):
                 upload(asset, fmt, registry)
                 for _ in range(24):
                     time.sleep(10)
-                    if indexed(*check):
-                        break
+                    try:
+                        if indexed(*check):
+                            break
+                    except (OSError, subprocess.CalledProcessError) as error:
+                        # The index may be mid-update; a conflicting package still fails.
+                        print(f'Index not readable yet: {error}', flush=True)
                 else:
                     raise ValueError(f'{asset.path.name} not indexed yet; verify upload before retrying')
             print(f'Verified {asset.path.name} sha256:{asset.sha256}', flush=True)
